@@ -55,7 +55,7 @@ export const make = Effect.fn("makeBitbucketSourceControlProvider")(function* ()
         .listPullRequests({
           cwd: input.cwd,
           ...(input.context ? { context: input.context } : {}),
-          headSelector: input.headSelector,
+          ...(input.headSelector !== undefined ? { headSelector: input.headSelector } : {}),
           ...(source ? { source } : {}),
           state: input.state,
           ...(input.limit !== undefined ? { limit: input.limit } : {}),

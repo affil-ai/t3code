@@ -55,7 +55,8 @@ export interface GitHubCliShape {
 
   readonly listOpenPullRequests: (input: {
     readonly cwd: string;
-    readonly headSelector: string;
+    // When omitted, list every open pull request (no `--head` filter).
+    readonly headSelector?: string;
     readonly limit?: number;
   }) => Effect.Effect<ReadonlyArray<GitHubPullRequestSummary>, GitHubCliError>;
 
@@ -251,8 +252,7 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
         args: [
           "pr",
           "list",
-          "--head",
-          input.headSelector,
+          ...(input.headSelector !== undefined ? ["--head", input.headSelector] : []),
           "--state",
           "open",
           "--limit",

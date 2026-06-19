@@ -44,7 +44,8 @@ export interface AzureDevOpsCliShape {
 
   readonly listPullRequests: (input: {
     readonly cwd: string;
-    readonly headSelector: string;
+    // When omitted, list pull requests without a source-branch filter.
+    readonly headSelector?: string;
     readonly source?: SourceControlProvider.SourceControlRefSelector;
     readonly state: "open" | "closed" | "merged" | "all";
     readonly limit?: number;
@@ -261,8 +262,9 @@ export const make = Effect.fn("makeAzureDevOpsCli")(function* () {
 
   return AzureDevOpsCli.of({
     execute,
-    listPullRequests: (input) =>
-      executeJson({
+    listPullRequests: (input) => {
+      const headBranch = SourceControlProvider.sourceBranch(input);
+      return executeJson({
         cwd: input.cwd,
         args: [
           "repos",
@@ -270,8 +272,7 @@ export const make = Effect.fn("makeAzureDevOpsCli")(function* () {
           "list",
           "--detect",
           "true",
-          "--source-branch",
-          SourceControlProvider.sourceBranch(input),
+          ...(headBranch !== undefined ? ["--source-branch", headBranch] : []),
           "--status",
           toAzureStatus(input.state),
           "--top",
@@ -300,7 +301,8 @@ export const make = Effect.fn("makeAzureDevOpsCli")(function* () {
                 }),
               ),
         ),
-      ),
+      );
+    },
     getPullRequest: (input) =>
       executeJson({
         cwd: input.cwd,

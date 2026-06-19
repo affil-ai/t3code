@@ -90,7 +90,7 @@ export const make = Effect.fn("makeAzureDevOpsSourceControlProvider")(function* 
       return azure
         .listPullRequests({
           cwd: input.cwd,
-          headSelector: input.headSelector,
+          ...(input.headSelector !== undefined ? { headSelector: input.headSelector } : {}),
           ...(source !== undefined ? { source } : {}),
           state: input.state,
           ...(input.limit !== undefined ? { limit: input.limit } : {}),

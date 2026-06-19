@@ -16,6 +16,9 @@ import {
   GitActionProgressEvent,
   GitActionProgressPhase,
   GitCommandError,
+  type GitListPullRequestsInput,
+  type GitListPullRequestsResult,
+  type GitListedPullRequest,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
@@ -82,6 +85,9 @@ export interface GitManagerShape {
   readonly resolvePullRequest: (
     input: GitPullRequestRefInput,
   ) => Effect.Effect<GitResolvePullRequestResult, GitManagerServiceError>;
+  readonly listPullRequests: (
+    input: GitListPullRequestsInput,
+  ) => Effect.Effect<GitListPullRequestsResult, GitManagerServiceError>;
   readonly preparePullRequestThread: (
     input: GitPreparePullRequestThreadInput,
   ) => Effect.Effect<GitPreparePullRequestThreadResult, GitManagerServiceError>;
@@ -1514,6 +1520,80 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     },
   );
 
+  const toListedPullRequest = (cwd: string, summary: ChangeRequest): GitListedPullRequest => ({
+    cwd,
+    provider: summary.provider,
+    number: summary.number,
+    title: summary.title,
+    url: summary.url,
+    baseRefName: summary.baseRefName,
+    headRefName: summary.headRefName,
+    state: summary.state,
+    updatedAt: Option.match(summary.updatedAt, {
+      onNone: () => null,
+      onSome: (value) => DateTime.formatIso(value),
+    }),
+    ...(summary.isDraft !== undefined ? { isDraft: summary.isDraft } : {}),
+    ...(summary.isCrossRepository !== undefined
+      ? { isCrossRepository: summary.isCrossRepository }
+      : {}),
+  });
+
+  // Lists pull/change requests across multiple repositories. Each cwd is resolved and
+  // queried independently with bounded concurrency; a failure in one repository is
+  // collected into `failures` rather than failing the whole batch (e.g. a directory that
+  // isn't a repo, an unauthenticated/unsupported provider, or a provider without listing).
+  const listPullRequestsForCwd = (
+    cwd: string,
+    options: { readonly state: ChangeRequest["state"] | "all"; readonly limit?: number },
+  ) =>
+    Effect.gen(function* () {
+      const provider = yield* sourceControlProvider(cwd);
+      const summaries = yield* provider.listChangeRequests({
+        cwd,
+        state: options.state,
+        ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      });
+      return {
+        pullRequests: summaries.map((summary) => toListedPullRequest(cwd, summary)),
+        failure: null as GitListPullRequestsResult["failures"][number] | null,
+      };
+    }).pipe(
+      Effect.catch((error) => {
+        const rawMessage = error.message;
+        const message =
+          typeof rawMessage === "string" && rawMessage.trim().length > 0
+            ? rawMessage
+            : "Unknown error";
+        return Effect.succeed({
+          pullRequests: [] as ReadonlyArray<GitListedPullRequest>,
+          failure: { cwd, message } satisfies GitListPullRequestsResult["failures"][number],
+        });
+      }),
+    );
+
+  const listPullRequests: GitManagerShape["listPullRequests"] = Effect.fn("listPullRequests")(
+    function* (input) {
+      const state = input.state ?? "open";
+      const uniqueCwds = Arr.dedupe(input.cwds);
+
+      const perCwd = yield* Effect.forEach(
+        uniqueCwds,
+        (cwd) =>
+          listPullRequestsForCwd(cwd, {
+            state,
+            ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          }),
+        { concurrency: 4 },
+      );
+
+      return {
+        pullRequests: perCwd.flatMap((entry) => entry.pullRequests),
+        failures: perCwd.flatMap((entry) => (entry.failure ? [entry.failure] : [])),
+      } satisfies GitListPullRequestsResult;
+    },
+  );
+
   const preparePullRequestThread: GitManagerShape["preparePullRequestThread"] = Effect.fn(
     "preparePullRequestThread",
   )(function* (input) {
@@ -1909,6 +1989,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     invalidateRemoteStatus,
     invalidateStatus,
     resolvePullRequest,
+    listPullRequests,
     preparePullRequestThread,
     runStackedAction,
   } satisfies GitManagerShape;

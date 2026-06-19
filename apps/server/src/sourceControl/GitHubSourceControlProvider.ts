@@ -117,7 +117,7 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
         return github
           .listOpenPullRequests({
             cwd: input.cwd,
-            headSelector: input.headSelector,
+            ...(input.headSelector !== undefined ? { headSelector: input.headSelector } : {}),
             ...(input.limit !== undefined ? { limit: input.limit } : {}),
           })
           .pipe(
@@ -133,8 +133,7 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
           args: [
             "pr",
             "list",
-            "--head",
-            input.headSelector,
+            ...(input.headSelector !== undefined ? ["--head", input.headSelector] : []),
             "--state",
             stateArg,
             "--limit",

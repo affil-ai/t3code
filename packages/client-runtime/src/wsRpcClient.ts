@@ -139,6 +139,7 @@ export interface WsRpcClient {
       options?: GitRunStackedActionOptions,
     ) => Promise<GitRunStackedActionResult>;
     readonly resolvePullRequest: RpcUnaryMethod<typeof WS_METHODS.gitResolvePullRequest>;
+    readonly listPullRequests: RpcUnaryMethod<typeof WS_METHODS.gitListPullRequests>;
     readonly preparePullRequestThread: RpcUnaryMethod<
       typeof WS_METHODS.gitPreparePullRequestThread
     >;
@@ -346,6 +347,8 @@ export function createWsRpcClient(
       },
       resolvePullRequest: (input) =>
         transport.request((client) => client[WS_METHODS.gitResolvePullRequest](input)),
+      listPullRequests: (input) =>
+        transport.request((client) => client[WS_METHODS.gitListPullRequests](input)),
       preparePullRequestThread: (input) =>
         transport.request((client) => client[WS_METHODS.gitPreparePullRequestThread](input)),
     },

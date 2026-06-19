@@ -38,15 +38,31 @@ export function normalizeSourceBranch(headSelector: string): string {
 export function sourceBranch(input: {
   readonly headSelector: string;
   readonly source?: SourceControlRefSelector;
-}): string {
-  return input.source?.refName ?? normalizeSourceBranch(input.headSelector);
+}): string;
+export function sourceBranch(input: {
+  readonly headSelector?: string;
+  readonly source?: SourceControlRefSelector;
+}): string | undefined;
+export function sourceBranch(input: {
+  readonly headSelector?: string;
+  readonly source?: SourceControlRefSelector;
+}): string | undefined {
+  if (input.source?.refName) {
+    return input.source.refName;
+  }
+  return input.headSelector === undefined ? undefined : normalizeSourceBranch(input.headSelector);
 }
 
 export function sourceControlRefFromInput(input: {
-  readonly headSelector: string;
+  readonly headSelector?: string;
   readonly source?: SourceControlRefSelector;
 }): SourceControlRefSelector | undefined {
-  return input.source ?? parseSourceControlOwnerRef(input.headSelector);
+  if (input.source) {
+    return input.source;
+  }
+  return input.headSelector === undefined
+    ? undefined
+    : parseSourceControlOwnerRef(input.headSelector);
 }
 
 export interface SourceControlProviderShape {
@@ -55,7 +71,8 @@ export interface SourceControlProviderShape {
     readonly cwd: string;
     readonly context?: SourceControlProviderContext;
     readonly source?: SourceControlRefSelector;
-    readonly headSelector: string;
+    // When omitted, list all change requests in the repository (no head-branch filter).
+    readonly headSelector?: string;
     readonly state: ChangeRequestState | "all";
     readonly limit?: number;
   }) => Effect.Effect<ReadonlyArray<ChangeRequest>, SourceControlProviderError>;

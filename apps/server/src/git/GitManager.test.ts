@@ -555,8 +555,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           args: [
             "pr",
             "list",
-            "--head",
-            input.headSelector,
+            ...(input.headSelector !== undefined ? ["--head", input.headSelector] : []),
             "--state",
             "open",
             "--limit",

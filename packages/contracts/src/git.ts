@@ -1,6 +1,17 @@
 import * as Schema from "effect/Schema";
-import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { SourceControlProviderError, SourceControlProviderInfo } from "./sourceControl.ts";
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  PositiveInt,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
+import {
+  ChangeRequestState,
+  SourceControlProviderError,
+  SourceControlProviderInfo,
+  SourceControlProviderKind,
+} from "./sourceControl.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
@@ -147,6 +158,23 @@ export const GitPullRequestRefInput = Schema.Struct({
 });
 export type GitPullRequestRefInput = typeof GitPullRequestRefInput.Type;
 
+const GitListPullRequestsState = Schema.Literals(["open", "closed", "merged", "all"]);
+export type GitListPullRequestsState = typeof GitListPullRequestsState.Type;
+
+const GIT_LIST_PULL_REQUESTS_MAX_CWDS = 100;
+const GIT_LIST_PULL_REQUESTS_MAX_LIMIT = 100;
+
+export const GitListPullRequestsInput = Schema.Struct({
+  cwds: Schema.Array(TrimmedNonEmptyStringSchema).check(
+    Schema.isMaxLength(GIT_LIST_PULL_REQUESTS_MAX_CWDS),
+  ),
+  state: Schema.optional(GitListPullRequestsState),
+  limit: Schema.optional(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(GIT_LIST_PULL_REQUESTS_MAX_LIMIT)),
+  ),
+});
+export type GitListPullRequestsInput = typeof GitListPullRequestsInput.Type;
+
 export const GitPreparePullRequestThreadInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   reference: GitPullRequestReference,
@@ -271,6 +299,36 @@ export const GitResolvePullRequestResult = Schema.Struct({
   pullRequest: GitResolvedPullRequest,
 });
 export type GitResolvePullRequestResult = typeof GitResolvePullRequestResult.Type;
+
+// Flattened, client-friendly pull request shape for cross-project listing.
+// `updatedAt` is an ISO string (vs the provider `ChangeRequest`'s Option<DateTimeUtc>)
+// to match how the web client handles timestamps everywhere else.
+export const GitListedPullRequest = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  provider: SourceControlProviderKind,
+  number: PositiveInt,
+  title: TrimmedNonEmptyStringSchema,
+  url: Schema.String,
+  baseRefName: TrimmedNonEmptyStringSchema,
+  headRefName: TrimmedNonEmptyStringSchema,
+  state: ChangeRequestState,
+  updatedAt: Schema.NullOr(IsoDateTime),
+  isDraft: Schema.optional(Schema.Boolean),
+  isCrossRepository: Schema.optional(Schema.Boolean),
+});
+export type GitListedPullRequest = typeof GitListedPullRequest.Type;
+
+export const GitListPullRequestsFailure = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  message: TrimmedNonEmptyStringSchema,
+});
+export type GitListPullRequestsFailure = typeof GitListPullRequestsFailure.Type;
+
+export const GitListPullRequestsResult = Schema.Struct({
+  pullRequests: Schema.Array(GitListedPullRequest),
+  failures: Schema.Array(GitListPullRequestsFailure),
+});
+export type GitListPullRequestsResult = typeof GitListPullRequestsResult.Type;
 
 export const GitPreparePullRequestThreadResult = Schema.Struct({
   pullRequest: GitResolvedPullRequest,

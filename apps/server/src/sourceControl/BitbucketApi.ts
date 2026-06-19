@@ -105,7 +105,8 @@ export interface BitbucketApiShape {
   readonly listPullRequests: (input: {
     readonly cwd: string;
     readonly context?: SourceControlProvider.SourceControlProviderContext;
-    readonly headSelector: string;
+    // When omitted, list pull requests without a source-branch filter.
+    readonly headSelector?: string;
     readonly source?: SourceControlProvider.SourceControlRefSelector;
     readonly state: "open" | "closed" | "merged" | "all";
     readonly limit?: number;
@@ -581,11 +582,14 @@ export const make = Effect.fn("makeBitbucketApi")(function* () {
       resolveRepository(input).pipe(
         Effect.flatMap((repository) => {
           const states = toBitbucketStates(input.state);
+          const headBranch = SourceControlProvider.sourceBranch(input);
           const query: Record<string, string | ReadonlyArray<string>> = {
             pagelen: String(Math.max(1, Math.min(input.limit ?? 20, 50))),
             sort: "-updated_on",
             q: bitbucketQueryString([
-              `source.branch.name = "${SourceControlProvider.sourceBranch(input).replaceAll('"', '\\"')}"`,
+              ...(headBranch !== undefined
+                ? [`source.branch.name = "${headBranch.replaceAll('"', '\\"')}"`]
+                : []),
               bitbucketStateFilter(states),
             ]),
             state: states,

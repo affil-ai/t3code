@@ -79,6 +79,8 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     modelSelection: Schema.fromJsonString(ModelSelection),
     externalThreadLinkCount: Schema.Number,
     externalThreadLinkMuted: Schema.Number,
+    externalThreadLinkUrl: Schema.NullOr(Schema.String),
+    externalThreadLinkSource: Schema.NullOr(Schema.String),
   }),
 );
 type ProjectionThreadDbRow = Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>;
@@ -231,6 +233,8 @@ function mapExternalThreadLinkState(row: ProjectionThreadDbRow): ExternalThreadL
   return row.externalThreadLinkCount > 0
     ? {
         muted: row.externalThreadLinkMuted > 0,
+        ...(row.externalThreadLinkUrl !== null ? { url: row.externalThreadLinkUrl } : {}),
+        ...(row.externalThreadLinkSource !== null ? { source: row.externalThreadLinkSource } : {}),
       }
     : null;
 }
@@ -362,7 +366,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             END
             FROM external_thread_links
             WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
-          ) AS "externalThreadLinkMuted"
+          ) AS "externalThreadLinkMuted",
+          (
+            SELECT external_thread_links.url
+            FROM external_thread_links
+            WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
+              AND external_thread_links.url IS NOT NULL
+            ORDER BY (external_thread_links.source = 'slack') DESC,
+              external_thread_links.created_at ASC,
+              external_thread_links.external_thread_id ASC
+            LIMIT 1
+          ) AS "externalThreadLinkUrl",
+          (
+            SELECT external_thread_links.source
+            FROM external_thread_links
+            WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
+              AND external_thread_links.url IS NOT NULL
+            ORDER BY (external_thread_links.source = 'slack') DESC,
+              external_thread_links.created_at ASC,
+              external_thread_links.external_thread_id ASC
+            LIMIT 1
+          ) AS "externalThreadLinkSource"
         FROM projection_threads
         ORDER BY created_at ASC, thread_id ASC
       `,
@@ -403,7 +427,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             END
             FROM external_thread_links
             WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
-          ) AS "externalThreadLinkMuted"
+          ) AS "externalThreadLinkMuted",
+          (
+            SELECT external_thread_links.url
+            FROM external_thread_links
+            WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
+              AND external_thread_links.url IS NOT NULL
+            ORDER BY (external_thread_links.source = 'slack') DESC,
+              external_thread_links.created_at ASC,
+              external_thread_links.external_thread_id ASC
+            LIMIT 1
+          ) AS "externalThreadLinkUrl",
+          (
+            SELECT external_thread_links.source
+            FROM external_thread_links
+            WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
+              AND external_thread_links.url IS NOT NULL
+            ORDER BY (external_thread_links.source = 'slack') DESC,
+              external_thread_links.created_at ASC,
+              external_thread_links.external_thread_id ASC
+            LIMIT 1
+          ) AS "externalThreadLinkSource"
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NULL
@@ -446,7 +490,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             END
             FROM external_thread_links
             WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
-          ) AS "externalThreadLinkMuted"
+          ) AS "externalThreadLinkMuted",
+          (
+            SELECT external_thread_links.url
+            FROM external_thread_links
+            WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
+              AND external_thread_links.url IS NOT NULL
+            ORDER BY (external_thread_links.source = 'slack') DESC,
+              external_thread_links.created_at ASC,
+              external_thread_links.external_thread_id ASC
+            LIMIT 1
+          ) AS "externalThreadLinkUrl",
+          (
+            SELECT external_thread_links.source
+            FROM external_thread_links
+            WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
+              AND external_thread_links.url IS NOT NULL
+            ORDER BY (external_thread_links.source = 'slack') DESC,
+              external_thread_links.created_at ASC,
+              external_thread_links.external_thread_id ASC
+            LIMIT 1
+          ) AS "externalThreadLinkSource"
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NOT NULL
@@ -821,7 +885,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             END
             FROM external_thread_links
             WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
-          ) AS "externalThreadLinkMuted"
+          ) AS "externalThreadLinkMuted",
+          (
+            SELECT external_thread_links.url
+            FROM external_thread_links
+            WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
+              AND external_thread_links.url IS NOT NULL
+            ORDER BY (external_thread_links.source = 'slack') DESC,
+              external_thread_links.created_at ASC,
+              external_thread_links.external_thread_id ASC
+            LIMIT 1
+          ) AS "externalThreadLinkUrl",
+          (
+            SELECT external_thread_links.source
+            FROM external_thread_links
+            WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
+              AND external_thread_links.url IS NOT NULL
+            ORDER BY (external_thread_links.source = 'slack') DESC,
+              external_thread_links.created_at ASC,
+              external_thread_links.external_thread_id ASC
+            LIMIT 1
+          ) AS "externalThreadLinkSource"
         FROM projection_threads
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL

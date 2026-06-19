@@ -8,6 +8,7 @@ import {
   IconEdit as SquarePenIcon,
   IconFocus2 as FocusIcon,
   IconFolderPlus as FolderPlusIcon,
+  IconLayoutDashboard as DashboardIcon,
   IconLoader2,
   IconMessageQuestion,
   IconPlus as PlusIcon,
@@ -2676,12 +2677,28 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
     }
     void navigate({ to: "/settings" });
   }, [isMobile, navigate, setOpenMobile]);
+  const handleDashboardClick = useCallback(() => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+    void navigate({ to: "/dashboard" });
+  }, [isMobile, navigate, setOpenMobile]);
 
   return (
     <SidebarFooter className="p-2">
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            size="sm"
+            className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+            onClick={handleDashboardClick}
+          >
+            <DashboardIcon className="size-3.5" />
+            <span className="text-xs">Dashboard</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton
             size="sm"
