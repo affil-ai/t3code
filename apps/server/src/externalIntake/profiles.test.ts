@@ -72,6 +72,55 @@ describe("defaultIntakeProfile", () => {
 });
 
 describe("loadIntakeProfiles", () => {
+  it("parses modelSelection from intake profile JSON", () => {
+    clearLegacySupportProfileEnv();
+    process.env.T3_INTAKE_PROFILES_JSON = JSON.stringify([
+      {
+        id: "nextcard",
+        workspaceRoot: "~/code/nextcard",
+        aliases: ["nextcard"],
+        modelSelection: {
+          instanceId: "claudeAgent",
+          model: "claude-opus-4-8",
+          options: [{ id: "effort", value: "high" }],
+        },
+      },
+    ]);
+
+    const profile = loadIntakeProfiles()[0];
+    expect(profile?.modelSelection).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-opus-4-8",
+      options: [{ id: "effort", value: "high" }],
+    });
+  });
+
+  it("normalizes legacy object-shaped modelSelection options from intake profile JSON", () => {
+    clearLegacySupportProfileEnv();
+    process.env.T3_INTAKE_PROFILES_JSON = JSON.stringify([
+      {
+        id: "nextcard",
+        workspaceRoot: "~/code/nextcard",
+        aliases: ["nextcard"],
+        modelSelection: {
+          provider: "claudeAgent",
+          model: "claude-opus-4-8",
+          options: { effort: "high", contextWindow: "1m" },
+        },
+      },
+    ]);
+
+    const profile = loadIntakeProfiles()[0];
+    expect(profile?.modelSelection).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-opus-4-8",
+      options: [
+        { id: "effort", value: "high" },
+        { id: "contextWindow", value: "1m" },
+      ],
+    });
+  });
+
   it("normalizes Slack emoji names on intake profiles", () => {
     clearLegacySupportProfileEnv();
     process.env.T3_INTAKE_PROFILES_JSON = JSON.stringify([

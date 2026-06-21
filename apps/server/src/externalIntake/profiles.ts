@@ -1,4 +1,10 @@
-import { ProviderInstanceId, type ModelSelection, type ProjectScript } from "@t3tools/contracts";
+import {
+  ModelSelection,
+  ProviderInstanceId,
+  type ModelSelection as ModelSelectionType,
+  type ProjectScript,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import { expandHomePath } from "../pathExpansion.ts";
 
@@ -27,7 +33,7 @@ export interface IntakeProjectProfile {
   readonly primary?: boolean;
   readonly defaultBaseRef?: string;
   readonly setupScript?: IntakeSetupScriptProfile;
-  readonly modelSelection?: ModelSelection;
+  readonly modelSelection?: ModelSelectionType;
   readonly supportEmail?: SupportEmailProfile;
 }
 
@@ -128,6 +134,14 @@ function supportEmailField(record: Record<string, unknown>): SupportEmailProfile
   };
 }
 
+const decodeModelSelection = Schema.decodeUnknownSync(ModelSelection);
+
+function modelSelectionField(record: Record<string, unknown>): ModelSelectionType | undefined {
+  const value = record.modelSelection;
+  if (value === undefined) return undefined;
+  return decodeModelSelection(value);
+}
+
 function normalizeProfile(value: unknown, fallbackId: string): IntakeProjectProfile {
   const record = normalizeStringRecord(value);
   const workspaceRoot = stringField(record, "workspaceRoot");
@@ -141,6 +155,7 @@ function normalizeProfile(value: unknown, fallbackId: string): IntakeProjectProf
   const slackEmoji = slackEmojiField(record);
   const setupScript = setupScriptField(record);
   const supportEmail = supportEmailField(record);
+  const modelSelection = modelSelectionField(record);
   const aliases = stringArrayField(record, "aliases");
   return {
     id,
@@ -152,10 +167,11 @@ function normalizeProfile(value: unknown, fallbackId: string): IntakeProjectProf
     ...(defaultBaseRef !== undefined ? { defaultBaseRef } : {}),
     ...(setupScript !== undefined ? { setupScript } : {}),
     ...(supportEmail !== undefined ? { supportEmail } : {}),
+    ...(modelSelection !== undefined ? { modelSelection } : {}),
   };
 }
 
-function defaultModelSelectionFromEnv(): ModelSelection | undefined {
+function defaultModelSelectionFromEnv(): ModelSelectionType | undefined {
   const instanceId = envValue("T3_DEFAULT_PROVIDER_INSTANCE_ID");
   const model = envValue("T3_DEFAULT_MODEL");
   if (instanceId === undefined || model === undefined) {
