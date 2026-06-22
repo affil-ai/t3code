@@ -394,7 +394,7 @@ function externalThreadLinksEqual(
 ): boolean {
   if (left === right) return true;
   if (left == null || right == null) return false;
-  return left.muted === right.muted;
+  return left.muted === right.muted && left.source === right.source && left.url === right.url;
 }
 
 function sidebarThreadSummariesEqual(

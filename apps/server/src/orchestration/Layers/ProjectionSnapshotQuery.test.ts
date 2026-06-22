@@ -88,7 +88,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'thread-1',
           'project-1',
           'slack-message-1',
-          'https://slack.test/archives/C1/p1',
+          NULL,
           1,
           '{}',
           '2026-02-24T00:00:02.500Z',
@@ -393,6 +393,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           externalThreadLink: {
             muted: true,
+            source: "slack",
           },
         },
       ]);
@@ -465,6 +466,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasActionableProposedPlan: false,
           externalThreadLink: {
             muted: true,
+            source: "slack",
           },
         },
       ]);

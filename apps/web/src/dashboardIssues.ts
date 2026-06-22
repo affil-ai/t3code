@@ -1,0 +1,589 @@
+/**
+ * Pure logic for the /dashboard "issues" view.
+ *
+ * An "issue" is a unit of work that joins one of the user's pull requests with the
+ * thread/worktree that backs it. Threads expose a `branch`; listed PRs expose a
+ * `headRefName`. We join the two by branch (within the same project) to build issues.
+ * Unmatched PRs and unmatched worktree-backed threads stand on their own.
+ *
+ * Everything here is framework-free so it can be unit-tested in isolation.
+ */
+
+import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
+import type { GitListedPullRequest } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
+import { deriveLogicalProjectKey } from "./logicalProject";
+import type { Project, SidebarThreadSummary } from "./types";
+
+export type IssueStatus = "merged" | "closed" | "draft" | "ready" | "worktree-only";
+export type DashboardPullRequest = GitListedPullRequest & {
+  readonly environmentId?: EnvironmentId | undefined;
+};
+
+export const ISSUE_STATUS_ORDER: ReadonlyArray<IssueStatus> = [
+  "ready",
+  "draft",
+  "merged",
+  "closed",
+  "worktree-only",
+];
+
+export const ISSUE_STATUS_LABEL: Record<IssueStatus, string> = {
+  ready: "Ready",
+  draft: "Draft",
+  merged: "Merged",
+  closed: "Closed",
+  "worktree-only": "Worktree",
+};
+
+/** How a worktree/thread most likely came into being. Inferred, not authoritative. */
+export type WorktreeOrigin = "slack" | "pull-request" | "manual" | "none";
+
+export interface DashboardIssue {
+  /** Stable key for React lists and saved-view selection. */
+  id: string;
+  status: IssueStatus;
+  /** Display title: PR title when matched, else the thread title. */
+  title: string;
+  branch: string | null;
+  /** The PR side of the join, when this issue has a matched/standalone PR. */
+  pullRequest: GitListedPullRequest | null;
+  /** The thread/worktree side of the join, when one exists. */
+  thread: SidebarThreadSummary | null;
+  /** The project this issue belongs to (for create-from-PR scoping). */
+  project: Project | null;
+  worktreePath: string | null;
+  worktreeOrigin: WorktreeOrigin;
+  /** Slack (or other external) permalink, when exposed. */
+  externalLink: string | null;
+  externalSource: string | null;
+  hasWorktree: boolean;
+  hasSlack: boolean;
+  hasDevin: boolean;
+  /** ISO timestamps used for sorting. */
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export function resolveProjectBadgeLabel(project: Project): string {
+  return project.repositoryIdentity?.displayName ?? project.name;
+}
+
+export function dashboardProjectFilterKey(project: Project): string {
+  return scopedProjectKey(scopeProjectRef(project.environmentId, project.id));
+}
+
+/**
+ * Normalize a head ref for joining. Providers sometimes return cross-repo refs as
+ * `owner:branch`; threads store the plain branch name. Strip an `owner:` prefix and trim.
+ */
+export function normalizeBranchKey(branch: string | null | undefined): string | null {
+  if (!branch) {
+    return null;
+  }
+  const trimmed = branch.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const ownerSplit = /^[^:/\s]+:(.+)$/u.exec(trimmed);
+  return (ownerSplit?.[1]?.trim() || trimmed).toLowerCase();
+}
+
+export function hasDevinBranchPrefix(branch: string | null | undefined): boolean {
+  const normalized = normalizeBranchKey(branch);
+  return (
+    normalized !== null && (normalized.startsWith("devin/") || normalized.startsWith("devin-"))
+  );
+}
+
+/** Derive the single issue status from the PR state (if any) and worktree presence. */
+export function deriveIssueStatus(input: {
+  pullRequest: GitListedPullRequest | null;
+  hasWorktree: boolean;
+}): IssueStatus | null {
+  const pr = input.pullRequest;
+  if (pr) {
+    if (pr.state === "merged") {
+      return "merged";
+    }
+    if (pr.state === "closed") {
+      return "closed";
+    }
+    // open
+    return pr.isDraft ? "draft" : "ready";
+  }
+  if (input.hasWorktree) {
+    return "worktree-only";
+  }
+  return null;
+}
+
+/** Infer how a worktree/thread originated from the signals we have. */
+export function inferWorktreeOrigin(input: {
+  hasWorktree: boolean;
+  externalSource: string | null;
+  hasExternalThreadLink: boolean;
+  matchedPullRequest: boolean;
+}): WorktreeOrigin {
+  if (!input.hasWorktree) {
+    return "none";
+  }
+  if (
+    input.externalSource === "slack" ||
+    (input.externalSource === null && input.hasExternalThreadLink)
+  ) {
+    return "slack";
+  }
+  if (input.matchedPullRequest) {
+    return "pull-request";
+  }
+  return "manual";
+}
+
+export const WORKTREE_ORIGIN_LABEL: Record<WorktreeOrigin, string> = {
+  slack: "From Slack",
+  "pull-request": "From PR",
+  manual: "Created manually",
+  none: "No worktree",
+};
+
+function resolveProjectForThread(
+  thread: SidebarThreadSummary,
+  projects: ReadonlyArray<Project>,
+): Project | null {
+  return (
+    projects.find(
+      (project) =>
+        project.environmentId === thread.environmentId && project.id === thread.projectId,
+    ) ?? null
+  );
+}
+
+function projectByCwd(projects: ReadonlyArray<Project>): Map<string, Project> {
+  const map = new Map<string, Project>();
+  for (const project of projects) {
+    map.set(project.cwd, project);
+  }
+  return map;
+}
+
+function projectByEnvironmentCwd(projects: ReadonlyArray<Project>): Map<string, Project> {
+  const map = new Map<string, Project>();
+  for (const project of projects) {
+    map.set(projectCwdKey(project.environmentId, project.cwd), project);
+  }
+  return map;
+}
+
+function projectCwdKey(environmentId: EnvironmentId | null | undefined, cwd: string): string {
+  return `${environmentId ?? ""}::${cwd}`;
+}
+
+function projectBranchKey(
+  environmentId: EnvironmentId | null | undefined,
+  cwd: string,
+  branchKey: string,
+): string {
+  return `${projectCwdKey(environmentId, cwd)}::${branchKey}`;
+}
+
+function projectIssueKey(project: Project): string {
+  return deriveLogicalProjectKey(project, { groupingMode: "repository" });
+}
+
+function pullRequestIdentityKey(pullRequest: DashboardPullRequest): string {
+  return `${pullRequest.provider}:${pullRequest.url || `${pullRequest.cwd}#${pullRequest.number}`}`;
+}
+
+function resolveProjectForPullRequest(
+  pullRequest: DashboardPullRequest,
+  cwdToProject: ReadonlyMap<string, Project>,
+  environmentCwdToProject: ReadonlyMap<string, Project>,
+): Project | null {
+  if (pullRequest.environmentId) {
+    return (
+      environmentCwdToProject.get(projectCwdKey(pullRequest.environmentId, pullRequest.cwd)) ?? null
+    );
+  }
+  return cwdToProject.get(pullRequest.cwd) ?? null;
+}
+
+function branchTokens(branch: string | null | undefined): ReadonlySet<string> {
+  const normalized = normalizeBranchKey(branch);
+  if (!normalized) {
+    return new Set();
+  }
+  return new Set(
+    normalized
+      .split(/[^a-z0-9]+/u)
+      .map((token) => (token.length > 4 && token.endsWith("s") ? token.slice(0, -1) : token))
+      .filter((token) => token.length > 1),
+  );
+}
+
+function compactBranchStem(branch: string | null | undefined): string | null {
+  const tokens = branchTokens(branch);
+  if (tokens.size === 0) {
+    return null;
+  }
+  return [...tokens].join("");
+}
+
+function branchSimilarityScore(left: string | null | undefined, right: string | null | undefined) {
+  const leftKey = normalizeBranchKey(left);
+  const rightKey = normalizeBranchKey(right);
+  if (!leftKey || !rightKey) {
+    return 0;
+  }
+  if (leftKey === rightKey) {
+    return 1;
+  }
+  const [shorter, longer] =
+    leftKey.length <= rightKey.length ? [leftKey, rightKey] : [rightKey, leftKey];
+  if (shorter.length >= 12 && longer.startsWith(shorter)) {
+    return 0.95;
+  }
+
+  const leftStem = compactBranchStem(leftKey);
+  const rightStem = compactBranchStem(rightKey);
+  if (!leftStem || !rightStem) {
+    return 0;
+  }
+  const [shorterStem, longerStem] =
+    leftStem.length <= rightStem.length ? [leftStem, rightStem] : [rightStem, leftStem];
+  return shorterStem.length >= 12 && longerStem.startsWith(shorterStem) ? 0.9 : 0;
+}
+
+function moreRelevantPullRequest(
+  current: DashboardPullRequest | undefined,
+  candidate: DashboardPullRequest,
+): DashboardPullRequest {
+  if (!current) {
+    return candidate;
+  }
+  if (current.state !== "open" && candidate.state === "open") {
+    return candidate;
+  }
+  return current;
+}
+
+/**
+ * Build the issue list by joining listed PRs with threads, scoped to the given projects.
+ *
+ * - A thread whose branch matches a PR's head ref (same project) becomes one issue.
+ * - A PR with no matching thread becomes a standalone "create-able" issue.
+ * - A worktree-backed thread with no matching PR becomes a "worktree-only" issue.
+ * - Threads without a worktree and without a PR are dropped (not units of work here).
+ */
+export function buildDashboardIssues(input: {
+  threads: ReadonlyArray<SidebarThreadSummary>;
+  pullRequests: ReadonlyArray<DashboardPullRequest>;
+  projects: ReadonlyArray<Project>;
+}): DashboardIssue[] {
+  const { threads, pullRequests, projects } = input;
+  const cwdToProject = projectByCwd(projects);
+  const environmentCwdToProject = projectByEnvironmentCwd(projects);
+
+  // Index PRs by resolved project and normalized head branch. Raw cwd is not stable enough
+  // for cloud/remote projects, but the resolved project is the same scope used by threads.
+  const prByProjectBranch = new Map<string, DashboardPullRequest>();
+  const prsByProject = new Map<string, DashboardPullRequest[]>();
+  for (const pr of pullRequests) {
+    const branchKey = normalizeBranchKey(pr.headRefName);
+    if (!branchKey) {
+      continue;
+    }
+    const prProject = resolveProjectForPullRequest(pr, cwdToProject, environmentCwdToProject);
+    const key = prProject
+      ? `${projectIssueKey(prProject)}::${branchKey}`
+      : projectBranchKey(pr.environmentId, pr.cwd, branchKey);
+    const existing = prByProjectBranch.get(key);
+    prByProjectBranch.set(key, moreRelevantPullRequest(existing, pr));
+
+    if (prProject) {
+      const projectKey = projectIssueKey(prProject);
+      const projectPrs = prsByProject.get(projectKey);
+      if (projectPrs) {
+        projectPrs.push(pr);
+      } else {
+        prsByProject.set(projectKey, [pr]);
+      }
+    }
+  }
+
+  const issues: DashboardIssue[] = [];
+  const consumedPrIdentities = new Set<string>();
+
+  // 1) Threads → issues (matched to a PR by branch when possible).
+  for (const thread of threads) {
+    const project = resolveProjectForThread(thread, projects);
+    const branchKey = normalizeBranchKey(thread.branch);
+    let matchedPr: DashboardPullRequest | null = null;
+    if (project && branchKey) {
+      const projectKey = projectIssueKey(project);
+      const key = `${projectKey}::${branchKey}`;
+      let candidate = prByProjectBranch.get(key);
+      if (!candidate) {
+        let bestScore = 0;
+        for (const projectPr of prsByProject.get(projectKey) ?? []) {
+          const score = branchSimilarityScore(thread.branch, projectPr.headRefName);
+          if (score > bestScore) {
+            bestScore = score;
+            candidate = projectPr;
+          } else if (score === bestScore && score > 0) {
+            candidate = moreRelevantPullRequest(candidate, projectPr);
+          }
+        }
+      }
+      if (candidate) {
+        matchedPr = candidate;
+        consumedPrIdentities.add(pullRequestIdentityKey(candidate));
+      }
+    }
+
+    const hasWorktree = thread.worktreePath !== null && thread.worktreePath !== undefined;
+    const status = deriveIssueStatus({ pullRequest: matchedPr, hasWorktree });
+    if (!status) {
+      // No PR and no worktree — not a unit of work for this view.
+      continue;
+    }
+
+    const externalLink = thread.externalThreadLink?.url ?? null;
+    const externalSource = thread.externalThreadLink?.source ?? null;
+    const hasExternalThreadLink =
+      thread.externalThreadLink !== null && thread.externalThreadLink !== undefined;
+    const hasSlack =
+      externalSource === "slack" || (externalSource === null && hasExternalThreadLink);
+
+    issues.push({
+      id: `thread:${thread.environmentId}:${thread.id}`,
+      status,
+      title: matchedPr?.title ?? thread.title,
+      branch: thread.branch,
+      pullRequest: matchedPr,
+      thread,
+      project,
+      worktreePath: thread.worktreePath ?? null,
+      worktreeOrigin: inferWorktreeOrigin({
+        hasWorktree,
+        externalSource,
+        hasExternalThreadLink,
+        matchedPullRequest: matchedPr !== null,
+      }),
+      externalLink,
+      externalSource,
+      hasWorktree,
+      hasSlack,
+      hasDevin: hasDevinBranchPrefix(thread.branch ?? matchedPr?.headRefName ?? null),
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt ?? thread.latestUserMessageAt ?? thread.createdAt,
+    });
+  }
+
+  // 2) Unmatched PRs → standalone "create-able" issues.
+  for (const pr of pullRequests) {
+    const branchKey = normalizeBranchKey(pr.headRefName);
+    if (!branchKey) {
+      continue;
+    }
+    if (consumedPrIdentities.has(pullRequestIdentityKey(pr))) {
+      continue;
+    }
+    const prProject = resolveProjectForPullRequest(pr, cwdToProject, environmentCwdToProject);
+    const key = prProject
+      ? `${projectIssueKey(prProject)}::${branchKey}`
+      : projectBranchKey(pr.environmentId, pr.cwd, branchKey);
+    // Only surface this PR once (the indexed representative for its branch).
+    if (prByProjectBranch.get(key) !== pr) {
+      continue;
+    }
+    const status = deriveIssueStatus({ pullRequest: pr, hasWorktree: false });
+    if (!status) {
+      continue;
+    }
+    issues.push({
+      id: `pr:${pr.cwd}:${pr.number}`,
+      status,
+      title: pr.title,
+      branch: pr.headRefName,
+      pullRequest: pr,
+      thread: null,
+      project: prProject,
+      worktreePath: null,
+      worktreeOrigin: "none",
+      externalLink: null,
+      externalSource: null,
+      hasWorktree: false,
+      hasSlack: false,
+      hasDevin: hasDevinBranchPrefix(pr.headRefName),
+      createdAt: null,
+      updatedAt: pr.updatedAt,
+    });
+  }
+
+  return issues;
+}
+
+export type SortField = "created" | "updated";
+export type SortDirection = "asc" | "desc";
+
+export interface DashboardFilters {
+  statuses: ReadonlyArray<IssueStatus>;
+  projectIds: ReadonlyArray<string>;
+  searchQuery: string;
+  hasWorktree: boolean;
+  hasSlack: boolean;
+  hasDevin?: boolean;
+}
+
+export const EMPTY_FILTERS: DashboardFilters = {
+  statuses: [],
+  projectIds: [],
+  searchQuery: "",
+  hasWorktree: false,
+  hasSlack: false,
+  hasDevin: false,
+};
+
+export const CLOSED_PULL_REQUEST_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
+function normalizedSearchTerms(query: string): ReadonlyArray<string> {
+  return query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/u)
+    .filter((term) => term.length > 0);
+}
+
+function issueSearchText(issue: DashboardIssue): string {
+  const project = issue.project;
+  const repositoryIdentity = project?.repositoryIdentity ?? null;
+  return [
+    issue.title,
+    issue.status,
+    ISSUE_STATUS_LABEL[issue.status],
+    issue.branch,
+    issue.worktreePath,
+    issue.worktreeOrigin,
+    WORKTREE_ORIGIN_LABEL[issue.worktreeOrigin],
+    issue.externalLink,
+    issue.externalSource,
+    issue.hasDevin ? "devin" : null,
+    issue.pullRequest?.number === undefined ? null : `#${issue.pullRequest.number}`,
+    issue.pullRequest?.number,
+    issue.pullRequest?.title,
+    issue.pullRequest?.url,
+    issue.pullRequest?.provider,
+    issue.pullRequest?.baseRefName,
+    issue.pullRequest?.headRefName,
+    issue.thread?.title,
+    issue.thread?.id,
+    project?.name,
+    project?.cwd,
+    repositoryIdentity?.displayName,
+    repositoryIdentity?.canonicalKey,
+    repositoryIdentity?.owner,
+    repositoryIdentity?.name,
+    repositoryIdentity?.provider,
+    repositoryIdentity?.locator.remoteName,
+    repositoryIdentity?.locator.remoteUrl,
+  ]
+    .filter((value): value is string | number => value !== null && value !== undefined)
+    .join(" ")
+    .toLowerCase();
+}
+
+function isStaleClosedPullRequestIssue(issue: DashboardIssue, nowMs: number): boolean {
+  if (issue.status !== "closed" || issue.pullRequest === null) {
+    return false;
+  }
+  if (!issue.pullRequest.updatedAt) {
+    return false;
+  }
+  const updatedAtMs = new Date(issue.pullRequest.updatedAt).getTime();
+  return !Number.isNaN(updatedAtMs) && updatedAtMs < nowMs - CLOSED_PULL_REQUEST_STALE_AFTER_MS;
+}
+
+export function filterIssues(
+  issues: ReadonlyArray<DashboardIssue>,
+  filters: DashboardFilters,
+  options?: { nowMs?: number },
+): DashboardIssue[] {
+  const projectIds = new Set(filters.projectIds);
+  const searchTerms = normalizedSearchTerms(filters.searchQuery);
+  const nowMs = options?.nowMs ?? Date.now();
+  return issues.filter((issue) => {
+    if (isStaleClosedPullRequestIssue(issue, nowMs)) {
+      return false;
+    }
+    if (filters.statuses.length > 0 && !filters.statuses.includes(issue.status)) {
+      return false;
+    }
+    if (projectIds.size > 0) {
+      if (!issue.project) {
+        return false;
+      }
+      const projectKey = dashboardProjectFilterKey(issue.project);
+      if (!projectIds.has(projectKey) && !projectIds.has(issue.project.id)) {
+        return false;
+      }
+    }
+    if (filters.hasWorktree && !issue.hasWorktree) {
+      return false;
+    }
+    if (filters.hasSlack && !issue.hasSlack) {
+      return false;
+    }
+    if (filters.hasDevin && !issue.hasDevin) {
+      return false;
+    }
+    if (searchTerms.length > 0) {
+      const searchText = issueSearchText(issue);
+      if (!searchTerms.every((term) => searchText.includes(term))) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function timeValue(iso: string | null): number {
+  if (!iso) {
+    return 0;
+  }
+  const parsed = new Date(iso).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+export function sortIssues(
+  issues: ReadonlyArray<DashboardIssue>,
+  field: SortField,
+  direction: SortDirection,
+): DashboardIssue[] {
+  const sorted = [...issues].sort((a, b) => {
+    const aValue = timeValue(field === "created" ? a.createdAt : a.updatedAt);
+    const bValue = timeValue(field === "created" ? b.createdAt : b.updatedAt);
+    if (aValue === bValue) {
+      // Stable, deterministic tiebreaker.
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    }
+    return aValue - bValue;
+  });
+  return direction === "desc" ? sorted.toReversed() : sorted;
+}
+
+export function groupIssuesByStatus(
+  issues: ReadonlyArray<DashboardIssue>,
+): Array<{ status: IssueStatus; issues: DashboardIssue[] }> {
+  const grouped = new Map<IssueStatus, DashboardIssue[]>();
+  for (const status of ISSUE_STATUS_ORDER) {
+    grouped.set(status, []);
+  }
+  for (const issue of issues) {
+    grouped.get(issue.status)?.push(issue);
+  }
+  return ISSUE_STATUS_ORDER.map((status) => ({
+    status,
+    issues: grouped.get(status) ?? [],
+  }));
+}

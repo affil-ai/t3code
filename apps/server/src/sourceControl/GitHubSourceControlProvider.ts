@@ -8,6 +8,7 @@ import {
   type ChangeRequest,
   type ChangeRequestState,
 } from "@t3tools/contracts";
+import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
 
 import * as GitHubCli from "./GitHubCli.ts";
 import { findAuthenticatedGitHubAccount, parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
@@ -50,6 +51,15 @@ function toChangeRequest(summary: GitHubCli.GitHubPullRequestSummary): ChangeReq
       ? { headRepositoryOwnerLogin: summary.headRepositoryOwnerLogin }
       : {}),
   };
+}
+
+function contextRepositoryNameWithOwner(
+  context: SourceControlProvider.SourceControlProviderContext | undefined,
+): string | undefined {
+  if (context?.provider.kind !== "github") {
+    return undefined;
+  }
+  return parseGitHubRepositoryNameWithOwnerFromRemoteUrl(context.remoteUrl) ?? undefined;
 }
 
 function parseGitHubAuth(input: SourceControlProviderDiscovery.SourceControlAuthProbeInput) {
@@ -114,10 +124,12 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
   const listChangeRequests: SourceControlProvider.SourceControlProviderShape["listChangeRequests"] =
     (input) => {
       if (input.state === "open") {
+        const repository = contextRepositoryNameWithOwner(input.context);
         return github
           .listOpenPullRequests({
             cwd: input.cwd,
-            headSelector: input.headSelector,
+            ...(repository !== undefined ? { repository } : {}),
+            ...(input.headSelector !== undefined ? { headSelector: input.headSelector } : {}),
             ...(input.limit !== undefined ? { limit: input.limit } : {}),
           })
           .pipe(
@@ -127,14 +139,15 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
       }
 
       const stateArg: ChangeRequestState | "all" = input.state;
+      const repository = contextRepositoryNameWithOwner(input.context);
       return github
         .execute({
           cwd: input.cwd,
           args: [
             "pr",
             "list",
-            "--head",
-            input.headSelector,
+            ...(repository !== undefined ? ["--repo", repository] : []),
+            ...(input.headSelector !== undefined ? ["--head", input.headSelector] : []),
             "--state",
             stateArg,
             "--limit",

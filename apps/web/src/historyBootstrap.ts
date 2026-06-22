@@ -25,11 +25,22 @@ function attachmentSummary(message: ChatMessage): string | null {
     return null;
   }
 
+  const attachmentLabel = attachments.every((attachment) => attachment.type === "image")
+    ? count === 1
+      ? "image"
+      : "images"
+    : attachments.every((attachment) => attachment.type === "file")
+      ? count === 1
+        ? "file"
+        : "files"
+      : count === 1
+        ? "attachment"
+        : "attachments";
   const names = attachments.slice(0, 3).map((attachment) => attachment.name);
   const namesSummary = names.join(", ");
   const extraCount = count - names.length;
   const extraSummary = extraCount > 0 ? ` (+${extraCount} more)` : "";
-  return `[Attached file${count === 1 ? "" : "s"}: ${namesSummary}${extraSummary}]`;
+  return `[Attached ${attachmentLabel}: ${namesSummary}${extraSummary}]`;
 }
 
 function buildMessageBlock(message: ChatMessage): string {

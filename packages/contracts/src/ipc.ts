@@ -11,6 +11,8 @@ import type {
   VcsRemoveWorktreeInput,
   VcsSwitchRefInput,
   VcsSwitchRefResult,
+  GitListPullRequestsInput,
+  GitListPullRequestsResult,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
@@ -1138,6 +1140,7 @@ export interface EnvironmentApi {
   };
   git: {
     resolvePullRequest: (input: GitPullRequestRefInput) => Promise<GitResolvePullRequestResult>;
+    listPullRequests: (input: GitListPullRequestsInput) => Promise<GitListPullRequestsResult>;
     preparePullRequestThread: (
       input: GitPreparePullRequestThreadInput,
     ) => Promise<GitPreparePullRequestThreadResult>;

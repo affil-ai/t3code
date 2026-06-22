@@ -176,6 +176,9 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.vcsPull, AuthOrchestrationOperateScope],
   [WS_METHODS.gitRunStackedAction, AuthOrchestrationOperateScope],
   [WS_METHODS.gitResolvePullRequest, AuthOrchestrationOperateScope],
+  // Read-only: listing PRs powers the dashboard view and must work for read-scoped users.
+  // (Creating a worktree from a PR still goes through preparePullRequestThread, which requires operate.)
+  [WS_METHODS.gitListPullRequests, AuthOrchestrationReadScope],
   [WS_METHODS.gitPreparePullRequestThread, AuthOrchestrationOperateScope],
   [WS_METHODS.vcsListRefs, AuthOrchestrationReadScope],
   [WS_METHODS.vcsCreateWorktree, AuthOrchestrationOperateScope],
@@ -1397,6 +1400,10 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               "rpc.aggregate": "git",
             },
           ),
+        [WS_METHODS.gitListPullRequests]: (input) =>
+          observeRpcEffect(WS_METHODS.gitListPullRequests, gitWorkflow.listPullRequests(input), {
+            "rpc.aggregate": "git",
+          }),
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitPreparePullRequestThread,

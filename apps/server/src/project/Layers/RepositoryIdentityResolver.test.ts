@@ -113,24 +113,24 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     }).pipe(Effect.provide(RepositoryIdentityResolverLive)),
   );
 
-  it.effect("prefers upstream over origin when both remotes are configured", () =>
+  it.effect("prefers origin over upstream when both remotes are configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-repository-identity-upstream-test-",
+        prefix: "t3-repository-identity-fork-test-",
       });
 
       yield* git(cwd, ["init"]);
-      yield* git(cwd, ["remote", "add", "origin", "git@github.com:julius/t3code.git"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:affil-ai/t3code.git"]);
       yield* git(cwd, ["remote", "add", "upstream", "git@github.com:T3Tools/t3code.git"]);
 
       const resolver = yield* RepositoryIdentityResolver;
       const identity = yield* resolver.resolve(cwd);
 
       expect(identity).not.toBeNull();
-      expect(identity?.locator.remoteName).toBe("upstream");
-      expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
-      expect(identity?.displayName).toBe("t3tools/t3code");
+      expect(identity?.locator.remoteName).toBe("origin");
+      expect(identity?.canonicalKey).toBe("github.com/affil-ai/t3code");
+      expect(identity?.displayName).toBe("affil-ai/t3code");
     }).pipe(Effect.provide(RepositoryIdentityResolverLive)),
   );
 

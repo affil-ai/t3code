@@ -32,6 +32,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { AGENT_ARTIFACT_INSTRUCTIONS } from "../../agentArtifacts.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -641,7 +642,10 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.effort, "high");
       const promptText = yield* Effect.promise(() => readFirstPromptText(createInput));
-      assert.equal(promptText, "Ultrathink:\nInvestigate the edge cases");
+      assert.equal(
+        promptText,
+        `Ultrathink:\nInvestigate the edge cases\n\n${AGENT_ARTIFACT_INSTRUCTIONS}`,
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -696,7 +700,7 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(promptMessage?.message.content, [
         {
           type: "text",
-          text: "What's in this image?",
+          text: `What's in this image?\n\n${AGENT_ARTIFACT_INSTRUCTIONS}`,
         },
         {
           type: "image",
@@ -1093,7 +1097,7 @@ describe("ClaudeAdapterLive", () => {
       const toolStarted = runtimeEvents.find((event) => event.type === "item.started");
       assert.equal(toolStarted?.type, "item.started");
       if (toolStarted?.type === "item.started") {
-        assert.equal(toolStarted.payload.itemType, "dynamic_tool_call");
+        assert.equal(toolStarted.payload.itemType, "file_read");
       }
 
       const toolInputUpdated = runtimeEvents.find(
@@ -2960,7 +2964,7 @@ describe("ClaudeAdapterLive", () => {
         attachments: [],
       });
 
-      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6"]);
+      assert.deepEqual(harness.query.setModelCalls, ["us.anthropic.claude-opus-4-6-v1"]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3065,7 +3069,10 @@ describe("ClaudeAdapterLive", () => {
         attachments: [],
       });
 
-      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6[1m]", "claude-opus-4-6"]);
+      assert.deepEqual(harness.query.setModelCalls, [
+        "us.anthropic.claude-opus-4-6-v1[1m]",
+        "us.anthropic.claude-opus-4-6-v1",
+      ]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

@@ -53,7 +53,8 @@ export interface GitLabCliShape {
 
   readonly listMergeRequests: (input: {
     readonly cwd: string;
-    readonly headSelector: string;
+    // When omitted, list merge requests without a source-branch filter.
+    readonly headSelector?: string;
     readonly source?: SourceControlProvider.SourceControlRefSelector;
     readonly state: "open" | "closed" | "merged" | "all";
     readonly limit?: number;
@@ -224,8 +225,19 @@ function normalizeHeadSelector(headSelector: string): string {
 function sourceRefName(input: {
   readonly headSelector: string;
   readonly source?: SourceControlProvider.SourceControlRefSelector;
-}): string {
-  return input.source?.refName ?? normalizeHeadSelector(input.headSelector);
+}): string;
+function sourceRefName(input: {
+  readonly headSelector?: string;
+  readonly source?: SourceControlProvider.SourceControlRefSelector;
+}): string | undefined;
+function sourceRefName(input: {
+  readonly headSelector?: string;
+  readonly source?: SourceControlProvider.SourceControlRefSelector;
+}): string | undefined {
+  if (input.source?.refName) {
+    return input.source.refName;
+  }
+  return input.headSelector === undefined ? undefined : normalizeHeadSelector(input.headSelector);
 }
 
 function sourceProjectIdentifier(
@@ -275,14 +287,14 @@ export const make = Effect.fn("makeGitLabCli")(function* () {
 
   return GitLabCli.of({
     execute,
-    listMergeRequests: (input) =>
-      execute({
+    listMergeRequests: (input) => {
+      const headBranch = sourceRefName(input);
+      return execute({
         cwd: input.cwd,
         args: [
           "mr",
           "list",
-          "--source-branch",
-          sourceRefName(input),
+          ...(headBranch !== undefined ? ["--source-branch", headBranch] : []),
           ...stateArgs(input.state),
           "--per-page",
           String(input.limit ?? 20),
@@ -310,7 +322,8 @@ export const make = Effect.fn("makeGitLabCli")(function* () {
                 }),
               ),
         ),
-      ),
+      );
+    },
     getMergeRequest: (input) =>
       execute({
         cwd: input.cwd,

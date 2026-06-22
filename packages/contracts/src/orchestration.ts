@@ -356,6 +356,10 @@ export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
 export const OrchestrationExternalThreadLinkState = Schema.Struct({
   muted: Schema.Boolean,
+  // A clickable permalink to the external thread (e.g. a Slack message), when one is stored.
+  url: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  // The external source the link came from (e.g. "slack", "support_email", "github").
+  source: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type OrchestrationExternalThreadLinkState = typeof OrchestrationExternalThreadLinkState.Type;
 

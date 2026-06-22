@@ -119,7 +119,7 @@ export const make = Effect.fn("makeGitLabSourceControlProvider")(function* () {
       return gitlab
         .listMergeRequests({
           cwd: input.cwd,
-          headSelector: input.headSelector,
+          ...(input.headSelector !== undefined ? { headSelector: input.headSelector } : {}),
           ...(source ? { source } : {}),
           state: input.state,
           ...(input.limit !== undefined ? { limit: input.limit } : {}),

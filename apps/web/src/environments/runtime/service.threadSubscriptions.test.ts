@@ -153,6 +153,7 @@ vi.mock("@t3tools/client-runtime", async (importOriginal) => {
     git: {
       runStackedAction: vi.fn(),
       resolvePullRequest: vi.fn(),
+      listPullRequests: vi.fn(),
       preparePullRequestThread: vi.fn(),
     },
     review: {
