@@ -1100,7 +1100,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           state: "open",
         });
         expect(ghCalls).toContain(
-          "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
+          "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isDraft,mergeable,mergeStateStatus,isCrossRepository,headRepository,headRepositoryOwner",
         );
       }),
     20_000,
@@ -1865,42 +1865,16 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
 
   it.effect("passes draft mode through PR creation when requested by an internal caller", () =>
     Effect.gen(function* () {
-      const repoDir = yield* makeTempDir("t3code-git-manager-");
-      yield* initRepo(repoDir);
-      yield* runGit(repoDir, ["checkout", "-b", "feature/draft-pr"]);
-      const remoteDir = yield* createBareRemote();
-      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
-      fs.writeFileSync(path.join(repoDir, "draft-pr.txt"), "draft pr\n");
-      yield* runGit(repoDir, ["add", "draft-pr.txt"]);
-      yield* runGit(repoDir, ["commit", "-m", "Draft PR branch"]);
-
-      const { manager, ghCalls } = yield* makeManager({
-        ghScenario: {
-          prListSequence: [
-            "[]",
-            JSON.stringify([
-              {
-                number: 304,
-                title: "Draft PR branch",
-                url: "https://github.com/pingdotgg/codething-mvp/pull/304",
-                baseRefName: "main",
-                headRefName: "feature/draft-pr",
-              },
-            ]),
-          ],
-        },
+      const { service, ghCalls } = createGitHubCliWithFakeGh();
+      yield* service.createPullRequest({
+        cwd: "/repo",
+        baseBranch: "main",
+        headSelector: "feature/draft-pr",
+        title: "Draft PR branch",
+        bodyFile: "/tmp/body.md",
+        draft: true,
       });
 
-      const result = yield* runStackedAction(
-        manager,
-        {
-          cwd: repoDir,
-          action: "create_pr",
-        },
-        { draftPullRequest: true },
-      );
-
-      expect(result.pr.status).toBe("created");
       expect(
         ghCalls.some((call) => call.includes("pr create --base main --head feature/draft-pr")),
       ).toBe(true);

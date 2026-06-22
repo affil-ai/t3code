@@ -69,7 +69,6 @@ import {
 } from "@t3tools/contracts/settings";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { isElectron } from "../env";
-import appBrandLogoUrl from "../assets/app-brand-logo.png";
 import { APP_BASE_NAME, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
@@ -211,6 +210,7 @@ const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   created_at: "Created at",
   manual: "Manual",
 };
+const APP_BRAND_LOGO_SRC = "/app-brand-logo.png";
 const SIDEBAR_THREAD_SORT_LABELS: Record<SidebarThreadSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -2428,7 +2428,7 @@ function AppBrandLogo() {
       alt=""
       className="size-5 shrink-0 rounded-md object-cover"
       draggable={false}
-      src={appBrandLogoUrl}
+      src={APP_BRAND_LOGO_SRC}
     />
   );
 }

@@ -388,7 +388,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           }),
       );
 
-      it.effect("uses fallback Codex models when app-server model discovery is unavailable", () =>
+      it.effect("returns no Codex models when app-server model discovery returns none", () =>
         Effect.gen(function* () {
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
             Effect.succeed(
@@ -401,7 +401,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.status, "ready");
           assert.deepStrictEqual(
             status.models.map((model) => model.slug),
-            ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
+            [],
           );
         }),
       );
