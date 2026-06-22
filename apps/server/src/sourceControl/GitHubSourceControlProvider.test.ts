@@ -109,7 +109,7 @@ it.effect("uses gh json listing for non-open change request state queries", () =
       "--limit",
       "10",
       "--json",
-      "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
+      "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isDraft,mergeable,mergeStateStatus,isCrossRepository,headRepository,headRepositoryOwner",
     ]);
     assert.strictEqual(changeRequests[0]?.provider, "github");
     assert.strictEqual(changeRequests[0]?.state, "merged");
@@ -117,6 +117,50 @@ it.effect("uses gh json listing for non-open change request state queries", () =
       changeRequests[0]?.updatedAt,
       Option.some(DateTime.makeUnsafe("2026-01-02T00:00:00.000Z")),
     );
+  }),
+);
+
+it.effect("lists GitHub PRs against the repository from the bound remote context", () =>
+  Effect.gen(function* () {
+    let listInput: Parameters<GitHubCli.GitHubCliShape["listOpenPullRequests"]>[0] | null = null;
+    let executeArgs: ReadonlyArray<string> = [];
+    const provider = yield* makeProvider({
+      listOpenPullRequests: (input) => {
+        listInput = input;
+        return Effect.succeed([]);
+      },
+      execute: (input) => {
+        executeArgs = input.args;
+        return Effect.succeed(processResult("[]"));
+      },
+    });
+
+    yield* provider.listChangeRequests({
+      cwd: "/repo",
+      state: "open",
+      context: {
+        provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+        remoteName: "origin",
+        remoteUrl: "git@github.com:affil-ai/t3code.git",
+      },
+    });
+
+    assert.deepStrictEqual(listInput, {
+      cwd: "/repo",
+      repository: "affil-ai/t3code",
+    });
+
+    yield* provider.listChangeRequests({
+      cwd: "/repo",
+      state: "all",
+      context: {
+        provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+        remoteName: "origin",
+        remoteUrl: "git@github.com:affil-ai/t3code.git",
+      },
+    });
+
+    assert.deepStrictEqual(executeArgs.slice(0, 4), ["pr", "list", "--repo", "affil-ai/t3code"]);
   }),
 );
 

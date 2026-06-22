@@ -50,6 +50,32 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
       }),
     );
 
+    it.effect("resolves root favicon.png files", () =>
+      Effect.gen(function* () {
+        const resolver = yield* ProjectFaviconResolver;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "favicon.png", "png");
+
+        const resolved = yield* resolver.resolvePath(cwd);
+
+        expect(resolved).not.toBeNull();
+        expect(resolved).toContain("favicon.png");
+      }),
+    );
+
+    it.effect("resolves common public PNG favicon names", () =>
+      Effect.gen(function* () {
+        const resolver = yield* ProjectFaviconResolver;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "public/favicon-32x32.png", "png");
+
+        const resolved = yield* resolver.resolvePath(cwd);
+
+        expect(resolved).not.toBeNull();
+        expect(resolved).toContain("public/favicon-32x32.png");
+      }),
+    );
+
     it.effect("resolves icon hrefs from project source files", () =>
       Effect.gen(function* () {
         const resolver = yield* ProjectFaviconResolver;

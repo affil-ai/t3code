@@ -32,20 +32,11 @@ export function ProjectFavicon(input: {
   className?: string;
   isActive?: boolean;
 }) {
-  // When this project holds the active thread, show a themed open-folder icon
-  // that matches the project name color, so the active project reads as one
-  // cohesive, fully-lit unit. Inactive projects keep their resolved favicon
-  // image (or the muted closed-folder fallback).
-  if (input.isActive) {
-    return (
-      <FolderOpenIcon className={`size-3.5 shrink-0 text-foreground/90 ${input.className ?? ""}`} />
-    );
-  }
-
   return (
     <ResolvedProjectFavicon
       environmentId={input.environmentId}
       cwd={input.cwd}
+      {...(input.isActive !== undefined ? { isActive: input.isActive } : {})}
       {...(input.className !== undefined ? { className: input.className } : {})}
     />
   );
@@ -55,6 +46,7 @@ function ResolvedProjectFavicon(input: {
   environmentId: EnvironmentId;
   cwd: string;
   className?: string;
+  isActive?: boolean;
 }) {
   const src = resolveProjectFaviconUrl({
     environmentId: input.environmentId,
@@ -65,7 +57,9 @@ function ResolvedProjectFavicon(input: {
   );
 
   if (!src) {
-    return (
+    return input.isActive ? (
+      <FolderOpenIcon className={`size-3.5 shrink-0 text-foreground/90 ${input.className ?? ""}`} />
+    ) : (
       <FolderIcon
         className={`size-3.5 shrink-0 text-muted-foreground/50 ${input.className ?? ""}`}
       />
@@ -75,9 +69,15 @@ function ResolvedProjectFavicon(input: {
   return (
     <>
       {status !== "loaded" ? (
-        <FolderIcon
-          className={`size-3.5 shrink-0 text-muted-foreground/50 ${input.className ?? ""}`}
-        />
+        input.isActive ? (
+          <FolderOpenIcon
+            className={`size-3.5 shrink-0 text-foreground/90 ${input.className ?? ""}`}
+          />
+        ) : (
+          <FolderIcon
+            className={`size-3.5 shrink-0 text-muted-foreground/50 ${input.className ?? ""}`}
+          />
+        )
       ) : null}
       <img
         src={src}

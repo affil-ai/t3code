@@ -12,6 +12,7 @@ interface CreateWorktreeButtonProps {
   environmentId: EnvironmentId;
   project: Project;
   pullRequest: GitListedPullRequest;
+  presentation?: "icon" | "label";
 }
 
 /**
@@ -22,6 +23,7 @@ export function CreateWorktreeButton({
   environmentId,
   project,
   pullRequest,
+  presentation = "label",
 }: CreateWorktreeButtonProps) {
   const action = usePreparePullRequestThreadAction({ environmentId, cwd: project.cwd });
   const createThreadDraft = useCreateThreadDraft();
@@ -56,13 +58,15 @@ export function CreateWorktreeButton({
     <div className="flex flex-col items-end gap-1">
       <Button
         type="button"
-        size="xs"
+        size={presentation === "icon" ? "icon-sm" : "xs"}
         variant="outline"
         onClick={handleClick}
         disabled={action.isPending}
+        title="Start a thread from this pull request"
+        aria-label="Start a thread from this pull request"
       >
         <GitBranchPlusIcon className="size-3.5" />
-        {action.isPending ? "Creating…" : "Create worktree"}
+        {presentation === "label" ? (action.isPending ? "Starting…" : "Start thread") : null}
       </Button>
       {error ? (
         <span className="max-w-48 truncate text-destructive-foreground text-xs" title={error}>

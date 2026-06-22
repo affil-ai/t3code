@@ -1,13 +1,16 @@
 import { Link } from "@tanstack/react-router";
-import type { EnvironmentId } from "@t3tools/contracts";
-import { ExternalLink, FolderGit2, GitPullRequest, MessageSquare } from "lucide-react";
+import { MessageSquare } from "lucide-react";
+import { memo } from "react";
 
 import { WORKTREE_ORIGIN_LABEL, type DashboardIssue } from "../../dashboardIssues";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { Badge } from "../ui/badge";
-import { CreateWorktreeButton } from "./CreateWorktreeButton";
+import { DashboardIssueActionsMenu } from "./DashboardIssueActionsMenu";
+import { DashboardProjectBadge } from "./DashboardProjectBadge";
+import { DevinLogoIcon } from "./DevinLogoIcon";
 import { IssueStatusBadge } from "./IssueStatusBadge";
+import { SlackLogoIcon } from "./SlackLogoIcon";
 
 function MetaItem({ children }: { children: React.ReactNode }) {
   return (
@@ -15,26 +18,28 @@ function MetaItem({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function IssueRow({
-  issue,
-  environmentId,
-}: {
-  issue: DashboardIssue;
-  environmentId: EnvironmentId;
-}) {
+export const IssueRow = memo(function IssueRow({ issue }: { issue: DashboardIssue }) {
   const threadRef =
     issue.thread !== null
       ? { environmentId: issue.thread.environmentId, threadId: issue.thread.id }
       : null;
 
   const titleNode = (
-    <span className="truncate font-medium text-foreground text-sm">{issue.title}</span>
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      {issue.hasSlack ? (
+        <SlackLogoIcon aria-label="Linked Slack thread" className="size-3.5 shrink-0" />
+      ) : null}
+      {issue.hasDevin ? (
+        <DevinLogoIcon aria-label="Devin branch" className="size-3.5 shrink-0" />
+      ) : null}
+      <span className="truncate font-medium text-foreground text-sm">{issue.title}</span>
+    </span>
   );
 
   return (
     <div className="flex items-center gap-3 border-border border-b px-3 py-2.5 last:border-b-0 hover:bg-accent/40">
       <div className="w-24 shrink-0">
-        <IssueStatusBadge status={issue.status} />
+        <IssueStatusBadge status={issue.status} pullRequest={issue.pullRequest} />
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -51,14 +56,17 @@ export function IssueRow({
         )}
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {issue.project ? (
+            <MetaItem>
+              <DashboardProjectBadge project={issue.project} />
+            </MetaItem>
+          ) : null}
           {issue.branch ? (
             <MetaItem>
-              <FolderGit2 className="size-3" />
               <span className="max-w-56 truncate font-mono">{issue.branch}</span>
             </MetaItem>
           ) : null}
-          {issue.project ? <MetaItem>{issue.project.name}</MetaItem> : null}
-          {issue.hasWorktree ? (
+          {issue.hasWorktree && issue.worktreeOrigin !== "slack" ? (
             <MetaItem>
               <Badge variant="outline" size="sm">
                 {WORKTREE_ORIGIN_LABEL[issue.worktreeOrigin]}
@@ -82,31 +90,14 @@ export function IssueRow({
           </a>
         ) : null}
 
-        {issue.pullRequest ? (
-          <a
-            className="inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground hover:underline"
-            href={issue.pullRequest.url}
-            target="_blank"
-            rel="noreferrer"
-            title={`Open PR #${issue.pullRequest.number}`}
-          >
-            <GitPullRequest className="size-3" />#{issue.pullRequest.number}
-            <ExternalLink className="size-2.5" />
-          </a>
-        ) : null}
-
         <span className="w-20 shrink-0 text-right text-muted-foreground text-xs">
           {issue.updatedAt ? formatRelativeTimeLabel(issue.updatedAt) : "—"}
         </span>
 
-        {issue.thread === null && issue.pullRequest !== null && issue.project !== null ? (
-          <CreateWorktreeButton
-            environmentId={environmentId}
-            project={issue.project}
-            pullRequest={issue.pullRequest}
-          />
-        ) : null}
+        <div className="flex w-7 shrink-0 justify-end">
+          <DashboardIssueActionsMenu issue={issue} />
+        </div>
       </div>
     </div>
   );
-}
+});

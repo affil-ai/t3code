@@ -55,6 +55,7 @@ export interface GitHubCliShape {
 
   readonly listOpenPullRequests: (input: {
     readonly cwd: string;
+    readonly repository?: string;
     // When omitted, list every open pull request (no `--head` filter).
     readonly headSelector?: string;
     readonly limit?: number;
@@ -252,6 +253,7 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
         args: [
           "pr",
           "list",
+          ...(input.repository !== undefined ? ["--repo", input.repository] : []),
           ...(input.headSelector !== undefined ? ["--head", input.headSelector] : []),
           "--state",
           "open",

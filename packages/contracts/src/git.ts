@@ -162,7 +162,7 @@ const GitListPullRequestsState = Schema.Literals(["open", "closed", "merged", "a
 export type GitListPullRequestsState = typeof GitListPullRequestsState.Type;
 
 const GIT_LIST_PULL_REQUESTS_MAX_CWDS = 100;
-const GIT_LIST_PULL_REQUESTS_MAX_LIMIT = 100;
+const GIT_LIST_PULL_REQUESTS_MAX_LIMIT = 500;
 
 export const GitListPullRequestsInput = Schema.Struct({
   cwds: Schema.Array(TrimmedNonEmptyStringSchema).check(

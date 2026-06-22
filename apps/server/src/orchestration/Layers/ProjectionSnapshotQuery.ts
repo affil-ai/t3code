@@ -381,7 +381,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             SELECT external_thread_links.source
             FROM external_thread_links
             WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
-              AND external_thread_links.url IS NOT NULL
             ORDER BY (external_thread_links.source = 'slack') DESC,
               external_thread_links.created_at ASC,
               external_thread_links.external_thread_id ASC
@@ -442,7 +441,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             SELECT external_thread_links.source
             FROM external_thread_links
             WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
-              AND external_thread_links.url IS NOT NULL
             ORDER BY (external_thread_links.source = 'slack') DESC,
               external_thread_links.created_at ASC,
               external_thread_links.external_thread_id ASC
@@ -505,7 +503,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             SELECT external_thread_links.source
             FROM external_thread_links
             WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
-              AND external_thread_links.url IS NOT NULL
             ORDER BY (external_thread_links.source = 'slack') DESC,
               external_thread_links.created_at ASC,
               external_thread_links.external_thread_id ASC
@@ -900,7 +897,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             SELECT external_thread_links.source
             FROM external_thread_links
             WHERE external_thread_links.t3_thread_id = projection_threads.thread_id
-              AND external_thread_links.url IS NOT NULL
             ORDER BY (external_thread_links.source = 'slack') DESC,
               external_thread_links.created_at ASC,
               external_thread_links.external_thread_id ASC
