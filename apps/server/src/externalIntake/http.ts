@@ -22,6 +22,7 @@ import {
   formatSupportEmailForAgent,
   processSupportEmailAttachments,
   supportEmailContextFromEnv,
+  supportEmailDuplicateExternalIds,
   supportEmailLookupExternalIds,
   supportEmailPrimaryExternalId,
   supportEmailSlackPreview,
@@ -33,7 +34,10 @@ import {
   type ResendReceivedEmail,
 } from "./supportEmail.ts";
 import { ServerConfig } from "../config.ts";
-import { ExternalIntegrationRepository } from "../persistence/Services/ExternalIntegrations.ts";
+import {
+  ExternalIntegrationRepository,
+  type ExternalThreadLink,
+} from "../persistence/Services/ExternalIntegrations.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
@@ -322,6 +326,13 @@ export const supportEmailWebhookRouteLayer = HttpRouter.add(
       repoName: profile.id,
     });
 
+    const duplicateExternalIds = new Set(supportEmailDuplicateExternalIds(email));
+    let existingThreadMatch:
+      | {
+          readonly matchedExternalId: string;
+          readonly link: ExternalThreadLink;
+        }
+      | undefined;
     const lookupExternalIds = supportEmailLookupExternalIds(email, supportContext);
     for (const supportExternalId of lookupExternalIds) {
       const existingLink = yield* repository.getThreadLink({
@@ -329,27 +340,39 @@ export const supportEmailWebhookRouteLayer = HttpRouter.add(
         externalThreadId: supportExternalId,
       });
       if (Option.isSome(existingLink)) {
-        for (const storedExternalId of supportEmailStoredExternalIds(email, supportContext)) {
-          yield* repository.upsertThreadLink({
-            source: "support_email",
-            externalThreadId: storedExternalId,
+        if (duplicateExternalIds.has(supportExternalId)) {
+          for (const storedExternalId of supportEmailStoredExternalIds(email, supportContext)) {
+            yield* repository.upsertThreadLink({
+              source: "support_email",
+              externalThreadId: storedExternalId,
+              t3ThreadId: existingLink.value.t3ThreadId,
+              projectId: existingLink.value.projectId,
+              primaryExternalMessageId: `support-email:${email.id}`,
+              url: existingLink.value.url,
+              muted: existingLink.value.muted,
+              metadata: { emailId: email.id },
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+          yield* completeReceipt({
+            status: "duplicate",
+            emailId: email.id,
+            t3ThreadId: String(existingLink.value.t3ThreadId),
+            matchedExternalId: supportExternalId,
+          });
+          return json({
+            accepted: true,
+            duplicate: true,
             t3ThreadId: existingLink.value.t3ThreadId,
-            projectId: existingLink.value.projectId,
-            primaryExternalMessageId: `support-email:${email.id}`,
-            url: existingLink.value.url,
-            muted: true,
-            metadata: { emailId: email.id },
-            createdAt: now,
-            updatedAt: now,
           });
         }
-        yield* completeReceipt({
-          status: "duplicate",
-          emailId: email.id,
-          t3ThreadId: String(existingLink.value.t3ThreadId),
+
+        existingThreadMatch = {
           matchedExternalId: supportExternalId,
-        });
-        return json({ accepted: true, duplicate: true, t3ThreadId: existingLink.value.t3ThreadId });
+          link: existingLink.value,
+        };
+        break;
       }
     }
 
@@ -367,7 +390,7 @@ export const supportEmailWebhookRouteLayer = HttpRouter.add(
     let notificationSlackLink: ExternalSlackNotificationLink | undefined;
     const slackChannelId =
       profile.supportEmail?.slackChannelId ?? envValue("SUPPORT_EMAIL_SLACK_CHANNEL_ID");
-    if (slackChannelId !== undefined) {
+    if (existingThreadMatch === undefined && slackChannelId !== undefined) {
       const posted = yield* externalChat.postToChannel({
         source: "slack",
         channelId: slackChannelId,
@@ -390,7 +413,7 @@ export const supportEmailWebhookRouteLayer = HttpRouter.add(
     const primaryExternalId = supportEmailPrimaryExternalId(email, supportContext);
     const result = yield* intake.handleMessage({
       source: "support_email",
-      externalThreadId: primaryExternalId,
+      externalThreadId: existingThreadMatch?.matchedExternalId ?? primaryExternalId,
       externalMessageId: `support-email:${email.id}`,
       text: formatSupportEmailForAgent(email, attachments, supportContext),
       title: supportEmailTitle(email),
@@ -455,6 +478,24 @@ export const supportEmailWebhookRouteLayer = HttpRouter.add(
             ),
             Effect.ignoreCause({ log: true }),
           );
+      }
+    } else if (result.status === "continued" && existingThreadMatch !== undefined) {
+      for (const supportExternalId of supportEmailStoredExternalIds(email, supportContext)) {
+        yield* repository.upsertThreadLink({
+          source: "support_email",
+          externalThreadId: supportExternalId,
+          t3ThreadId: result.t3ThreadId,
+          projectId: existingThreadMatch.link.projectId,
+          primaryExternalMessageId: `support-email:${email.id}`,
+          url: existingThreadMatch.link.url,
+          muted: existingThreadMatch.link.muted,
+          metadata: {
+            emailId: email.id,
+            matchedExternalId: existingThreadMatch.matchedExternalId,
+          },
+          createdAt: now,
+          updatedAt: now,
+        });
       }
     } else if (result.status === "ignored" && notificationSlackLink !== undefined) {
       yield* externalChat

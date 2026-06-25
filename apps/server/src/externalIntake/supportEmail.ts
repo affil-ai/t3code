@@ -351,6 +351,10 @@ function supportEmailOwnExternalIds(email: ResendReceivedEmail) {
   return [...ids];
 }
 
+export function supportEmailDuplicateExternalIds(email: ResendReceivedEmail) {
+  return supportEmailOwnExternalIds(email);
+}
+
 export function supportEmailStoredExternalIds(
   email: ResendReceivedEmail,
   context: SupportEmailContext,

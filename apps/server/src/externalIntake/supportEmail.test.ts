@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   formatSupportEmailForAgent,
+  supportEmailDuplicateExternalIds,
   supportEmailLookupExternalIds,
   supportEmailSlackPreview,
   supportEmailStoredExternalIds,
@@ -46,6 +47,35 @@ describe("support email external ids", () => {
     expect(supportEmailStoredExternalIds(email, context)).toContain(
       "conversation:user@example.com:login fails",
     );
+  });
+
+  it("does not classify referenced parent messages as exact-email duplicates", () => {
+    const email = {
+      id: "email-3",
+      from: "Staff <john@nextcard.com>",
+      to: ["user@example.com"],
+      cc: ["support@nextcard.com"],
+      subject: "Re: Login fails",
+      message_id: "<reply@mail.example>",
+      headers: {
+        "In-Reply-To": "<original@mail.example>",
+        References: "<original@mail.example>",
+      },
+      text: "The fix is live.",
+    } satisfies ResendReceivedEmail;
+
+    expect(supportEmailLookupExternalIds(email, context)).toContain(
+      "message:original@mail.example",
+    );
+    expect(supportEmailDuplicateExternalIds(email)).toEqual(
+      expect.arrayContaining([
+        "message:reply@mail.example",
+        "<reply@mail.example>",
+        "message-id:<reply@mail.example>",
+        "resend:email-3",
+      ]),
+    );
+    expect(supportEmailDuplicateExternalIds(email)).not.toContain("message:original@mail.example");
   });
 
   it("uses conversation fallback for staff forwards", () => {
