@@ -32,7 +32,7 @@ export function slackThreadUrl(input: { readonly channelId: string; readonly thr
 export function stripSlackClientAttribution(text: string) {
   return text
     .replace(
-      /\n?\s*(?:\*Sent using\*|_Sent using_|Sent using)\s+(?:ChatGPT|<@[UW][A-Z0-9]+(?:\|ChatGPT)?>)\s*$/i,
+      /\n?\s*(?:\*Sent using\*|_Sent using_|Sent using)\s+(?:@?ChatGPT|<@[UW][A-Z0-9]+(?:\|ChatGPT)?>)\s*$/i,
       "",
     )
     .trim();

@@ -134,6 +134,14 @@ describe("stripSlackClientAttribution", () => {
       ),
     ).toBe("confirm u can make spreadsheets");
   });
+
+  it("removes rendered ChatGPT mention client attribution", () => {
+    expect(
+      stripSlackClientAttribution(
+        "confirm u can make spreadsheets in the shared Affil drive Sent using @ChatGPT",
+      ),
+    ).toBe("confirm u can make spreadsheets in the shared Affil drive");
+  });
 });
 
 describe("canonicalSlackChatThreadId", () => {

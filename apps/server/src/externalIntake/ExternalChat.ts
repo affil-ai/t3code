@@ -567,6 +567,7 @@ const makeExternalChat = Effect.gen(function* () {
       const initialPromptContext = buildSlackInitialPromptContext(
         slackThreadContext === undefined ? {} : { slackThreadContext },
       );
+      const rawText = stripSlackClientAttribution(ref.raw.text ?? input.message.text);
 
       const intakeMessage: ExternalIntakeMessage = {
         source: "slack",
@@ -578,11 +579,11 @@ const makeExternalChat = Effect.gen(function* () {
         url: ref.url,
         receivedAt: input.message.metadata.dateSent.toISOString(),
         projectHintText: buildSlackProjectHintText({
-          currentText: ref.raw.text ?? input.message.text,
+          currentText: rawText,
           slackThreadContext,
         }),
         slack: {
-          rawText: stripSlackClientAttribution(ref.raw.text ?? input.message.text),
+          rawText,
           isMention: input.message.isMention,
           conversationKind: ref.conversationKind,
           botUserId: process.env.SLACK_BOT_USER_ID,
