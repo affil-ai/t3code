@@ -7,6 +7,7 @@ import {
   slackConversationKind,
   uploadSlackFiles,
 } from "./ExternalChat.ts";
+import { stripSlackClientAttribution } from "./slack.ts";
 
 const originalFetch = globalThis.fetch;
 
@@ -116,6 +117,22 @@ describe("slackConversationKind", () => {
         raw: { channel_type: "mpim" },
       }),
     ).toBe("mpim");
+  });
+});
+
+describe("stripSlackClientAttribution", () => {
+  it("removes plain ChatGPT client attribution", () => {
+    expect(
+      stripSlackClientAttribution("confirm u can make spreadsheets\n*Sent using* ChatGPT"),
+    ).toBe("confirm u can make spreadsheets");
+  });
+
+  it("removes Slack mention-form ChatGPT client attribution", () => {
+    expect(
+      stripSlackClientAttribution(
+        "confirm u can make spreadsheets\n*Sent using* <@U0BC8FXNJG0|ChatGPT>",
+      ),
+    ).toBe("confirm u can make spreadsheets");
   });
 });
 

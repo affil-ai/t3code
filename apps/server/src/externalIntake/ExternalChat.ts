@@ -582,7 +582,7 @@ const makeExternalChat = Effect.gen(function* () {
           slackThreadContext,
         }),
         slack: {
-          rawText: ref.raw.text ?? input.message.text,
+          rawText: stripSlackClientAttribution(ref.raw.text ?? input.message.text),
           isMention: input.message.isMention,
           conversationKind: ref.conversationKind,
           botUserId: process.env.SLACK_BOT_USER_ID,
