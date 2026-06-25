@@ -4,6 +4,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -11,12 +12,15 @@ import { DatabaseSync } from "node:sqlite";
 
 interface Config {
   readonly threadId: string;
+  readonly replacementThreadId: string | undefined;
+  readonly createReplacementThread: boolean;
   readonly dbPath: string;
   readonly baseRef: string;
   readonly remote: string;
   readonly backupDir: string | undefined;
   readonly dryRun: boolean;
   readonly force: boolean;
+  readonly repairWorktree: boolean;
   readonly runSetup: boolean;
   readonly clearProviderRuntime: boolean;
 }
@@ -25,6 +29,9 @@ interface ThreadRow {
   readonly thread_id: string;
   readonly project_id: string;
   readonly thread_title: string;
+  readonly model_selection_json: string | null;
+  readonly runtime_mode: string;
+  readonly interaction_mode: string;
   readonly branch: string | null;
   readonly worktree_path: string | null;
   readonly project_title: string;
@@ -63,30 +70,37 @@ Usage:
 
 Options:
   --db <path>                 SQLite state DB. Defaults to $T3CODE_STATE_DB or ~/.t3/userdata/state.sqlite.
+  --create-replacement-thread Create a fresh T3 thread projection by cloning --thread-id metadata.
+  --replacement-thread-id <id> Move Slack external_thread_links from --thread-id to this T3 thread
+                              after repairing the replacement thread worktree.
   --base-ref <ref>            Base branch/ref for recreating the worktree. Defaults to dev.
                               "dev" becomes "origin/dev"; "origin/main" fetches main from origin.
   --remote <name>             Git remote used for branch base refs. Defaults to origin.
   --backup-dir <path>         Backup destination. Defaults to ~/.t3/repair-backups/<timestamp>-<thread>.
   --force                     Allow replacing a valid existing target branch.
+  --skip-worktree-repair      Only retarget Slack links and runtime state; do not recreate worktree.
   --skip-setup                Do not run scripts/worktree-setup.sh or .t3code/worktree-setup.sh.
   --keep-provider-runtime     Do not clear the stale provider_session_runtime row.
   --dry-run                   Print intended actions without writing files or DB rows.
   --help                      Show this help.
 
-The script preserves the existing T3 thread row and Slack external_thread_links row. It recreates
-the git worktree at the same worktree_path so future Slack replies continue into the same thread.
+By default the script repairs the existing T3 thread in place. With --replacement-thread-id, it
+keeps the same Slack external thread but retargets future Slack replies to the replacement T3 thread.
 `.trim();
 }
 
 function parseArgs(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = process.env): Config {
   const args = [...argv];
   let threadId = "";
+  let replacementThreadId: string | undefined;
+  let createReplacementThread = false;
   let dbPath = env.T3CODE_STATE_DB ?? path.join(homedir(), ".t3", "userdata", "state.sqlite");
   let baseRef = "dev";
   let remote = "origin";
   let backupDir: string | undefined;
   let dryRun = false;
   let force = false;
+  let repairWorktree = true;
   let runSetup = true;
   let clearProviderRuntime = true;
 
@@ -99,6 +113,12 @@ function parseArgs(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = process
         process.exit(0);
       case "--thread-id":
         threadId = requireValue(arg, args.shift());
+        break;
+      case "--create-replacement-thread":
+        createReplacementThread = true;
+        break;
+      case "--replacement-thread-id":
+        replacementThreadId = requireValue(arg, args.shift());
         break;
       case "--db":
         dbPath = requireValue(arg, args.shift());
@@ -118,6 +138,9 @@ function parseArgs(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = process
       case "--force":
         force = true;
         break;
+      case "--skip-worktree-repair":
+        repairWorktree = false;
+        break;
       case "--skip-setup":
         runSetup = false;
         break;
@@ -132,15 +155,21 @@ function parseArgs(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = process
   if (threadId.trim().length === 0) {
     throw new Error(`Missing required --thread-id.\n\n${usage()}`);
   }
+  if (createReplacementThread && replacementThreadId !== undefined) {
+    throw new Error("--create-replacement-thread cannot be combined with --replacement-thread-id.");
+  }
 
   return {
     threadId: threadId.trim(),
+    replacementThreadId: replacementThreadId === undefined ? undefined : replacementThreadId.trim(),
+    createReplacementThread,
     dbPath: resolveUserPath(dbPath),
     baseRef: baseRef.trim(),
     remote: remote.trim(),
     backupDir: backupDir === undefined ? undefined : resolveUserPath(backupDir),
     dryRun,
     force,
+    repairWorktree,
     runSetup,
     clearProviderRuntime,
   };
@@ -243,6 +272,9 @@ function readThread(db: DatabaseSync, threadId: string): ThreadRow {
           threads.thread_id,
           threads.project_id,
           threads.title AS thread_title,
+          threads.model_selection_json,
+          threads.runtime_mode,
+          threads.interaction_mode,
           threads.branch,
           threads.worktree_path,
           projects.title AS project_title,
@@ -306,6 +338,105 @@ function readProviderRuntime(db: DatabaseSync, threadId: string): ProviderRuntim
       `,
     )
     .get(threadId) as ProviderRuntimeRow | undefined;
+}
+
+function createReplacementThread(db: DatabaseSync, config: Config, source: ThreadRow): ThreadRow {
+  if (source.model_selection_json === null || source.model_selection_json.trim().length === 0) {
+    throw new Error(`Source thread ${source.thread_id} does not have model_selection_json.`);
+  }
+
+  const targetThreadId = randomUUID();
+  const now = new Date().toISOString();
+  const title = `${source.thread_title} (recovered)`;
+  const commandId = `repair-slack-thread:create-replacement:${targetThreadId}`;
+  const eventId = randomUUID();
+  const eventPayload = {
+    threadId: targetThreadId,
+    projectId: source.project_id,
+    title,
+    modelSelection: JSON.parse(source.model_selection_json) as unknown,
+    runtimeMode: source.runtime_mode,
+    interactionMode: source.interaction_mode,
+    branch: source.branch,
+    worktreePath: source.worktree_path,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  console.log(`Creating replacement T3 thread ${targetThreadId}.`);
+  if (config.dryRun) {
+    return {
+      ...source,
+      thread_id: targetThreadId,
+      thread_title: title,
+    };
+  }
+
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    db.prepare(
+      `
+        INSERT INTO orchestration_events (
+          event_id,
+          aggregate_kind,
+          stream_id,
+          stream_version,
+          event_type,
+          occurred_at,
+          command_id,
+          causation_event_id,
+          correlation_id,
+          actor_kind,
+          payload_json,
+          metadata_json
+        )
+        VALUES (?, 'thread', ?, 1, 'thread.created', ?, ?, NULL, ?, 'server', ?, '{}')
+      `,
+    ).run(eventId, targetThreadId, now, commandId, commandId, JSON.stringify(eventPayload));
+
+    db.prepare(
+      `
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          created_at,
+          updated_at,
+          archived_at,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          deleted_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, 0, 0, 0, NULL)
+      `,
+    ).run(
+      targetThreadId,
+      source.project_id,
+      title,
+      source.model_selection_json,
+      source.runtime_mode,
+      source.interaction_mode,
+      source.branch,
+      source.worktree_path,
+      now,
+      now,
+    );
+
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+
+  return readThread(db, targetThreadId);
 }
 
 function assertRepairableThread(row: ThreadRow): asserts row is ThreadRow & {
@@ -543,22 +674,63 @@ function runSetupIfPresent(
   });
 }
 
-function clearProviderRuntimeIfRequested(db: DatabaseSync, config: Config): number {
+function clearProviderRuntimeIfRequested(
+  db: DatabaseSync,
+  config: Config,
+  targetThreadId: string,
+): number {
   if (!config.clearProviderRuntime) {
     console.log("Keeping provider_session_runtime because --keep-provider-runtime was provided.");
     return 0;
   }
   if (config.dryRun) {
-    console.log(`Would delete provider_session_runtime row for ${config.threadId}.`);
+    console.log(`Would delete provider_session_runtime row for ${targetThreadId}.`);
     return 0;
   }
   const result = db
     .prepare("DELETE FROM provider_session_runtime WHERE thread_id = ?")
-    .run(config.threadId);
+    .run(targetThreadId);
+  return Number(result.changes);
+}
+
+function relinkSlackLinksIfRequested(
+  db: DatabaseSync,
+  config: Config,
+  input: {
+    readonly sourceThreadId: string;
+    readonly targetThreadId: string;
+    readonly targetProjectId: string;
+  },
+): number {
+  if (config.replacementThreadId === undefined && !config.createReplacementThread) {
+    return 0;
+  }
+  if (config.dryRun) {
+    console.log(
+      `Would retarget Slack external_thread_links from ${input.sourceThreadId} to ${input.targetThreadId}.`,
+    );
+    return 0;
+  }
+
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `
+        UPDATE external_thread_links
+        SET
+          t3_thread_id = ?,
+          project_id = ?,
+          updated_at = ?
+        WHERE source = 'slack'
+          AND t3_thread_id = ?
+      `,
+    )
+    .run(input.targetThreadId, input.targetProjectId, now, input.sourceThreadId);
   return Number(result.changes);
 }
 
 function printSummary(input: {
+  readonly sourceThread: ThreadRow;
   readonly thread: ThreadRow & { readonly branch: string; readonly worktree_path: string };
   readonly slackLinks: ReadonlyArray<ExternalThreadLinkRow>;
   readonly pendingTurns: ReadonlyArray<PendingTurnRow>;
@@ -567,6 +739,11 @@ function printSummary(input: {
 }): void {
   console.log("");
   console.log("Repair target:");
+  if (input.sourceThread.thread_id !== input.thread.thread_id) {
+    console.log(
+      `  Slack source thread: ${input.sourceThread.thread_title} (${input.sourceThread.thread_id})`,
+    );
+  }
   console.log(`  Project: ${input.thread.project_title} (${input.thread.project_id})`);
   console.log(`  Thread: ${input.thread.thread_title} (${input.thread.thread_id})`);
   console.log(`  Branch: ${input.thread.branch}`);
@@ -603,13 +780,23 @@ function main(): void {
   const backupDir = backupPathFor(config);
   const db = new DatabaseSync(config.dbPath);
   try {
-    const thread = readThread(db, config.threadId);
-    assertRepairableThread(thread);
-    const projectRoot = resolveUserPath(thread.workspace_root);
-    const worktreePath = resolveUserPath(thread.worktree_path);
-    const slackLinks = readSlackLinks(db, config.threadId);
-    const pendingTurns = readPendingTurns(db, config.threadId);
-    const providerRuntime = readProviderRuntime(db, config.threadId);
+    const sourceThread = readThread(db, config.threadId);
+    const targetThread = config.createReplacementThread
+      ? createReplacementThread(db, config, sourceThread)
+      : config.replacementThreadId === undefined
+        ? sourceThread
+        : readThread(db, config.replacementThreadId);
+    assertRepairableThread(targetThread);
+    if (sourceThread.project_id !== targetThread.project_id && !config.force) {
+      throw new Error(
+        `Source thread project (${sourceThread.project_id}) does not match replacement thread project (${targetThread.project_id}). Use --force only if this relink is intentional.`,
+      );
+    }
+    const projectRoot = resolveUserPath(targetThread.workspace_root);
+    const worktreePath = resolveUserPath(targetThread.worktree_path);
+    const slackLinks = readSlackLinks(db, sourceThread.thread_id);
+    const pendingTurns = readPendingTurns(db, targetThread.thread_id);
+    const providerRuntime = readProviderRuntime(db, targetThread.thread_id);
 
     if (slackLinks.length === 0) {
       throw new Error(
@@ -621,27 +808,38 @@ function main(): void {
     }
 
     printSummary({
-      thread: { ...thread, worktree_path: worktreePath },
+      sourceThread,
+      thread: { ...targetThread, worktree_path: worktreePath },
       slackLinks,
       pendingTurns,
       providerRuntime,
       backupDir,
     });
 
-    recreateWorktree(config, {
-      projectRoot,
-      worktreePath,
-      branch: thread.branch,
-      backupDir,
+    if (config.repairWorktree) {
+      recreateWorktree(config, {
+        projectRoot,
+        worktreePath,
+        branch: targetThread.branch,
+        backupDir,
+      });
+      runSetupIfPresent(config, { projectRoot, worktreePath });
+    } else {
+      console.log("Skipping worktree repair because --skip-worktree-repair was provided.");
+    }
+    const relinkedSlackRows = relinkSlackLinksIfRequested(db, config, {
+      sourceThreadId: sourceThread.thread_id,
+      targetThreadId: targetThread.thread_id,
+      targetProjectId: targetThread.project_id,
     });
-    runSetupIfPresent(config, { projectRoot, worktreePath });
-    const deletedRuntimeRows = clearProviderRuntimeIfRequested(db, config);
-    const slackLinksAfterRepair = readSlackLinks(db, config.threadId);
+    const deletedRuntimeRows = clearProviderRuntimeIfRequested(db, config, targetThread.thread_id);
+    const slackLinksAfterRepair = readSlackLinks(db, targetThread.thread_id);
 
     console.log("");
+    console.log(`Relinked Slack external_thread_links rows: ${relinkedSlackRows}`);
     console.log(`Deleted provider_session_runtime rows: ${deletedRuntimeRows}`);
     console.log(`Slack links after repair: ${slackLinksAfterRepair.length}`);
-    if (!config.dryRun) {
+    if (!config.dryRun && config.repairWorktree) {
       verifyWorktree(worktreePath);
     }
     console.log("");
