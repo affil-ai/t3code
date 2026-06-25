@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { slackConversationKind, uploadSlackFiles } from "./ExternalChat.ts";
+import type { Message, Thread } from "chat";
+
+import {
+  canonicalSlackChatThreadId,
+  slackConversationKind,
+  uploadSlackFiles,
+} from "./ExternalChat.ts";
 
 const originalFetch = globalThis.fetch;
 
@@ -110,5 +116,42 @@ describe("slackConversationKind", () => {
         raw: { channel_type: "mpim" },
       }),
     ).toBe("mpim");
+  });
+});
+
+describe("canonicalSlackChatThreadId", () => {
+  it("uses the incoming message timestamp for top-level Slack DMs", () => {
+    expect(
+      canonicalSlackChatThreadId(
+        { id: "slack:D123:", channelId: "slack:D123" } as Thread,
+        {
+          id: "1781138017.962159",
+          raw: {
+            channel: "D123",
+            channel_type: "im",
+            ts: "1781138017.962159",
+            text: "please fix this",
+          },
+        } as Message,
+      ),
+    ).toBe("slack:D123:1781138017.962159");
+  });
+
+  it("keeps Slack DM replies attached to their parent thread timestamp", () => {
+    expect(
+      canonicalSlackChatThreadId(
+        { id: "slack:D123:1781138017.962159", channelId: "slack:D123" } as Thread,
+        {
+          id: "1781138111.000200",
+          raw: {
+            channel: "D123",
+            channel_type: "im",
+            thread_ts: "1781138017.962159",
+            ts: "1781138111.000200",
+            text: "follow-up",
+          },
+        } as Message,
+      ),
+    ).toBe("slack:D123:1781138017.962159");
   });
 });
