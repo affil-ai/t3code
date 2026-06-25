@@ -12,6 +12,7 @@ import {
   type UploadChatAttachment,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -28,6 +29,11 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ExternalIntegrationRepository } from "../persistence/Services/ExternalIntegrations.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import {
+  TextGeneration,
+  type IntakeRouteRepoChoiceInput,
+} from "../textGeneration/TextGeneration.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import {
   defaultBaseRefForProfile,
@@ -186,6 +192,14 @@ const INTAKE_MODEL_SELECTION_BY_TAG = {
   }),
 } as const satisfies Record<string, ModelSelection>;
 
+/**
+ * Model used when the intake preprocessing step decides the request is asking
+ * for something to be executed/run. Codex is preferred for run-style work; this
+ * mirrors the standard `[codex]` routing tag (GPT-5.5, medium reasoning,
+ * default service tier).
+ */
+const INTAKE_RUN_INTENT_MODEL_SELECTION = INTAKE_MODEL_SELECTION_BY_TAG.codex;
+
 const INTAKE_MODEL_ROUTING_TAGS = Object.keys(INTAKE_MODEL_SELECTION_BY_TAG).sort(
   (left, right) => right.length - left.length,
 );
@@ -335,11 +349,69 @@ function projectMentionedInText(projects: readonly OrchestrationProjectShell[], 
   });
 }
 
+/**
+ * Stable identifiers the intake preprocessing model echoes back when it picks a
+ * repository. Profiles and active projects share one id space but are prefixed
+ * so the choice maps back to exactly one source.
+ */
+function intakeProfileRepoChoiceId(profile: IntakeProjectProfile) {
+  return `profile:${profile.id}`;
+}
+
+function intakeProjectRepoChoiceId(project: OrchestrationProjectShell) {
+  return `project:${project.id}`;
+}
+
+function projectRoutingAliases(project: OrchestrationProjectShell): string[] {
+  return [
+    project.title,
+    project.repositoryIdentity?.displayName,
+    project.repositoryIdentity?.name,
+    project.repositoryIdentity?.locator.remoteName,
+  ].flatMap((alias) => (alias ? [alias] : []));
+}
+
+/**
+ * Build the repository menu shown to the intake preprocessing model. Profiles
+ * come first (they are the configured routing targets); already-active
+ * projects follow so the model can also pick an existing checkout.
+ */
+export function buildIntakeRepoChoices(input: {
+  readonly profiles: readonly IntakeProjectProfile[];
+  readonly projects: readonly OrchestrationProjectShell[];
+}): IntakeRouteRepoChoiceInput[] {
+  const seenWorkspaceRoots = new Set<string>();
+  const choices: IntakeRouteRepoChoiceInput[] = [];
+
+  for (const profile of input.profiles) {
+    seenWorkspaceRoots.add(profile.workspaceRoot);
+    choices.push({
+      id: intakeProfileRepoChoiceId(profile),
+      name: profile.title ?? profile.id,
+      aliases: profileRoutingAliases(profile),
+    });
+  }
+
+  for (const project of input.projects) {
+    // Skip projects already represented by a profile pointing at the same root
+    // so the model isn't offered two ids for one repository.
+    if (seenWorkspaceRoots.has(project.workspaceRoot)) continue;
+    choices.push({
+      id: intakeProjectRepoChoiceId(project),
+      name: project.title,
+      aliases: projectRoutingAliases(project),
+    });
+  }
+
+  return choices;
+}
+
 export function resolveIntakeProjectRoutingTarget(input: {
   readonly profiles: readonly IntakeProjectProfile[];
   readonly projects: readonly OrchestrationProjectShell[];
   readonly text: string;
   readonly projectHintText?: string | undefined;
+  readonly preferredRepoId?: string | undefined;
   readonly fallbackProfile?: IntakeProjectProfile | undefined;
 }): ExternalIntakeProjectRoutingTarget {
   const textProfile = profileMentionedInText(input.profiles, input.text);
@@ -362,6 +434,25 @@ export function resolveIntakeProjectRoutingTarget(input: {
     const hintProject = projectMentionedInText(input.projects, projectHintText);
     if (hintProject !== undefined) {
       return { type: "project", project: hintProject };
+    }
+  }
+
+  // LLM preprocessing only breaks ties the deterministic scans above could not:
+  // an explicit project/profile mention always wins over the model's guess.
+  const preferredRepoId = input.preferredRepoId?.trim();
+  if (preferredRepoId !== undefined && preferredRepoId.length > 0) {
+    const preferredProfile = input.profiles.find(
+      (candidate) => intakeProfileRepoChoiceId(candidate) === preferredRepoId,
+    );
+    if (preferredProfile !== undefined) {
+      return { type: "profile", profile: preferredProfile };
+    }
+
+    const preferredProject = input.projects.find(
+      (candidate) => intakeProjectRepoChoiceId(candidate) === preferredRepoId,
+    );
+    if (preferredProject !== undefined) {
+      return { type: "project", project: preferredProject };
     }
   }
 
@@ -490,6 +581,8 @@ const makeExternalIntake = Effect.gen(function* () {
   const git = yield* GitVcsDriver;
   const projectSetupScriptRunner = yield* ProjectSetupScriptRunner;
   const serverEnvironment = yield* ServerEnvironment;
+  const textGeneration = yield* TextGeneration;
+  const serverSettingsService = yield* ServerSettingsService;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
@@ -505,21 +598,91 @@ const makeExternalIntake = Effect.gen(function* () {
       Effect.provideService(ServerConfig, serverConfig),
     );
 
-  const resolveProject = (input: ExternalIntakeMessage) =>
+  /**
+   * Pick a working directory for the preprocessing model CLI to spawn in. The
+   * classification only needs the prompt text, so any real directory works;
+   * prefer a configured workspace root for a sane environment and fall back to
+   * the server's cwd.
+   */
+  const resolveClassificationCwd = (input: {
+    readonly message: ExternalIntakeMessage;
+    readonly projects: readonly OrchestrationProjectShell[];
+  }) =>
     Effect.gen(function* () {
-      if (input.profile !== undefined) {
+      const candidates = [
+        input.message.profile?.workspaceRoot,
+        ...profiles.map((profile) => profile.workspaceRoot),
+        ...input.projects.map((project) => project.workspaceRoot),
+      ].filter((candidate): candidate is string => candidate !== undefined && candidate.length > 0);
+      for (const candidate of candidates) {
+        const exists = yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false));
+        if (exists) return candidate;
+      }
+      return process.cwd();
+    });
+
+  /**
+   * Preprocessing step: ask a model to classify the incoming request before a
+   * worktree exists, deciding (a) which configured repository it targets and
+   * (b) whether it is asking for something to be executed/run. Mirrors the
+   * model-backed thread/branch rename pipeline (same `textGenerationModelSelection`
+   * server setting). Best-effort: returns `null` on any failure so intake keeps
+   * working with its existing deterministic routing and default model.
+   */
+  const classifyIntakeRoute = (input: {
+    readonly message: ExternalIntakeMessage;
+    readonly projects: readonly OrchestrationProjectShell[];
+  }) =>
+    Effect.gen(function* () {
+      const text = input.message.text.trim();
+      if (text.length === 0) return null;
+
+      const repoChoices = buildIntakeRepoChoices({ profiles, projects: input.projects });
+      const { textGenerationModelSelection: modelSelection } =
+        yield* serverSettingsService.getSettings;
+      const cwd = yield* resolveClassificationCwd(input);
+
+      const route = yield* textGeneration.generateIntakeRoute({
+        cwd,
+        message: text,
+        repoChoices,
+        modelSelection,
+      });
+
+      return {
+        preferredRepoId: route.repoId.length > 0 ? route.repoId : undefined,
+        runsSomething: route.runsSomething,
+      };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("external intake preprocessing classification failed", {
+          source: input.message.source,
+          externalThreadId: input.message.externalThreadId,
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(null)),
+      ),
+    );
+
+  const resolveProject = (input: {
+    readonly message: ExternalIntakeMessage;
+    readonly preferredRepoId?: string | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const message = input.message;
+      if (message.profile !== undefined) {
         const existing = yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(
-          input.profile.workspaceRoot,
+          message.profile.workspaceRoot,
         );
-        return resolvedProfileProject(input.profile, existing);
+        return resolvedProfileProject(message.profile, existing);
       }
 
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
       const routingTarget = resolveIntakeProjectRoutingTarget({
         profiles,
         projects: snapshot.projects,
-        text: input.text,
-        projectHintText: input.projectHintText,
+        text: message.text,
+        projectHintText: message.projectHintText,
+        preferredRepoId: input.preferredRepoId,
         fallbackProfile: defaultIntakeProfile(profiles),
       });
 
@@ -658,14 +821,29 @@ const makeExternalIntake = Effect.gen(function* () {
 
   const createLinkedThread = (message: ExternalIntakeMessage, now: string) =>
     Effect.gen(function* () {
-      const resolvedProject = yield* resolveProject(message);
+      // Preprocessing: a model classifies the request to pick the target repo
+      // and decide whether it wants something executed. Best-effort — `null`
+      // when disabled/failed, leaving the existing deterministic behavior.
+      const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+      const route = yield* classifyIntakeRoute({ message, projects: snapshot.projects });
+
+      const resolvedProject = yield* resolveProject({
+        message,
+        preferredRepoId: route?.preferredRepoId,
+      });
       const { projectId, modelSelection: projectModelSelection } = yield* ensureProject({
         ...resolvedProject,
         now,
       });
-      // An inline [codex]/[claude] tag in the requester's message overrides the
-      // project/profile default for this thread.
-      const modelSelection = modelSelectionFromIntakeTags(message.text) ?? projectModelSelection;
+      // Final model precedence:
+      //   1. an inline [codex]/[claude] tag the requester typed (explicit wins),
+      //   2. the preprocessing run-intent → Codex when the request is asking for
+      //      something to be executed/run,
+      //   3. the project/profile default selection.
+      const modelSelection =
+        modelSelectionFromIntakeTags(message.text) ??
+        (route?.runsSomething === true ? INTAKE_RUN_INTENT_MODEL_SELECTION : undefined) ??
+        projectModelSelection;
       const baseRef = defaultBaseRefForProfile(resolvedProject.profile);
       const branch = buildTemporaryWorktreeBranchName((byteLength) =>
         randomBytes(byteLength).toString("hex"),

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildIntakeRoutePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
@@ -133,6 +134,35 @@ describe("buildThreadTitlePrompt", () => {
     expect(result.prompt).toContain("thread.png");
     expect(result.prompt).toContain("image/png");
     expect(result.prompt).toContain("67890 bytes");
+  });
+});
+
+describe("buildIntakeRoutePrompt", () => {
+  it("lists the available repositories with ids and aliases", () => {
+    const result = buildIntakeRoutePrompt({
+      message: "run the data backfill script in nextcard",
+      repoChoices: [
+        { id: "profile:nextcard", name: "nextcard", aliases: ["nextcard", "next card"] },
+        { id: "profile:t3code", name: "t3code" },
+      ],
+    });
+
+    expect(result.prompt).toContain("Return a JSON object with keys: repoId, runsSomething.");
+    expect(result.prompt).toContain("Available repositories:");
+    expect(result.prompt).toContain(
+      "id: profile:nextcard — nextcard (aliases: nextcard, next card)",
+    );
+    expect(result.prompt).toContain("id: profile:t3code — t3code");
+    expect(result.prompt).toContain("run the data backfill script in nextcard");
+  });
+
+  it("falls back to a placeholder when no repositories are configured", () => {
+    const result = buildIntakeRoutePrompt({
+      message: "do something",
+      repoChoices: [],
+    });
+
+    expect(result.prompt).toContain("(no repositories configured)");
   });
 });
 

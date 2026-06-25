@@ -22,6 +22,7 @@ import { type TextGenerationShape } from "./TextGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildIntakeRoutePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
@@ -85,7 +86,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generateIntakeRoute",
     value: unknown,
     detail: string,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -115,7 +117,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateIntakeRoute";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -357,10 +360,34 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     };
   });
 
+  const generateIntakeRoute: TextGenerationShape["generateIntakeRoute"] = Effect.fn(
+    "ClaudeTextGeneration.generateIntakeRoute",
+  )(function* (input) {
+    const { prompt, outputSchema } = buildIntakeRoutePrompt({
+      message: input.message,
+      repoChoices: input.repoChoices,
+      attachments: input.attachments,
+    });
+
+    const generated = yield* runClaudeJson({
+      operation: "generateIntakeRoute",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson: outputSchema,
+      modelSelection: input.modelSelection,
+    });
+
+    return {
+      repoId: generated.repoId.trim(),
+      runsSomething: generated.runsSomething,
+    };
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateIntakeRoute,
   } satisfies TextGenerationShape;
 });
