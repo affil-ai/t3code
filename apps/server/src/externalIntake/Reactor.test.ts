@@ -6,6 +6,7 @@ import {
   assistantTextDeliveryKey,
   dedupeAssistantAttachments,
   shouldFinalizeAssistantRelayFromMessage,
+  userInputResponseFailureDeliveryKey,
 } from "./Reactor.ts";
 
 describe("ExternalIntakeReactor", () => {
@@ -24,6 +25,16 @@ describe("ExternalIntakeReactor", () => {
     expect(assistantAttachmentDeliveryKey({ ...base, attachmentId: "attachment-1" })).not.toBe(
       assistantTextDeliveryKey(base),
     );
+  });
+
+  it("uses a stable delivery key for user-input response failures", () => {
+    expect(
+      userInputResponseFailureDeliveryKey({
+        threadId: "thread-1",
+        activityId: "activity-failed",
+        externalThreadId: "T123:C123:1781138017.962159",
+      }),
+    ).toBe("user-input-response-failed:thread-1:activity-failed:T123:C123:1781138017.962159");
   });
 
   it("finalizes attachment-only assistant updates that still have a turn id", () => {

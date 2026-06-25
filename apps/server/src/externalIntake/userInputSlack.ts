@@ -157,8 +157,8 @@ function parseLabeledAnswers(
   text: string,
 ): Map<number, string> {
   const answers = new Map<number, string>();
-  const questionKeys = questions.map((question) =>
-    [question.id, question.header, question.question]
+  const questionKeys = questions.map((question, index) =>
+    [question.id, question.header, question.question, `q${index + 1}`, `question ${index + 1}`]
       .map((value) => value.trim().toLowerCase())
       .filter((value) => value.length > 0),
   );
@@ -207,6 +207,13 @@ export function buildSlackUserInputAnswers(
       answers[question.id] = resolveQuestionAnswer(question, rawAnswer);
     }
   });
+
+  if (Object.keys(answers).length === 0) {
+    for (const question of questions) {
+      answers[question.id] = resolveQuestionAnswer(question, normalized);
+    }
+    return answers as ProviderUserInputAnswers;
+  }
 
   return Object.keys(answers).length === questions.length
     ? (answers as ProviderUserInputAnswers)

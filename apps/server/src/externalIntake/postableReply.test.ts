@@ -7,6 +7,7 @@ import {
   postableSupportEmailNotification,
   postableTaskStartedStatus,
   postableUserInputRequest,
+  postableUserInputResponseFailed,
   protectSlackPackageScopes,
 } from "./postableReply.ts";
 
@@ -88,14 +89,61 @@ describe("postableUserInputRequest", () => {
       markdown: [
         "Claude needs input to continue.",
         "",
-        "1. **Framework**",
+        "**Q1: Framework**",
         "Which framework?",
         "",
         "Options:",
-        "1. React - React.js",
-        "2. Vue - Vue.js",
+        "- 1: **React** - React.js",
+        "- 2: **Vue** - Vue.js",
         "",
         "Reply in this thread with the answer.",
+      ].join("\n"),
+    });
+  });
+
+  it("tells users that one reply can answer every question", () => {
+    const message = postableUserInputRequest({
+      kind: "slack_thread",
+      questions: [
+        {
+          id: "scope",
+          header: "Scope",
+          question: "Which scope?",
+          options: [{ label: "All", description: "Apply everywhere" }],
+          multiSelect: false,
+        },
+        {
+          id: "mode",
+          header: "Mode",
+          question: "Which mode?",
+          options: [{ label: "Fast", description: "Move quickly" }],
+          multiSelect: false,
+        },
+      ],
+    });
+
+    expect(message).toMatchObject({
+      markdown: expect.stringContaining(
+        "Reply with one answer to apply it to every question, or answer each question with `Q1: ...`, `Q2: ...`.",
+      ),
+    });
+  });
+});
+
+describe("postableUserInputResponseFailed", () => {
+  it("formats provider response failures for Slack", () => {
+    expect(
+      postableUserInputResponseFailed({
+        kind: "slack_thread",
+        detail: "Stale pending user-input request: req-1.",
+      }),
+    ).toEqual({
+      markdown: [
+        "I couldn't submit that response to Claude.",
+        "",
+        "Reason: Stale pending user-input request: req-1.",
+        "",
+        "Open T3 and restart the turn if Claude's pending question is stale.",
       ].join("\n"),
     });
   });

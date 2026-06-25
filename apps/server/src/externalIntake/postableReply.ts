@@ -27,6 +27,19 @@ export interface UserInputRequestMessage {
   readonly questions: ReadonlyArray<UserInputQuestion>;
 }
 
+export interface UserInputResponseFailedMessage {
+  readonly kind: ReplyLinkKind;
+  readonly detail?: string | undefined;
+}
+
+const MAX_FAILURE_DETAIL_LENGTH = 500;
+
+function truncateFailureDetail(detail: string) {
+  const trimmed = detail.trim();
+  if (trimmed.length <= MAX_FAILURE_DETAIL_LENGTH) return trimmed;
+  return `${trimmed.slice(0, MAX_FAILURE_DETAIL_LENGTH - 1).trimEnd()}…`;
+}
+
 function isMarkdownTableSeparator(line: string): boolean {
   const cells = line
     .trim()
@@ -118,14 +131,14 @@ export function postableReplyBody(input: {
 
 function formatUserInputQuestion(question: UserInputQuestion, index: number) {
   const title = question.header.trim() || `Question ${index + 1}`;
-  const lines = [`${index + 1}. **${title}**`, question.question.trim()];
+  const lines = [`**Q${index + 1}: ${title}**`, question.question.trim()];
   if (question.options.length > 0) {
     lines.push(
       "",
       "Options:",
       ...question.options.map((option, optionIndex) => {
         const description = option.description.trim();
-        return `${optionIndex + 1}. ${option.label}${description ? ` - ${description}` : ""}`;
+        return `- ${optionIndex + 1}: **${option.label}**${description ? ` - ${description}` : ""}`;
       }),
     );
   }
@@ -136,7 +149,7 @@ export function postableUserInputRequest(input: UserInputRequestMessage): Postab
   const answerHint =
     input.questions.length === 1
       ? "Reply in this thread with the answer."
-      : "Reply in this thread with numbered answers, one per line.";
+      : "Reply with one answer to apply it to every question, or answer each question with `Q1: ...`, `Q2: ...`.";
   const markdown = [
     "Claude needs input to continue.",
     "",
@@ -146,6 +159,20 @@ export function postableUserInputRequest(input: UserInputRequestMessage): Postab
   ].join("\n");
 
   return { markdown: toSlackMarkdown(markdown) };
+}
+
+export function postableUserInputResponseFailed(
+  input: UserInputResponseFailedMessage,
+): PostableMessage {
+  const detail = input.detail?.trim();
+  const lines = [
+    "I couldn't submit that response to Claude.",
+    ...(detail && detail.length > 0 ? ["", `Reason: ${truncateFailureDetail(detail)}`] : []),
+    "",
+    "Open T3 and restart the turn if Claude's pending question is stale.",
+  ];
+
+  return { markdown: toSlackMarkdown(lines.join("\n")) };
 }
 
 export function postableTaskStartedStatus(input: TaskStartedStatusMessage): PostableMessage {

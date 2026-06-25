@@ -47,6 +47,27 @@ describe("buildSlackUserInputAnswers", () => {
     });
   });
 
+  it("parses Q-labeled multi-question replies", () => {
+    expect(
+      buildSlackUserInputAnswers([frameworkQuestion, areasQuestion], "Q1: Vue\nQ2: Server, Web"),
+    ).toEqual({
+      "Which framework?": "Vue",
+      "Which areas?": ["Server", "Web"],
+    });
+  });
+
+  it("applies a free-form reply to every question when no numbered answers are present", () => {
+    expect(
+      buildSlackUserInputAnswers(
+        [frameworkQuestion, areasQuestion],
+        "use the old mobile bar from git history",
+      ),
+    ).toEqual({
+      "Which framework?": "use the old mobile bar from git history",
+      "Which areas?": "use the old mobile bar from git history",
+    });
+  });
+
   it("does not submit partial multi-question replies", () => {
     expect(buildSlackUserInputAnswers([frameworkQuestion, areasQuestion], "1. React")).toBeNull();
   });

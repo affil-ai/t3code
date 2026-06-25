@@ -869,6 +869,10 @@ const makeExternalIntake = Effect.gen(function* () {
             acceptedAt: input.now,
           };
         }
+        return {
+          status: "ignored" as const,
+          reason: "slack_user_input_unparseable",
+        };
       }
 
       const messageNonce = randomUUID();
