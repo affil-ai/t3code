@@ -216,3 +216,61 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
 
   return { prompt, outputSchema };
 }
+
+// ---------------------------------------------------------------------------
+// Intake route (repo + run-intent classification)
+// ---------------------------------------------------------------------------
+
+export interface IntakeRouteRepoChoice {
+  /** Stable identifier the model must echo back when it picks this repo. */
+  readonly id: string;
+  /** Human-facing name shown to the requester (project or profile title). */
+  readonly name: string;
+  /** Extra names/aliases the request might use to refer to this repo. */
+  readonly aliases?: readonly string[] | undefined;
+}
+
+export interface IntakeRoutePromptInput {
+  readonly message: string;
+  readonly repoChoices: readonly IntakeRouteRepoChoice[];
+  readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  readonly policy?: TextGenerationPolicy | undefined;
+}
+
+function formatIntakeRepoChoice(choice: IntakeRouteRepoChoice): string {
+  const aliases = (choice.aliases ?? []).filter((alias) => alias.trim().length > 0);
+  const aliasSuffix = aliases.length > 0 ? ` (aliases: ${aliases.join(", ")})` : "";
+  return `- id: ${choice.id} — ${choice.name}${aliasSuffix}`;
+}
+
+export function buildIntakeRoutePrompt(input: IntakeRoutePromptInput) {
+  const repoList =
+    input.repoChoices.length > 0
+      ? input.repoChoices.map(formatIntakeRepoChoice).join("\n")
+      : "(no repositories configured)";
+
+  const base = buildPromptFromMessage({
+    instruction:
+      "You triage an incoming coding task and decide which repository it targets and whether it asks for something to be executed.",
+    responseShape: "Return a JSON object with keys: repoId, runsSomething.",
+    rules: [
+      "repoId must be exactly one of the listed repository ids, or an empty string if the request does not clearly map to any of them.",
+      "Match the repository the requester intends, using the names and aliases as hints. Do not invent ids.",
+      "Set runsSomething to true when the request is primarily about running, executing, reproducing, or operating something (e.g. run a script, run tests, execute a command, reproduce a bug, run a migration, fetch/query data, kick off a job).",
+      "Set runsSomething to false when the request is primarily about writing or changing code, designing, planning, reviewing, or answering a question.",
+      "When in doubt about runsSomething, prefer false.",
+    ],
+    message: input.message,
+    attachments: input.attachments,
+    additionalInstructions: input.policy?.threadTitleInstructions,
+  });
+
+  const prompt = [base, "", "Available repositories:", repoList].join("\n");
+
+  const outputSchema = Schema.Struct({
+    repoId: Schema.String,
+    runsSomething: Schema.Boolean,
+  });
+
+  return { prompt, outputSchema };
+}

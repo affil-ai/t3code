@@ -20,6 +20,7 @@ import { resolveAttachmentPath } from "../attachmentStore.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildIntakeRoutePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
@@ -161,7 +162,8 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateIntakeRoute";
   }) =>
     sharedServerMutex.withPermit(
       Effect.gen(function* () {
@@ -271,7 +273,8 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateIntakeRoute";
     readonly cwd: string;
     readonly prompt: string;
     readonly outputSchemaJson: S;
@@ -459,10 +462,34 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     };
   });
 
+  const generateIntakeRoute: TextGenerationShape["generateIntakeRoute"] = Effect.fn(
+    "OpenCodeTextGeneration.generateIntakeRoute",
+  )(function* (input) {
+    const { prompt, outputSchema } = buildIntakeRoutePrompt({
+      message: input.message,
+      repoChoices: input.repoChoices,
+      attachments: input.attachments,
+    });
+    const generated = yield* runOpenCodeJson({
+      operation: "generateIntakeRoute",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson: outputSchema,
+      modelSelection: input.modelSelection,
+      attachments: input.attachments,
+    });
+
+    return {
+      repoId: generated.repoId.trim(),
+      runsSomething: generated.runsSomething,
+    };
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateIntakeRoute,
   } satisfies TextGenerationShape;
 });

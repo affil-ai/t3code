@@ -278,6 +278,20 @@ const ProjectSetupScriptRunnerLayerLive = ProjectSetupScriptRunnerLive.pipe(
   Layer.provideMerge(TerminalLayerLive),
 );
 
+// Text generation closure used by the external intake preprocessing step
+// (repo + run-intent classification). `ExternalIntakeLayerLive` is *provided
+// into* the runtime base, so the base's `TextGeneration`/`ServerSettings`
+// outputs cannot flow back to satisfy it — the intake layer must close over
+// these itself. Every layer reference here is shared with the base by Effect's
+// reference-memoization, so the provider instance registry (and its settings
+// watcher daemon) is still built exactly once.
+const ExternalIntakeTextGenerationLayerLive = TextGeneration.layer.pipe(
+  Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+  Layer.provideMerge(ProviderEventLoggersLive),
+  Layer.provideMerge(OpenCodeRuntimeLive),
+  Layer.provideMerge(ServerSettingsLive),
+);
+
 const ExternalIntakeLayerLive = ExternalIntakeLive.pipe(
   Layer.provideMerge(ExternalIntegrationRepositoryLive),
   Layer.provideMerge(OrchestrationLayerLive),
@@ -285,6 +299,8 @@ const ExternalIntakeLayerLive = ExternalIntakeLive.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(ProjectSetupScriptRunnerLayerLive),
   Layer.provideMerge(ServerEnvironmentLive),
+  Layer.provideMerge(ExternalIntakeTextGenerationLayerLive),
+  Layer.provideMerge(ServerSettingsLive),
 );
 
 const ExternalChatLayerLive = ExternalChatLive.pipe(
