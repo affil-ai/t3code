@@ -70,6 +70,32 @@ export interface ThreadTitleGenerationResult {
   title: string;
 }
 
+export interface IntakeRouteRepoChoiceInput {
+  /** Stable identifier the model echoes back when it picks this repo. */
+  id: string;
+  /** Human-facing name shown to the requester (project or profile title). */
+  name: string;
+  /** Extra names/aliases the request might use to refer to this repo. */
+  aliases?: ReadonlyArray<string> | undefined;
+}
+
+export interface IntakeRouteGenerationInput {
+  cwd: string;
+  message: string;
+  /** Repositories the intake can route to. */
+  repoChoices: ReadonlyArray<IntakeRouteRepoChoiceInput>;
+  attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  /** What model and provider to use for generation. */
+  modelSelection: ModelSelection;
+}
+
+export interface IntakeRouteGenerationResult {
+  /** Chosen repo id, or empty string when no listed repo clearly matched. */
+  repoId: string;
+  /** True when the request is primarily about executing/running something. */
+  runsSomething: boolean;
+}
+
 export interface TextGenerationService {
   generateCommitMessage(
     input: CommitMessageGenerationInput,
@@ -77,6 +103,7 @@ export interface TextGenerationService {
   generatePrContent(input: PrContentGenerationInput): Promise<PrContentGenerationResult>;
   generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
   generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
+  generateIntakeRoute(input: IntakeRouteGenerationInput): Promise<IntakeRouteGenerationResult>;
 }
 
 /**
@@ -110,6 +137,14 @@ export interface TextGenerationShape {
   readonly generateThreadTitle: (
     input: ThreadTitleGenerationInput,
   ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+  /**
+   * Classify an incoming intake request: which repository it targets and
+   * whether it asks for something to be executed/run.
+   */
+  readonly generateIntakeRoute: (
+    input: IntakeRouteGenerationInput,
+  ) => Effect.Effect<IntakeRouteGenerationResult, TextGenerationError>;
 }
 
 /**
@@ -123,7 +158,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "generateIntakeRoute";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistryShape,
@@ -161,6 +197,10 @@ export const makeTextGenerationFromRegistry = (
   generateThreadTitle: (input) =>
     resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
       Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
+    ),
+  generateIntakeRoute: (input) =>
+    resolveInstance(registry, "generateIntakeRoute", input.modelSelection.instanceId).pipe(
+      Effect.flatMap((textGeneration) => textGeneration.generateIntakeRoute(input)),
     ),
 });
 

@@ -23,6 +23,7 @@ import {
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildIntakeRoutePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
@@ -101,7 +102,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generateIntakeRoute",
     value: unknown,
   ): Effect.Effect<string, TextGenerationError> =>
     encodeJsonString(value).pipe(
@@ -120,7 +122,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generateIntakeRoute",
     attachments: BranchNameGenerationInput["attachments"],
   ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
     if (!attachments || attachments.length === 0) {
@@ -162,7 +165,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateIntakeRoute";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -402,10 +406,39 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     } satisfies ThreadTitleGenerationResult;
   });
 
+  const generateIntakeRoute: TextGenerationShape["generateIntakeRoute"] = Effect.fn(
+    "CodexTextGeneration.generateIntakeRoute",
+  )(function* (input) {
+    const { imagePaths } = yield* materializeImageAttachments(
+      "generateIntakeRoute",
+      input.attachments,
+    );
+    const { prompt, outputSchema } = buildIntakeRoutePrompt({
+      message: input.message,
+      repoChoices: input.repoChoices,
+      attachments: input.attachments,
+    });
+
+    const generated = yield* runCodexJson({
+      operation: "generateIntakeRoute",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson: outputSchema,
+      imagePaths,
+      modelSelection: input.modelSelection,
+    });
+
+    return {
+      repoId: generated.repoId.trim(),
+      runsSomething: generated.runsSomething,
+    };
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateIntakeRoute,
   } satisfies TextGenerationShape;
 });

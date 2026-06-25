@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationProjectShell } from "@t3tools/contracts";
 
 import {
+  buildIntakeRepoChoices,
   modelSelectionFromIntakeTags,
   resolveIntakeProjectRoutingTarget,
 } from "./ExternalIntake.ts";
@@ -177,6 +178,64 @@ describe("modelSelectionFromIntakeTags", () => {
 });
 
 describe("resolveIntakeProjectRoutingTarget", () => {
+  it("routes to the first mentioned project name when a later project is reference context", () => {
+    const affil = profile({
+      id: "affil",
+      workspaceRoot: "/workspace/affil",
+      aliases: ["affil", "affiliate", "affil-ai"],
+    });
+
+    expect(
+      resolveIntakeProjectRoutingTarget({
+        profiles: [
+          profile({
+            id: "nextcard",
+            workspaceRoot: "/workspace/nextcard",
+            aliases: ["nextcard", "next card", "nc"],
+          }),
+          affil,
+        ],
+        projects: [],
+        text: [
+          "@U0B0T56AY7R in affil ui data table, update the view button with a way to sort order",
+          "of columns. this is similar to how data table in nextcard-ui works in /code/nextcard",
+        ].join(" "),
+      }),
+    ).toEqual({ type: "profile", profile: affil });
+  });
+
+  it("does not route broad profile aliases as project mentions", () => {
+    expect(
+      resolveIntakeProjectRoutingTarget({
+        profiles: [
+          profile({
+            id: "affil",
+            workspaceRoot: "/workspace/affil",
+            aliases: ["affil", "affiliate", "affil-ai"],
+          }),
+        ],
+        projects: [],
+        text: "update the affiliate dashboard copy",
+      }),
+    ).toEqual({ type: "unresolved" });
+  });
+
+  it("routes brand tokens inside URLs to the matching project", () => {
+    const affil = profile({
+      id: "affil",
+      workspaceRoot: "/workspace/affil",
+      aliases: ["affil", "affiliate", "affil-ai"],
+    });
+
+    expect(
+      resolveIntakeProjectRoutingTarget({
+        profiles: [affil],
+        projects: [],
+        text: "fix https://app.affil.ai/mockups?id=b1b9b223-566c-40f5-876c-b41f4077fd93",
+      }),
+    ).toEqual({ type: "profile", profile: affil });
+  });
+
   it("lets an active project mentioned in the request beat a conflicting source hint", () => {
     const nextcard = profile({
       id: "nextcard",
@@ -235,5 +294,145 @@ describe("resolveIntakeProjectRoutingTarget", () => {
         projectHintText: "nextcard",
       }),
     ).toEqual({ type: "profile", profile: t3codeProfile });
+  });
+
+  it("uses the preprocessing preferredRepoId to break a tie no scan resolved", () => {
+    const nextcard = profile({
+      id: "nextcard",
+      workspaceRoot: "/workspace/nextcard",
+      aliases: ["nextcard"],
+    });
+    const t3code = profile({
+      id: "t3code",
+      workspaceRoot: "/workspace/t3code",
+      aliases: ["t3code"],
+    });
+
+    expect(
+      resolveIntakeProjectRoutingTarget({
+        profiles: [nextcard, t3code],
+        projects: [],
+        // No project/profile name appears in the request, so the deterministic
+        // scans fall through to the model's choice.
+        text: "add a settings page with a dark mode toggle",
+        preferredRepoId: "profile:t3code",
+      }),
+    ).toEqual({ type: "profile", profile: t3code });
+  });
+
+  it("prefers an explicit mention over the preprocessing preferredRepoId", () => {
+    const nextcard = profile({
+      id: "nextcard",
+      workspaceRoot: "/workspace/nextcard",
+      aliases: ["nextcard"],
+    });
+    const t3code = profile({
+      id: "t3code",
+      workspaceRoot: "/workspace/t3code",
+      aliases: ["t3code"],
+    });
+
+    expect(
+      resolveIntakeProjectRoutingTarget({
+        profiles: [nextcard, t3code],
+        projects: [],
+        text: "in nextcard, fix the login bug",
+        // The model guessed t3code, but the request explicitly names nextcard.
+        preferredRepoId: "profile:t3code",
+      }),
+    ).toEqual({ type: "profile", profile: nextcard });
+  });
+
+  it("ignores a preferredRepoId that matches no configured repo", () => {
+    const nextcard = profile({
+      id: "nextcard",
+      workspaceRoot: "/workspace/nextcard",
+      aliases: ["nextcard"],
+    });
+
+    expect(
+      resolveIntakeProjectRoutingTarget({
+        profiles: [nextcard],
+        projects: [
+          projectShell({
+            id: "project-other",
+            title: "other",
+            workspaceRoot: "/workspace/other",
+          }),
+          projectShell({
+            id: "project-more",
+            title: "more",
+            workspaceRoot: "/workspace/more",
+          }),
+        ],
+        text: "do some work",
+        preferredRepoId: "profile:does-not-exist",
+        fallbackProfile: nextcard,
+      }),
+    ).toEqual({ type: "profile", profile: nextcard });
+  });
+});
+
+describe("buildIntakeRepoChoices", () => {
+  it("lists profiles then projects with prefixed ids and routing aliases", () => {
+    const choices = buildIntakeRepoChoices({
+      profiles: [
+        profile({
+          id: "t3code",
+          workspaceRoot: "/workspace/t3code",
+          aliases: ["t3code", "t3 code"],
+        }),
+      ],
+      projects: [
+        projectShell({
+          id: "project-other",
+          title: "Other App",
+          workspaceRoot: "/workspace/other",
+        }),
+      ],
+    });
+
+    expect(choices).toEqual([
+      { id: "profile:t3code", name: "t3code", aliases: ["t3code", "t3 code"] },
+      { id: "project:project-other", name: "Other App", aliases: ["Other App"] },
+    ]);
+  });
+
+  it("does not offer a project already represented by a same-root profile", () => {
+    const choices = buildIntakeRepoChoices({
+      profiles: [
+        profile({
+          id: "t3code",
+          workspaceRoot: "/workspace/t3code",
+          aliases: ["t3code"],
+        }),
+      ],
+      projects: [
+        projectShell({
+          id: "project-t3code",
+          title: "t3code",
+          workspaceRoot: "/workspace/t3code",
+        }),
+      ],
+    });
+
+    expect(choices).toEqual([{ id: "profile:t3code", name: "t3code", aliases: ["t3code"] }]);
+  });
+
+  it("only exposes prominent profile aliases to the preprocessing model", () => {
+    const choices = buildIntakeRepoChoices({
+      profiles: [
+        profile({
+          id: "affil",
+          workspaceRoot: "/workspace/affil",
+          aliases: ["affil", "affiliate", "affil-ai"],
+        }),
+      ],
+      projects: [],
+    });
+
+    expect(choices).toEqual([
+      { id: "profile:affil", name: "affil", aliases: ["affil", "affil-ai"] },
+    ]);
   });
 });

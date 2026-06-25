@@ -14,6 +14,7 @@ import { type ThreadTitleGenerationResult, type TextGenerationShape } from "./Te
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildIntakeRoutePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
@@ -36,7 +37,8 @@ function mapGrokAcpError(
     | "generateCommitMessage"
     | "generatePrContent"
     | "generateBranchName"
-    | "generateThreadTitle",
+    | "generateThreadTitle"
+    | "generateIntakeRoute",
   detail: string,
   cause: unknown,
 ): TextGenerationError {
@@ -73,7 +75,8 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateIntakeRoute";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -263,10 +266,34 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     } satisfies ThreadTitleGenerationResult;
   });
 
+  const generateIntakeRoute: TextGenerationShape["generateIntakeRoute"] = Effect.fn(
+    "GrokTextGeneration.generateIntakeRoute",
+  )(function* (input) {
+    const { prompt, outputSchema } = buildIntakeRoutePrompt({
+      message: input.message,
+      repoChoices: input.repoChoices,
+      attachments: input.attachments,
+    });
+
+    const generated = yield* runGrokJson({
+      operation: "generateIntakeRoute",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson: outputSchema,
+      modelSelection: input.modelSelection,
+    });
+
+    return {
+      repoId: generated.repoId.trim(),
+      runsSomething: generated.runsSomething,
+    };
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateIntakeRoute,
   } satisfies TextGenerationShape;
 });
