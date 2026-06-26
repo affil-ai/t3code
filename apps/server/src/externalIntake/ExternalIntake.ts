@@ -275,6 +275,10 @@ const EXTERNAL_INTAKE_AGENT_PROMPT = [
   "- If you make code changes, commit them and push the branch before finishing.",
   "- As soon as there are code changes, create or update a GitHub pull request targeting `dev`.",
   "- When you first create the pull request, include the PR URL and the relevant Vercel preview deployment URL in that response.",
+  "- To find the Vercel preview URL for a PR: `gh pr checks` and commit statuses only expose the Vercel inspector URL (https://vercel.com/…), which is NOT a usable public preview — do not share it as the preview link.",
+  "- Get the real preview URL from the Deployments API: run `gh api \"repos/<owner>/<repo>/deployments?sha=<headSha>&per_page=20\"` to find the deployment with environment name `Preview`, then `gh api \"repos/<owner>/<repo>/deployments/<id>/statuses\" --jq '.[].environment_url'` — the `environment_url` is the per-deployment public URL.",
+  "- Prefer the stable branch-alias URL, which always points at the latest deploy: derive `<project>` and `<preview-domain>` from the `environment_url` you just found (do NOT assume `.vercel.app` — some projects deploy under a custom domain such as `*.nextcard.com`), then form `https://<project>-git-<branch-slug>.<preview-domain>` where `<branch-slug>` is the branch name with all non-alphanumeric characters replaced by dashes. Verify the alias returns HTTP 200 (`curl -sI -o /dev/null -w '%{http_code}'`) before sharing it; if it 404s fall back to the `environment_url`.",
+  "- To deep-link into a specific page of the preview app, append the route path to the preview origin. If the preview is behind auth, the agent must log in on that preview host first.",
   "- If you cannot commit, push, create the PR, or find the preview URL, say exactly why in the response where that failure occurs.",
 ].join("\n");
 
