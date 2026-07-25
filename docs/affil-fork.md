@@ -1,8 +1,9 @@
 # Affil T3 Code fork
 
 The maintained Affil line starts from upstream T3 Code and keeps customization
-small enough to reapply after upstream updates. The historical `main` branch is
-preserved until this line is promoted.
+small enough to reapply after upstream updates. The repository default branch is
+`feature/affil-desktop-v2`; the historical `main` branch remains intact for
+recovery and reference.
 
 ## Shared UI and desktop releases
 
@@ -26,8 +27,8 @@ app. Both values remain environment-configurable so upstream defaults stay
 unchanged outside the Affil workflow.
 
 GitHub only enables manually dispatched workflows from the repository's default
-branch. Promote this maintained line to the default branch before attempting the
-first release; do not copy the workflow into the historical branch.
+branch. Keep the maintained line as the default while using this workflow; do
+not copy the workflow into the historical branch.
 
 ## macOS updater credentials
 
