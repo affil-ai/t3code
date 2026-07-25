@@ -1,8 +1,8 @@
 # Affil T3 Code fork
 
 The maintained Affil line starts from upstream T3 Code and keeps customization
-small enough to reapply after upstream updates. The historical `main` branch is
-preserved until this line is promoted.
+small enough to reapply after upstream updates. `main` is reset to each selected
+upstream nightly and then receives only the small Affil commits documented here.
 
 ## Shared UI and desktop releases
 
@@ -26,8 +26,27 @@ app. Both values remain environment-configurable so upstream defaults stay
 unchanged outside the Affil workflow.
 
 GitHub only enables manually dispatched workflows from the repository's default
-branch. Promote this maintained line to the default branch before attempting the
-first release; do not copy the workflow into the historical branch.
+branch, so keep `main` as the repository default.
+
+## Building the desktop fork locally
+
+The local build does not use GitHub credentials and does not contact or update
+the remote T3 server. It derives the desktop version from the nearest upstream
+release tag, applies the Affil product name and bundle ID, and builds for the
+current Mac architecture:
+
+```sh
+vp install
+vp run dist:desktop:affil:local
+open release-local/*.dmg
+```
+
+The unsigned DMG is written to `release-local/`. macOS may require
+right-clicking the app and selecting **Open** on first launch.
+
+To include T3 Connect in a source build, put the public Clerk and relay values
+from `.env.example` in `.env.local` before building. No server-side secrets
+belong in that file.
 
 ## macOS updater credentials
 
@@ -77,5 +96,5 @@ the same version before cutting a production server over.
 5. Push the branch and dispatch **Affil synchronized release** with the exact
    upstream version.
 
-Do not merge upstream into the historical fork branch. That branch contains an
-older orchestration product and is retained only for recovery and reference.
+Do not merge old fork history back into `main`; rebuild from an upstream release
+tag and reapply the small Affil commits.

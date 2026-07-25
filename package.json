@@ -32,6 +32,7 @@
     "dist:desktop:dmg": "node scripts/build-desktop-artifact.ts --platform mac --target dmg",
     "dist:desktop:dmg:arm64": "node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64",
     "dist:desktop:dmg:x64": "node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch x64",
+    "dist:desktop:affil:local": "T3CODE_DESKTOP_UPDATE_REPOSITORY=affil-ai/t3code T3CODE_DESKTOP_APP_ID=ai.affil.t3code T3CODE_DESKTOP_PRODUCT_NAME='Affil T3 Code' node scripts/build-desktop-artifact.ts --platform mac --target dmg --build-version \"$(git describe --tags --match 'v*' --abbrev=0 | sed 's/^v//')\" --output-dir release-local --verbose",
     "dist:desktop:linux": "node scripts/build-desktop-artifact.ts --platform linux --target AppImage --arch x64",
     "dist:desktop:win": "node scripts/build-desktop-artifact.ts --platform win --target nsis",
     "dist:desktop:win:arm64": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch arm64",
