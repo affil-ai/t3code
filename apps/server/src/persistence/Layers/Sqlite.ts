@@ -7,6 +7,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import { ServerConfig } from "../../config.ts";
 
+export const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+
 type RuntimeSqliteLayerConfig = {
   readonly filename: string;
   readonly spanAttributes?: Record<string, unknown>;
@@ -32,6 +34,10 @@ const makeRuntimeSqliteLayer = Effect.fn("makeRuntimeSqliteLayer")(function* (
 const setup = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    // The server and short-lived CLI commands (for example SSH pairing) open
+    // this database from separate processes. Wait through brief writer
+    // collisions instead of failing the command immediately with SQLITE_BUSY.
+    yield* sql`PRAGMA busy_timeout = ${sql.literal(SQLITE_BUSY_TIMEOUT_MS.toString())};`;
     yield* sql`PRAGMA journal_mode = WAL;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* runMigrations();
