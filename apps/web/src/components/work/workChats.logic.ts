@@ -19,6 +19,37 @@ import {
   type WorkModeData,
 } from "../../workModeStore";
 
+/**
+ * The repository project a new Work chat runs in, without asking: the open
+ * chat's, then the saved default, then the most recently used one. Work
+ * projects are not repositories, so the choice only decides where the agent runs.
+ */
+export function resolveWorkChatRepositoryKey(input: {
+  /** Repository project key of the chat on screen, when there is one. */
+  activeProjectKey: string | null;
+  defaultProjectKey: string | null;
+  /** Repository project keys that still exist. */
+  projectKeys: ReadonlySet<string>;
+  /** Unarchived threads, for the most recently used project. */
+  threads: ReadonlyArray<
+    Pick<SidebarThreadSummary, "environmentId" | "projectId" | "updatedAt" | "latestUserMessageAt">
+  >;
+  scopedProjectKey: (environmentId: string, projectId: string) => string;
+}): string | null {
+  const { activeProjectKey, defaultProjectKey, projectKeys } = input;
+  if (activeProjectKey !== null && projectKeys.has(activeProjectKey)) return activeProjectKey;
+  if (defaultProjectKey !== null && projectKeys.has(defaultProjectKey)) return defaultProjectKey;
+  let best: { key: string; at: number } | null = null;
+  for (const thread of input.threads) {
+    const key = input.scopedProjectKey(thread.environmentId, thread.projectId);
+    if (!projectKeys.has(key)) continue;
+    const at = Date.parse(thread.latestUserMessageAt ?? thread.updatedAt) || 0;
+    if (best === null || at > best.at) best = { key, at };
+  }
+  if (best !== null) return best.key;
+  return projectKeys.values().next().value ?? null;
+}
+
 export const WORK_THREAD_DRAG_TYPE = "application/x-t3work-threads";
 export const WORK_PROJECT_DRAG_TYPE = "application/x-t3work-project";
 

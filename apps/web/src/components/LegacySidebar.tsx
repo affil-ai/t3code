@@ -234,6 +234,7 @@ import {
   WORK_PROJECT_DRAG_TYPE,
   readWorkThreadDrag,
   writeWorkThreadDrag,
+  resolveWorkChatRepositoryKey,
 } from "./work/workChats.logic";
 import {
   buildPhysicalToLogicalProjectKeyMap,
@@ -3302,36 +3303,31 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
   }, [dropTarget]);
 
   /**
-   * Every server thread needs a repository project to run in. New chats use
-   * the active thread's, the only one, or one picked from a menu.
+   * Every server thread needs a repository project to run in. A new Work chat
+   * opens at once in the open chat's repository, the saved default, or the
+   * most recently used one, so it never asks which repository to use.
    */
   const createChat = useCallback(
-    (workProjectId: string | null, position: { x: number; y: number }) => {
+    (workProjectId: string | null, _position: { x: number; y: number }) => {
       void (async () => {
         const activeThread = routeThreadKey ? threadByKeyRef.current.get(routeThreadKey) : null;
-        let projectRef = activeThread
-          ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
-          : null;
-        if (!projectRef && repositoryProjects.length === 1) {
-          projectRef = scopeProjectRef(
-            repositoryProjects[0]!.environmentId,
-            repositoryProjects[0]!.id,
-          );
-        }
-        if (!projectRef) {
-          const api = readLocalApi();
-          if (!api || repositoryProjects.length === 0) return;
-          const clicked = await api.contextMenu.show(
-            repositoryProjects.map((project) => ({
-              id: scopedProjectKey(scopeProjectRef(project.environmentId, project.id)),
-              label: `Run in ${project.title}`,
-            })),
-            position,
-          );
-          const picked = clicked ? repositoryProjectByKey.get(clicked) : undefined;
-          if (!picked) return;
-          projectRef = scopeProjectRef(picked.environmentId, picked.id);
-        }
+        const projectKey = resolveWorkChatRepositoryKey({
+          activeProjectKey: activeThread
+            ? scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId))
+            : null,
+          defaultProjectKey: useWorkModeStore.getState().defaultProjectKey,
+          projectKeys: new Set(repositoryProjectByKey.keys()),
+          threads: [...threadByKeyRef.current.values()].filter(
+            (thread) => thread.archivedAt === null,
+          ),
+          scopedProjectKey: (environmentId, projectId) =>
+            scopedProjectKey(
+              scopeProjectRef(environmentId as EnvironmentId, projectId as ProjectId),
+            ),
+        });
+        const picked = projectKey === null ? undefined : repositoryProjectByKey.get(projectKey);
+        if (!picked) return;
+        const projectRef = scopeProjectRef(picked.environmentId, picked.id);
         if (isMobile) setOpenMobile(false);
         const result = await settlePromise(() => handleNewThread(projectRef));
         if (result._tag === "Failure") {
@@ -3355,14 +3351,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
         }
       })();
     },
-    [
-      handleNewThread,
-      isMobile,
-      repositoryProjectByKey,
-      repositoryProjects,
-      routeThreadKey,
-      setOpenMobile,
-    ],
+    [handleNewThread, isMobile, repositoryProjectByKey, routeThreadKey, setOpenMobile],
   );
 
   const createProject = useCallback(() => {

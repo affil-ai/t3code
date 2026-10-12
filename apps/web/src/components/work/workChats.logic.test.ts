@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { SidebarThreadSummary } from "../../types";
 import { initialWorkModeData, useWorkModeStore } from "../../workModeStore";
 import {
+  resolveWorkChatRepositoryKey,
   applyWorkThreadMenuAction,
   buildWorkThreadMenuItems,
   groupWorkThreads,
@@ -124,5 +125,74 @@ describe("applyWorkThreadMenuAction", () => {
     expect(state.folders).toHaveLength(1);
     expect(state.threadFolderByKey["env-1:a"]).toBe(state.folders[0]?.id);
     expect(state.editingFolderId).toBe(state.folders[0]?.id);
+  });
+});
+
+describe("resolveWorkChatRepositoryKey", () => {
+  const keyOf = (environmentId: string, projectId: string) => `${environmentId}:${projectId}`;
+  const projectKeys = new Set(["env:a", "env:b", "env:c"]);
+  const threads = [
+    {
+      environmentId: "env",
+      projectId: "a",
+      updatedAt: "2026-10-01T00:00:00Z",
+      latestUserMessageAt: null,
+    },
+    {
+      environmentId: "env",
+      projectId: "b",
+      updatedAt: "2026-10-01T00:00:00Z",
+      latestUserMessageAt: "2026-10-05T00:00:00Z",
+    },
+    {
+      environmentId: "env",
+      projectId: "gone",
+      updatedAt: "2026-10-09T00:00:00Z",
+      latestUserMessageAt: null,
+    },
+  ] as never;
+
+  it("prefers the open chat's repository, then the saved default", () => {
+    const base = { projectKeys, threads, scopedProjectKey: keyOf };
+    expect(
+      resolveWorkChatRepositoryKey({
+        ...base,
+        activeProjectKey: "env:c",
+        defaultProjectKey: "env:a",
+      }),
+    ).toBe("env:c");
+    expect(
+      resolveWorkChatRepositoryKey({ ...base, activeProjectKey: null, defaultProjectKey: "env:a" }),
+    ).toBe("env:a");
+  });
+
+  it("falls back to the most recently used existing repository, then any", () => {
+    expect(
+      resolveWorkChatRepositoryKey({
+        activeProjectKey: "env:gone",
+        defaultProjectKey: "env:missing",
+        projectKeys,
+        threads,
+        scopedProjectKey: keyOf,
+      }),
+    ).toBe("env:b");
+    expect(
+      resolveWorkChatRepositoryKey({
+        activeProjectKey: null,
+        defaultProjectKey: null,
+        projectKeys: new Set(["env:only"]),
+        threads: [],
+        scopedProjectKey: keyOf,
+      }),
+    ).toBe("env:only");
+    expect(
+      resolveWorkChatRepositoryKey({
+        activeProjectKey: null,
+        defaultProjectKey: null,
+        projectKeys: new Set(),
+        threads: [],
+        scopedProjectKey: keyOf,
+      }),
+    ).toBeNull();
   });
 });
