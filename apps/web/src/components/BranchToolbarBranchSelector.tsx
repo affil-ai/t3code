@@ -84,6 +84,7 @@ import {
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useLocalDraftSession } from "./localDraftSession";
+import { useIsWorkMode } from "../workModeStore";
 import { MiddleTruncate } from "./ui/middle-truncate";
 import { BranchPicker, BranchPickerRefItem } from "./BranchPicker";
 
@@ -130,6 +131,7 @@ export function BranchToolbarBranchSelector({
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
 }: BranchToolbarBranchSelectorProps) {
+  const isWorkMode = useIsWorkMode();
   const composerFloatingLayerProps = useComposerMenuProps();
   const canWriteSourceControl = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const canOperateThread = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
@@ -630,6 +632,9 @@ export function BranchToolbarBranchSelector({
     ? resolveThreadPullRequestBadge(serverThread?.pullRequests)
     : null;
   const displayedPr = linkedStatus?.pr ?? (currentLinkedPr === null ? branchPr : null);
+  const diffTotals = isWorkMode
+    ? (branchStatusQuery.data?.branchChanges ?? branchStatusQuery.data?.workingTree ?? null)
+    : null;
   const displayedPrStatus = prStatusIndicator(
     displayedPr,
     linkedStatus?.sourceControlProvider ?? branchStatusQuery.data?.sourceControlProvider,
@@ -827,6 +832,7 @@ export function BranchToolbarBranchSelector({
             openAriaLabel={prUrl ?? "Open pull request"}
             onOpen={(event) => openPrLink(event, prUrl)}
             onActed={() => branchStatusQuery.refresh()}
+            diffTotals={diffTotals}
           />
         ) : null}
       </div>

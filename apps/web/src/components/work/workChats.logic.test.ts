@@ -44,6 +44,37 @@ describe("groupWorkThreads", () => {
     expect(groups.byProjectId.get("p2")?.map((entry) => entry.id)).toEqual(["a"]);
     expect(groups.chats.map((entry) => entry.id).toSorted()).toEqual(["b", "c"]);
   });
+
+  it("keeps lineage threads out of both Projects and Chats", () => {
+    const groups = groupWorkThreads(
+      [
+        thread("root"),
+        thread("subagent", {
+          lineage: {
+            rootThreadId: ThreadId.make("root"),
+            parentThreadId: ThreadId.make("root"),
+            relationshipToParent: "subagent",
+          },
+        }),
+        thread("fork", {
+          lineage: {
+            rootThreadId: ThreadId.make("root"),
+            parentThreadId: ThreadId.make("root"),
+            relationshipToParent: "fork",
+          },
+        }),
+      ],
+      {
+        folders: projects,
+        threadFolderByKey: { "env-1:subagent": "p1", "env-1:fork": "p2" },
+      },
+      "updated_at",
+    );
+
+    expect(groups.byProjectId.get("p1")).toBeUndefined();
+    expect(groups.byProjectId.get("p2")).toBeUndefined();
+    expect(groups.chats.map((entry) => entry.id)).toEqual(["root"]);
+  });
 });
 
 describe("buildWorkThreadMenuItems", () => {

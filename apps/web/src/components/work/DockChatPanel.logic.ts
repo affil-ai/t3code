@@ -14,17 +14,21 @@ export function deriveDockChatTitle(text: string): string {
     : firstLine;
 }
 
-/** Other unarchived chats, most recent first. The host thread is excluded. */
+/** Other chats, most recent first. The host thread is excluded. */
 export function listDockChatCandidates(
   threads: ReadonlyArray<EnvironmentThreadShell>,
   hostThreadRef: ScopedThreadRef,
+  lineageThreadKeys: ReadonlySet<string> = new Set(),
 ): EnvironmentThreadShell[] {
   const recency = (thread: EnvironmentThreadShell) =>
     Date.parse(thread.latestUserMessageAt ?? thread.updatedAt) || 0;
   return threads
     .filter(
       (thread) =>
-        thread.archivedAt === null &&
+        (thread.archivedAt === null ||
+          lineageThreadKeys.has(
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          )) &&
         !(
           thread.environmentId === hostThreadRef.environmentId &&
           thread.id === hostThreadRef.threadId
@@ -34,7 +38,7 @@ export function listDockChatCandidates(
 }
 
 export interface DockChatSection {
-  id: "work-project" | "repo" | "other";
+  id: "lineage" | "work-project" | "repo" | "other";
   title: string;
   threads: EnvironmentThreadShell[];
 }
@@ -43,8 +47,8 @@ export interface DockChatSection {
 export const DOCK_OTHER_CHATS_LIMIT = 30;
 
 /**
- * Every other chat in up to three sections: the host's Work project, then the
- * host's repository project, then everything else. A chat appears once, in the
+ * Every other chat in up to four sections: lineage first, then the host's Work
+ * project, repository project, and everything else. A chat appears once, in the
  * first section it matches, most recent first. Empty sections are dropped.
  */
 export function sectionDockChatCandidates(input: {
@@ -54,15 +58,20 @@ export function sectionDockChatCandidates(input: {
   repoTitle: string;
   /** The host's Work project and the scoped keys of the chats filed in it. */
   workProject: { name: string; threadKeys: ReadonlySet<string> } | null;
+  /** Scoped keys of the host's immediate parent, forks, and subagents. */
+  lineageThreadKeys?: ReadonlySet<string>;
 }): DockChatSection[] {
   const { hostThreadRef, hostProjectId, repoTitle, workProject } = input;
+  const lineageThreadKeys = input.lineageThreadKeys ?? new Set<string>();
+  const inLineage: EnvironmentThreadShell[] = [];
   const inWorkProject: EnvironmentThreadShell[] = [];
   const inRepo: EnvironmentThreadShell[] = [];
   const other: EnvironmentThreadShell[] = [];
-  for (const thread of listDockChatCandidates(input.threads, hostThreadRef)) {
-    if (
-      workProject?.threadKeys.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))
-    ) {
+  for (const thread of listDockChatCandidates(input.threads, hostThreadRef, lineageThreadKeys)) {
+    const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+    if (lineageThreadKeys.has(threadKey)) {
+      inLineage.push(thread);
+    } else if (workProject?.threadKeys.has(threadKey)) {
       inWorkProject.push(thread);
     } else if (
       thread.environmentId === hostThreadRef.environmentId &&
@@ -74,6 +83,7 @@ export function sectionDockChatCandidates(input: {
     }
   }
   const sections: DockChatSection[] = [
+    { id: "lineage", title: "Lineage", threads: inLineage },
     { id: "work-project", title: `In ${workProject?.name ?? ""}`, threads: inWorkProject },
     { id: "repo", title: `In ${repoTitle}`, threads: inRepo },
     { id: "other", title: "Other chats", threads: other.slice(0, DOCK_OTHER_CHATS_LIMIT) },

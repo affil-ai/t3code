@@ -8,6 +8,7 @@ import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 
 import { sortThreads } from "../../lib/threadSort";
+import { getSidebarForkParentThreadId, isSidebarSubagentThread } from "../Sidebar.logic";
 import type { SidebarThreadSummary } from "../../types";
 import {
   buildWorkFolderTree,
@@ -37,6 +38,17 @@ export function groupWorkThreads(
   const chats: SidebarThreadSummary[] = [];
   for (const thread of threads) {
     if (thread.archivedAt !== null) continue;
+    // Work's sidebar is a user-facing inbox, not the lineage navigator. Keep
+    // subagents and forks reachable from the thread's Lineage section while
+    // preventing them from duplicating their host in Projects or Chats.
+    if (
+      thread.lineage !== undefined &&
+      (thread.lineage.parentThreadId !== null ||
+        isSidebarSubagentThread(thread) ||
+        getSidebarForkParentThreadId(thread) !== null)
+    ) {
+      continue;
+    }
     const projectId = resolveThreadWorkProjectId(
       data,
       scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),

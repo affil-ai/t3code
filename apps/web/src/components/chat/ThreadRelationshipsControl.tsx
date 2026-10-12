@@ -44,6 +44,8 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { buildThreadRouteParams } from "../../threadRoutes";
+import { useRightPanelStore } from "../../rightPanelStore";
+import { useIsWorkMode } from "../../workModeStore";
 import {
   useProjects,
   useServerConfigs,
@@ -197,6 +199,7 @@ export function ThreadRelationshipsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
+  const isWorkMode = useIsWorkMode();
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const projection = useThreadProjection(ref)?.projection ?? null;
   const providers = useServerConfigs().get(props.environmentId)?.providers;
@@ -283,11 +286,20 @@ export function ThreadRelationshipsPanel(props: {
     return null;
   }
 
-  const openThread = (threadId: ThreadId) => {
+  const navigateToThread = (threadId: ThreadId) => {
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
     });
+  };
+  const openThread = (threadId: ThreadId) => {
+    if (isWorkMode) {
+      // Work keeps the main route in place and uses the fork-aware Chat surface
+      // for related conversations. `openChat` also makes the right panel visible.
+      useRightPanelStore.getState().openChat(ref, threadId);
+      return;
+    }
+    navigateToThread(threadId);
   };
 
   const merge = async () => {
@@ -302,7 +314,7 @@ export function ThreadRelationshipsPanel(props: {
       },
     });
     setBusyAction(null);
-    if (result._tag === "Success") openThread(mergeTargetThreadId);
+    if (result._tag === "Success") navigateToThread(mergeTargetThreadId);
   };
 
   const detach = async () => {

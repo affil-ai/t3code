@@ -27,7 +27,7 @@ import {
   GitBranchIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 
 import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import { usePullRequestChecksRefresh } from "~/hooks/usePullRequestChecksRefresh";
@@ -79,6 +79,23 @@ import {
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./threadDetailsPanelStyles";
 
+export interface ThreadDiffTotals {
+  readonly insertions: number;
+  readonly deletions: number;
+}
+
+function DiffTotals({ totals }: { totals: ThreadDiffTotals }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 font-mono text-2xs tabular-nums"
+      aria-label={`+${totals.insertions} insertions, -${totals.deletions} deletions`}
+    >
+      <span className="text-success">+{totals.insertions}</span>
+      <span className="text-destructive">-{totals.deletions}</span>
+    </span>
+  );
+}
+
 export function ThreadDetailsPrRow({
   environmentId,
   pr,
@@ -91,6 +108,7 @@ export function ThreadDetailsPrRow({
   onOpen,
   onActed,
   onStopWatching,
+  diffTotals,
 }: {
   environmentId: EnvironmentId;
   pr: ThreadPr;
@@ -106,6 +124,8 @@ export function ThreadDetailsPrRow({
   onActed?: () => void;
   /** Set while the server watches this pull request for the thread; stops the watch. */
   onStopWatching?: (() => void) | undefined;
+  /** Work mode's branch diff totals, shown only on the current thread PR row. */
+  diffTotals?: ThreadDiffTotals | null;
 }) {
   const serverConfigs = useServerConfigs();
   const supportsPullRequests =
@@ -383,7 +403,7 @@ export function ThreadDetailsPrRow({
       </Tooltip>
     ) : null;
 
-  const openRow = (text: string, part: "row" | "link-primary") => (
+  const openRow = (content: ReactNode, part: "row" | "link-primary") => (
     <Tooltip>
       <TooltipTrigger
         render={
@@ -398,13 +418,26 @@ export function ThreadDetailsPrRow({
         }
       >
         {icon}
-        <span className="min-w-0 flex-1 truncate text-left">{text}</span>
+        <span className="min-w-0 flex-1 truncate text-left">{content}</span>
       </TooltipTrigger>
       {rowTooltip}
     </Tooltip>
   );
 
   const showChecks = detail !== null && checksRollup !== null && !conflicting && !detail.isDraft;
+  const numberPrefix = `#${number}`;
+  const singleLineTitle =
+    detail?.title ??
+    (label.startsWith(numberPrefix) ? label.slice(numberPrefix.length).trimStart() : label);
+  const singleLineContent = diffTotals ? (
+    <>
+      <span className="shrink-0 tabular-nums">{numberPrefix}</span>
+      <DiffTotals totals={diffTotals} />
+      <span className="min-w-0 truncate">{singleLineTitle}</span>
+    </>
+  ) : (
+    (detail?.title ?? label)
+  );
 
   return (
     <>
@@ -416,6 +449,7 @@ export function ThreadDetailsPrRow({
           {openRow(detail.title, "row")}
           <div className="-mt-1 flex h-6 min-w-0 items-center gap-0.5 ps-9 pe-1 text-xs text-muted-foreground">
             <span className="me-1 shrink-0 tabular-nums">#{number}</span>
+            {diffTotals ? <DiffTotals totals={diffTotals} /> : null}
             {showChecks && checksRollup !== null ? (
               <PullRequestChecksPopover
                 checksState={checksRollup}
@@ -451,12 +485,12 @@ export function ThreadDetailsPrRow({
         </div>
       ) : watching ? (
         <div className={THREAD_DETAILS_PANEL_LINK_SPLIT_GROUP_CLASS}>
-          {openRow(label, "link-primary")}
+          {openRow(singleLineContent, "link-primary")}
           <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
           {watchControl("secondary")}
         </div>
       ) : (
-        openRow(label, "row")
+        openRow(singleLineContent, "row")
       )}
       {rowAction === "merge" ? (
         <AlertDialog open={confirmingMerge} onOpenChange={(open) => setConfirmingMerge(open)}>

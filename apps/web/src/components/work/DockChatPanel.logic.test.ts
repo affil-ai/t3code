@@ -63,6 +63,53 @@ describe("sectionDockChatCandidates", () => {
     ]);
   });
 
+  it("puts lineage first and does not repeat it in later sections", () => {
+    const parent = thread(mac, "parent", "repo", "2026-09-25T14:00:00Z");
+    const fork = thread(mac, "fork", "repo", "2026-09-25T13:00:00Z");
+    const filed = thread(mac, "filed", "repo", "2026-09-25T12:00:00Z");
+    const sections = sectionDockChatCandidates({
+      threads: [parent, fork, filed],
+      hostThreadRef,
+      hostProjectId: "repo",
+      repoTitle: "machine",
+      workProject: { name: "Work", threadKeys: new Set([keyOf(fork), keyOf(filed)]) },
+      lineageThreadKeys: new Set([keyOf(parent), keyOf(fork)]),
+    });
+
+    expect(sections.map((section) => [section.title, section.threads.map((t) => t.id)])).toEqual([
+      ["Lineage", ["parent", "fork"]],
+      ["In Work", ["filed"]],
+    ]);
+  });
+
+  it("includes an archived lineage chat but not unrelated archived chats", () => {
+    const archivedLineage = thread(
+      mac,
+      "archived-lineage",
+      "repo",
+      "2026-09-25T12:00:00Z",
+      "2026-09-25T12:30:00Z",
+    );
+    const archivedOther = thread(
+      mac,
+      "archived-other",
+      "repo",
+      "2026-09-25T11:00:00Z",
+      "2026-09-25T11:30:00Z",
+    );
+    const sections = sectionDockChatCandidates({
+      threads: [archivedLineage, archivedOther],
+      hostThreadRef,
+      hostProjectId: "repo",
+      repoTitle: "machine",
+      workProject: null,
+      lineageThreadKeys: new Set([keyOf(archivedLineage)]),
+    });
+
+    expect(sections.map((section) => section.id)).toEqual(["lineage"]);
+    expect(sections[0]?.threads.map((entry) => entry.id)).toEqual(["archived-lineage"]);
+  });
+
   it("drops empty sections and caps other chats", () => {
     const others = Array.from({ length: DOCK_OTHER_CHATS_LIMIT + 5 }, (_, index) =>
       thread(

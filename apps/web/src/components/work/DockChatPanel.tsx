@@ -9,8 +9,13 @@
  * then its repository, then the rest.
  */
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import {
+  deriveThreadRelationshipGraph,
+  immediateThreadRelationships,
+} from "@t3tools/client-runtime/state/thread-relationships";
 import {
   EnvironmentId,
   type ModelSelection,
@@ -21,6 +26,7 @@ import { MessageSquarePlusIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { composerDraftHasUserContent, useComposerDraftStore } from "~/composerDraftStore";
+import { useArchivedThreadSnapshots } from "~/lib/archivedThreadsState";
 import { newThreadId } from "~/lib/utils";
 import { type ChatSurface, useRightPanelStore } from "~/rightPanelStore";
 import { useThreadProjection, useThreadShell, useThreadShells } from "~/state/entities";
@@ -41,6 +47,50 @@ function useDockChatSections(
   hostThreadRef: ScopedThreadRef,
 ): DockChatSection[] {
   const threads = useThreadShells();
+  const hostProjection = useThreadProjection(hostThreadRef)?.projection ?? null;
+  const archivedEnvironmentIds = useMemo(
+    () => [hostThreadRef.environmentId],
+    [hostThreadRef.environmentId],
+  );
+  const archived = useArchivedThreadSnapshots(archivedEnvironmentIds);
+  const archivedThreads = useMemo(
+    () =>
+      archived.snapshots
+        .filter((entry) => entry.environmentId === hostThreadRef.environmentId)
+        .flatMap((entry) =>
+          entry.snapshot.threads.map((thread) => presentThreadShell(entry.environmentId, thread)),
+        ),
+    [archived.snapshots, hostThreadRef.environmentId],
+  );
+  const candidateThreads = useMemo(() => {
+    const byKey = new Map(
+      threads.map(
+        (thread) =>
+          [scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)), thread] as const,
+      ),
+    );
+    for (const thread of archivedThreads) {
+      const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      if (!byKey.has(key)) byKey.set(key, thread);
+    }
+    return [...byKey.values()];
+  }, [archivedThreads, threads]);
+  const lineageThreadKeys = useMemo(() => {
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        ...threads
+          .filter((thread) => thread.environmentId === hostThreadRef.environmentId)
+          .map((thread) => thread.source),
+        ...archivedThreads.map((thread) => thread.source),
+      ],
+      projection: hostProjection,
+    });
+    return new Set(
+      immediateThreadRelationships(graph, hostThreadRef.threadId).map((row) =>
+        scopedThreadKey(scopeThreadRef(hostThreadRef.environmentId, row.threadId)),
+      ),
+    );
+  }, [archivedThreads, hostProjection, hostThreadRef, threads]);
   const folders = useWorkModeStore((state) => state.folders);
   const threadFolderByKey = useWorkModeStore((state) => state.threadFolderByKey);
   const workProject = useMemo(() => {
@@ -60,13 +110,14 @@ function useDockChatSections(
   return useMemo(
     () =>
       sectionDockChatCandidates({
-        threads,
+        threads: candidateThreads,
         hostThreadRef,
         hostProjectId: project.id,
         repoTitle: project.title,
         workProject,
+        lineageThreadKeys,
       }),
-    [hostThreadRef, project.id, project.title, threads, workProject],
+    [candidateThreads, hostThreadRef, lineageThreadKeys, project.id, project.title, workProject],
   );
 }
 

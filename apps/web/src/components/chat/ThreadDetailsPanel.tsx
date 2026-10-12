@@ -28,6 +28,7 @@ import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { useIsWorkMode } from "../../workModeStore";
 
 interface VersionMismatchIssue {
   readonly clientVersion: string;
@@ -78,6 +79,7 @@ export interface ThreadDetailsPanelProps extends Pick<
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
+  const isWorkMode = useIsWorkMode();
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
     props.activeProjectScripts ? props.gitCwd : null,
@@ -168,7 +170,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 <BranchToolbar layout="panel" panelSection="workspace" {...branchToolbarProps} />
               ) : null}
 
-              {density !== "essential" && props.showOpenInPicker ? (
+              {density !== "essential" && !isWorkMode && props.showOpenInPicker ? (
                 <OpenInPicker
                   keybindings={props.keybindings}
                   environmentId={props.environmentId}
@@ -178,7 +180,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {props.activeProjectScripts ? (
+              {!isWorkMode && props.activeProjectScripts ? (
                 <ProjectScriptsControl
                   environmentId={props.environmentId}
                   displayMode="panel"
@@ -194,7 +196,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             </div>
           </ThreadDetailsSection>
 
-          {props.gitCwd ? (
+          {props.gitCwd && (!isWorkMode || props.isGitRepo) ? (
             <ThreadDetailsSection
               headingId="thread-details-version-control-heading"
               title="Version Control"
@@ -205,7 +207,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 {props.isGitRepo ? (
                   <BranchToolbar layout="panel" panelSection="branch" {...branchToolbarProps} />
                 ) : null}
-                {props.activeProjectName ? (
+                {props.activeProjectName && !isWorkMode ? (
                   <GitActionsControl
                     displayMode="panel"
                     compact={density !== "full"}
