@@ -1,3 +1,4 @@
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
@@ -21,6 +22,7 @@ import {
   setNotificationBadge,
   unlockNotificationAudio,
 } from "../threadNotifications";
+import { readCompletionSnippet } from "./notificationSnippet";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
 import { toastManager } from "./ui/toast";
 
@@ -175,34 +177,46 @@ function EnvironmentNotifications({
         document.hasFocus() &&
         (activeEnvironmentId !== environmentId || activeThreadId !== thread.id)
       ) {
-        const toastId = toastManager.add({
-          type: kind === "completion" ? "success" : status === "failed" ? "error" : "warning",
-          title,
-          description: thread.title,
-          data: {
-            hideCopyButton: true,
-            leadingIcon:
-              kind === "completion" ? (
-                <CircleCheckIcon aria-hidden className="size-4 text-success-foreground" />
-              ) : status === "approval" ? (
-                <ShieldQuestionIcon aria-hidden className="size-4 text-warning-foreground" />
-              ) : status === "failed" ? (
-                <CircleAlertIcon aria-hidden className="size-4 text-destructive-foreground" />
-              ) : (
-                <MessageCircleQuestionIcon aria-hidden className="size-4 text-info-foreground" />
-              ),
-          },
-          actionProps: {
-            children: "Open thread",
-            onClick: () => {
-              toastManager.close(toastId);
-              void navigate({
-                to: "/$environmentId/$threadId",
-                params: { environmentId, threadId: thread.id },
-              });
+        const showToast = (toastTitle: string, toastDescription: string) => {
+          const toastId = toastManager.add({
+            type: kind === "completion" ? "success" : status === "failed" ? "error" : "warning",
+            title: toastTitle,
+            description: toastDescription,
+            data: {
+              hideCopyButton: true,
+              leadingIcon:
+                kind === "completion" ? (
+                  <CircleCheckIcon aria-hidden className="size-4 text-success-foreground" />
+                ) : status === "approval" ? (
+                  <ShieldQuestionIcon aria-hidden className="size-4 text-warning-foreground" />
+                ) : status === "failed" ? (
+                  <CircleAlertIcon aria-hidden className="size-4 text-destructive-foreground" />
+                ) : (
+                  <MessageCircleQuestionIcon aria-hidden className="size-4 text-info-foreground" />
+                ),
             },
-          },
-        });
+            actionProps: {
+              children: "Open thread",
+              onClick: () => {
+                toastManager.close(toastId);
+                void navigate({
+                  to: "/$environmentId/$threadId",
+                  params: { environmentId, threadId: thread.id },
+                });
+              },
+            },
+          });
+        };
+        if (kind === "completion") {
+          const toastThreadTitle = thread.title;
+          void readCompletionSnippet(scopeThreadRef(environmentId, thread.id)).then((snippet) =>
+            snippet === null
+              ? showToast(title, toastThreadTitle)
+              : showToast(toastThreadTitle, snippet),
+          );
+        } else {
+          showToast(title, thread.title);
+        }
         continue;
       }
       if (
@@ -212,24 +226,39 @@ function EnvironmentNotifications({
         Notification.permission !== "granted"
       )
         continue;
-      try {
-        const notification = new Notification(title, {
-          body: thread.title,
-          tag: `${environmentId}:${thread.id}`,
-          silent: true,
-        });
-        onNotification(environmentId, notification);
-        notification.addEventListener("click", () => {
-          notification.close();
-          window.focus();
-          void navigate({
-            to: "/$environmentId/$threadId",
-            params: { environmentId, threadId: thread.id },
+      const notificationThreadId = thread.id;
+      const showDesktopNotification = (notificationTitle: string, body: string) => {
+        try {
+          const notification = new Notification(notificationTitle, {
+            body,
+            tag: `${environmentId}:${notificationThreadId}`,
+            silent: true,
           });
-        });
-      } catch {
-        // Some browsers expose Notification but reject desktop presentation.
+          onNotification(environmentId, notification);
+          notification.addEventListener("click", () => {
+            notification.close();
+            window.focus();
+            void navigate({
+              to: "/$environmentId/$threadId",
+              params: { environmentId, threadId: notificationThreadId },
+            });
+          });
+        } catch {
+          // Some browsers expose Notification but reject desktop presentation.
+        }
+      };
+      if (kind !== "completion") {
+        showDesktopNotification(title, thread.title);
+        continue;
       }
+      // A completion leads with the chat's name and previews its final reply.
+      const threadTitle = thread.title;
+      void readCompletionSnippet(scopeThreadRef(environmentId, notificationThreadId)).then(
+        (snippet) =>
+          snippet === null
+            ? showDesktopNotification(title, threadTitle)
+            : showDesktopNotification(threadTitle, snippet),
+      );
     }
     previous.current = next;
   }, [

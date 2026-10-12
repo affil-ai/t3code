@@ -6,6 +6,7 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
+  snippet: null as string | null,
   mode: "off" as ClientSettings["notificationMode"],
   inApp: true,
   active: { environmentId: "env-1", threadId: "other-thread" },
@@ -119,6 +120,9 @@ vi.mock("../threadNotifications", async (importOriginal) => ({
 vi.mock("./ui/toast", () => ({
   toastManager: { add: state.add, close: state.close },
 }));
+vi.mock("./notificationSnippet", () => ({
+  readCompletionSnippet: () => Promise.resolve(state.snippet),
+}));
 
 import { ThreadNotificationCoordinator } from "./ThreadNotificationCoordinator";
 
@@ -139,6 +143,7 @@ async function complete() {
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(state, {
+    snippet: null,
     mode: "off",
     inApp: true,
     active: { environmentId: "env-1", threadId: "other-thread" },
@@ -322,5 +327,27 @@ describe("thread notifications", () => {
       tag: "env-1:thread-1",
       silent: true,
     });
+  });
+
+  it("titles a completion with the chat and previews its final reply", async () => {
+    state.snippet = "The web build is live on t3.olumbe.com.";
+    state.mode = "notifications";
+    state.focused = false;
+    await render();
+    await complete();
+    expect(state.notification).toHaveBeenCalledWith("Fix the login form", {
+      body: "The web build is live on t3.olumbe.com.",
+      tag: "env-1:thread-1",
+      silent: true,
+    });
+  });
+
+  it("previews the final reply in the in-app toast", async () => {
+    state.snippet = "Done: all tests pass.";
+    await render();
+    await complete();
+    const toast = state.add.mock.calls[0]?.[0];
+    expect(toast?.title).toBe("Fix the login form");
+    expect(toast?.description).toBe("Done: all tests pass.");
   });
 });
