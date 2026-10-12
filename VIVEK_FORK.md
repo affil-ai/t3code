@@ -90,14 +90,14 @@ first on `PATH`: the build installs into a staging folder without
 PATH="$PWD/node_modules/.bin:$HOME/.cargo/bin:$PATH" \
   env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY \
   node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64 \
-  --build-version 0.0.46-nightly.20261007.2787
+  --build-version 0.0.46-nightly.20261012.3035
 ```
 
 The DMG and ZIP go to `release/`. Quit the fork before replacing it. To install
 the ZIP on this Mac:
 
 ```sh
-ditto -x -k release/T3-Work-0.0.46-nightly.20261007.2787-arm64.zip /Applications
+ditto -x -k release/T3-Work-0.0.46-nightly.20261012.3035-arm64.zip /Applications
 codesign --force --deep --sign "Apple Development" '/Applications/T3 Work.app'
 codesign --verify --deep --strict '/Applications/T3 Work.app'
 ```

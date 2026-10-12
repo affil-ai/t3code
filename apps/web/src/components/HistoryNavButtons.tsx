@@ -34,7 +34,7 @@ function historyEnd(history: RouterHistory) {
 }
 
 const BUTTON_CLASS =
-  "pointer-events-auto inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-icon-muted outline-hidden ring-ring [-webkit-app-region:no-drag] hover:bg-accent hover:text-foreground focus-visible:ring-2 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-icon-muted [&_svg]:size-4";
+  "pointer-events-auto inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-icon-muted outline-hidden ring-ring [-webkit-app-region:no-drag] hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-icon-muted [&_svg]:size-4";
 
 /** Back and forward through this window's navigation history. */
 export function HistoryNavButtons({ className }: { className?: string }) {
