@@ -37,6 +37,7 @@ import { useThreadVisitedMigration } from "../hooks/useThreadVisitedMigration";
 import ThreadSidebar from "./Sidebar";
 import { useIsWorkMode } from "../workModeStore";
 import { useThreadParentFiling } from "./work/useThreadParentFiling";
+import { useWorkStateSync } from "./work/workStateSync";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { MainAppLocationTracker } from "./sidebar/mainAppLocation";
@@ -227,6 +228,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const legacySidebarEnabled = useLegacySidebarEnabled();
   const isWorkMode = useIsWorkMode();
   useThreadParentFiling();
+  useWorkStateSync();
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
   // Settings routes show the settings nav in place of whichever thread

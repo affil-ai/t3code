@@ -26,14 +26,33 @@ export interface WorkFolder {
   createdAt: string;
 }
 
-export interface WorkModeData {
-  mode: AppMode;
+export interface WorkSharedData {
   folders: WorkFolder[];
   threadFolderByKey: Record<string, string>;
+}
+
+export interface WorkModeData extends WorkSharedData {
+  mode: AppMode;
   collapsedFolderIds: string[];
   /** Scoped project key that new Work chats start in, or null for the first project. */
   defaultProjectKey: string | null;
 }
+
+export type WorkModeOperation =
+  | {
+      type: "createFolder";
+      input: { id: string; name: string; parentId: string | null; createdAt: string };
+    }
+  | { type: "renameFolder"; folderId: string; name: string }
+  | { type: "deleteFolder"; folderId: string }
+  | { type: "moveFolder"; folderId: string; parentId: string | null }
+  | {
+      type: "reorderFolder";
+      folderId: string;
+      targetId: string;
+      position: "before" | "after";
+    }
+  | { type: "fileThreads"; threadKeys: ReadonlyArray<string>; projectId: string | null };
 
 export const WORK_MODE_STORAGE_KEY = "t3work:work-mode:v1";
 
@@ -199,6 +218,35 @@ export function reorderFolder(
   return unchanged ? data : { ...data, folders };
 }
 
+export function applyWorkModeOperation(
+  data: WorkModeData,
+  operation: WorkModeOperation,
+): WorkModeData {
+  switch (operation.type) {
+    case "createFolder":
+      return createFolder(data, operation.input);
+    case "renameFolder":
+      return renameFolder(data, operation.folderId, operation.name);
+    case "deleteFolder":
+      return deleteFolder(data, operation.folderId);
+    case "moveFolder":
+      return moveFolder(data, operation.folderId, operation.parentId);
+    case "reorderFolder":
+      return reorderFolder(data, operation.folderId, operation.targetId, operation.position);
+    case "fileThreads":
+      return fileThreads(data, operation.threadKeys, operation.projectId);
+  }
+}
+
+export function pickWorkSharedData(
+  data: Pick<WorkModeData, "folders" | "threadFolderByKey">,
+): WorkSharedData {
+  return {
+    folders: data.folders,
+    threadFolderByKey: data.threadFolderByKey,
+  };
+}
+
 export function setFolderCollapsed(
   data: WorkModeData,
   folderId: string,
@@ -252,7 +300,7 @@ export function buildWorkFolderTree(folders: ReadonlyArray<WorkFolder>): WorkFol
   return build(null, 0);
 }
 
-function sanitizePersistedData(value: unknown): WorkModeData {
+export function sanitizePersistedData(value: unknown): WorkModeData {
   if (!value || typeof value !== "object") return initialWorkModeData;
   const raw = value as Partial<Record<keyof WorkModeData, unknown>>;
   const folders = Array.isArray(raw.folders)
@@ -285,7 +333,21 @@ function sanitizePersistedData(value: unknown): WorkModeData {
   };
 }
 
+/** Sanitize the subset of Work state that is safe to share with a server. */
+export function sanitizeWorkSharedData(value: unknown): WorkSharedData {
+  const persisted = sanitizePersistedData(value);
+  const folderIds = new Set(persisted.folders.map((folder) => folder.id));
+  return {
+    folders: persisted.folders,
+    threadFolderByKey: Object.fromEntries(
+      Object.entries(persisted.threadFolderByKey).filter(([, folderId]) => folderIds.has(folderId)),
+    ),
+  };
+}
+
 interface WorkModeStore extends WorkModeData {
+  /** Operations are transient and let the sync layer rebase local edits. */
+  pendingOperations: WorkModeOperation[];
   /** Work project whose name is being edited inline. Not persisted. */
   editingFolderId: string | null;
   setMode: (mode: AppMode) => void;
@@ -298,6 +360,8 @@ interface WorkModeStore extends WorkModeData {
   setFolderCollapsed: (folderId: string, collapsed: boolean) => void;
   setEditingFolderId: (folderId: string | null) => void;
   setDefaultProjectKey: (projectKey: string | null) => void;
+  applyServerData: (value: unknown) => void;
+  acknowledgePendingOperations: (count: number) => void;
 }
 
 const pickData = (state: WorkModeStore): WorkModeData => ({
@@ -308,37 +372,85 @@ const pickData = (state: WorkModeStore): WorkModeData => ({
   defaultProjectKey: state.defaultProjectKey,
 });
 
+function workDataChanged(left: WorkModeData, right: WorkModeData): boolean {
+  return (
+    left.mode !== right.mode ||
+    left.folders !== right.folders ||
+    left.threadFolderByKey !== right.threadFolderByKey ||
+    left.collapsedFolderIds !== right.collapsedFolderIds ||
+    left.defaultProjectKey !== right.defaultProjectKey
+  );
+}
+
+function applyRecordedOperation(
+  state: WorkModeStore,
+  operation: WorkModeOperation,
+): Partial<WorkModeStore> {
+  const current = pickData(state);
+  const next = applyWorkModeOperation(current, operation);
+  if (!workDataChanged(current, next)) return state;
+  return {
+    ...next,
+    pendingOperations: [...state.pendingOperations, operation],
+  };
+}
+
 export const useWorkModeStore = create<WorkModeStore>()(
   persist(
     (set) => ({
       ...initialWorkModeData,
+      pendingOperations: [],
       editingFolderId: null,
       setMode: (mode) => set({ mode }),
       createFolder: (name, parentId) => {
         const id = randomUUID();
-        set((state) =>
-          createFolder(pickData(state), {
-            id,
-            name,
-            parentId,
-            createdAt: new Date().toISOString(),
-          }),
-        );
+        const operation: WorkModeOperation = {
+          type: "createFolder",
+          input: { id, name, parentId, createdAt: new Date().toISOString() },
+        };
+        set((state) => applyRecordedOperation(state, operation));
         return id;
       },
       renameFolder: (folderId, name) =>
-        set((state) => renameFolder(pickData(state), folderId, name)),
-      deleteFolder: (folderId) => set((state) => deleteFolder(pickData(state), folderId)),
+        set((state) => applyRecordedOperation(state, { type: "renameFolder", folderId, name })),
+      deleteFolder: (folderId) =>
+        set((state) => applyRecordedOperation(state, { type: "deleteFolder", folderId })),
       moveFolder: (folderId, parentId) =>
-        set((state) => moveFolder(pickData(state), folderId, parentId)),
+        set((state) => applyRecordedOperation(state, { type: "moveFolder", folderId, parentId })),
       reorderFolder: (folderId, targetId, position) =>
-        set((state) => reorderFolder(pickData(state), folderId, targetId, position)),
+        set((state) =>
+          applyRecordedOperation(state, { type: "reorderFolder", folderId, targetId, position }),
+        ),
       fileThreads: (threadKeys, projectId) =>
-        set((state) => fileThreads(pickData(state), threadKeys, projectId)),
+        set((state) =>
+          applyRecordedOperation(state, {
+            type: "fileThreads",
+            threadKeys: [...threadKeys],
+            projectId,
+          }),
+        ),
       setFolderCollapsed: (folderId, collapsed) =>
         set((state) => setFolderCollapsed(pickData(state), folderId, collapsed)),
       setEditingFolderId: (editingFolderId) => set({ editingFolderId }),
       setDefaultProjectKey: (defaultProjectKey) => set({ defaultProjectKey }),
+      applyServerData: (value) =>
+        set((state) => {
+          const shared = sanitizeWorkSharedData(value);
+          const folderIds = new Set(shared.folders.map((folder) => folder.id));
+          const collapsedFolderIds = state.collapsedFolderIds.filter((id) => folderIds.has(id));
+          if (
+            state.folders === shared.folders &&
+            state.threadFolderByKey === shared.threadFolderByKey &&
+            state.collapsedFolderIds === collapsedFolderIds
+          ) {
+            return state;
+          }
+          return { ...state, ...shared, collapsedFolderIds };
+        }),
+      acknowledgePendingOperations: (count) =>
+        set((state) =>
+          count > 0 ? { pendingOperations: state.pendingOperations.slice(count) } : state,
+        ),
     }),
     {
       name: WORK_MODE_STORAGE_KEY,

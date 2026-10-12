@@ -20,10 +20,13 @@ choice is stored locally under `t3work:work-mode:v1`.
   (`apps/web/src/components/LegacySidebar.tsx`,
   `apps/web/src/components/work/workChats.logic.ts`). Drag chats onto a project,
   or use a chat's context menu, to file them; drop them on Chats to remove them.
-  Work projects are client-side only: they record which project each
-  `environmentId:threadId` is in and do not change server threads, which still
-  run in a repository project. Deleting a Work project moves its chats back to
-  Chats. A chat an agent creates through the orchestration API can name its
+  Work projects and filings sync through `/api/t3work/state` on the first
+  connected environment that serves it (the vivek-affil browser proxy). They
+  record which project each `environmentId:threadId` is in and do not change
+  server threads, which still run in a repository project. Collapsed state,
+  mode, and the default project stay per device. Deleting a Work project moves
+  its chats back to Chats. A chat an agent creates through the orchestration
+  API can name its
   parent with `<!-- t3work-parent: <thread ID> -->` at the start of its first
   message; the app files it in the parent's Work project and hides the marker
   (`apps/web/src/components/work/threadParent.logic.ts`). Each unfiled chat
