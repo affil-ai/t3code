@@ -7636,12 +7636,23 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
   const onOpenRelatedThread = useCallback(
     (threadId: ThreadId) => {
+      // The right panel's chat shows another thread in place.
+      if (embedded) {
+        embedded.onOpenThread(threadId);
+        return;
+      }
+      // Work keeps the main chat and opens subagents, forks, and parents
+      // beside it in the right panel's Chat surface.
+      if (isWorkMode && activeThreadRef && chatSurfaceAvailable) {
+        useRightPanelStore.getState().openChat(activeThreadRef, threadId);
+        return;
+      }
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
       });
     },
-    [environmentId, navigate],
+    [activeThreadRef, chatSurfaceAvailable, embedded, environmentId, isWorkMode, navigate],
   );
 
   // Commands such as /compact and /goal clear run as their own turn. The draft
