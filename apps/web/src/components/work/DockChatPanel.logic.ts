@@ -38,55 +38,42 @@ export function listDockChatCandidates(
 }
 
 export interface DockChatSection {
-  id: "lineage" | "work-project" | "repo" | "other";
+  id: "lineage" | "repo";
   title: string;
   threads: EnvironmentThreadShell[];
 }
 
-/** "Other chats" can span every project, so it lists only the most recent. */
-export const DOCK_OTHER_CHATS_LIMIT = 30;
-
 /**
- * Every other chat in up to four sections: lineage first, then the host's Work
- * project, repository project, and everything else. A chat appears once, in the
- * first section it matches, most recent first. Empty sections are dropped.
+ * Related chats in up to two sections: the host's lineage, then the rest of its
+ * repository project. Chats in other projects are not listed. A chat appears
+ * once, lineage first, most recent first. Empty sections are dropped.
  */
 export function sectionDockChatCandidates(input: {
   threads: ReadonlyArray<EnvironmentThreadShell>;
   hostThreadRef: ScopedThreadRef;
   hostProjectId: string;
   repoTitle: string;
-  /** The host's Work project and the scoped keys of the chats filed in it. */
-  workProject: { name: string; threadKeys: ReadonlySet<string> } | null;
   /** Scoped keys of the host's immediate parent, forks, and subagents. */
   lineageThreadKeys?: ReadonlySet<string>;
 }): DockChatSection[] {
-  const { hostThreadRef, hostProjectId, repoTitle, workProject } = input;
+  const { hostThreadRef, hostProjectId, repoTitle } = input;
   const lineageThreadKeys = input.lineageThreadKeys ?? new Set<string>();
   const inLineage: EnvironmentThreadShell[] = [];
-  const inWorkProject: EnvironmentThreadShell[] = [];
   const inRepo: EnvironmentThreadShell[] = [];
-  const other: EnvironmentThreadShell[] = [];
   for (const thread of listDockChatCandidates(input.threads, hostThreadRef, lineageThreadKeys)) {
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
     if (lineageThreadKeys.has(threadKey)) {
       inLineage.push(thread);
-    } else if (workProject?.threadKeys.has(threadKey)) {
-      inWorkProject.push(thread);
     } else if (
       thread.environmentId === hostThreadRef.environmentId &&
       thread.projectId === hostProjectId
     ) {
       inRepo.push(thread);
-    } else {
-      other.push(thread);
     }
   }
   const sections: DockChatSection[] = [
     { id: "lineage", title: "Lineage", threads: inLineage },
-    { id: "work-project", title: `In ${workProject?.name ?? ""}`, threads: inWorkProject },
     { id: "repo", title: `In ${repoTitle}`, threads: inRepo },
-    { id: "other", title: "Other chats", threads: other.slice(0, DOCK_OTHER_CHATS_LIMIT) },
   ];
   return sections.filter((section) => section.threads.length > 0);
 }

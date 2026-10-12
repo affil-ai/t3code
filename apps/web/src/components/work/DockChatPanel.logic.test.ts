@@ -3,7 +3,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { DOCK_OTHER_CHATS_LIMIT, sectionDockChatCandidates } from "./DockChatPanel.logic";
+import { sectionDockChatCandidates } from "./DockChatPanel.logic";
 
 const mac = EnvironmentId.make("env-mac");
 const ubuntu = EnvironmentId.make("env-ubuntu");
@@ -31,11 +31,11 @@ const keyOf = (shell: EnvironmentThreadShell) =>
   scopedThreadKey(scopeThreadRef(shell.environmentId, shell.id));
 
 describe("sectionDockChatCandidates", () => {
-  it("orders Work project, then repo, then everything else, each chat once", () => {
-    const filedOnUbuntu = thread(ubuntu, "filed-ubuntu", "other-repo", "2026-09-25T10:00:00Z");
-    const filedInRepo = thread(mac, "filed-repo", "repo", "2026-09-25T09:00:00Z");
-    const repoChat = thread(mac, "repo-chat", "repo", "2026-09-25T11:00:00Z");
-    const sameIdOtherMachine = thread(ubuntu, "repo-chat-2", "repo", "2026-09-25T08:00:00Z");
+  it("lists only the host's repo chats, most recent first, without the host or archived chats", () => {
+    const older = thread(mac, "older", "repo", "2026-09-25T09:00:00Z");
+    const newer = thread(mac, "newer", "repo", "2026-09-25T11:00:00Z");
+    const otherRepo = thread(mac, "other-repo", "elsewhere", "2026-09-25T12:00:00Z");
+    const sameProjectIdOtherMachine = thread(ubuntu, "ubuntu-repo", "repo", "2026-09-25T13:00:00Z");
     const archived = thread(
       mac,
       "archived",
@@ -43,42 +43,35 @@ describe("sectionDockChatCandidates", () => {
       "2026-09-25T12:00:00Z",
       "2026-09-25T12:30:00Z",
     );
-    const host = thread(mac, "host", "repo", "2026-09-25T13:00:00Z");
+    const host = thread(mac, "host", "repo", "2026-09-25T14:00:00Z");
 
     const sections = sectionDockChatCandidates({
-      threads: [filedOnUbuntu, filedInRepo, repoChat, sameIdOtherMachine, archived, host],
+      threads: [older, newer, otherRepo, sameProjectIdOtherMachine, archived, host],
       hostThreadRef,
       hostProjectId: "repo",
       repoTitle: "machine",
-      workProject: {
-        name: "Affil Ops",
-        threadKeys: new Set([keyOf(filedOnUbuntu), keyOf(filedInRepo)]),
-      },
     });
 
     expect(sections.map((section) => [section.title, section.threads.map((t) => t.id)])).toEqual([
-      ["In Affil Ops", ["filed-ubuntu", "filed-repo"]],
-      ["In machine", ["repo-chat"]],
-      ["Other chats", ["repo-chat-2"]],
+      ["In machine", ["newer", "older"]],
     ]);
   });
 
-  it("puts lineage first and does not repeat it in later sections", () => {
-    const parent = thread(mac, "parent", "repo", "2026-09-25T14:00:00Z");
+  it("puts lineage first, from any project, and does not repeat it in the repo section", () => {
+    const parent = thread(mac, "parent", "elsewhere", "2026-09-25T14:00:00Z");
     const fork = thread(mac, "fork", "repo", "2026-09-25T13:00:00Z");
-    const filed = thread(mac, "filed", "repo", "2026-09-25T12:00:00Z");
+    const repoChat = thread(mac, "repo-chat", "repo", "2026-09-25T12:00:00Z");
     const sections = sectionDockChatCandidates({
-      threads: [parent, fork, filed],
+      threads: [parent, fork, repoChat],
       hostThreadRef,
       hostProjectId: "repo",
       repoTitle: "machine",
-      workProject: { name: "Work", threadKeys: new Set([keyOf(fork), keyOf(filed)]) },
       lineageThreadKeys: new Set([keyOf(parent), keyOf(fork)]),
     });
 
     expect(sections.map((section) => [section.title, section.threads.map((t) => t.id)])).toEqual([
       ["Lineage", ["parent", "fork"]],
-      ["In Work", ["filed"]],
+      ["In machine", ["repo-chat"]],
     ]);
   });
 
@@ -102,7 +95,6 @@ describe("sectionDockChatCandidates", () => {
       hostThreadRef,
       hostProjectId: "repo",
       repoTitle: "machine",
-      workProject: null,
       lineageThreadKeys: new Set([keyOf(archivedLineage)]),
     });
 
@@ -110,23 +102,13 @@ describe("sectionDockChatCandidates", () => {
     expect(sections[0]?.threads.map((entry) => entry.id)).toEqual(["archived-lineage"]);
   });
 
-  it("drops empty sections and caps other chats", () => {
-    const others = Array.from({ length: DOCK_OTHER_CHATS_LIMIT + 5 }, (_, index) =>
-      thread(
-        ubuntu,
-        `other-${index}`,
-        "elsewhere",
-        `2026-09-${String((index % 28) + 1).padStart(2, "0")}T00:00:00Z`,
-      ),
-    );
+  it("returns no sections when nothing is related", () => {
     const sections = sectionDockChatCandidates({
-      threads: others,
+      threads: [thread(ubuntu, "elsewhere-chat", "elsewhere", "2026-09-25T00:00:00Z")],
       hostThreadRef,
       hostProjectId: "repo",
       repoTitle: "machine",
-      workProject: null,
     });
-    expect(sections.map((section) => section.id)).toEqual(["other"]);
-    expect(sections[0]?.threads).toHaveLength(DOCK_OTHER_CHATS_LIMIT);
+    expect(sections).toEqual([]);
   });
 });

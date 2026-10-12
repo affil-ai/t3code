@@ -5,8 +5,8 @@
  * dock has the same timeline and composer as the main chat. The embedded view
  * answers window-level shortcuts only for events from inside it and never
  * navigates. Until the surface has a thread, the panel offers a new chat in
- * the project and lists every other chat: the main chat's Work project first,
- * then its repository, then the rest.
+ * the project and lists related chats: the main chat's lineage first, then the
+ * other chats in its repository. Each row shows the chat's provider logo.
  */
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -20,6 +20,7 @@ import {
   EnvironmentId,
   type ModelSelection,
   type ScopedThreadRef,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { MessageSquarePlusIcon } from "lucide-react";
@@ -29,11 +30,17 @@ import { composerDraftHasUserContent, useComposerDraftStore } from "~/composerDr
 import { useArchivedThreadSnapshots } from "~/lib/archivedThreadsState";
 import { newThreadId } from "~/lib/utils";
 import { type ChatSurface, useRightPanelStore } from "~/rightPanelStore";
-import { useThreadProjection, useThreadShell, useThreadShells } from "~/state/entities";
+import {
+  useServerConfigs,
+  useThreadProjection,
+  useThreadShell,
+  useThreadShells,
+} from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { environmentShell } from "~/state/shell";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { resolveThreadWorkProjectId, useWorkModeStore } from "~/workModeStore";
+import { ThreadRelationshipIcon } from "../chat/ThreadRelationshipIcon";
 import ChatView, { type ChatViewEmbedding } from "../ChatView";
 import { type DockChatSection, sectionDockChatCandidates } from "./DockChatPanel.logic";
 
@@ -91,22 +98,6 @@ function useDockChatSections(
       ),
     );
   }, [archivedThreads, hostProjection, hostThreadRef, threads]);
-  const folders = useWorkModeStore((state) => state.folders);
-  const threadFolderByKey = useWorkModeStore((state) => state.threadFolderByKey);
-  const workProject = useMemo(() => {
-    const workProjectId = resolveThreadWorkProjectId(
-      { folders, threadFolderByKey },
-      scopedThreadKey(hostThreadRef),
-    );
-    const folder = folders.find((candidate) => candidate.id === workProjectId);
-    if (!folder) return null;
-    const threadKeys = new Set(
-      Object.entries(threadFolderByKey)
-        .filter(([, folderId]) => folderId === folder.id)
-        .map(([threadKey]) => threadKey),
-    );
-    return { name: folder.name, threadKeys };
-  }, [folders, hostThreadRef, threadFolderByKey]);
   return useMemo(
     () =>
       sectionDockChatCandidates({
@@ -114,10 +105,9 @@ function useDockChatSections(
         hostThreadRef,
         hostProjectId: project.id,
         repoTitle: project.title,
-        workProject,
         lineageThreadKeys,
       }),
-    [candidateThreads, hostThreadRef, lineageThreadKeys, project.id, project.title, workProject],
+    [candidateThreads, hostThreadRef, lineageThreadKeys, project.id, project.title],
   );
 }
 
@@ -278,6 +268,7 @@ function DockChatPicker(props: {
   onSelect: (thread: EnvironmentThreadShell) => void;
 }) {
   const { sections, projectTitle, onNewChat, onSelect } = props;
+  const serverConfigs = useServerConfigs();
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-3 pb-3">
       <button
@@ -304,6 +295,10 @@ function DockChatPicker(props: {
                 className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent/60"
                 onClick={() => onSelect(thread)}
               >
+                <DockChatThreadIcon
+                  thread={thread}
+                  providers={serverConfigs.get(thread.environmentId)?.providers}
+                />
                 <span className="min-w-0 flex-1 truncate">{thread.title}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {formatRelativeTimeLabel(thread.latestUserMessageAt ?? thread.updatedAt)}
@@ -314,5 +309,22 @@ function DockChatPicker(props: {
         </section>
       ))}
     </div>
+  );
+}
+
+/** The chat's current provider logo with its run status dot, as lineage rows show it. */
+function DockChatThreadIcon(props: {
+  thread: EnvironmentThreadShell;
+  providers: ReadonlyArray<ServerProvider> | undefined;
+}) {
+  const { thread, providers } = props;
+  const instanceId = thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId;
+  const provider = providers?.find((entry) => entry.instanceId === instanceId);
+  return (
+    <ThreadRelationshipIcon
+      driver={provider?.driver}
+      provider={provider}
+      status={thread.runtime?.status ?? thread.latestRun?.status ?? null}
+    />
   );
 }

@@ -36,10 +36,20 @@ export function useEnvironmentStageLabel(): string {
   const primaryServerVersion =
     useAtomValue(primaryServerConfigAtom)?.environment.serverVersion ?? null;
 
-  return resolveServerBackedAppStageLabel({
-    primaryServerVersion,
-    fallbackStageLabel: APP_STAGE_LABEL,
-  });
+  return resolveForkStageLabel(
+    resolveServerBackedAppStageLabel({
+      primaryServerVersion,
+      fallbackStageLabel: APP_STAGE_LABEL,
+    }),
+  );
+}
+
+/**
+ * T3 Work ships one channel, even when built from or connected to a nightly
+ * server, so Nightly gets no stage art, pill, or label. Dev builds keep theirs.
+ */
+export function resolveForkStageLabel(stageLabel: string): string {
+  return stageLabel.trim().toLowerCase() === "nightly" ? "Alpha" : stageLabel;
 }
 
 export function useSidebarStageBackdropVariant(enabled = true): SidebarStageBackdropVariant | null {
