@@ -93,7 +93,19 @@ const make = Effect.gen(function* () {
             : projection.messages.find((candidate) => candidate.id === run.userMessageId);
         return run === undefined || message === undefined
           ? undefined
-          : { runId: run.id, wakes: parseWakeDigest(message.text) };
+          : {
+              runId: run.id,
+              held: run.queueHeld === true,
+              // Whether a turn is in flight, which would queue a new wake behind it.
+              busy: projection.runs.some(
+                (candidate) =>
+                  candidate.status === "preparing" ||
+                  candidate.status === "starting" ||
+                  candidate.status === "running" ||
+                  candidate.status === "waiting",
+              ),
+              wakes: parseWakeDigest(message.text),
+            };
       }),
     );
 
@@ -175,9 +187,38 @@ const make = Effect.gen(function* () {
             });
           }
         }
-        if (wakes.length > 0) {
+        const pending = yield* pendingWake(coordinatorShell.projectId, target);
+        // A restart or stop holds the coordinator's queue until someone resumes it,
+        // and a wake folded into a held run never reaches the coordinator. Once no
+        // turn is in flight, send the held digest again as a new wake and drop the
+        // held one. While a turn runs, a new wake would queue behind it and be held
+        // too, so the wake keeps folding into the held run until that turn ends.
+        if (pending?.held === true && !pending.busy) {
           const wakeId = yield* crypto.randomUUIDv4;
-          const pending = yield* pendingWake(coordinatorShell.projectId, target);
+          const merged = mergeWakes(pending.wakes, wakes);
+          // With nothing in flight the wake starts a turn; the held queue only blocks
+          // queued sends. Sending before cancelling means a failure between the two
+          // repeats the wake rather than losing it.
+          yield* threads.sendToThread({
+            projectId: coordinatorShell.projectId,
+            commandId: CommandId.make(`firstmate:wake:${wakeId}`),
+            threadId: target,
+            messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
+            text: wakeDigest(merged),
+            notification: wakeNotification(merged),
+            attachments: [],
+            mode: "auto",
+            createdBy: "agent",
+            creationSource: "server",
+          });
+          yield* threads.dispatch({
+            type: "queued-run.cancel",
+            commandId: CommandId.make(`firstmate:wake-cancel-held:${wakeId}`),
+            threadId: target,
+            runId: pending.runId,
+          });
+        } else if (wakes.length > 0) {
+          const wakeId = yield* crypto.randomUUIDv4;
           if (pending !== undefined) {
             // At most one wake waits: fold this pass into the one already queued.
             const merged = mergeWakes(pending.wakes, wakes);

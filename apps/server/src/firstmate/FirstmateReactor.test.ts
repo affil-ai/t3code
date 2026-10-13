@@ -82,18 +82,35 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const sends = yield* Ref.make<ReadonlyArray<ThreadManagement.ThreadManagementSendInput>>([]);
   const failSends = yield* Ref.make(false);
   // A wake still waiting in the coordinator's queue, as the projection would show it.
-  const queued = yield* Ref.make<{ readonly runId: string; readonly text: string } | null>(null);
+  const queued = yield* Ref.make<{
+    readonly runId: string;
+    readonly text: string;
+    readonly held?: boolean;
+  } | null>(null);
+  // Status of the coordinator's in-flight turn, if any, beside the queued wake.
+  const activeStatus = yield* Ref.make<string | null>(null);
   const revisions = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
   const layerThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
     getProjectThreadRecords: () =>
-      Ref.get(queued).pipe(
-        Effect.map((wake) => {
+      Effect.all([Ref.get(queued), Ref.get(activeStatus)]).pipe(
+        Effect.map(([wake, active]) => {
           const messageId = MessageId.make("firstmate:wake-message:queued");
           return {
-            runs:
-              wake === null
+            runs: [
+              ...(active === null
                 ? []
-                : [{ id: RunId.make(wake.runId), status: "queued", userMessageId: messageId }],
+                : [{ id: RunId.make("run:active"), status: active, userMessageId: "user" }]),
+              ...(wake === null
+                ? []
+                : [
+                    {
+                      id: RunId.make(wake.runId),
+                      status: "queued",
+                      userMessageId: messageId,
+                      ...(wake.held === true ? { queueHeld: true } : {}),
+                    },
+                  ]),
+            ],
             messages: wake === null ? [] : [{ id: messageId, text: wake.text }],
           } as never;
         }),
@@ -143,7 +160,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const reactor = yield* FirstmateReactor.FirstmateReactor.pipe(Effect.provide(context));
   const setWorker = (value: OrchestrationV2ThreadShell) =>
     Ref.update(workers, (map) => new Map([...map, [value.id, value]]));
-  return { service, reactor, sends, failSends, setWorker, queued, revisions };
+  return { service, reactor, sends, failSends, setWorker, queued, activeStatus, revisions };
 });
 
 const createTask = (
@@ -370,6 +387,90 @@ describe("FirstmateReactor pending wakes", () => {
         expect(revise.notification.summary).toBe(
           "Firstmate: 2 updates — Dashboards (worker finished), PDF review (worker failed)",
         );
+      }),
+    ),
+  );
+
+  it.effect("sends a held wake again once the coordinator is idle, and drops the held one", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        const task = yield* createTask(harness.service, {
+          title: "Dashboards",
+          nextActor: "worker",
+          workerThreadId: workerId,
+        });
+        yield* harness.setWorker(
+          shell(workerId, { status: "completed", latestRunId: RunId.make("run:1") }),
+        );
+        yield* harness.reactor.sweep();
+        const [first] = yield* Ref.get(harness.sends);
+        // A server restart held the coordinator's queue with that wake in it.
+        yield* Ref.set(harness.queued, {
+          runId: "run:wake-held",
+          text: first!.text,
+          held: true,
+        });
+
+        // No new task wakes, but the held one is still delivered.
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends).toHaveLength(2);
+        expect(sends[1]).toMatchObject({ mode: "auto", threadId: coordinatorId });
+        expect(sends[1]!.text).toContain(`- ${task.id} Dashboards: worker-completed`);
+        expect(sends[1]!.messageId).not.toBe(first!.messageId);
+        expect(yield* Ref.get(harness.revisions)).toEqual([
+          expect.objectContaining({ type: "queued-run.cancel", runId: "run:wake-held" }),
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("folds into a held wake while the coordinator's turn runs, then sends it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* createTask(harness.service, {
+          title: "Dashboards",
+          nextActor: "worker",
+          workerThreadId: workerId,
+        });
+        yield* harness.setWorker(
+          shell(workerId, { status: "completed", latestRunId: RunId.make("run:1") }),
+        );
+        yield* harness.reactor.sweep();
+        const [first] = yield* Ref.get(harness.sends);
+        yield* Ref.set(harness.queued, {
+          runId: "run:wake-held",
+          text: first!.text,
+          held: true,
+        });
+        // The user is talking to the coordinator: a new wake would queue behind
+        // that turn and be held too, so it folds into the held wake for now.
+        yield* Ref.set(harness.activeStatus, "running");
+        yield* harness.setWorker(
+          shell(workerId, { status: "completed", latestRunId: RunId.make("run:2") }),
+        );
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+        const [revise] = yield* Ref.get(harness.revisions);
+        expect(revise).toMatchObject({
+          type: "queued-notification.revise",
+          runId: "run:wake-held",
+        });
+
+        // The user's turn ends; the next pass delivers the held wake.
+        yield* Ref.set(harness.activeStatus, null);
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends).toHaveLength(2);
+        expect(sends[1]!.text).toContain("Dashboards: worker-completed");
+        expect((yield* Ref.get(harness.revisions)).at(-1)).toMatchObject({
+          type: "queued-run.cancel",
+          runId: "run:wake-held",
+        });
       }),
     ),
   );
