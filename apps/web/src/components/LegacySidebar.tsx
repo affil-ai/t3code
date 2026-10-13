@@ -797,6 +797,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     },
     [confirmArchiveButtonRefs, setConfirmingArchiveThreadKey, threadKey, thread.environmentId],
   );
+  const stopClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
   const handleTogglePinClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -907,6 +911,33 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         <TooltipPopup side="top">Archive</TooltipPopup>
       </Tooltip>
     )
+  ) : canOperateThread && isWorkMode ? (
+    // Work rows always show archive on hover; a running chat gets it disabled
+    // with the reason, so every row offers the same actions.
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <div className={archiveActionClassName}>
+            <button
+              type="button"
+              data-thread-selection-safe
+              data-testid={`thread-archive-${thread.id}`}
+              aria-label={`Archive ${thread.title}`}
+              aria-disabled
+              className={cn(
+                WORK_ARCHIVE_BUTTON_CLASS,
+                "cursor-not-allowed opacity-40 hover:text-icon-muted",
+              )}
+              onPointerDown={stopPropagationOnPointerDown}
+              onClick={stopClick}
+            >
+              <ArchiveIcon className="size-3.5" />
+            </button>
+          </div>
+        }
+      />
+      <TooltipPopup side="top">Stop the chat to archive it</TooltipPopup>
+    </Tooltip>
   ) : null;
   const threadMeta =
     isWorkMode && !threadStatus && !jumpLabel ? null : (
