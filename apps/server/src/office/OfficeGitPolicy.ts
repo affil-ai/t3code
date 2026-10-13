@@ -177,6 +177,8 @@ const make = Effect.gen(function* () {
             "!" + quoteShellArgument(path.join(githubBin, "git-credential-office-app")),
           ],
           ["http.https://github.com/.extraheader", ""],
+          ["url.https://github.com/.insteadOf", "git@github.com:"],
+          ["url.https://github.com/.insteadOf", "ssh://git@github.com/"],
           ["core.hooksPath", hooks],
         ];
         const environment: Record<string, string> = {

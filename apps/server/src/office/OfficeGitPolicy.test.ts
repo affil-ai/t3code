@@ -125,6 +125,9 @@ describe("Office Git identity", () => {
           });
           const vivek = yield* policy.environmentForMessage({ threadId, messageId, cwd });
           expect(vivek).toBeDefined();
+          expect(
+            yield* git(["config", "--get-all", "url.https://github.com/.insteadOf"], vivek),
+          ).toBe("git@github.com:\nssh://git@github.com/");
           yield* git(["commit", "--allow-empty", "-m", "Office change"], vivek);
           expect(yield* git(["show", "-s", "--format=%an|%ae|%cn|%ce"])).toBe(
             "office-of-the-cto[bot]|302235476+office-of-the-cto[bot]@users.noreply.github.com|office-of-the-cto[bot]|302235476+office-of-the-cto[bot]@users.noreply.github.com",
