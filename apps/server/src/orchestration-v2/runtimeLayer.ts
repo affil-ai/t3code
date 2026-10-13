@@ -53,7 +53,6 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as OfficeGitPolicy from "../office/OfficeGitPolicy.ts";
 import * as OfficeService from "../office/OfficeService.ts";
-import * as ProcessRunner from "../processRunner.ts";
 import * as TreehouseRuntime from "../workspace/treehouseRuntimeLayer.ts";
 import * as TreehouseThreadWorkspaces from "../workspace/TreehouseThreadWorkspaces.ts";
 
@@ -65,12 +64,7 @@ export const layerEventInfrastructure = Layer.mergeAll(
 
 const layerRuntimePolicyProvided = RuntimePolicy.layerWithOfficeGit.pipe(
   Layer.provide(RuntimePolicy.layerFromProjectStore.pipe(Layer.provide(ProjectStore.layer))),
-  Layer.provide(
-    OfficeGitPolicy.layer.pipe(
-      Layer.provide(OfficeService.layer),
-      Layer.provide(ProcessRunner.layer),
-    ),
-  ),
+  Layer.provide(OfficeGitPolicy.runtimeLayer),
 );
 
 const layerEventStoreProvided = EventStore.layerFromOrchestrationEventStore.pipe(

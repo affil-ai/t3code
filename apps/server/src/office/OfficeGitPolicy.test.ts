@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -37,7 +38,11 @@ const withRepository = <A, E>(
       args: ReadonlyArray<string>,
       env?: Readonly<Record<string, string>>,
     ) => Effect.Effect<string, TestGitCommandError | ProcessRunner.ProcessRunError>;
-  }) => Effect.Effect<A, E, OfficeService.OfficeService | OfficeGitPolicy.OfficeGitPolicy>,
+  }) => Effect.Effect<
+    A,
+    E,
+    OfficeService.OfficeService | OfficeGitPolicy.OfficeGitPolicy | SqlClient.SqlClient
+  >,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -92,7 +97,7 @@ const withRepository = <A, E>(
       { mode: 0o700 },
     );
     const officeLayer = OfficeService.layer.pipe(
-      Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" })),
+      Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
     );
     const policyLayer = OfficeGitPolicy.layer.pipe(
       Layer.provideMerge(officeLayer),
@@ -112,6 +117,47 @@ const withRepository = <A, E>(
   );
 
 describe("Office Git identity", () => {
+  it.effect(
+    "terminals follow the active actor and child lineage while another request is queued",
+    () =>
+      withRepository(({ cwd }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const office = yield* OfficeService.OfficeService;
+          const policy = yield* OfficeGitPolicy.OfficeGitPolicy;
+          yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, payload_json TEXT, deleted_at TEXT)`;
+          yield* sql`CREATE TABLE orchestration_v2_projection_runs (run_id TEXT, thread_id TEXT, ordinal INTEGER, status TEXT, payload_json TEXT)`;
+          yield* office.upsertThread({
+            ...entry,
+            request: { messageId, requester: { name: "Vivek", email: "vivek@example.test" } },
+          });
+          const beforeLaunch = yield* policy.environmentForThread({ threadId, cwd });
+          expect(beforeLaunch?.OFFICE_GIT_COAUTHOR).toBe("Vivek <vivek@example.test>");
+          yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${threadId},${JSON.stringify({ lineage: { rootThreadId: threadId }, activeRunId: "active-run" })},NULL)`;
+          yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES ('active-run',${threadId},1,'running',${JSON.stringify({ userMessageId: messageId })})`;
+          yield* office.upsertThread({
+            ...entry,
+            request: {
+              messageId: MessageId.make("queued-request"),
+              requester: { name: "Lilly", email: "lilly@example.test" },
+            },
+          });
+          yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES ('queued-run',${threadId},2,'queued',${JSON.stringify({ userMessageId: "queued-request" })})`;
+          expect((yield* policy.environmentForThread({ threadId, cwd }))?.OFFICE_GIT_COAUTHOR).toBe(
+            "Vivek <vivek@example.test>",
+          );
+          const child = ThreadId.make("child");
+          yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${child},${JSON.stringify({ lineage: { rootThreadId: threadId }, latestRunId: "active-run" })},NULL)`;
+          yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES ('child-run',${child},1,'running',${JSON.stringify({ userMessageId: messageId })})`;
+          expect(
+            (yield* policy.environmentForThread({ threadId: child, cwd }))?.OFFICE_GIT_COAUTHOR,
+          ).toBe("Vivek <vivek@example.test>");
+          expect(
+            yield* policy.environmentForThread({ threadId: ThreadId.make("personal"), cwd }),
+          ).toBeUndefined();
+        }),
+      ),
+  );
   it.effect(
     "uses the bot with the immutable requester, keeps hooks, and leaves personal commits alone",
     () =>

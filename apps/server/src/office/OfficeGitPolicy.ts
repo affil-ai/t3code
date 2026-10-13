@@ -1,4 +1,4 @@
-import { OfficeError, isOfficeError, type MessageId, type ThreadId } from "@t3tools/contracts";
+import { OfficeError, isOfficeError, MessageId, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
 import * as Hex from "effect/encoding/Hex";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -20,6 +21,11 @@ export class OfficeGitPolicy extends Context.Service<
     readonly environmentForMessage: (input: {
       readonly threadId: ThreadId;
       readonly messageId: MessageId;
+      readonly cwd: string;
+    }) => Effect.Effect<Readonly<Record<string, string>> | undefined, OfficeError>;
+    /** Terminals and setup use the active run's actor, including child lineage. */
+    readonly environmentForThread: (input: {
+      readonly threadId: ThreadId;
       readonly cwd: string;
     }) => Effect.Effect<Readonly<Record<string, string>> | undefined, OfficeError>;
   }
@@ -86,6 +92,7 @@ const quoteShellArgument = (value: string) => "'" + value.replaceAll("'", "'\\''
 
 const make = Effect.gen(function* () {
   const office = yield* OfficeService.OfficeService;
+  const sql = yield* SqlClient.SqlClient;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
@@ -152,7 +159,47 @@ const make = Effect.gen(function* () {
     return { originalHooks, hooks, gitBin };
   });
 
-  return OfficeGitPolicy.of({
+  const service: OfficeGitPolicy["Service"] = {
+    environmentForThread: (input) =>
+      Effect.gen(function* () {
+        const threads = yield* sql<{ root_id: string | null; message_id: string | null }>`
+        SELECT json_extract(t.payload_json,'$.lineage.rootThreadId') AS root_id,
+          json_extract(r.payload_json,'$.userMessageId') AS message_id
+        FROM orchestration_v2_projection_threads t
+        LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = (
+          SELECT run_id FROM orchestration_v2_projection_runs
+          WHERE thread_id = t.thread_id AND status != 'queued'
+          ORDER BY CASE WHEN status IN ('preparing','starting','running','waiting') THEN 0 ELSE 1 END,
+            ordinal DESC LIMIT 1)
+        WHERE t.thread_id = ${input.threadId} AND t.deleted_at IS NULL`;
+        const rootThreadId = ThreadId.make(threads[0]?.root_id ?? input.threadId);
+        const groups = yield* sql`SELECT 1 FROM office_thread WHERE thread_id = ${rootThreadId}`;
+        if (groups.length === 0) {
+          if (rootThreadId.startsWith("office:"))
+            return yield* new OfficeError({ message: "Office request identity is unavailable." });
+          return undefined;
+        }
+        // Setup can run before a native run exists. Registration precedes launch.
+        const receipts = threads[0]?.message_id
+          ? []
+          : yield* sql<{ message_id: string }>`
+        SELECT message_id FROM office_git_request WHERE thread_id = ${rootThreadId}
+        ORDER BY rowid DESC LIMIT 1`;
+        const messageId = threads[0]?.message_id ?? receipts[0]?.message_id;
+        if (messageId === undefined)
+          return yield* new OfficeError({ message: "Office request identity is unavailable." });
+        return yield* service.environmentForMessage({
+          ...input,
+          threadId: rootThreadId,
+          messageId: MessageId.make(messageId),
+        });
+      }).pipe(
+        Effect.mapError((cause) =>
+          isOfficeError(cause)
+            ? cause
+            : new OfficeError({ message: "Could not resolve Office terminal identity.", cause }),
+        ),
+      ),
     environmentForMessage: (input) =>
       Effect.gen(function* () {
         const requester = yield* office.requesterForMessage(input);
@@ -212,7 +259,12 @@ const make = Effect.gen(function* () {
             : new OfficeError({ message: "Could not prepare Office Git identity.", cause }),
         ),
       ),
-  });
+  };
+  return OfficeGitPolicy.of(service);
 });
 
 export const layer = Layer.effect(OfficeGitPolicy, make);
+export const runtimeLayer = layer.pipe(
+  Layer.provide(OfficeService.layer),
+  Layer.provide(ProcessRunner.layer),
+);
