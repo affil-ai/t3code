@@ -167,7 +167,17 @@ describe("FirstmateReactor", () => {
         yield* harness.reactor.sweep();
         const sends = yield* Ref.get(harness.sends);
         expect(sends).toHaveLength(1);
-        expect(sends[0]).toMatchObject({ mode: "queue", threadId: coordinatorId });
+        expect(sends[0]).toMatchObject({
+          mode: "queue",
+          threadId: coordinatorId,
+          createdBy: "agent",
+          creationSource: "server",
+          notification: {
+            source: { kind: "monitor" },
+            outcome: "completed",
+            summary: "Firstmate: 1 update — Task one (worker finished)",
+          },
+        });
         expect(sends[0]!.text).toContain(`- ${task.id} Task one: worker-completed`);
         expect(sends[0]!.text).not.toContain("Quiet task");
         expect(sends[0]!.text).toContain("Reconcile with firstmate_task_list");
@@ -180,6 +190,7 @@ describe("FirstmateReactor", () => {
         const after = yield* Ref.get(harness.sends);
         expect(after).toHaveLength(2);
         expect(after[1]!.text).toContain("Task one: worker-failed");
+        expect(after[1]!.notification?.outcome).toBe("failed");
       }),
     ),
   );
@@ -286,4 +297,41 @@ describe("FirstmateReactor", () => {
       }),
     ),
   );
+});
+
+describe("wakeNotification", () => {
+  const wake = (
+    title: string,
+    reason: FirstmateReactor.FirstmateWakeReason,
+    additionalReasons: ReadonlyArray<FirstmateReactor.FirstmateWakeReason> = [],
+  ): FirstmateReactor.FirstmateWake => ({
+    taskId: `task:${title}`,
+    title,
+    reason,
+    additionalReasons,
+  });
+
+  it("names tasks by title, picks the outcome, and folds long lists", () => {
+    const notification = FirstmateReactor.wakeNotification([
+      wake("Office dashboards", "worker-completed"),
+      wake("PDF review", "worker-completed", ["worker-waiting"]),
+      wake("Archived products", "orphan"),
+      wake("Review bot", "wake-time"),
+    ]);
+    expect(notification.outcome).toBe("updated");
+    expect(notification.summary).toBe(
+      "Firstmate: 4 updates — Office dashboards (worker finished), PDF review (worker finished), Archived products (no worker running), and 1 more",
+    );
+    expect(notification.summary).not.toContain("task:");
+    expect(notification.detail).toContain("Firstmate wake-up:");
+  });
+
+  it("reports a failure over any other outcome and shortens long titles", () => {
+    const notification = FirstmateReactor.wakeNotification([
+      wake("A very long task title that goes on well past the limit", "worker-waiting"),
+      wake("Broken", "worker-failed"),
+    ]);
+    expect(notification.outcome).toBe("failed");
+    expect(notification.summary).toContain("A very long task title that goes on wel…");
+  });
 });

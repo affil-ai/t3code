@@ -1,4 +1,9 @@
-import { CommandId, FirstmateError, MessageId } from "@t3tools/contracts";
+import {
+  CommandId,
+  FirstmateError,
+  MessageId,
+  type OrchestrationV2Notification,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -64,6 +69,50 @@ export function wakeDigest(wakes: ReadonlyArray<FirstmateWake>): string {
     "",
     "Reconcile with firstmate_task_list, update every task you touch, and tell the user only about outcomes and decisions.",
   ].join("\n");
+}
+
+const WAKE_REASON_LABELS: Record<FirstmateWakeReason, string> = {
+  "worker-completed": "worker finished",
+  "worker-failed": "worker failed",
+  "worker-interrupted": "worker stopped",
+  "worker-waiting": "worker needs input",
+  "wake-time": "check-in time",
+  orphan: "no worker running",
+};
+
+// Enough to tell the tasks apart in a one-line row; the full digest is the message text.
+const SUMMARY_TASKS = 3;
+const SUMMARY_TITLE_LENGTH = 40;
+
+function shortTitle(title: string): string {
+  return title.length <= SUMMARY_TITLE_LENGTH
+    ? title
+    : `${title.slice(0, SUMMARY_TITLE_LENGTH - 1).trimEnd()}…`;
+}
+
+/**
+ * The compact timeline row for a wake. The coordinator still receives the
+ * full digest as the message text; this is what the user sees.
+ */
+export function wakeNotification(wakes: ReadonlyArray<FirstmateWake>): OrchestrationV2Notification {
+  const reasons = wakes.flatMap((wake) => [wake.reason, ...(wake.additionalReasons ?? [])]);
+  const outcome = reasons.includes("worker-failed")
+    ? "failed"
+    : reasons.includes("worker-waiting")
+      ? "updated"
+      : "completed";
+  const items = wakes
+    .slice(0, SUMMARY_TASKS)
+    .map((wake) => `${shortTitle(wake.title)} (${WAKE_REASON_LABELS[wake.reason]})`);
+  const more = wakes.length - items.length;
+  const count = wakes.length === 1 ? "1 update" : `${wakes.length} updates`;
+  return {
+    source: { kind: "monitor" },
+    outcome,
+    summary: `Firstmate: ${count} — ${items.join(", ")}${more > 0 ? `, and ${more} more` : ""}`,
+    // Expanding the row shows the same digest the coordinator received.
+    detail: wakeDigest(wakes),
+  };
 }
 
 export class FirstmateReactor extends Context.Service<
@@ -169,9 +218,12 @@ const make = Effect.gen(function* () {
             threadId: target,
             messageId: MessageId.make(`firstmate:wake-message:${wakeId}`),
             text: wakeDigest(wakes),
+            // A notification is an automatic wake: a compact row in the timeline,
+            // hidden from the queue, and it does not keep the thread from settling.
+            notification: wakeNotification(wakes),
             attachments: [],
             mode: "queue",
-            createdBy: "system",
+            createdBy: "agent",
             creationSource: "server",
           });
         }
