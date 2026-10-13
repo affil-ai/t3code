@@ -17,7 +17,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { resolveStorage } from "./lib/storage";
 import { randomUUID } from "./lib/utils";
 
-export type AppMode = "code" | "work";
+export type AppMode = "code" | "work" | "office";
 
 export interface WorkFolder {
   id: string;
@@ -323,7 +323,7 @@ export function sanitizePersistedData(value: unknown): WorkModeData {
         )
       : {};
   return {
-    mode: raw.mode === "work" ? "work" : "code",
+    mode: raw.mode === "work" || raw.mode === "office" ? raw.mode : "code",
     folders,
     threadFolderByKey,
     collapsedFolderIds: Array.isArray(raw.collapsedFolderIds)
@@ -469,7 +469,7 @@ export function useAppMode(): AppMode {
 }
 
 export function useIsWorkMode(): boolean {
-  return useWorkModeStore((state) => state.mode === "work");
+  return useWorkModeStore((state) => state.mode === "work" || state.mode === "office");
 }
 
 /** Non-reactive read for event handlers that should not re-subscribe on mode changes. */

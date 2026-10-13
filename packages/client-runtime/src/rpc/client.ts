@@ -8,6 +8,7 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import { FIRSTMATE_WS_METHODS } from "@t3tools/contracts"; // fork: firstmate
+import { OFFICE_WS_METHODS } from "@t3tools/contracts"; // fork: office
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -50,6 +51,7 @@ type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 
 export type EnvironmentSubscriptionRpcTag =
   | typeof FIRSTMATE_WS_METHODS.firstmateSubscribe // fork: firstmate
+  | typeof OFFICE_WS_METHODS.subscribe // fork: office
   | typeof WS_METHODS.codexAuthCallbackSubscribe
   | typeof WS_METHODS.providerAuthSubscribe
   | typeof WS_METHODS.providerInstallSubscribe

@@ -7,6 +7,7 @@ import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 
 import { rpcRequestDuration, rpcRequestsTotal, withMetrics } from "./Metrics.ts";
 import { FIRSTMATE_RPC_AGGREGATES } from "../firstmate/rpc.ts"; // fork: firstmate
+import { OFFICE_RPC_AGGREGATES } from "../office/rpc.ts"; // fork: office
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
@@ -88,6 +89,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.scheduledTasksList]: "scheduledTasks",
   [WS_METHODS.scheduledTasksSubscribe]: "scheduledTasks",
   ...FIRSTMATE_RPC_AGGREGATES, // fork: firstmate
+  ...OFFICE_RPC_AGGREGATES, // fork: office
   [WS_METHODS.scheduledTasksUpsert]: "scheduledTasks",
   [WS_METHODS.scheduledTasksSetEnabled]: "scheduledTasks",
   [WS_METHODS.scheduledTasksDelete]: "scheduledTasks",

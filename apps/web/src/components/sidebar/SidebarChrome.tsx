@@ -95,6 +95,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
 const APP_MODE_OPTIONS = [
   { mode: "code", label: "Code", description: "Projects, terminals, and Git" },
   { mode: "work", label: "Work", description: "Projects and chats" },
+  { mode: "office", label: "Office", description: "Office chats by Slack channel" },
 ] as const satisfies ReadonlyArray<{
   mode: AppMode;
   label: string;

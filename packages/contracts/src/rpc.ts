@@ -348,6 +348,7 @@ import {
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
 import { FirstmateRpcs } from "./firstmate.ts"; // fork: firstmate
+import { OfficeRpcs } from "./office.ts"; // fork: office
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   ProjectCloneActionInput,
@@ -1938,6 +1939,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   ...FirstmateRpcs, // fork: firstmate
+  ...OfficeRpcs, // fork: office
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,

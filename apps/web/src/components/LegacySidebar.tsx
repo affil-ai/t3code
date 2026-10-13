@@ -225,7 +225,7 @@ import {
 import type { SidebarThreadSummary } from "../types";
 import {
   buildWorkFolderTree,
-  useIsWorkMode,
+  useAppMode,
   useWorkModeStore,
   type WorkFolderNode,
 } from "../workModeStore";
@@ -249,6 +249,8 @@ import {
 } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { FirstmateSidebarLink } from "./firstmate/FirstmateSidebarLink"; // fork: firstmate
+import { useOfficeThreads } from "../state/office"; // fork: office
+import { officeFolders } from "./work/officeGroups"; // fork: office
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -459,7 +461,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     return () => window.removeEventListener("dragend", clearFileDrag);
   }, [isFileDragOver]);
   const { leaseLiveStatus, rowRef } = useSidebarRowSubscriptionLease(isActive);
-  const isWorkMode = useIsWorkMode();
+  const appMode = useAppMode();
+  const isWorkMode = appMode !== "code";
   // Work mode: drag rows between projects, Chats, and folders. A selected row
   // carries the whole selection.
   const handleWorkDragStart = useCallback(
@@ -987,8 +990,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       className="w-full"
       data-thread-item
       {...fileDropHandlers}
-      draggable={isWorkMode && renamingThreadKey !== threadKey}
-      onDragStart={isWorkMode ? handleWorkDragStart : undefined}
+      draggable={appMode === "work" && renamingThreadKey !== threadKey}
+      onDragStart={appMode === "work" ? handleWorkDragStart : undefined}
       onMouseLeave={handleMouseLeave}
       onBlurCapture={handleBlurCapture}
     >
@@ -3382,9 +3385,25 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
     collapseThreadListForProject,
     resolveLogicalProjectKey,
   } = props;
-  const threads = useThreadShells();
+  const isOffice = useAppMode() === "office";
+  const officeMetadata = useOfficeThreads();
+  const allThreads = useThreadShells();
+  const officeGrouping = useMemo(() => officeFolders(officeMetadata), [officeMetadata]);
+  const officeKeys = useMemo(
+    () => new Set(Object.keys(officeGrouping.threadFolderByKey)),
+    [officeGrouping],
+  );
+  const threads = useMemo(
+    () =>
+      allThreads.filter(
+        (thread) =>
+          officeKeys.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))) ===
+          isOffice,
+      ),
+    [allThreads, officeKeys, isOffice],
+  );
   const repositoryProjects = useProjects();
-  const { folders, threadFolderByKey, collapsedFolderIds, editingFolderId } = useWorkModeStore(
+  const workState = useWorkModeStore(
     useShallow((state) => ({
       folders: state.folders,
       threadFolderByKey: state.threadFolderByKey,
@@ -3392,6 +3411,10 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
       editingFolderId: state.editingFolderId,
     })),
   );
+  const [officeCollapsedIds, setOfficeCollapsedIds] = useState<readonly string[]>([]);
+  const { folders, threadFolderByKey } = isOffice ? officeGrouping : workState;
+  const collapsedFolderIds = isOffice ? officeCollapsedIds : workState.collapsedFolderIds;
+  const editingFolderId = isOffice ? null : workState.editingFolderId;
   const pinnedThreadKeys = useWorkPinnedStore((state) => state.pinnedThreadKeys);
   const threadSortOrder = useClientSettings<SidebarThreadSortOrder>(
     (settings) => settings.sidebarThreadSortOrder,
@@ -3559,59 +3582,62 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
   );
 
   const dropHandlers = useCallback(
-    (target: WorkDropTarget) => ({
-      onDragOver: (event: React.DragEvent<HTMLElement>) => {
-        if (isWorkProjectDrag(event.dataTransfer)) {
-          if (target.projectId === null) return;
-          event.preventDefault();
-          event.stopPropagation();
-          event.dataTransfer.dropEffect = "move";
-          const reorder = resolveDropPosition(
-            event.clientY,
-            event.currentTarget.getBoundingClientRect(),
-          );
-          setDropTarget((current) =>
-            current?.projectId === target.projectId && current.reorder === reorder
-              ? current
-              : { projectId: target.projectId, reorder },
-          );
-          return;
-        }
-        if (!isWorkThreadDrag(event.dataTransfer)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.dataTransfer.dropEffect = "move";
-        setDropTarget((current) =>
-          current?.projectId === target.projectId && current.reorder === undefined
-            ? current
-            : target,
-        );
-      },
-      onDrop: (event: React.DragEvent<HTMLElement>) => {
-        const draggedProjectId = event.dataTransfer.getData(WORK_PROJECT_DRAG_TYPE);
-        if (draggedProjectId) {
-          if (target.projectId === null) return;
-          event.preventDefault();
-          event.stopPropagation();
-          setDropTarget(null);
-          useWorkModeStore
-            .getState()
-            .reorderFolder(
-              draggedProjectId,
-              target.projectId,
-              resolveDropPosition(event.clientY, event.currentTarget.getBoundingClientRect()),
-            );
-          return;
-        }
-        const threadKeys = readWorkThreadDrag(event.dataTransfer);
-        if (!threadKeys) return;
-        event.preventDefault();
-        event.stopPropagation();
-        setDropTarget(null);
-        useWorkModeStore.getState().fileThreads(threadKeys, target.projectId);
-      },
-    }),
-    [],
+    (target: WorkDropTarget) =>
+      isOffice
+        ? {}
+        : {
+            onDragOver: (event: React.DragEvent<HTMLElement>) => {
+              if (isWorkProjectDrag(event.dataTransfer)) {
+                if (target.projectId === null) return;
+                event.preventDefault();
+                event.stopPropagation();
+                event.dataTransfer.dropEffect = "move";
+                const reorder = resolveDropPosition(
+                  event.clientY,
+                  event.currentTarget.getBoundingClientRect(),
+                );
+                setDropTarget((current) =>
+                  current?.projectId === target.projectId && current.reorder === reorder
+                    ? current
+                    : { projectId: target.projectId, reorder },
+                );
+                return;
+              }
+              if (!isWorkThreadDrag(event.dataTransfer)) return;
+              event.preventDefault();
+              event.stopPropagation();
+              event.dataTransfer.dropEffect = "move";
+              setDropTarget((current) =>
+                current?.projectId === target.projectId && current.reorder === undefined
+                  ? current
+                  : target,
+              );
+            },
+            onDrop: (event: React.DragEvent<HTMLElement>) => {
+              const draggedProjectId = event.dataTransfer.getData(WORK_PROJECT_DRAG_TYPE);
+              if (draggedProjectId) {
+                if (target.projectId === null) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setDropTarget(null);
+                useWorkModeStore
+                  .getState()
+                  .reorderFolder(
+                    draggedProjectId,
+                    target.projectId,
+                    resolveDropPosition(event.clientY, event.currentTarget.getBoundingClientRect()),
+                  );
+                return;
+              }
+              const threadKeys = readWorkThreadDrag(event.dataTransfer);
+              if (!threadKeys) return;
+              event.preventDefault();
+              event.stopPropagation();
+              setDropTarget(null);
+              useWorkModeStore.getState().fileThreads(threadKeys, target.projectId);
+            },
+          },
+    [isOffice],
   );
 
   const renderThreadList = (
@@ -3697,7 +3723,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
         >
           <div
             className="group/project-header relative"
-            draggable={editingFolderId !== folder.id}
+            draggable={!isOffice && editingFolderId !== folder.id}
             onDragStart={(event) => {
               event.stopPropagation();
               event.dataTransfer.effectAllowed = "move";
@@ -3719,11 +3745,22 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
             ) : (
               <SidebarMenuButton
                 style={indentStyle}
-                onClick={() => useWorkModeStore.getState().setFolderCollapsed(folder.id, expanded)}
-                onDoubleClick={() => useWorkModeStore.getState().setEditingFolderId(folder.id)}
+                onClick={() => {
+                  if (isOffice)
+                    setOfficeCollapsedIds((ids) =>
+                      expanded ? [...ids, folder.id] : ids.filter((id) => id !== folder.id),
+                    );
+                  else useWorkModeStore.getState().setFolderCollapsed(folder.id, expanded);
+                }}
+                onDoubleClick={
+                  isOffice
+                    ? undefined
+                    : () => useWorkModeStore.getState().setEditingFolderId(folder.id)
+                }
                 onContextMenu={(event) => {
                   event.preventDefault();
-                  handleProjectContextMenu(node, { x: event.clientX, y: event.clientY });
+                  if (!isOffice)
+                    handleProjectContextMenu(node, { x: event.clientX, y: event.clientY });
                 }}
               >
                 {/* Leaves room for the new-chat action at the end of the row. */}
@@ -3742,7 +3779,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
                 </span>
               </SidebarMenuButton>
             )}
-            {editingFolderId !== folder.id ? (
+            {!isOffice && editingFolderId !== folder.id ? (
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -3773,7 +3810,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
           ) : null}
           <div style={{ paddingLeft: `${node.depth * WORK_PROJECT_INDENT_PX}px` }}>
             {renderThreadList(
-              `work-project:${folder.id}`,
+              `${isOffice ? "office" : "work"}-project:${folder.id}`,
               groups.byProjectId.get(folder.id) ?? [],
               expanded,
             )}
@@ -3801,62 +3838,72 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
       ) : null}
       <SidebarGroup data-testid="work-projects-section">
         <div className="group/section-header mb-1 flex items-center justify-between pl-2 pr-1.5">
-          <span className="text-xs font-medium text-sidebar-muted-foreground/80">Projects</span>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="icon-xs"
-                  variant="ghost-muted"
-                  aria-label="New project"
-                  className={WORK_SECTION_HEADER_ACTION_CLASS}
-                  onClick={createProject}
-                />
-              }
-            >
-              <FolderPlusIcon className="size-3.5" />
-            </TooltipTrigger>
-            <TooltipPopup side="right">New project</TooltipPopup>
-          </Tooltip>
-        </div>
-        <SidebarMenu>{projectTree.map(renderProject)}</SidebarMenu>
-        {projectTree.length === 0 ? (
-          <div className="px-2 pt-2 text-center text-secondary-label text-xs">
-            Create a project and drag chats into it
-          </div>
-        ) : null}
-      </SidebarGroup>
-      <SidebarGroup data-testid="work-chats-section" {...dropHandlers({ projectId: null })}>
-        <div
-          className={cn(
-            "rounded-md transition-colors",
-            isChatsDropTarget && "bg-sidebar-row-hover/60",
-          )}
-        >
-          <div className="group/section-header mb-1 flex items-center justify-between pl-2 pr-1.5">
-            <span className="text-xs font-medium text-sidebar-muted-foreground/80">Chats</span>
+          <span className="text-xs font-medium text-sidebar-muted-foreground/80">
+            {isOffice ? "Channels" : "Projects"}
+          </span>
+          {!isOffice ? (
             <Tooltip>
               <TooltipTrigger
                 render={
                   <Button
                     size="icon-xs"
                     variant="ghost-muted"
-                    aria-label="New chat"
+                    aria-label="New project"
                     className={WORK_SECTION_HEADER_ACTION_CLASS}
-                    onClick={(event) => createChat(null, { x: event.clientX, y: event.clientY })}
+                    onClick={createProject}
                   />
                 }
               >
-                <SquarePenIcon className="size-3.5" />
+                <FolderPlusIcon className="size-3.5" />
               </TooltipTrigger>
-              <TooltipPopup side="right">New chat</TooltipPopup>
+              <TooltipPopup side="right">New project</TooltipPopup>
             </Tooltip>
-          </div>
-          <SidebarMenu>
-            <SidebarMenuItem>{renderThreadList("work-chats", groups.chats, true)}</SidebarMenuItem>
-          </SidebarMenu>
+          ) : null}
         </div>
+        <SidebarMenu>{projectTree.map(renderProject)}</SidebarMenu>
+        {projectTree.length === 0 ? (
+          <div className="px-2 pt-2 text-center text-secondary-label text-xs">
+            {isOffice
+              ? "Office chats will appear here when the Office worker connects."
+              : "Create a project and drag chats into it"}
+          </div>
+        ) : null}
       </SidebarGroup>
+      {!isOffice ? (
+        <SidebarGroup data-testid="work-chats-section" {...dropHandlers({ projectId: null })}>
+          <div
+            className={cn(
+              "rounded-md transition-colors",
+              isChatsDropTarget && "bg-sidebar-row-hover/60",
+            )}
+          >
+            <div className="group/section-header mb-1 flex items-center justify-between pl-2 pr-1.5">
+              <span className="text-xs font-medium text-sidebar-muted-foreground/80">Chats</span>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      size="icon-xs"
+                      variant="ghost-muted"
+                      aria-label="New chat"
+                      className={WORK_SECTION_HEADER_ACTION_CLASS}
+                      onClick={(event) => createChat(null, { x: event.clientX, y: event.clientY })}
+                    />
+                  }
+                >
+                  <SquarePenIcon className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipPopup side="right">New chat</TooltipPopup>
+              </Tooltip>
+            </div>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                {renderThreadList("work-chats", groups.chats, true)}
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </div>
+        </SidebarGroup>
+      ) : null}
     </>
   );
 });
@@ -3938,7 +3985,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     projectsLength,
     resolveLogicalProjectKey,
   } = props;
-  const isWorkMode = useIsWorkMode();
+  const appMode = useAppMode();
+  const isWorkMode = appMode !== "code";
 
   const handleProjectSortOrderChange = useCallback(
     (sortOrder: SidebarProjectSortOrder) => {
@@ -3976,7 +4024,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               </CommandDialogTrigger>
             </SidebarMenuItem>
           </SidebarMenu>
-          {isWorkMode ? <FirstmateSidebarLink /> : null /* fork: firstmate */}
+          {
+            useWorkModeStore.getState().mode === "work" ? (
+              <FirstmateSidebarLink />
+            ) : null /* fork: firstmate */
+          }
         </SidebarGroup>
       }
     >

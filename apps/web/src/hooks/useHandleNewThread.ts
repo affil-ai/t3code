@@ -1,3 +1,4 @@
+import { leaveOfficeForPersonalChat } from "../components/work/officeGroups"; // fork: office
 import { useAtomValue } from "@effect/atom-react";
 import {
   scopedProjectKey,
@@ -83,6 +84,7 @@ export function useNewThreadHandler() {
       // prepared checkout, a task to write — addresses that one rather than looking the project
       // up again and finding whichever draft it happens to hold.
     ): Promise<{ draftId: DraftId; threadId: ThreadId } | null> => {
+      leaveOfficeForPersonalChat(); // fork: office
       const projects = readProjects();
       const targetServerSettings =
         environmentServerConfigs.get(projectRef.environmentId)?.settings ?? DEFAULT_SERVER_SETTINGS;
