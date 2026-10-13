@@ -89,7 +89,7 @@ import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { releaseProjectDraftUploads } from "../lib/composerDraftUploads";
 import { isTerminalFocused } from "../lib/terminalFocus";
-import { cn, isMacPlatform } from "../lib/utils";
+import { cn, isMacPlatform, newThreadId } from "../lib/utils";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import {
@@ -97,6 +97,7 @@ import {
   useProjects,
   useThreadShells,
   useThreadShellsForProjectRefs,
+  waitForThreadShell,
 } from "../state/entities";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
@@ -270,6 +271,10 @@ const SIDEBAR_ICON_ACTION_BUTTON_CLASS =
   "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-0.75 text-icon-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
 // Work rows swap the status icon for archive in place, so the button takes the
 // status icon's 16px box; the pseudo-element keeps a 24px hit area.
+// Work section header actions (New project, New chat) show on hover or focus on
+// desktop and stay visible on touch screens, which have no hover.
+const WORK_SECTION_HEADER_ACTION_CLASS =
+  "opacity-0 transition-opacity duration-150 focus-visible:opacity-100 group-hover/section-header:opacity-100 pointer-coarse:opacity-100";
 const WORK_ARCHIVE_BUTTON_CLASS =
   "relative inline-flex size-4 cursor-pointer items-center justify-center rounded-sm text-icon-muted before:absolute before:-inset-1 before:content-[''] hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
 
@@ -1392,6 +1397,7 @@ function useSidebarThreadRowController(input: SidebarThreadRowControllerInput) {
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const forkThread = useAtomCommand(threadEnvironment.forkFromRun, { reportFailure: false });
   const router = useRouter();
   const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
   const clearPendingFileDrop = useSidebarPendingFileDropStore((s) => s.clearPendingFileDrop);
@@ -1791,7 +1797,8 @@ function useSidebarThreadRowController(input: SidebarThreadRowControllerInput) {
           ...(thread.branch
             ? [{ id: "new-thread-on-branch", label: `New thread on ${thread.branch}` }]
             : []),
-          { id: "rename", label: "Rename thread", separatorBefore: workItems.length > 0 },
+          { id: "fork", label: "Fork chat", separatorBefore: workItems.length > 0 },
+          { id: "rename", label: "Rename thread" },
           { id: "mark-unread", label: "Mark unread" },
           { id: "copy-path", label: "Copy Path" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
@@ -1834,6 +1841,39 @@ function useSidebarThreadRowController(input: SidebarThreadRowControllerInput) {
               description: error instanceof Error ? error.message : "An error occurred.",
             }),
           );
+        }
+        return;
+      }
+
+      if (clicked === "fork") {
+        // Forks after the latest finished response, like the per-response fork
+        // button in the timeline, then opens the new chat.
+        const targetThreadRef = scopeThreadRef(thread.environmentId, newThreadId());
+        const result = await forkThread({
+          environmentId: thread.environmentId,
+          input: {
+            sourceThreadId: thread.id,
+            targetThreadId: targetThreadRef.threadId,
+            title: `${thread.title} fork`,
+          },
+        });
+        if (result._tag === "Failure") {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not fork chat",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+          return;
+        }
+        if (isMobile) setOpenMobile(false);
+        if (await waitForThreadShell(targetThreadRef)) {
+          void router.navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(targetThreadRef),
+          });
         }
         return;
       }
@@ -1897,6 +1937,7 @@ function useSidebarThreadRowController(input: SidebarThreadRowControllerInput) {
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,
+      forkThread,
       handleNewThread,
       isMobile,
       markThreadUnread,
@@ -3746,7 +3787,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
   return (
     <>
       {groups.pinned.length > 0 ? (
-        <SidebarGroup data-testid="work-pinned-section">
+        <SidebarGroup data-testid="work-pinned-section" className="pb-3">
           <div className="mb-1 flex h-6 items-center pl-2 pr-1.5">
             <span className="text-xs font-medium text-sidebar-muted-foreground/80">Pinned</span>
           </div>
@@ -3758,7 +3799,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
         </SidebarGroup>
       ) : null}
       <SidebarGroup data-testid="work-projects-section">
-        <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
+        <div className="group/section-header mb-1 flex items-center justify-between pl-2 pr-1.5">
           <span className="text-xs font-medium text-sidebar-muted-foreground/80">Projects</span>
           <Tooltip>
             <TooltipTrigger
@@ -3767,6 +3808,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
                   size="icon-xs"
                   variant="ghost-muted"
                   aria-label="New project"
+                  className={WORK_SECTION_HEADER_ACTION_CLASS}
                   onClick={createProject}
                 />
               }
@@ -3790,7 +3832,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
             isChatsDropTarget && "bg-sidebar-row-hover/60",
           )}
         >
-          <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
+          <div className="group/section-header mb-1 flex items-center justify-between pl-2 pr-1.5">
             <span className="text-xs font-medium text-sidebar-muted-foreground/80">Chats</span>
             <Tooltip>
               <TooltipTrigger
@@ -3799,6 +3841,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
                     size="icon-xs"
                     variant="ghost-muted"
                     aria-label="New chat"
+                    className={WORK_SECTION_HEADER_ACTION_CLASS}
                     onClick={(event) => createChat(null, { x: event.clientX, y: event.clientY })}
                   />
                 }
