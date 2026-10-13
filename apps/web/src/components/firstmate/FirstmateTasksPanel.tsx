@@ -228,9 +228,6 @@ function TaskCard({
         >
           {task.title}
         </p>
-        {task.note.trim().length > 0 ? (
-          <p className="mt-0.5 line-clamp-2 text-xs leading-4 text-muted-foreground">{task.note}</p>
-        ) : null}
         <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground/80">
           {task.workerThreadId !== null ? (
             <>
@@ -617,9 +614,6 @@ function TaskDetail({
             <span>{taskStatusLabel(task)}</span>
           </div>
           <h3 className="text-base leading-6 font-semibold text-foreground">{task.title}</h3>
-          {task.note.trim().length > 0 ? (
-            <p className="text-sm text-muted-foreground">{task.note}</p>
-          ) : null}
         </header>
         <DetailSection title="What you asked">
           <DetailText>{task.intent}</DetailText>
