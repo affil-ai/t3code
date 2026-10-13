@@ -129,6 +129,16 @@ describe("Firstmate task contracts", () => {
     ).toEqual({ taskId: task.id, summary: "Waiting for the user.", state: "waiting" });
   });
 
+  it("accepts ready as an update state without close evidence", () => {
+    expect(
+      decodeUpdate({ taskId: task.id, summary: "Reviewed and green.", state: "ready" }),
+    ).toEqual({
+      taskId: task.id,
+      summary: "Reviewed and green.",
+      state: "ready",
+    });
+  });
+
   it("keeps reactor bookkeeping out of the public task model", () => {
     const stored = decodeStored({
       ...task,

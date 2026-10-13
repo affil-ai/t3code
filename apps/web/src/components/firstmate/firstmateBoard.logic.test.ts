@@ -12,7 +12,7 @@ import {
   type FirstmateColumnId,
 } from "./firstmateBoard.logic";
 
-const STATES = ["open", "waiting", "done", "dropped"] as const;
+const STATES = ["open", "waiting", "ready", "done", "dropped"] as const;
 const ACTORS = ["coordinator", "worker", "user", "external"] as const;
 
 function task(
@@ -52,6 +52,7 @@ describe("firstmateColumnForTask", () => {
       coordinator: "in-progress",
       external: "in-review",
     },
+    ready: { user: "ready", worker: "ready", coordinator: "ready", external: "ready" },
     waiting: {
       user: "needs-you",
       worker: "in-review",
@@ -78,6 +79,10 @@ describe("firstmateColumnForTask", () => {
     expect(firstmateColumnForTask(task("t", "waiting", "user"))).toBe("needs-you");
   });
 
+  it("keeps a ready task out of Needs you even when the user acts next", () => {
+    expect(firstmateColumnForTask(task("t", "ready", "user"))).toBe("ready");
+  });
+
   it("moves a blocked worker out of In progress", () => {
     expect(firstmateColumnForTask(task("t", "waiting", "worker"))).toBe("in-review");
   });
@@ -99,6 +104,15 @@ describe("mapFirstmateBoard", () => {
     expect(mapFirstmateBoard([older, newer])["needs-you"].map((t) => t.id)).toEqual([
       "newer",
       "older",
+    ]);
+  });
+
+  it("sorts ready tasks newest first", () => {
+    const newer = task("ready-newer", "ready", "user", "2026-10-12T12:00:00.000Z");
+    const older = task("ready-older", "ready", "worker", "2026-10-12T11:00:00.000Z");
+    expect(mapFirstmateBoard([older, newer]).ready.map((t) => t.id)).toEqual([
+      "ready-newer",
+      "ready-older",
     ]);
   });
 
@@ -126,14 +140,15 @@ describe("counts", () => {
     task("b", "waiting", "user"),
     task("c", "open", "worker"),
     task("d", "done", "user"),
+    task("e", "ready", "user"),
   ];
 
-  it("counts what needs the user", () => {
+  it("counts what needs the user, leaving out ready tasks", () => {
     expect(countFirstmateNeedsYou(tasks)).toBe(2);
   });
 
   it("counts tasks that are not closed", () => {
-    expect(countFirstmateOpenTasks(tasks)).toBe(3);
+    expect(countFirstmateOpenTasks(tasks)).toBe(4);
   });
 });
 

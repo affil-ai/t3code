@@ -28,8 +28,11 @@ export type FirstmateTaskEventId = typeof FirstmateTaskEventId.Type;
  * `waiting` means in review: the work is ready and waits on reviewers (Devin,
  * the Office reviewer, a teammate) or on checks. The board shows it as
  * "In review".
+ *
+ * `ready` means reviewed with checks green, waiting only on the user to merge
+ * or deploy. The board shows it as "Ready for deployment".
  */
-export const FirstmateTaskState = Schema.Literals(["open", "waiting", "done", "dropped"]);
+export const FirstmateTaskState = Schema.Literals(["open", "waiting", "ready", "done", "dropped"]);
 export type FirstmateTaskState = typeof FirstmateTaskState.Type;
 
 export const FirstmateNextActor = Schema.Literals(["coordinator", "worker", "user", "external"]);

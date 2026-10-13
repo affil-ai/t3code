@@ -65,7 +65,7 @@ const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
 const FirstmateTaskUpdateTool = Tool.make("firstmate_task_update", {
   ...shared,
   description:
-    "Partially update a Firstmate task and append an event. Only the configured Firstmate coordinator may update tasks. Closing requires closeEvidence.",
+    "Partially update a Firstmate task and append an event. Only the configured Firstmate coordinator may update tasks. Closing requires closeEvidence. Set state waiting while a PR waits on reviews or checks, and ready once it is reviewed and green and only the user's merge or deploy remains; put the PR in links or artifacts.",
   parameters: FirstmateTaskUpdateInput,
   success: FirstmateTaskMutationResult,
 })

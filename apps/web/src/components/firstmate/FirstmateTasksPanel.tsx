@@ -1,7 +1,7 @@
 /**
  * Firstmate's Tasks panel, a right-panel surface beside the coordinator chat.
- * Tasks stack in sections (Needs you, In progress, In review, and a folded
- * Done), newest activity first. It is read-only: the user changes tasks by
+ * Tasks stack in sections (Needs you, Ready for deployment, In progress,
+ * In review, and a folded Done), newest activity first. It is read-only: the user changes tasks by
  * talking to the chat. A card drills into the task's intent, definition of
  * done, evidence, links, and event log, with a back button to the list.
  */
@@ -62,6 +62,7 @@ const CoordinatorThreadContext = createContext<ThreadId | null>(null);
 
 const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
   "needs-you": "Needs you",
+  ready: "Ready for deployment",
   "in-progress": "In progress",
   "in-review": "In review",
   done: "Done",
@@ -69,6 +70,7 @@ const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
 
 const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = {
   "needs-you": "Nothing needs you",
+  ready: "Nothing ready to deploy",
   "in-progress": "Nothing in progress",
   "in-review": "Nothing in review",
 };
@@ -76,6 +78,7 @@ const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = {
 /** A small dot per column; it is the board's only color. */
 const COLUMN_DOT: Record<FirstmateColumnId, string> = {
   "needs-you": "bg-warning",
+  ready: "bg-success",
   "in-progress": "bg-info",
   "in-review": "bg-muted-foreground/60",
   done: "bg-muted-foreground/30",
@@ -396,7 +399,7 @@ function TaskSections({
   return (
     <ScrollArea className="min-h-0 flex-1" scrollFade>
       <div className="flex flex-col gap-3 px-2 pt-1 pb-4">
-        {(["needs-you", "in-progress", "in-review"] as const).map((column) => (
+        {(["needs-you", "ready", "in-progress", "in-review"] as const).map((column) => (
           <ActiveSection
             key={column}
             column={column}
