@@ -4,6 +4,7 @@ import {
   formatReadToolLabel,
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
+import type { MessageId } from "@t3tools/contracts";
 import { field, text } from "../unknownField.ts";
 import { readWorkflowAgentAnswers } from "../workflowAgentAnswers.ts";
 import {
@@ -1851,6 +1852,7 @@ export function claudeEffectiveQueryPolicyKey(
     readonly allowedTools?: ReadonlyArray<string>;
     readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   },
+  executionEnvironment?: ProviderAdapter.ProviderAdapterV2RuntimePolicy["executionEnvironment"],
 ): string {
   return JSON.stringify({
     runtimePolicy: claudeRuntimeQueryPolicyKey({
@@ -1860,6 +1862,7 @@ export function claudeEffectiveQueryPolicyKey(
         : { allowedTools: mcpOverrides.allowedTools }),
     }),
     mcpServers: mcpOverrides.mcpServers,
+    executionEnvironment,
   });
 }
 
@@ -3511,7 +3514,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const lastTurnRouteByNativeThread = yield* Ref.make(
           new Map<
             string,
-            { readonly threadId: ThreadId; readonly providerThreadId: ProviderThreadId }
+            {
+              readonly threadId: ThreadId;
+              readonly providerThreadId: ProviderThreadId;
+              readonly messageId: MessageId;
+            }
           >(),
         );
         // Authoritative + incremental background-task roster for post-settle
@@ -6434,6 +6441,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           yield* continuationRequests.offer({
             threadId: route.threadId,
+            originMessageId: route.messageId,
             providerThreadId: route.providerThreadId,
             driver: CLAUDE_PROVIDER,
             detail,
@@ -8270,7 +8278,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey = claudeEffectiveQueryPolicyKey(
+            queryPolicy,
+            mcpOverrides,
+            turnInput.runtimePolicy.executionEnvironment,
+          );
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
@@ -8347,7 +8359,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
             settings: adapterOptions.settings,
-            environment: adapterOptions.environment,
+            environment: {
+              ...adapterOptions.environment,
+              ...turnInput.runtimePolicy.executionEnvironment,
+            },
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...(mcpOverrides.allowedTools === undefined
               ? {}
@@ -8512,14 +8527,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 detail: `Claude provider turn ${currentTurn.providerTurnId} is still active.`,
               });
             }
-            yield* Ref.update(lastTurnRouteByNativeThread, (current) => {
-              const updated = new Map(current);
-              updated.set(nativeThreadId, {
-                threadId: turnInput.threadId,
-                providerThreadId: turnInput.providerThread.id,
-              });
-              return updated;
-            });
             yield* rememberProviderThread(turnInput.providerThread);
             if (!goalsByNativeThread.has(nativeThreadId)) {
               goalsByNativeThread.set(nativeThreadId, turnInput.providerThread.goal ?? null);
@@ -8582,6 +8589,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     uuid: promptUuid,
                   });
             const querySession = yield* openQuery(turnInput, nativeThreadId);
+            // A refused new requester must not reattribute the old process's wake.
+            yield* Ref.update(lastTurnRouteByNativeThread, (current) => {
+              const updated = new Map(current);
+              updated.set(nativeThreadId, {
+                threadId: turnInput.threadId,
+                providerThreadId: turnInput.providerThread.id,
+                messageId: turnInput.message.messageId,
+              });
+              return updated;
+            });
             const attachTurn = Effect.gen(function* () {
               querySession.lastTurn = context;
               yield* Ref.set(activeTurn, context);
@@ -9214,7 +9231,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 options: forkOptions,
                 threadId: forkInput.targetThreadId,
                 providerSessionId: input.providerSessionId,
-                environment: adapterOptions.environment,
+                environment: {
+                  ...adapterOptions.environment,
+                  ...forkInput.runtimePolicy?.executionEnvironment,
+                },
               });
               yield* Ref.update(openedNativeThreads, (current) => {
                 const updated = new Set(current);

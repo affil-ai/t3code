@@ -30,6 +30,44 @@ const read = (service: OfficeService["Service"]) =>
   service.subscribe().pipe(Stream.runHead, Effect.map(Option.getOrThrow));
 
 describe("OfficeService", () => {
+  it.effect(
+    "keeps a background continuation with its original requester after a newer request",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* OfficeService;
+        yield* service.upsertThread(registration);
+        const newer = {
+          messageId: MessageId.make("newer-request"),
+          requester: { name: "Lilly", email: "lilly@example.test" },
+        };
+        yield* service.upsertThread({ ...registration, request: newer });
+        const wake = MessageId.make("background-wake");
+        yield* service.inheritRequester({
+          threadId: entry.threadId,
+          sourceMessageId: request.messageId,
+          messageId: wake,
+        });
+        yield* service.inheritRequester({
+          threadId: entry.threadId,
+          sourceMessageId: request.messageId,
+          messageId: wake,
+        });
+        expect(
+          yield* service.requesterForMessage({ threadId: entry.threadId, messageId: wake }),
+        ).toEqual(request.requester);
+        const changed = yield* service
+          .inheritRequester({
+            threadId: entry.threadId,
+            sourceMessageId: newer.messageId,
+            messageId: wake,
+          })
+          .pipe(Effect.flip);
+        expect(changed.message).toBe("Office request identity changed.");
+        expect(
+          yield* service.requesterForMessage({ threadId: entry.threadId, messageId: wake }),
+        ).toEqual(request.requester);
+      }).pipe(Effect.provide(testLayer)),
+  );
   it.effect("keeps each message's requester when another person posts in the same chat", () =>
     Effect.gen(function* () {
       const service = yield* OfficeService;

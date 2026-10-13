@@ -47,6 +47,8 @@ export interface ProviderContinuationRequest {
    * wakes a run was dispatched for. Otherwise the service allocates one.
    */
   readonly messageId?: MessageId;
+  /** Immutable request that owns the background work; not the latest user message. */
+  readonly originMessageId?: MessageId;
   readonly dispatchIfCurrent?: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<Option.Option<A>, E, R>;

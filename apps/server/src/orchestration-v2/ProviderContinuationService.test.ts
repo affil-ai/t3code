@@ -24,7 +24,16 @@ import * as TestClock from "effect/testing/TestClock";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
+import * as OfficeService from "../office/OfficeService.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+
+const layerContinuationWorker = ProviderContinuationService.layer.pipe(
+  Layer.provideMerge(
+    OfficeService.layer.pipe(Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  ),
+);
 
 const threadId = ThreadId.make("thread-provider-continuation");
 const providerThreadId = ProviderThreadId.make("provider-thread-continuation");
@@ -99,7 +108,7 @@ function layerTest(input: {
     getThreadRecords: input.getThreadRecords,
     dispatch: (command) => Queue.offer(input.dispatched, command).pipe(Effect.as({} as never)),
   });
-  const layerWorker = ProviderContinuationService.layer.pipe(
+  const layerWorker = layerContinuationWorker.pipe(
     Layer.provide(
       Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
     ),
@@ -108,6 +117,52 @@ function layerTest(input: {
 }
 
 describe("ProviderContinuationService", () => {
+  it.effect(
+    "dispatches a background wake with the original Office requester after a newer request",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* Queue.unbounded<unknown>();
+        yield* Effect.gen(function* () {
+          const office = yield* OfficeService.OfficeService;
+          const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+          const sourceMessageId = MessageId.make("office-original");
+          const messageId = MessageId.make("office-background-wake");
+          const metadata = {
+            threadId,
+            officeChatId: "office-chat",
+            workspaceId: "team",
+            conversationId: "C123",
+            conversationType: "channel" as const,
+            label: "Engineering",
+          };
+          yield* office.upsertThread({
+            ...metadata,
+            request: {
+              messageId: sourceMessageId,
+              requester: { name: "Vivek", email: "vivek@example.test" },
+            },
+          });
+          yield* office.upsertThread({
+            ...metadata,
+            request: {
+              messageId: MessageId.make("office-newer"),
+              requester: { name: "Lilly", email: "lilly@example.test" },
+            },
+          });
+          yield* requests.offer({ ...request(), originMessageId: sourceMessageId, messageId });
+          yield* Queue.take(dispatched);
+          assert.deepEqual(yield* office.requesterForMessage({ threadId, messageId }), {
+            name: "Vivek",
+            email: "vivek@example.test",
+          });
+        }).pipe(
+          Effect.provide(
+            layerTest({ dispatched, getThreadRecords: () => Effect.succeed(projection) }),
+          ),
+          Effect.scoped,
+        );
+      }),
+  );
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>
     Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();
@@ -311,7 +366,7 @@ describe("ProviderContinuationService", () => {
             ),
           ),
       });
-      const layerWorker = ProviderContinuationService.layer.pipe(
+      const layerWorker = layerContinuationWorker.pipe(
         Layer.provide(
           Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
         ),
@@ -360,7 +415,7 @@ describe("ProviderContinuationService", () => {
             Effect.andThen(Effect.fail(new Error("simulated persistent failure") as never)),
           ),
       });
-      const layerWorker = ProviderContinuationService.layer.pipe(
+      const layerWorker = layerContinuationWorker.pipe(
         Layer.provide(
           Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
         ),
@@ -435,7 +490,7 @@ describe("ProviderContinuationService", () => {
               Effect.andThen(Effect.fail(new Error("simulated persistent failure") as never)),
             ),
         });
-        const layerWorker = ProviderContinuationService.layer.pipe(
+        const layerWorker = layerContinuationWorker.pipe(
           Layer.provide(
             Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
           ),
@@ -498,7 +553,7 @@ describe("ProviderContinuationService", () => {
             Effect.andThen(Effect.fail(new Error("simulated dispatch failure") as never)),
           ),
       });
-      const layerWorker = ProviderContinuationService.layer.pipe(
+      const layerWorker = layerContinuationWorker.pipe(
         Layer.provide(
           Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
         ),
@@ -559,7 +614,7 @@ describe("ProviderContinuationService", () => {
             return Queue.offer(acknowledged, command).pipe(Effect.as({} as never));
           },
         });
-        const layerWorker = ProviderContinuationService.layer.pipe(
+        const layerWorker = layerContinuationWorker.pipe(
           Layer.provide(
             Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
           ),
@@ -629,7 +684,7 @@ describe("ProviderContinuationService", () => {
               }) as never,
             ),
         });
-        const layerWorker = ProviderContinuationService.layer.pipe(
+        const layerWorker = layerContinuationWorker.pipe(
           Layer.provide(
             Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
           ),
@@ -682,7 +737,7 @@ describe("ProviderContinuationService", () => {
               }) as never,
             ),
         });
-        const layerWorker = ProviderContinuationService.layer.pipe(
+        const layerWorker = layerContinuationWorker.pipe(
           Layer.provide(
             Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
           ),

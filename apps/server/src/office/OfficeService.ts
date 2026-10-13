@@ -25,6 +25,11 @@ export class OfficeService extends Context.Service<
       readonly threadId: ThreadId;
       readonly messageId: MessageId;
     }) => Effect.Effect<OfficeRequester | null, OfficeError>;
+    readonly inheritRequester: (input: {
+      readonly threadId: ThreadId;
+      readonly sourceMessageId: MessageId;
+      readonly messageId: MessageId;
+    }) => Effect.Effect<void, OfficeError>;
     readonly removeThread: (input: {
       readonly threadId: ThreadId;
     }) => Effect.Effect<void, OfficeError>;
@@ -64,7 +69,7 @@ export const layer = Layer.effect(
         ),
       );
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
-    return {
+    const service: OfficeService["Service"] = {
       subscribe: () =>
         Stream.unwrap(
           Effect.gen(function* () {
@@ -129,6 +134,33 @@ export const layer = Layer.effect(
               : new OfficeError({ message: "Could not resolve Office request identity.", cause }),
           ),
         ),
+      inheritRequester: (input) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const requester = yield* service.requesterForMessage({
+                threadId: input.threadId,
+                messageId: input.sourceMessageId,
+              });
+              if (requester === null) return;
+              const encoded = yield* encodeRequester(requester);
+              yield* sql`INSERT INTO office_git_request (thread_id, message_id, requester_json)
+          VALUES (${input.threadId}, ${input.messageId}, ${encoded}) ON CONFLICT(thread_id, message_id) DO NOTHING`;
+              const rows = yield* sql<{
+                requester_json: string;
+              }>`SELECT requester_json FROM office_git_request
+          WHERE thread_id = ${input.threadId} AND message_id = ${input.messageId}`;
+              if (rows[0]?.requester_json !== encoded)
+                return yield* new OfficeError({ message: "Office request identity changed." });
+            }),
+          )
+          .pipe(
+            Effect.mapError((cause) =>
+              isOfficeError(cause)
+                ? cause
+                : new OfficeError({ message: "Could not inherit Office request identity.", cause }),
+            ),
+          ),
       removeThread: ({ threadId }) =>
         Effect.gen(function* () {
           yield* sql.withTransaction(
@@ -144,5 +176,6 @@ export const layer = Layer.effect(
           ),
         ),
     };
+    return service;
   }),
 );

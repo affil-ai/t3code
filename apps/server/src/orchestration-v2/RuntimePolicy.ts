@@ -1,5 +1,6 @@
 import {
   ModelSelection,
+  type MessageId,
   OrchestrationV2AppThread,
   ProjectId,
   ProviderInstanceId,
@@ -14,6 +15,7 @@ import * as Schema from "effect/Schema";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
+import * as OfficeGitPolicy from "../office/OfficeGitPolicy.ts";
 
 /**
  * ERRORS
@@ -49,6 +51,8 @@ export interface RuntimePolicyV2Shape {
   readonly resolve: (input: {
     readonly thread: OrchestrationV2AppThread;
     readonly modelSelection: ModelSelection;
+    /** Present when resolving an execution, rather than a workspace-only check. */
+    readonly messageId?: MessageId;
   }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2RuntimePolicy, RuntimePolicyV2Error>;
 }
 
@@ -131,6 +135,39 @@ export const layerFromProjectStore: Layer.Layer<
           cwd,
         });
       }),
+    });
+  }),
+);
+
+/** Resolve the request once. Its environment stays with that run's adapters. */
+export const layerWithOfficeGit = Layer.effect(
+  RuntimePolicyV2,
+  Effect.gen(function* () {
+    const base = yield* RuntimePolicyV2;
+    const git = yield* OfficeGitPolicy.OfficeGitPolicy;
+    return RuntimePolicyV2.of({
+      resolve: (input) =>
+        Effect.gen(function* () {
+          const policy = yield* base.resolve(input);
+          if (input.messageId === undefined || policy.cwd === null) return policy;
+          const executionEnvironment = yield* git
+            .environmentForMessage({
+              threadId: input.thread.lineage.rootThreadId,
+              messageId: input.messageId,
+              cwd: policy.cwd,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new RuntimePolicyResolveError({
+                    projectId: input.thread.projectId,
+                    providerInstanceId: input.modelSelection.instanceId,
+                    cause,
+                  }),
+              ),
+            );
+          return executionEnvironment === undefined ? policy : { ...policy, executionEnvironment };
+        }),
     });
   }),
 );

@@ -1,0 +1,208 @@
+import { describe, expect, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { MessageId, ThreadId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+
+import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as OfficeService from "./OfficeService.ts";
+import * as OfficeGitPolicy from "./OfficeGitPolicy.ts";
+
+const threadId = ThreadId.make("office:git-test");
+const messageId = MessageId.make("receipt-vivek");
+const entry = {
+  threadId,
+  officeChatId: "chat",
+  workspaceId: "team",
+  conversationId: "C123",
+  conversationType: "channel" as const,
+  label: "Engineering",
+};
+
+class TestGitCommandError extends Schema.TaggedError<TestGitCommandError>()("TestGitCommandError", {
+  exitCode: Schema.NullOr(Schema.Number),
+}) {}
+
+const withRepository = <A, E>(
+  test: (input: {
+    readonly cwd: string;
+    readonly originalHooks: string;
+    readonly git: (
+      args: ReadonlyArray<string>,
+      env?: Readonly<Record<string, string>>,
+    ) => Effect.Effect<string, TestGitCommandError | ProcessRunner.ProcessRunError>;
+  }) => Effect.Effect<A, E, OfficeService.OfficeService | OfficeGitPolicy.OfficeGitPolicy>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const runner = yield* ProcessRunner.ProcessRunner;
+    const hostEnvironment = yield* HostProcess.Environment;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-office-git-" });
+    const githubBin = path.join(cwd, "broker", "bin");
+    const originalHooks = path.join(cwd, ".githooks");
+    yield* fs.makeDirectory(githubBin, { recursive: true });
+    yield* fs.makeDirectory(originalHooks);
+    for (const name of ["gh", "git-credential-office-app"])
+      yield* fs.writeFileString(path.join(githubBin, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const git = (args: ReadonlyArray<string>, env?: Readonly<Record<string, string>>) =>
+      runner
+        .run({
+          command: "git",
+          args,
+          cwd,
+          env: {
+            ...hostEnvironment,
+            ...env,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_GLOBAL: "/dev/null",
+          },
+        })
+        .pipe(
+          Effect.flatMap((result) =>
+            result.code === 0
+              ? Effect.succeed(result.stdout.trim())
+              : Effect.fail(new TestGitCommandError({ exitCode: result.code })),
+          ),
+        );
+    yield* git(["init", "--quiet"]);
+    yield* git(["config", "user.name", "Personal User"]);
+    yield* git(["config", "user.email", "personal@example.test"]);
+    yield* git(["config", "commit.gpgSign", "false"]);
+    yield* git(["config", "core.hooksPath", ".githooks"]);
+    yield* fs.writeFileString(
+      path.join(originalHooks, "prepare-commit-msg"),
+      '#!/bin/sh\nprintf "\\nOriginal-Hook: ran\\n" >> "$1"\n',
+      { mode: 0o700 },
+    );
+    yield* fs.writeFileString(
+      path.join(originalHooks, "commit-msg"),
+      '#!/bin/sh\nsed "/^Co-authored-by:/d" "$1" > "$1.edited"\nmv "$1.edited" "$1"\nprintf "\\nCommit-Hook: ran\\n" >> "$1"\n',
+      { mode: 0o700 },
+    );
+    yield* fs.writeFileString(
+      path.join(originalHooks, "pre-commit"),
+      '#!/bin/sh\nprintf "ran\\n" >> .pre-commit-ran\n',
+      { mode: 0o700 },
+    );
+    const officeLayer = OfficeService.layer.pipe(
+      Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" })),
+    );
+    const policyLayer = OfficeGitPolicy.layer.pipe(
+      Layer.provideMerge(officeLayer),
+      Layer.provide(ServerConfig.layerTest(cwd, path.join(cwd, "t3-state"))),
+    );
+    return yield* test({ cwd, originalHooks, git }).pipe(
+      Effect.provide(policyLayer),
+      Effect.provideService(HostProcess.Environment, {
+        ...hostEnvironment,
+        T3CODE_OFFICE_GITHUB_BIN: githubBin,
+        GIT_CONFIG_COUNT: "0",
+      }),
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+  );
+
+describe("Office Git identity", () => {
+  it.effect(
+    "uses the bot with the immutable requester, keeps hooks, and leaves personal commits alone",
+    () =>
+      withRepository(({ cwd, git }) =>
+        Effect.gen(function* () {
+          const office = yield* OfficeService.OfficeService;
+          const policy = yield* OfficeGitPolicy.OfficeGitPolicy;
+          yield* office.upsertThread({
+            ...entry,
+            request: { messageId, requester: { name: "Vivek", email: "vivek@example.test" } },
+          });
+          const vivek = yield* policy.environmentForMessage({ threadId, messageId, cwd });
+          expect(vivek).toBeDefined();
+          yield* git(["commit", "--allow-empty", "-m", "Office change"], vivek);
+          expect(yield* git(["show", "-s", "--format=%an|%ae|%cn|%ce"])).toBe(
+            "office-of-the-cto[bot]|302235476+office-of-the-cto[bot]@users.noreply.github.com|office-of-the-cto[bot]|302235476+office-of-the-cto[bot]@users.noreply.github.com",
+          );
+          expect(yield* git(["show", "-s", "--format=%B"])).toContain(
+            "Co-authored-by: Vivek <vivek@example.test>",
+          );
+          expect(yield* git(["show", "-s", "--format=%B"])).toContain("Original-Hook: ran");
+          expect(yield* git(["show", "-s", "--format=%B"])).toContain("Commit-Hook: ran");
+          const second = MessageId.make("receipt-lilly");
+          yield* office.upsertThread({
+            ...entry,
+            request: {
+              messageId: second,
+              requester: { name: "Lilly", email: "lilly@example.test" },
+            },
+          });
+          const lilly = yield* policy.environmentForMessage({ threadId, messageId: second, cwd });
+          yield* git(["commit", "--allow-empty", "--no-verify", "-m", "Lilly change"], lilly);
+          expect(yield* git(["show", "-s", "--format=%B"])).toContain(
+            "Co-authored-by: Lilly <lilly@example.test>",
+          );
+          yield* git(["commit", "--allow-empty", "-m", "Earlier agent finishes"], vivek);
+          expect(yield* git(["show", "-s", "--format=%B"])).toContain(
+            "Co-authored-by: Vivek <vivek@example.test>",
+          );
+          yield* git(
+            [
+              "-C",
+              cwd,
+              "-c",
+              "commit.verbose=false",
+              "commit",
+              "--amend",
+              "--allow-empty",
+              "--no-verify",
+              "--author",
+              "Wrong author <wrong@example.test>",
+              "-m",
+              "Preserve --author text in the message",
+            ],
+            lilly,
+          );
+          expect(yield* git(["show", "-s", "--format=%an|%ae"])).toBe(
+            "office-of-the-cto[bot]|302235476+office-of-the-cto[bot]@users.noreply.github.com",
+          );
+          expect(yield* git(["show", "-s", "--format=%B"])).toContain(
+            "Preserve --author text in the message",
+          );
+          expect(yield* git(["show", "-s", "--format=%B"])).toContain(
+            "Co-authored-by: Lilly <lilly@example.test>",
+          );
+          const personal = yield* policy.environmentForMessage({
+            threadId: ThreadId.make("personal"),
+            messageId,
+            cwd,
+          });
+          expect(personal).toBeUndefined();
+          yield* git(["commit", "--allow-empty", "-m", "Personal change"], personal);
+          expect(yield* git(["show", "-s", "--format=%an|%ae"])).toBe(
+            "Personal User|personal@example.test",
+          );
+          expect(yield* git(["show", "-s", "--format=%B"])).not.toContain("Co-authored-by:");
+          expect(yield* git(["config", "core.hooksPath"])).toBe(".githooks");
+          expect(yield* git(["config", "user.name"])).toBe("Personal User");
+        }),
+      ),
+  );
+
+  it.effect("refuses an Office request without an actor before preparing Git", () =>
+    withRepository(({ cwd }) =>
+      Effect.gen(function* () {
+        const policy = yield* OfficeGitPolicy.OfficeGitPolicy;
+        const failure = yield* policy
+          .environmentForMessage({ threadId, messageId, cwd })
+          .pipe(Effect.flip);
+        expect(failure.message).toBe("Office request identity is unavailable.");
+      }),
+    ),
+  );
+});

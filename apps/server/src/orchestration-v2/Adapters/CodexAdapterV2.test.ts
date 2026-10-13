@@ -2965,6 +2965,112 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect(
+    "applies the Office execution environment before sending a prompt to a loaded Codex thread",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = "codex-office-git";
+          const nativeThreadId = "native-office-git";
+          const nativeTurnId = "native-office-git-turn";
+          const prompt = "Commit the requested change";
+          const executionEnvironment = {
+            GIT_AUTHOR_NAME: "office-of-the-cto[bot]",
+            OFFICE_GIT_COAUTHOR: "Vivek <vivek@example.test>",
+          };
+          const runtimePolicy = { ...CODEX_TEST_RUNTIME_POLICY, executionEnvironment };
+          const transcript = makeCodexReplayTranscript({
+            scenario,
+            entries: [
+              ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }).slice(0, 5),
+              {
+                type: "expect_outbound",
+                label: "Office thread configuration",
+                frame: {
+                  id: 3,
+                  method: "thread/resume",
+                  params: {
+                    threadId: nativeThreadId,
+                    excludeTurns: true,
+                    cwd: "/workspace",
+                    model: "gpt-5.4",
+                    config: {
+                      ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                      shell_environment_policy: {
+                        inherit: "all",
+                        experimental_use_profile: false,
+                        set: executionEnvironment,
+                      },
+                      "features.apps": false,
+                    },
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "Office thread configuration",
+                frame: { id: 3, result: {} },
+              },
+              {
+                type: "expect_outbound",
+                label: "Office prompt",
+                frame: {
+                  id: 4,
+                  method: "turn/start",
+                  params: {
+                    threadId: nativeThreadId,
+                    input: [{ type: "text", text: prompt }],
+                    cwd: "/workspace",
+                    model: "gpt-5.4",
+                    approvalPolicy: "never",
+                    approvalsReviewer: "user",
+                    sandboxPolicy: { type: "dangerFullAccess" },
+                    summary: "detailed",
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "Office prompt",
+                frame: {
+                  id: 4,
+                  result: { turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }) },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "Office completion",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("office-git-attempt"),
+              text: prompt,
+            }),
+            runtimePolicy,
+          });
+          yield* harness.firstTerminal;
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
   it.effect.each(
     (
       [
