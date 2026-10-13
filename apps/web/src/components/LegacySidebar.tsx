@@ -251,6 +251,7 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { FirstmateSidebarLink } from "./firstmate/FirstmateSidebarLink"; // fork: firstmate
 import { useOfficeThreads } from "../state/office"; // fork: office
 import { officeFolders } from "./work/officeGroups"; // fork: office
+import { useFirstmateCoordinatorThreadKeys } from "./firstmate/useFirstmateCoordinatorThreadKeys"; // fork: firstmate
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -3450,10 +3451,17 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
       ),
     [repositoryProjects],
   );
+  const hiddenThreadKeys = useFirstmateCoordinatorThreadKeys(); // fork: firstmate
   const groups = useMemo(
     () =>
-      groupWorkThreads(threads, { folders, threadFolderByKey }, threadSortOrder, pinnedThreadKeys),
-    [folders, pinnedThreadKeys, threadFolderByKey, threadSortOrder, threads],
+      groupWorkThreads(
+        threads,
+        { folders, threadFolderByKey },
+        threadSortOrder,
+        pinnedThreadKeys,
+        hiddenThreadKeys,
+      ),
+    [folders, hiddenThreadKeys, pinnedThreadKeys, threadFolderByKey, threadSortOrder, threads],
   );
   const projectTree = useMemo(() => buildWorkFolderTree(folders), [folders]);
   const collapsedProjectIds = useMemo(() => new Set(collapsedFolderIds), [collapsedFolderIds]);
