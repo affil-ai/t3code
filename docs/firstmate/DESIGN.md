@@ -24,7 +24,12 @@ This is a fork-only feature. Keep it modular so upstream merges stay easy.
   - the right panel's `firstmate` surface: a union member and singleton case
     in `rightPanelStore.ts`, a title and icon case in `RightPanelTabs.tsx`,
     and one render-chain branch in `ChatView.tsx`, each delegating to
-    `components/firstmate/firstmateTab.tsx`
+    `components/firstmate/firstmateTab.tsx`. Whether a surface can be closed
+    comes from `components/firstmate/firstmateSurface.ts`.
+  - orchestration: `Orchestrator.ts` lets server notifications steer or start
+    a run, and handles the server-only `queued-notification.revise` command;
+    `ThreadManagementService.ts` passes an optional notification through
+    `sendToThread`.
 - Do not add to the shared migration list. Upstream numbers its migrations,
   and a fork migration would collide. Create the Firstmate tables at service
   start with `CREATE TABLE IF NOT EXISTS`. All table names start with
@@ -42,7 +47,7 @@ This is a fork-only feature. Keep it modular so upstream merges stay easy.
 | `title`                              | Short label                                                                                                          |
 | `intent`                             | The user's request in their own words                                                                                |
 | `definitionOfDone`                   | What closes the task                                                                                                 |
-| `state`                              | `open`, `waiting`, `done`, or `dropped`                                                                              |
+| `state`                              | `open`, `waiting` (in review), `ready` (only the user's merge or deploy left), `done`, or `dropped`                  |
 | `nextActor`                          | `coordinator`, `worker`, `user`, or `external`                                                                       |
 | `note`                               | One-line current status                                                                                              |
 | `wakeAt`                             | ISO time or null                                                                                                     |
@@ -64,8 +69,23 @@ service start when `PRAGMA table_info` shows them missing.
 
 ## Server
 
-`apps/server/src/firstmate/FirstmateService.ts` holds the store and its
-operations, plus the subscription stream for the board.
+`apps/server/src/firstmate/`, one concern per file:
+
+| File                                    | What it holds                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------- |
+| `store.ts`                              | The tables, their startup creation, and row ↔ task mapping                      |
+| `FirstmateService.ts`                   | Task and config operations, and the board's subscription stream                 |
+| `FirstmateReactor.ts`                   | When to wake the coordinator, and delivering the wake                           |
+| `wakeDigest.ts`                         | What a wake says: the digest text, its timeline row, and folding wakes together |
+| `FirstmateHome.ts`, `homeFiles.ts`      | The coordinator's home folder and the files seeded into it                      |
+| `coordinatorPrompt.ts`                  | The coordinator chat's first message                                            |
+| `rpc.ts`, `runtimeLayer.ts`, `index.ts` | Wiring into the server's RPC and runtime                                        |
+
+The web side follows the same split in `apps/web/src/components/firstmate/`:
+`firstmateBoard.logic.ts` (columns, pure), `FirstmateTasksPanel.tsx` (the
+list), `FirstmateTaskDetail.tsx`, `FirstmateTaskLinks.tsx`,
+`FirstmateTaskArtifacts.tsx`, and `firstmateTasksShared.ts` (labels and the
+coordinator context they share).
 
 `FirstmateReactor` uses no model. It is woken by orchestration events where
 possible and otherwise sweeps every 30 seconds. It collects wake reasons:
@@ -78,10 +98,13 @@ possible and otherwise sweeps every 30 seconds. It collects wake reasons:
   `coordinator` or `worker`, has no running worker, and has seen no event for
   10 minutes. Wake for an orphan once until the task is updated again.
 
-Each pass sends at most one message to the coordinator thread. It uses
-`ThreadManagementService.sendToThread` with `mode: "queue"`, the same way
-scheduled tasks post into a bound thread. The message is a short digest: one
-line per task with its id, title, and reason. It ends with:
+Each pass sends at most one message to the coordinator thread, as a
+`monitor` notification: the timeline shows one compact "Firstmate: N updates"
+row that expands to the digest. It uses `sendToThread` with `mode: "auto"`,
+so a wake steers into the coordinator's active turn when it can. If a wake is
+still queued, the pass folds into it with `queued-notification.revise`
+instead of queueing a second: at most one wake ever waits. The digest has one
+line per task with its id, title, and reasons. It ends with:
 
 > Reconcile with firstmate_task_list, update every task you touch, and tell
 > the user only about outcomes and decisions.
@@ -161,15 +184,17 @@ each session, write lasting learnings there, and write skills on request.
   own resolvers), then opens the new chat. A deleted coordinator gets a "Stop
   using this chat" button instead.
 - The panel is narrow: sections stack vertically, mapped in a pure, tested
-  logic file:
-  - Needs you: `nextActor` is `user`.
-  - In progress: `nextActor` is `worker` or `coordinator`.
-  - Waiting: `state` is `waiting`, or `nextActor` is `external`.
+  logic file. Rules apply in this order:
   - Done: `done` or `dropped`. Show the latest 20, collapsed by default.
-- A card shows the title, note, age, and next actor, plus links to the worker
-  thread and PRs. Clicking it drills into the task inside the panel, with a
-  back button: the intent, the definition of done, the close evidence, and
-  the event log.
+  - Ready for deployment: `state` is `ready`, whoever acts next.
+  - Needs you: `nextActor` is `user`.
+  - In review: `state` is `waiting`, or `nextActor` is `external`.
+  - In progress: `nextActor` is `worker` or `coordinator`.
+- A card shows the title, the worker chat link, status, and age, plus its
+  links. Clicking it drills into the task inside the panel, with a back
+  button: the intent, the definition of done, the close evidence, review
+  artifacts, links, and the event log. Artifacts appear only in the detail,
+  so the list stays clean. The Tasks tab cannot be closed.
 - The panel's menu offers "Name and icon…", a dialog with a name field and a
   grid of twelve lucide icons (`firstmateIcons.tsx`), and "Stop using this
   chat", which calls `setCoordinator(null)` and brings the Start button back.

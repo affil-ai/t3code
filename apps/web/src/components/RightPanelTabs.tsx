@@ -97,6 +97,7 @@ import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
 import { FirstmateTabIcon, firstmateTabTitle } from "./firstmate/firstmateTab"; // fork: firstmate
+import { isPinnedRightPanelSurface } from "./firstmate/firstmateSurface"; // fork: firstmate
 
 interface RightPanelTabsProps {
   mode: PreviewPanelMode;
@@ -1146,7 +1147,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           }),
         });
       }
-      const pinned = surface.kind === "firstmate"; // fork: firstmate
+      const pinned = isPinnedRightPanelSurface(surface); // fork: firstmate
       items.push(
         { id: "close", label: "Close", disabled: pinned }, // fork: firstmate
         {
@@ -1215,7 +1216,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       if (event.button !== 1) return;
       event.preventDefault();
       event.stopPropagation();
-      if (surface.kind === "firstmate") return; // fork: firstmate
+      if (isPinnedRightPanelSurface(surface)) return; // fork: firstmate
       props.onCloseSurface(surface);
     },
     [props],

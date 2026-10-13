@@ -17,6 +17,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { useClosedViewStore } from "./closedViewStore";
+import { isPinnedRightPanelSurface } from "./components/firstmate/firstmateSurface"; // fork: firstmate
 import { resolveStorage } from "./lib/storage";
 import { randomUUID } from "./lib/utils";
 
@@ -488,8 +489,7 @@ const userAction = (
     : {}),
 });
 
-/** Firstmate's Tasks tab stays open beside its chat; closing never removes it. */
-const isPinnedSurface = (surface: RightPanelSurface) => surface.kind === "firstmate"; // fork: firstmate
+const isPinnedSurface = isPinnedRightPanelSurface; // fork: firstmate
 
 // fork: firstmate
 function closeAllButPinned(current: ThreadRightPanelState): ThreadRightPanelState {

@@ -6,35 +6,19 @@
  * done, evidence, links, and event log, with a back button to the list.
  */
 import { useAtomValue } from "@effect/atom-react";
-import type {
-  EnvironmentId,
-  FirstmateSnapshot,
-  FirstmateTask,
-  FirstmateTaskEvent,
-  ThreadId,
-} from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import type { EnvironmentId, FirstmateSnapshot, FirstmateTask, ThreadId } from "@t3tools/contracts";
 import {
   ArrowLeftIcon,
   ChevronRightIcon,
   CircleSlashIcon,
   EllipsisIcon,
   ListChecksIcon,
-  LinkIcon,
-  MessageSquareTextIcon,
   PencilIcon,
 } from "lucide-react";
-import { createContext, type ReactNode, use, useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import { usePullRequestPreviewTarget } from "~/lib/openPullRequestLink";
-import { firstmateEnvironment, useFirstmateSnapshot, useFirstmateTask } from "~/state/firstmate";
-import { linkedPullRequestDetailAtom } from "~/state/pullRequests";
-import { useEnvironmentQuery } from "~/state/query";
-import { formatRelativeTimeLabel } from "~/timestampFormat";
-import { SlackIcon } from "../Icons";
-import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
-import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
+import { firstmateEnvironment, useFirstmateSnapshot } from "~/state/firstmate";
 import { useRelativeTimeTick } from "../settings/settingsLayout";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -42,166 +26,25 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
-import { Skeleton } from "../ui/skeleton";
 import { Spinner } from "../ui/spinner";
 import { FirstmateAppearanceDialog } from "./FirstmateAppearanceDialog";
-import { FirstmateArtifactList } from "./FirstmateTaskArtifacts";
 import { useFirstmateCommands } from "./firstmateCommands";
 import {
   type FirstmateColumnId,
-  firstmateColumnForTask,
   countFirstmateNeedsYou,
   firstmateTaskActivityAt,
-  isPullRequestUrl,
-  isSlackUrl,
   mapFirstmateBoard,
 } from "./firstmateBoard.logic";
-
-/** The coordinator chat beside the panel; artifact images are signed against it. */
-const CoordinatorThreadContext = createContext<ThreadId | null>(null);
-
-const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
-  "needs-you": "Needs you",
-  ready: "Ready for deployment",
-  "in-progress": "In progress",
-  "in-review": "In review",
-  done: "Done",
-};
-
-const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = {
-  "needs-you": "Nothing needs you",
-  ready: "Nothing ready to deploy",
-  "in-progress": "Nothing in progress",
-  "in-review": "Nothing in review",
-};
-
-/** A small dot per column; it is the board's only color. */
-const COLUMN_DOT: Record<FirstmateColumnId, string> = {
-  "needs-you": "bg-warning",
-  ready: "bg-success",
-  "in-progress": "bg-info",
-  "in-review": "bg-muted-foreground/60",
-  done: "bg-muted-foreground/30",
-};
-
-/** Who acts next, in the reader's terms. */
-const NEXT_ACTOR_LABELS: Record<FirstmateTask["nextActor"], string> = {
-  user: "You",
-  worker: "Worker",
-  coordinator: "Firstmate",
-  external: "Someone else",
-};
-
-const CLOSED_STATE_LABELS: Partial<Record<FirstmateTask["state"], string>> = {
-  done: "Done",
-  dropped: "Dropped",
-};
-
-const EVENT_ACTOR_LABELS: Record<FirstmateTaskEvent["actor"], string> = {
-  coordinator: "Firstmate",
-  user: "You",
-  system: "System",
-};
-
-function relativeAge(value: string): string {
-  return formatRelativeTimeLabel(value) || "just now";
-}
-
-/** What the card's meta line says about who has the ball. */
-function taskStatusLabel(task: FirstmateTask): string {
-  const closed = CLOSED_STATE_LABELS[task.state];
-  if (closed) return closed;
-  return `Next: ${NEXT_ACTOR_LABELS[task.nextActor]}`;
-}
-
-function stopPropagation(event: { stopPropagation: () => void }) {
-  event.stopPropagation();
-}
-
-function WorkerThreadLink({
-  environmentId,
-  task,
-  className,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly task: FirstmateTask;
-  readonly className?: string;
-}) {
-  if (task.workerThreadId === null) return null;
-  return (
-    <Link
-      className={className}
-      to="/$environmentId/$threadId"
-      params={{ environmentId, threadId: task.workerThreadId }}
-      onClick={stopPropagation}
-    >
-      <MessageSquareTextIcon className="size-3 shrink-0" />
-      <span className="truncate">Chat</span>
-    </Link>
-  );
-}
-
-/**
- * A pull request link's icon, drawn like the sidebar's: the state's glyph in
- * its color (open, draft, merged, closed). Until the state loads, or when no
- * project here can read the repository, it is the plain open glyph.
- */
-function PullRequestLinkIcon({
-  environmentId,
-  url,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly url: string;
-}) {
-  const target = usePullRequestPreviewTarget(environmentId, url);
-  const summary = useEnvironmentQuery(
-    target === null ? null : linkedPullRequestDetailAtom(target),
-  ).data;
-  if (!summary) return <PullRequestGlyph.pullRequest className="size-3 shrink-0" />;
-  const state = resolvePullRequestState({
-    state: summary.state,
-    isDraft: summary.isDraft === true,
-  });
-  return (
-    <state.Icon
-      data-tone
-      className={cn("size-3 shrink-0", state.toneClassName)}
-      aria-label={`Pull request ${state.label.toLowerCase()}`}
-    />
-  );
-}
-
-function ExternalTaskLink({
-  environmentId,
-  link,
-  className,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly link: FirstmateTask["links"][number];
-  readonly className?: string;
-}) {
-  return (
-    <a
-      className={className}
-      href={link.url}
-      target="_blank"
-      rel="noreferrer"
-      onClick={stopPropagation}
-    >
-      {isPullRequestUrl(link.url) ? (
-        <PullRequestLinkIcon environmentId={environmentId} url={link.url} />
-      ) : isSlackUrl(link.url) ? (
-        <SlackIcon className="size-3 shrink-0" />
-      ) : (
-        <LinkIcon className="size-3 shrink-0" />
-      )}
-      <span className="truncate">{link.label}</span>
-    </a>
-  );
-}
-
-const CARD_LINK_CLASS =
-  "inline-flex h-5 min-w-0 max-w-full items-center gap-1 rounded-sm px-1 text-2xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
+import { TaskDetail } from "./FirstmateTaskDetail";
+import { CARD_LINK_CLASS, ExternalTaskLink, WorkerThreadLink } from "./FirstmateTaskLinks";
+import {
+  COLUMN_DOT,
+  COLUMN_EMPTY,
+  COLUMN_LABELS,
+  CoordinatorThreadContext,
+  relativeAge,
+  taskStatusLabel,
+} from "./firstmateTasksShared";
 
 function TaskCard({
   environmentId,
@@ -574,128 +417,5 @@ export function FirstmateTasksPanel({
         )}
       </div>
     </CoordinatorThreadContext>
-  );
-}
-
-function DetailSection({
-  title,
-  children,
-}: {
-  readonly title: string;
-  readonly children: ReactNode;
-}) {
-  return (
-    <section className="space-y-1">
-      <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
-      {children}
-    </section>
-  );
-}
-
-function DetailText({ children }: { readonly children: string }) {
-  return <p className="text-sm leading-5 whitespace-pre-wrap text-foreground">{children}</p>;
-}
-
-const DETAIL_LINK_CLASS =
-  "flex h-8 min-w-0 items-center gap-2 rounded-md px-2 text-sm text-foreground transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&>svg]:size-3.5 [&>svg:not([data-tone])]:text-muted-foreground";
-
-function TaskDetail({
-  environmentId,
-  task,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly task: FirstmateTask;
-}) {
-  const detailQuery = useFirstmateTask(environmentId, task.id);
-  // The snapshot is newer than a loaded detail whenever the task changes, so
-  // fields come from the snapshot and only the events come from the query.
-  const events = detailQuery.data?.events ?? null;
-  const column = firstmateColumnForTask(task);
-  const hasLinks = task.workerThreadId !== null || task.links.length > 0;
-  const coordinatorThreadId = use(CoordinatorThreadContext);
-  return (
-    <ScrollArea className="min-h-0 flex-1" scrollFade>
-      <div className="space-y-5 px-4 pt-3 pb-6">
-        <header className="space-y-1">
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span aria-hidden className={cn("size-1.5 rounded-full", COLUMN_DOT[column])} />
-            <span>{COLUMN_LABELS[column]}</span>
-            <span aria-hidden>·</span>
-            <span>{taskStatusLabel(task)}</span>
-          </div>
-          <h3 className="text-base leading-6 font-semibold text-foreground">{task.title}</h3>
-        </header>
-        <DetailSection title="What you asked">
-          <DetailText>{task.intent}</DetailText>
-        </DetailSection>
-        <DetailSection title="Done when">
-          <DetailText>{task.definitionOfDone}</DetailText>
-        </DetailSection>
-        {task.closeEvidence ? (
-          <DetailSection title={task.state === "dropped" ? "Why it was dropped" : "Evidence"}>
-            <DetailText>{task.closeEvidence}</DetailText>
-          </DetailSection>
-        ) : null}
-        {coordinatorThreadId !== null && (task.artifacts?.length ?? 0) > 0 ? (
-          <DetailSection title="Review">
-            <FirstmateArtifactList
-              environmentId={environmentId}
-              threadId={coordinatorThreadId}
-              artifacts={task.artifacts ?? []}
-            />
-          </DetailSection>
-        ) : null}
-        {hasLinks ? (
-          <DetailSection title="Links">
-            <div className="-mx-2 flex flex-col">
-              <WorkerThreadLink
-                environmentId={environmentId}
-                task={task}
-                className={DETAIL_LINK_CLASS}
-              />
-              {task.links.map((link) => (
-                <ExternalTaskLink
-                  key={`${link.label}:${link.url}`}
-                  environmentId={environmentId}
-                  link={link}
-                  className={DETAIL_LINK_CLASS}
-                />
-              ))}
-            </div>
-          </DetailSection>
-        ) : null}
-        <DetailSection title="History">
-          {detailQuery.error && events === null ? (
-            <p className="text-sm text-destructive-foreground">Could not load the history.</p>
-          ) : events === null ? (
-            <div className="space-y-2 pt-1" aria-busy>
-              <Skeleton className="h-4 w-3/4" />
-              <Skeleton className="h-4 w-1/2" />
-            </div>
-          ) : events.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No history yet.</p>
-          ) : (
-            <ol className="relative mt-1 space-y-3 border-s border-border/70 ps-3.5">
-              {events.toReversed().map((event) => (
-                <li key={event.id} className="relative">
-                  <span
-                    aria-hidden
-                    className="absolute top-1.5 -left-[1.1875rem] size-1.5 rounded-full bg-muted-foreground/50 ring-2 ring-background"
-                  />
-                  <p className="text-sm leading-5 text-foreground">{event.summary}</p>
-                  <p className="text-2xs text-muted-foreground">
-                    {EVENT_ACTOR_LABELS[event.actor]} · {relativeAge(event.createdAt)}
-                  </p>
-                </li>
-              ))}
-            </ol>
-          )}
-        </DetailSection>
-        <p className="text-2xs text-muted-foreground/70">
-          Opened {relativeAge(task.createdAt)}
-          {task.closedAt ? ` · Closed ${relativeAge(task.closedAt)}` : null}
-        </p>
-      </div>
-    </ScrollArea>
   );
 }
