@@ -4,6 +4,7 @@ import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
 import * as Semaphore from "effect/Semaphore";
 import * as StorageCleanup from "./storageCleanup.ts";
+import * as TreehouseRuntime from "./workspace/treehouseRuntimeLayer.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as Firstmate from "./firstmate/index.ts"; // fork: firstmate
@@ -307,11 +308,13 @@ const layerPlatformServices = NodeServices.layer;
 
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 
+const layerGitVcsDriver = GitVcsDriver.layer.pipe(Layer.provideMerge(TreehouseRuntime.layer));
+
 const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer));
 
 const layerSourceControlProviderRegistry = SourceControlProviderRegistry.layer.pipe(
   Layer.provideMerge(SourceControlBuiltInDrivers.layer),
-  Layer.provideMerge(GitVcsDriver.layer),
+  Layer.provideMerge(layerGitVcsDriver),
   Layer.provideMerge(layerVcsDriverRegistry),
 );
 
@@ -354,14 +357,14 @@ const layerGitManager = GitManager.layer.pipe(
   Layer.provide(Layer.merge(ProjectionStoreV2.layer, ProjectStore.layer)),
   Layer.provideMerge(RuntimeLayer.layerProjectSetupScriptRunner),
   Layer.provideMerge(WorktreeSetupTracker.layer),
-  Layer.provideMerge(GitVcsDriver.layer),
+  Layer.provideMerge(layerGitVcsDriver),
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(TextGeneration.layer.pipe(Layer.provide(layerSourceControlProviderRegistry))),
 );
 
 const layerGit = Layer.empty.pipe(
   Layer.provideMerge(layerGitManager),
-  Layer.provideMerge(GitVcsDriver.layer),
+  Layer.provideMerge(layerGitVcsDriver),
 );
 
 const layerGitWorkflow = GitWorkflowService.layer.pipe(
@@ -370,7 +373,7 @@ const layerGitWorkflow = GitWorkflowService.layer.pipe(
 );
 
 const layerSourceControlRepositoryService = SourceControlRepositoryService.layer.pipe(
-  Layer.provideMerge(GitVcsDriver.layer),
+  Layer.provideMerge(layerGitVcsDriver),
   Layer.provideMerge(layerSourceControlProviderRegistry),
 );
 
@@ -380,7 +383,7 @@ const layerProjectCloneTracker = ProjectCloneTracker.layer.pipe(
 
 const layerReview = ReviewService.layer.pipe(
   Layer.provide(ProjectStore.layer),
-  Layer.provideMerge(GitVcsDriver.layer),
+  Layer.provideMerge(layerGitVcsDriver),
   Layer.provideMerge(layerVcsDriverRegistry),
 );
 

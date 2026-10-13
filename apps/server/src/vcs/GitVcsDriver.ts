@@ -149,6 +149,8 @@ export interface CreateWorktreeProgress {
 }
 
 export interface CreateWorktreeOptions {
+  /** The app thread that owns a durable pool lease. */
+  readonly ownerThreadId?: import("@t3tools/contracts").ThreadId;
   readonly progress?: CreateWorktreeProgress;
   /**
    * The project-over-environment `worktreeSubmodules` setting. Null (or

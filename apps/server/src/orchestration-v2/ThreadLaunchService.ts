@@ -459,6 +459,7 @@ const make = Effect.gen(function* () {
               path: null,
             },
             {
+              ownerThreadId: threadId,
               progress: {
                 onWorktreeClaimed: (path) =>
                   Effect.sync(() => {

@@ -44,6 +44,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as TreehouseThreadWorkspaces from "../workspace/TreehouseThreadWorkspaces.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -82,6 +83,22 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2,
   ProviderTurnStartServiceV2Shape
 >()("t3/orchestration-v2/ProviderTurnStartService/ProviderTurnStartServiceV2") {}
+
+/** Validate a durable lease before the ordinary start reads its workspace. */
+export const layerWithTreehouse = Layer.effect(
+  ProviderTurnStartServiceV2,
+  Effect.gen(function* () {
+    const service = yield* ProviderTurnStartServiceV2;
+    const workspaces = yield* TreehouseThreadWorkspaces.TreehouseThreadWorkspaces;
+    return ProviderTurnStartServiceV2.of({
+      start: (input) =>
+        workspaces.ensure(input.threadId).pipe(
+          Effect.mapError((cause) => new ProviderTurnStartError({ runId: input.runId, cause })),
+          Effect.andThen(service.start(input)),
+        ),
+    });
+  }),
+);
 
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,

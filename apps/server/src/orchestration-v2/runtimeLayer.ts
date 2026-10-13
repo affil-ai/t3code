@@ -54,6 +54,8 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as OfficeGitPolicy from "../office/OfficeGitPolicy.ts";
 import * as OfficeService from "../office/OfficeService.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as TreehouseRuntime from "../workspace/treehouseRuntimeLayer.ts";
+import * as TreehouseThreadWorkspaces from "../workspace/TreehouseThreadWorkspaces.ts";
 
 /** The shared application event log and its command receipts. */
 export const layerEventInfrastructure = Layer.mergeAll(
@@ -161,7 +163,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   ),
 );
 
-const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+const layerProviderTurnStartBaseProvided = ProviderTurnStartService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       layerContextHandoffServiceProvided,
@@ -261,6 +263,17 @@ const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImp
 export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe(
   Layer.provide(layerProjectService),
 );
+const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layerWithTreehouse.pipe(
+  Layer.provide(layerProviderTurnStartBaseProvided),
+  Layer.provide(
+    TreehouseThreadWorkspaces.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(TreehouseRuntime.layer, layerThreadManagementProvided, ProjectStore.layer),
+      ),
+    ),
+  ),
+);
+
 const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
 );

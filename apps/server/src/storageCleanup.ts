@@ -41,6 +41,7 @@ import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementSer
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import * as TreehouseWorktrees from "./workspace/TreehouseWorktrees.ts";
 import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
@@ -176,6 +177,7 @@ const make = Effect.gen(function* () {
   const terminals = yield* TerminalManager.TerminalManager;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const pool = yield* Effect.serviceOption(TreehouseWorktrees.TreehouseWorktrees);
   const liveTerminals = new Map<string, Map<string, TerminalSummary>>();
   const noteTerminal = (terminal: TerminalSummary) => {
     const threadTerminals =
@@ -613,6 +615,12 @@ const make = Effect.gen(function* () {
           )
         )
           return keep("settings changed since check");
+        if (Option.isSome(pool) && (yield* pool.value.ownsPath(worktreePath))) {
+          yield* pool.value.release(worktreePath);
+          keep("returned to the worktree pool for reuse");
+          yield* gitManager.invalidateStatus(project.workspaceRoot);
+          return;
+        }
         // Clean only untracked files; Git must still refuse removal if a tracked
         // edit arrives after our last status check.
         if (settings.worktreeKeepWhen === "tracked-changes")
