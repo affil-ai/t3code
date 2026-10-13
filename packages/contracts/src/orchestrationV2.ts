@@ -3181,6 +3181,18 @@ const OrchestrationV2InternalCommand = Schema.Union([
       }),
     ),
   }),
+  /**
+   * fork: firstmate - Rewrites a queued server notification that has not started,
+   * so a newer wake folds into it instead of queueing a second one.
+   */
+  Schema.Struct({
+    type: Schema.Literal("queued-notification.revise"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    text: Schema.String,
+    notification: OrchestrationV2Notification,
+  }),
   /** Records that the provider rollback `requestId` failed for good. */
   Schema.Struct({
     type: Schema.Literal("checkpoint.rollback.fail"),

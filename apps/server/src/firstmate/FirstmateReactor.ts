@@ -3,6 +3,8 @@ import {
   FirstmateError,
   MessageId,
   type OrchestrationV2Notification,
+  type ProjectId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -95,10 +97,12 @@ function shortTitle(title: string): string {
  * full digest as the message text; this is what the user sees.
  */
 export function wakeNotification(wakes: ReadonlyArray<FirstmateWake>): OrchestrationV2Notification {
-  const reasons = wakes.flatMap((wake) => [wake.reason, ...(wake.additionalReasons ?? [])]);
-  const outcome = reasons.includes("worker-failed")
+  const reasons = new Set(
+    wakes.flatMap((wake) => [wake.reason, ...(wake.additionalReasons ?? [])]),
+  );
+  const outcome = reasons.has("worker-failed")
     ? "failed"
-    : reasons.includes("worker-waiting")
+    : reasons.has("worker-waiting")
       ? "updated"
       : "completed";
   const items = wakes
@@ -113,6 +117,68 @@ export function wakeNotification(wakes: ReadonlyArray<FirstmateWake>): Orchestra
     // Expanding the row shows the same digest the coordinator received.
     detail: wakeDigest(wakes),
   };
+}
+
+const WAKE_MESSAGE_PREFIX = "firstmate:wake-message:";
+const WAKE_REASONS: ReadonlySet<string> = new Set<FirstmateWakeReason>([
+  "worker-completed",
+  "worker-failed",
+  "worker-interrupted",
+  "worker-waiting",
+  "wake-time",
+  "orphan",
+]);
+
+/**
+ * Reads the task lines back out of a digest written by `wakeDigest`, so a
+ * queued wake can be folded into without the reactor remembering it, even
+ * across a restart. Run ids are not in the digest.
+ */
+export function parseWakeDigest(text: string): ReadonlyArray<FirstmateWake> {
+  return text.split("\n").flatMap((line) => {
+    const match = /^- (\S+) (.+): ([a-z-]+(?:, [a-z-]+)*)$/.exec(line);
+    if (match === null) return [];
+    const reasons = match[3]!.split(", ");
+    if (!reasons.every((reason) => WAKE_REASONS.has(reason))) return [];
+    const [reason, ...additionalReasons] = reasons as FirstmateWakeReason[];
+    return [{ taskId: match[1]!, title: match[2]!, reason: reason!, additionalReasons }];
+  });
+}
+
+/**
+ * Folds `next` into `pending`: one line per task, reasons combined in the
+ * order first seen, and the newest run id. Tasks keep their first position.
+ */
+export function mergeWakes(
+  pending: ReadonlyArray<FirstmateWake>,
+  next: ReadonlyArray<FirstmateWake>,
+): ReadonlyArray<FirstmateWake> {
+  const merged = new Map<string, FirstmateWake>();
+  for (const wake of [...pending, ...next]) {
+    const existing = merged.get(wake.taskId);
+    if (existing === undefined) {
+      merged.set(wake.taskId, wake);
+      continue;
+    }
+    const reasons = [
+      ...new Set([
+        existing.reason,
+        ...(existing.additionalReasons ?? []),
+        wake.reason,
+        ...(wake.additionalReasons ?? []),
+      ]),
+    ];
+    merged.set(wake.taskId, {
+      taskId: wake.taskId,
+      title: wake.title,
+      reason: reasons[0]!,
+      additionalReasons: reasons.slice(1),
+      ...((wake.runId ?? existing.runId) === undefined
+        ? {}
+        : { runId: wake.runId ?? existing.runId }),
+    });
+  }
+  return [...merged.values()];
 }
 
 export class FirstmateReactor extends Context.Service<
@@ -131,6 +197,24 @@ const make = Effect.gen(function* () {
   const signal = yield* PubSub.sliding<void>(1);
   const seen = yield* Ref.make<ReadonlySet<string>>(new Set());
   const lane = yield* Semaphore.make(1);
+  /** The coordinator's queued Firstmate wake that has not started, if any. */
+  const pendingWake = (projectId: ProjectId, threadId: ThreadId) =>
+    threads.getProjectThreadRecords({ projectId, threadId }, ["runs", "messages"]).pipe(
+      Effect.map((projection) => {
+        const run = projection.runs.find(
+          (candidate) =>
+            candidate.status === "queued" &&
+            candidate.userMessageId.startsWith(WAKE_MESSAGE_PREFIX),
+        );
+        const message =
+          run === undefined
+            ? undefined
+            : projection.messages.find((candidate) => candidate.id === run.userMessageId);
+        return run === undefined || message === undefined
+          ? undefined
+          : { runId: run.id, wakes: parseWakeDigest(message.text) };
+      }),
+    );
 
   const sweep = () =>
     lane.withPermits(1)(
@@ -212,20 +296,36 @@ const make = Effect.gen(function* () {
         }
         if (wakes.length > 0) {
           const wakeId = yield* crypto.randomUUIDv4;
-          yield* threads.sendToThread({
-            projectId: coordinatorShell.projectId,
-            commandId: CommandId.make(`firstmate:wake:${wakeId}`),
-            threadId: target,
-            messageId: MessageId.make(`firstmate:wake-message:${wakeId}`),
-            text: wakeDigest(wakes),
-            // A notification is an automatic wake: a compact row in the timeline,
-            // hidden from the queue, and it does not keep the thread from settling.
-            notification: wakeNotification(wakes),
-            attachments: [],
-            mode: "queue",
-            createdBy: "agent",
-            creationSource: "server",
-          });
+          const pending = yield* pendingWake(coordinatorShell.projectId, target);
+          if (pending !== undefined) {
+            // At most one wake waits: fold this pass into the one already queued.
+            const merged = mergeWakes(pending.wakes, wakes);
+            yield* threads.dispatch({
+              type: "queued-notification.revise",
+              commandId: CommandId.make(`firstmate:wake-revise:${wakeId}`),
+              threadId: target,
+              runId: pending.runId,
+              text: wakeDigest(merged),
+              notification: wakeNotification(merged),
+            });
+          } else {
+            // `auto` steers the wake into the coordinator's active turn when it can,
+            // so a failure is seen mid-conversation instead of behind the user's turns.
+            yield* threads.sendToThread({
+              projectId: coordinatorShell.projectId,
+              commandId: CommandId.make(`firstmate:wake:${wakeId}`),
+              threadId: target,
+              messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
+              text: wakeDigest(wakes),
+              // A notification is an automatic wake: a compact row in the timeline,
+              // hidden from the queue, and it does not keep the thread from settling.
+              notification: wakeNotification(wakes),
+              attachments: [],
+              mode: "auto",
+              createdBy: "agent",
+              creationSource: "server",
+            });
+          }
         }
         // Markers are saved only after the enqueue succeeds. A failed send fails
         // this pass before here, so the next pass reports the same wakes again.

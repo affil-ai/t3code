@@ -477,6 +477,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "queued-run.reorder":
     case "queued-run.cancel":
     case "queued-run.edit":
+    case "queued-notification.revise": // fork: firstmate
     case "runtime-request.respond":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
@@ -3828,6 +3829,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly scheduledTaskId?: OrchestrationV2ConversationMessage["scheduledTaskId"];
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
+    readonly notification?: OrchestrationV2ConversationMessage["notification"]; // fork: firstmate
     readonly forceRestart: boolean;
   }) =>
     Effect.gen(function* () {
@@ -3977,6 +3979,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...(input.delegatedCompletion === undefined
               ? {}
               : { delegatedCompletion: input.delegatedCompletion }),
+            ...(input.notification === undefined ? {} : { notification: input.notification }), // fork: firstmate
             ...(input.scheduledTaskId === undefined
               ? {}
               : { scheduledTaskId: input.scheduledTaskId }),
@@ -4748,6 +4751,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (command.createdBy !== "agent" ||
           (command.creationSource !== "server" && command.creationSource !== "provider") ||
           (dispatchMode.type !== "queue_after_active" &&
+            // fork: firstmate - a server wake may steer into the active turn or start one.
+            !(
+              command.creationSource === "server" &&
+              (dispatchMode.type === "steer_active" || dispatchMode.type === "start_immediately")
+            ) &&
             !(
               command.restartContinuationOfRunId !== undefined &&
               dispatchMode.type === "start_immediately"
@@ -4916,6 +4924,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(command.senderThreadId === undefined
             ? {}
             : { senderThreadId: command.senderThreadId }),
+          ...(command.notification === undefined ? {} : { notification: command.notification }), // fork: firstmate
           forceRestart: dispatchMode.type === "restart_active",
         });
         return;
@@ -7999,6 +8008,61 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     });
 
+  // fork: firstmate
+  /** Rewrites a queued server notification in place, keeping its run and queue position. */
+  const dispatchQueuedNotificationRevise = (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "queued-notification.revise" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) =>
+    Effect.gen(function* () {
+      const reject = (cause: string) =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause,
+        });
+      const projection = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs", "messages"], { messageRoles: ["user"] })
+        .pipe(
+          Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
+        );
+      const queuedRun = projection.runs.find((candidate) => candidate.id === command.runId);
+      if (queuedRun === undefined || queuedRun.status !== "queued") {
+        return yield* reject(`Run ${command.runId} is not queued.`);
+      }
+      const queuedMessage = projection.messages.find(
+        (candidate) => candidate.id === queuedRun.userMessageId,
+      );
+      if (
+        queuedMessage === undefined ||
+        queuedMessage.notification === undefined ||
+        queuedMessage.creationSource !== "server" ||
+        queuedMessage.delegatedCompletion !== undefined
+      ) {
+        return yield* reject(`Queued run ${queuedRun.id} is not a server notification.`);
+      }
+      const now = yield* DateTime.now;
+      // A queued message has no turn item yet; it materializes, as a notification row,
+      // from this message when the run starts.
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "message.updated",
+        threadId: command.threadId,
+        runId: queuedRun.id,
+        ...(queuedRun.rootNodeId === null ? {} : { nodeId: queuedRun.rootNodeId }),
+        providerInstanceId: queuedRun.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...queuedMessage,
+          text: command.text,
+          notification: command.notification,
+          updatedAt: now,
+        },
+      });
+    });
+
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
     command: OrchestrationV2Command,
     fields: ReadonlyArray<K>,
@@ -10948,6 +11012,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "queued-run.edit":
         yield* dispatchQueuedRunEdit(command, events);
+        break;
+      case "queued-notification.revise": // fork: firstmate
+        yield* dispatchQueuedNotificationRevise(command, events);
         break;
       case "checkpoint.rollback":
         yield* dispatchCheckpointRollback(command, events, effects);

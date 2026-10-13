@@ -702,3 +702,47 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
     }),
   ),
 );
+
+// fork: firstmate
+it.effect("steers a server notification into the active turn as a notification", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "steering-server-notification",
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const notification = {
+          source: { kind: "monitor" as const },
+          outcome: "failed" as const,
+          summary: "Firstmate: 1 update — Task (worker failed)",
+        };
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("firstmate-wake-steer"),
+          threadId,
+          messageId: MessageId.make("firstmate:wake-message:steer"),
+          text: "Firstmate wake-up:",
+          attachments: [],
+          notification,
+          dispatchMode: { type: "steer_active", targetRunId: started[0]!.runId },
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        yield* worker.drain();
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        // The provider received the wake inside the running turn, not as a new run.
+        assert.deepEqual(steered, ["Firstmate wake-up:"]);
+        assert.equal(started.length, 1);
+        assert.lengthOf(projection.runs, 1);
+        const message = projection.messages.find(
+          (candidate) => candidate.id === "firstmate:wake-message:steer",
+        );
+        assert.deepEqual(message?.notification, notification);
+        assert.equal(message?.runId, started[0]!.runId);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   RunId,
   ThreadId,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -79,7 +81,27 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const workers = yield* Ref.make<ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>>(new Map());
   const sends = yield* Ref.make<ReadonlyArray<ThreadManagement.ThreadManagementSendInput>>([]);
   const failSends = yield* Ref.make(false);
+  // A wake still waiting in the coordinator's queue, as the projection would show it.
+  const queued = yield* Ref.make<{ readonly runId: string; readonly text: string } | null>(null);
+  const revisions = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
   const layerThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
+    getProjectThreadRecords: () =>
+      Ref.get(queued).pipe(
+        Effect.map((wake) => {
+          const messageId = MessageId.make("firstmate:wake-message:queued");
+          return {
+            runs:
+              wake === null
+                ? []
+                : [{ id: RunId.make(wake.runId), status: "queued", userMessageId: messageId }],
+            messages: wake === null ? [] : [{ id: messageId, text: wake.text }],
+          } as never;
+        }),
+      ),
+    dispatch: (command) =>
+      Ref.update(revisions, (values) => [...values, command]).pipe(
+        Effect.as({ sequence: 1, storedEvents: [] } as never),
+      ),
     getThreadShell: (id) =>
       id === coordinatorId
         ? Effect.succeed(shell(id))
@@ -121,7 +143,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const reactor = yield* FirstmateReactor.FirstmateReactor.pipe(Effect.provide(context));
   const setWorker = (value: OrchestrationV2ThreadShell) =>
     Ref.update(workers, (map) => new Map([...map, [value.id, value]]));
-  return { service, reactor, sends, failSends, setWorker };
+  return { service, reactor, sends, failSends, setWorker, queued, revisions };
 });
 
 const createTask = (
@@ -168,7 +190,7 @@ describe("FirstmateReactor", () => {
         const sends = yield* Ref.get(harness.sends);
         expect(sends).toHaveLength(1);
         expect(sends[0]).toMatchObject({
-          mode: "queue",
+          mode: "auto",
           threadId: coordinatorId,
           createdBy: "agent",
           creationSource: "server",
@@ -297,6 +319,94 @@ describe("FirstmateReactor", () => {
       }),
     ),
   );
+});
+
+describe("FirstmateReactor pending wakes", () => {
+  it.effect("folds a new wake into the queued one instead of queueing a second", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        const first = yield* createTask(harness.service, {
+          title: "Dashboards",
+          nextActor: "worker",
+          workerThreadId: workerId,
+        });
+        yield* harness.setWorker(
+          shell(workerId, { status: "completed", latestRunId: RunId.make("run:1") }),
+        );
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends).toHaveLength(1);
+        // That wake is still queued behind the user's turn when the next one comes.
+        yield* Ref.set(harness.queued, { runId: "run:wake-queued", text: sends[0]!.text });
+        const secondWorker = ThreadId.make("worker-two");
+        const second = yield* createTask(harness.service, {
+          title: "PDF review",
+          nextActor: "worker",
+          workerThreadId: secondWorker,
+        });
+        yield* harness.setWorker(
+          shell(secondWorker, { status: "failed", latestRunId: RunId.make("run:2") }),
+        );
+        yield* harness.setWorker(
+          shell(workerId, { status: "completed", latestRunId: RunId.make("run:3") }),
+        );
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+        const revisions = yield* Ref.get(harness.revisions);
+        expect(revisions).toHaveLength(1);
+        const revise = revisions[0]!;
+        expect(revise).toMatchObject({
+          type: "queued-notification.revise",
+          runId: "run:wake-queued",
+        });
+        if (revise.type !== "queued-notification.revise") throw new Error("unexpected command");
+        // One line per task; the first task's two runs combine into one line.
+        expect(revise.text).toContain(`- ${first.id} Dashboards: worker-completed\n`);
+        expect(revise.text).toContain(`- ${second.id} PDF review: worker-failed`);
+        expect(revise.text.match(/Dashboards/g)).toHaveLength(1);
+        expect(revise.notification.outcome).toBe("failed");
+        expect(revise.notification.summary).toBe(
+          "Firstmate: 2 updates — Dashboards (worker finished), PDF review (worker failed)",
+        );
+      }),
+    ),
+  );
+});
+
+describe("parseWakeDigest", () => {
+  it("reads back what wakeDigest wrote", () => {
+    const wakes: ReadonlyArray<FirstmateReactor.FirstmateWake> = [
+      {
+        taskId: "firstmate-task:a",
+        title: "Ship: the thing",
+        reason: "worker-failed",
+        additionalReasons: ["orphan"],
+      },
+      { taskId: "firstmate-task:b", title: "Other", reason: "wake-time", additionalReasons: [] },
+    ];
+    expect(FirstmateReactor.parseWakeDigest(FirstmateReactor.wakeDigest(wakes))).toEqual(wakes);
+  });
+
+  it("merges reasons per task, keeping first positions", () => {
+    const merged = FirstmateReactor.mergeWakes(
+      [{ taskId: "a", title: "A", reason: "worker-completed", additionalReasons: [] }],
+      [
+        { taskId: "b", title: "B", reason: "orphan" },
+        {
+          taskId: "a",
+          title: "A",
+          reason: "worker-failed",
+          additionalReasons: ["worker-completed"],
+        },
+      ],
+    );
+    expect(merged).toEqual([
+      { taskId: "a", title: "A", reason: "worker-completed", additionalReasons: ["worker-failed"] },
+      { taskId: "b", title: "B", reason: "orphan" },
+    ]);
+  });
 });
 
 describe("wakeNotification", () => {

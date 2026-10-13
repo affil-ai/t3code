@@ -2307,6 +2307,105 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  // fork: firstmate
+  it.effect("revises a queued server notification in place and refuses other messages", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-layer-notification-revise");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-notification-revise-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-layer-notification-revise-project"),
+        title: "Revise a queued wake",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-notification-revise",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-notification-revise-active"),
+        threadId,
+        messageId: MessageId.make("runtime-layer-notification-revise-active"),
+        text: "Keep the provider occupied.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "agent",
+        creationSource: "server",
+        commandId: CommandId.make("runtime-layer-notification-revise-wake"),
+        threadId,
+        messageId: MessageId.make("runtime-layer-notification-revise-wake"),
+        text: "First digest",
+        attachments: [],
+        notification: { source: { kind: "monitor" }, outcome: "completed", summary: "One" },
+        dispatchMode: { type: "queue_after_active" },
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-notification-revise-user"),
+        threadId,
+        messageId: MessageId.make("runtime-layer-notification-revise-user"),
+        text: "A user follow-up.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const runFor = (messageId: string) =>
+        before.runs.find((run) => run.userMessageId === messageId && run.status === "queued");
+      const wakeRun = runFor("runtime-layer-notification-revise-wake");
+      const userRun = runFor("runtime-layer-notification-revise-user");
+      assert.isDefined(wakeRun);
+      assert.isDefined(userRun);
+      if (wakeRun === undefined || userRun === undefined) return;
+
+      const notification = {
+        source: { kind: "monitor" as const },
+        outcome: "failed" as const,
+        summary: "Two",
+      };
+      yield* orchestrator.dispatch({
+        type: "queued-notification.revise",
+        commandId: CommandId.make("runtime-layer-notification-revise-apply"),
+        threadId,
+        runId: wakeRun.id,
+        text: "Merged digest",
+        notification,
+      });
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      const message = after.messages.find(
+        (candidate) => candidate.id === "runtime-layer-notification-revise-wake",
+      );
+      assert.equal(message?.text, "Merged digest");
+      assert.deepEqual(message?.notification, notification);
+      assert.equal(after.runs.find((run) => run.id === wakeRun.id)?.status, "queued");
+
+      const refused = yield* orchestrator
+        .dispatch({
+          type: "queued-notification.revise",
+          commandId: CommandId.make("runtime-layer-notification-revise-refused"),
+          threadId,
+          runId: userRun.id,
+          text: "Not a wake",
+          notification,
+        })
+        .pipe(Effect.flip);
+      assert.equal(refused._tag, "OrchestratorDispatchError");
+    }),
+  );
+
   it.effect.each(["manual", "automatic"])("settling ends every pull request watch: %s", (mode) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
