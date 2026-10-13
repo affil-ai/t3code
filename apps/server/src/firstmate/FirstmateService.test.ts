@@ -1,6 +1,7 @@
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
+  FirstmateError,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   ProjectId,
@@ -15,17 +16,17 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import type * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
-import { defaultCoordinatorPrompt } from "./coordinatorPrompt.ts";
+import { coordinatorKickoff } from "./coordinatorPrompt.ts";
+import * as FirstmateHome from "./FirstmateHome.ts";
 import * as FirstmateService from "./FirstmateService.ts";
 
 const coordinator = ThreadId.make("firstmate-coordinator");
 
 const layerDependencies = Layer.mergeAll(
-  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
+  Layer.mock(FirstmateHome.FirstmateHome)({ rename: () => Effect.void }),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(ThreadManagement.ThreadManagementService)({}),
   NodeCrypto.layer,
@@ -215,17 +216,21 @@ describe("FirstmateService", () => {
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
-  it.effect("start launches a fresh coordinator in the Scratch project", () =>
+  it.effect("start launches the coordinator at the root of the Firstmate home project", () =>
     Effect.gen(function* () {
-      const projectId = ProjectId.make("project:scratch");
+      const projectId = ProjectId.make("project:firstmate-home");
       const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+      const ensured: string[] = [];
       const launched: ThreadLaunchService.ThreadLaunchInput[] = [];
       const layer = FirstmateService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-              namedProjectsRoot: "",
-              ensureScratchProject: Effect.succeed({ projectId }),
+            Layer.mock(FirstmateHome.FirstmateHome)({
+              ensure: ({ name }) => {
+                ensured.push(name);
+                return Effect.succeed({ projectId });
+              },
+              rename: () => Effect.void,
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({
               launch: (input) => {
@@ -235,7 +240,9 @@ describe("FirstmateService", () => {
                 } as ThreadLaunchService.ThreadLaunchResult);
               },
             }),
-            Layer.mock(ThreadManagement.ThreadManagementService)({}),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: () => Effect.succeed(null),
+            }),
             NodeCrypto.layer,
             NodeSqliteClient.layer({ filename: ":memory:" }),
           ),
@@ -243,34 +250,38 @@ describe("FirstmateService", () => {
       );
       const context = yield* Layer.build(layer);
       const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
+      yield* service.setAppearance({ name: "Jarvis", icon: "bot" });
       const result = yield* service.start({ modelSelection });
       expect(result.threadId).toBe("launched-coordinator");
       expect(result.snapshot.coordinatorThreadId).toBe("launched-coordinator");
+      // The home project is titled, and the kickoff written, with the custom name.
+      expect(ensured).toEqual(["Jarvis"]);
       expect(launched).toHaveLength(1);
-      // A root launch in Scratch: ThreadLaunchService claims the thread's own folder.
       expect(launched[0]).toMatchObject({
         projectId,
+        title: "Jarvis",
         modelSelection,
         workspaceStrategy: { type: "root" },
-        initialMessage: { text: defaultCoordinatorPrompt, attachments: [] },
+        initialMessage: { text: coordinatorKickoff("Jarvis"), attachments: [] },
       });
+      expect(launched[0]!.initialMessage!.text).toMatch(/^You are Jarvis\. .*AGENTS\.md/);
       // A fresh thread: no threadId requested and no reuse.
       expect(launched[0]!.threadId).toBeUndefined();
       expect(launched[0]!.reuseExistingThread).toBeUndefined();
     }).pipe(Effect.scoped),
   );
 
-  it.effect("start fails without launching when Scratch is unavailable", () =>
+  it.effect("start fails without launching when the home folder cannot be set up", () =>
     Effect.gen(function* () {
       const launched: ThreadLaunchService.ThreadLaunchInput[] = [];
       const layer = FirstmateService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-              namedProjectsRoot: "",
-              ensureScratchProject: Effect.fail(
-                new ManagedProjectFolders.ScratchUnavailableError(),
-              ),
+            Layer.mock(FirstmateHome.FirstmateHome)({
+              ensure: () =>
+                Effect.fail(
+                  new FirstmateError({ message: "Could not set up the Firstmate folder." }),
+                ),
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({
               launch: (input) => {
@@ -289,9 +300,7 @@ describe("FirstmateService", () => {
       const failure = yield* service
         .start({ modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" } })
         .pipe(Effect.flip);
-      expect(failure.message).toBe(
-        "Threads without a project are not available on this environment.",
-      );
+      expect(failure.message).toBe("Could not set up the Firstmate folder.");
       expect(launched).toHaveLength(0);
       expect((yield* snapshot(service)).coordinatorThreadId).toBeNull();
     }).pipe(Effect.scoped),
@@ -311,14 +320,17 @@ describe("FirstmateService", () => {
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
-  it.effect("renames the coordinator chat through a thread metadata update", () =>
+  it.effect("renames the coordinator chat and the home project", () =>
     Effect.gen(function* () {
       const dispatched: OrchestrationV2ServerCommand[] = [];
+      const projectRenames: string[] = [];
       const titles = new Map<string, string>([[coordinator, "Firstmate"]]);
       const layer = FirstmateService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
+            Layer.mock(FirstmateHome.FirstmateHome)({
+              rename: (name) => Effect.sync(() => void projectRenames.push(name)),
+            }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({
               getThreadShell: (threadId) =>
@@ -361,6 +373,8 @@ describe("FirstmateService", () => {
       yield* service.setCoordinator({ threadId: ThreadId.make("gone") });
       yield* service.setAppearance({ name: "Mate", icon: "star" });
       expect(dispatched).toHaveLength(1);
+      // The home project follows every save; it skips an unchanged title itself.
+      expect(projectRenames).toEqual(["Jarvis", "Jarvis", "Jarvis", "Mate"]);
     }).pipe(Effect.scoped),
   );
 
@@ -380,7 +394,7 @@ describe("FirstmateService", () => {
       const layer = FirstmateService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
+            Layer.mock(FirstmateHome.FirstmateHome)({ rename: () => Effect.void }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({
               getThreadShell: () => Effect.succeed(null),

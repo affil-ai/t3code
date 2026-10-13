@@ -252,6 +252,7 @@ import { FirstmateSidebarLink } from "./firstmate/FirstmateSidebarLink"; // fork
 import { useOfficeThreads } from "../state/office"; // fork: office
 import { officeFolders } from "./work/officeGroups"; // fork: office
 import { useFirstmateCoordinatorThreadKeys } from "./firstmate/useFirstmateCoordinatorThreadKeys"; // fork: firstmate
+import { readFirstmateHomeProjectKeys } from "./firstmate/firstmateChatLists"; // fork: firstmate
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -3514,6 +3515,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
             scopedProjectKey(
               scopeProjectRef(environmentId as EnvironmentId, projectId as ProjectId),
             ),
+          excludedProjectKeys: readFirstmateHomeProjectKeys(), // fork: firstmate
         });
         const picked = projectKey === null ? undefined : repositoryProjectByKey.get(projectKey);
         if (!picked) return;

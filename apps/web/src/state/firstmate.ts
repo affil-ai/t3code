@@ -14,6 +14,7 @@ import {
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { useEnvironmentQuery } from "./query";
 
@@ -99,4 +100,9 @@ const firstmateHomeAtom = Atom.make((get): FirstmateHome | null => {
 
 export function useFirstmateHome(): FirstmateHome | null {
   return useAtomValue(firstmateHomeAtom);
+}
+
+/** The current Firstmate home, read once outside React, as event handlers do. */
+export function readFirstmateHome(): FirstmateHome | null {
+  return appAtomRegistry.get(firstmateHomeAtom);
 }

@@ -35,8 +35,12 @@ export function resolveWorkChatRepositoryKey(input: {
     Pick<SidebarThreadSummary, "environmentId" | "projectId" | "updatedAt" | "latestUserMessageAt">
   >;
   scopedProjectKey: (environmentId: string, projectId: string) => string;
+  /** Projects a new chat never runs in, such as Firstmate's home. */
+  excludedProjectKeys?: ReadonlySet<string>;
 }): string | null {
-  const { activeProjectKey, defaultProjectKey, projectKeys } = input;
+  const { activeProjectKey, defaultProjectKey } = input;
+  const excluded = input.excludedProjectKeys ?? new Set<string>();
+  const projectKeys = new Set([...input.projectKeys].filter((key) => !excluded.has(key)));
   if (activeProjectKey !== null && projectKeys.has(activeProjectKey)) return activeProjectKey;
   if (defaultProjectKey !== null && projectKeys.has(defaultProjectKey)) return defaultProjectKey;
   let best: { key: string; at: number } | null = null;
