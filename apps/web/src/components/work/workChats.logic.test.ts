@@ -220,4 +220,27 @@ describe("resolveWorkChatRepositoryKey", () => {
       }),
     ).toBeNull();
   });
+
+  it("never picks an excluded project, even the open chat's", () => {
+    expect(
+      resolveWorkChatRepositoryKey({
+        activeProjectKey: "env:b",
+        defaultProjectKey: null,
+        projectKeys,
+        threads,
+        scopedProjectKey: keyOf,
+        excludedProjectKeys: new Set(["env:b"]),
+      }),
+    ).toBe("env:a");
+    expect(
+      resolveWorkChatRepositoryKey({
+        activeProjectKey: null,
+        defaultProjectKey: null,
+        projectKeys: new Set(["env:home"]),
+        threads: [],
+        scopedProjectKey: keyOf,
+        excludedProjectKeys: new Set(["env:home"]),
+      }),
+    ).toBeNull();
+  });
 });

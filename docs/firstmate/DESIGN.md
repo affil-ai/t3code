@@ -4,7 +4,7 @@ Firstmate is a global coordinator chat. The user talks to one thread. It turns
 requests into tracked tasks, starts one worker thread per task, and is woken
 when a worker needs attention. The server keeps the task list. The
 coordinator does not track tasks in its own context. Behavior lives in the
-coordinator's prompt and skills, not in the server.
+coordinator's home folder, not in the server.
 
 This is a fork-only feature. Keep it modular so upstream merges stay easy.
 
@@ -58,8 +58,8 @@ an actor (`coordinator`, `user`, or `system`), and a summary. Every create and
 update writes one row.
 
 `firstmate_config` is a single row holding `coordinatorThreadId`, which is
-null until set, plus the user's `name` (default "Firstmate") and `icon`
-(default "compass"). Columns added after the first release are added at
+null until set, `homeProjectId`, which is null until the first start, plus the
+user's `name` (default "Firstmate") and `icon` (default "compass"). Columns added after the first release are added at
 service start when `PRAGMA table_info` shows them missing.
 
 ## Server
@@ -110,40 +110,42 @@ Follow the `scheduledTasks.*` pattern in `rpc.ts` and `ws.ts`:
 - `firstmate.getTask` returns a task with its events.
 - `firstmate.setCoordinator({ threadId | null })` sets or clears the
   coordinator.
-- `firstmate.start({ modelSelection })` creates a coordinator thread in the
-  Scratch project (`ManagedProjectFolders.ensureScratchProject`, as an MCP
-  `scratch: true` launch does; the root launch claims the thread's own
-  folder). It reuses the thread-creation path that scheduled tasks use to
-  start a fresh thread, sends `defaultCoordinatorPrompt` from
-  `apps/server/src/firstmate/coordinatorPrompt.ts` as the first message, and
+- `firstmate.start({ modelSelection })` prepares the home project (below),
+  then launches a coordinator thread at its root (`workspaceStrategy: root`)
+  through the thread-creation path scheduled tasks use for a fresh thread. It
   sets the new thread as coordinator. The thread is titled with the
-  configured name.
-- `firstmate.setAppearance({ name, icon })` saves the name and icon and
-  renames the coordinator chat with a `thread.metadata.update` command, the
-  same path a thread rename takes. `icon` is any short key; clients draw a
-  key they do not know as the compass.
+  configured name, and its first message is the short kickoff from
+  `coordinatorPrompt.ts`, which points the agent at `AGENTS.md` and `notes/`.
+- `firstmate.setAppearance({ name, icon })` saves the name and icon, renames
+  the coordinator chat with a `thread.metadata.update` command (the path a
+  thread rename takes), and retitles the home project through
+  `ProjectService.update`. `icon` is any short key; clients draw a key they
+  do not know as the compass.
 
-## Default coordinator prompt
+## Home project
 
-Keep it short. Users customize the coordinator with their own skills and
-rules.
+The coordinator's steering is files, not a prompt the server holds, so the
+provider harness loads it the way it loads any project's
+(`apps/server/src/firstmate/FirstmateHome.ts`):
 
-- You are Firstmate, the user's single point of contact. Every request becomes
-  a Firstmate task: record the user's intent verbatim and a definition of
-  done.
-- Do not do project work yourself. Start one worker thread per task with
-  `t3_thread_launch` and a new worktree. Record its thread id with
-  `firstmate_task_update`. To steer the worker or send it a follow-up, use
-  `t3_thread_send`.
-- After every wake, reconcile from `firstmate_task_list` rather than from
-  memory. Every open task must have a next actor, plus either a running worker
-  or a `wakeAt`.
-- Close a task only with evidence: a merged PR, a delivered report, or the
-  user's acceptance. Never merge a PR or discard work without the user's
-  explicit word. A decision for the user is a task whose `nextActor` is
-  `user`.
-- Talk in outcomes and decisions, and include PR URLs. Do not report internal
-  mechanics.
+- The folder is `~/firstmate` for the server's user, or
+  `T3CODE_FIRSTMATE_HOME` when set.
+- Each start creates any missing seed file (`homeFiles.ts`): `AGENTS.md`
+  with the standing instructions, `CLAUDE.md` importing it (`@AGENTS.md`),
+  `README.md`, `notes/README.md`, and `.agents/skills/README.md`, with
+  `.claude/skills` linked to `../.agents/skills`. A file that exists is never
+  rewritten, so user edits win and deleting a file restores the seed.
+- The folder is a Git repository. A start commits only the seed paths it
+  added, falling back to `Firstmate <firstmate@localhost>` when Git has no
+  identity. A failed commit leaves the files and still starts.
+- The project is found by workspace root, or created with
+  `ProjectService.bootstrap` and titled with the configured name.
+
+The standing instructions cover the task rules: every request is a task
+recorded verbatim with a definition of done, one worker per task in a new
+worktree, reconcile from `firstmate_task_list` after every wake, close only
+with evidence, and talk in outcomes. They also have Firstmate read `notes/`
+each session, write lasting learnings there, and write skills on request.
 
 ## Web
 
@@ -171,6 +173,10 @@ rules.
 - The panel's menu offers "Name and icon…", a dialog with a name field and a
   grid of twelve lucide icons (`firstmateIcons.tsx`), and "Stop using this
   chat", which calls `setCoordinator(null)` and brings the Start button back.
+- The Work sidebar lists Work projects, not server projects, so the home
+  project shows no row there; the coordinator is left out of its chat lists.
+  A new Work chat skips the home project when it picks a repository to run
+  in. Code mode lists the home project like any other.
 - Sidebar: in Work mode, directly below Search in `LegacySidebar.tsx`, render
   `<FirstmateSidebarLink />` from `components/firstmate/`. It shows the
   chosen name and icon with a badge counting Needs-you tasks. It targets the

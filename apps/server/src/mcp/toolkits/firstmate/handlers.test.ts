@@ -6,10 +6,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import * as FirstmateHome from "../../../firstmate/FirstmateHome.ts";
 import * as FirstmateService from "../../../firstmate/FirstmateService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
-import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
@@ -36,7 +36,7 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
   const layerFirstmate = FirstmateService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
+        Layer.mock(FirstmateHome.FirstmateHome)({}),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
         NodeCrypto.layer,
