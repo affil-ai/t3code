@@ -58,6 +58,19 @@ describe("groupWorkThreads", () => {
     expect(groups.chats.map((entry) => entry.id)).toEqual(["b"]);
   });
 
+  it("leaves hidden threads out of Pinned, projects, and Chats", () => {
+    const groups = groupWorkThreads(
+      [thread("a"), thread("b"), thread("c"), thread("coordinator")],
+      { folders: projects, threadFolderByKey: { "env-1:b": "p2" } },
+      "updated_at",
+      ["env-1:a"],
+      new Set(["env-1:a", "env-1:b", "env-1:coordinator"]),
+    );
+    expect(groups.pinned).toEqual([]);
+    expect(groups.byProjectId.get("p2")).toBeUndefined();
+    expect(groups.chats.map((entry) => entry.id)).toEqual(["c"]);
+  });
+
   it("keeps subagents out of the sidebar but lists forks like other chats", () => {
     const groups = groupWorkThreads(
       [

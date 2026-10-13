@@ -19,6 +19,7 @@ import {
   ChevronRightIcon,
   CircleSlashIcon,
   EllipsisIcon,
+  ListChecksIcon,
   LinkIcon,
   MessageSquareTextIcon,
   PencilIcon,
@@ -40,7 +41,6 @@ import { Skeleton } from "../ui/skeleton";
 import { Spinner } from "../ui/spinner";
 import { FirstmateAppearanceDialog } from "./FirstmateAppearanceDialog";
 import { useFirstmateCommands } from "./firstmateCommands";
-import { FirstmateIcon } from "./firstmateIcons";
 import {
   type FirstmateColumnId,
   firstmateColumnForTask,
@@ -362,10 +362,10 @@ function TaskSections({
   );
 }
 
-/** The panel's top row: Firstmate's icon and name, or a way back from a task. */
+/** The panel's top row: "Tasks", or a way back from a task. */
 function PanelHeader({ children }: { readonly children: ReactNode }) {
   return (
-    <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border/60 px-2">
+    <div className="flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-b border-border/60 ps-2 pe-3">
       {children}
     </div>
   );
@@ -484,7 +484,7 @@ export function FirstmateTasksPanel({
       : (snapshot.tasks.find((task) => task.id === selectedTaskId) ?? null);
   const needsYou = countFirstmateNeedsYou(snapshot.tasks);
   return (
-    <div className="@container/tasks flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+    <div className="@container/tasks flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
       {selectedTask ? (
         <>
           <PanelHeader>
@@ -503,8 +503,8 @@ export function FirstmateTasksPanel({
       ) : (
         <>
           <PanelHeader>
-            <FirstmateIcon icon={snapshot.icon} className="ms-1 size-4 shrink-0" />
-            <h2 className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.name}</h2>
+            <ListChecksIcon className="ms-1 size-4 shrink-0 text-muted-foreground" />
+            <h2 className="min-w-0 flex-1 truncate text-sm font-medium">Tasks</h2>
             {needsYou > 0 ? (
               <Badge variant="warning" size="sm" aria-label={`${needsYou} need you`}>
                 {needsYou}

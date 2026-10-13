@@ -1,22 +1,23 @@
 /**
  * The Tasks tab's label and icon in the right panel's tab bar, plus the
  * surface body. RightPanelTabs and ChatView delegate to these on one marked
- * line each, so Firstmate's name and icon stay in Firstmate's own files.
+ * line each. The tab is always "Tasks" with a checklist icon; Firstmate's
+ * custom name and icon stay on the sidebar row and the chat.
  */
 import type { ScopedThreadRef } from "@t3tools/contracts";
 
-import { readFirstmateName, useFirstmateHome } from "~/state/firstmate";
-import { FirstmateIcon } from "./firstmateIcons";
+import { ListChecksIcon } from "lucide-react";
+
 import { FirstmateTasksPanel } from "./FirstmateTasksPanel";
 
-/** The tab is named for Firstmate, so a renamed Firstmate renames its tab. */
+export const FIRSTMATE_TASKS_TITLE = "Tasks";
+
 export function firstmateTabTitle(): string {
-  return readFirstmateName();
+  return FIRSTMATE_TASKS_TITLE;
 }
 
 export function FirstmateTabIcon() {
-  const home = useFirstmateHome();
-  return <FirstmateIcon icon={home?.snapshot.icon} className="size-3 shrink-0" />;
+  return <ListChecksIcon className="size-3 shrink-0" />;
 }
 
 export function FirstmateTasksSurface({ threadRef }: { readonly threadRef: ScopedThreadRef }) {

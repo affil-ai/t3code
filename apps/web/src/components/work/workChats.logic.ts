@@ -67,6 +67,8 @@ export function groupWorkThreads(
   data: Pick<WorkModeData, "folders" | "threadFolderByKey">,
   sortOrder: SidebarThreadSortOrder,
   pinnedThreadKeys: ReadonlyArray<string> = [],
+  /** Threads with their own sidebar entry, such as the Firstmate coordinator. */
+  hiddenThreadKeys: ReadonlySet<string> = new Set(),
 ): WorkThreadGroups {
   const pinRank = new Map(pinnedThreadKeys.map((key, index) => [key, index] as const));
   const pinned: SidebarThreadSummary[] = [];
@@ -85,6 +87,7 @@ export function groupWorkThreads(
       continue;
     }
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+    if (hiddenThreadKeys.has(threadKey)) continue;
     if (pinRank.has(threadKey)) {
       pinned.push(thread);
       continue;
