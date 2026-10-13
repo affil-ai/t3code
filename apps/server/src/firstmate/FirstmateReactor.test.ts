@@ -169,7 +169,7 @@ describe("FirstmateReactor", () => {
         const sends = yield* Ref.get(harness.sends);
         expect(sends).toHaveLength(1);
         expect(sends[0]).toMatchObject({ mode: "queue", threadId: coordinatorId });
-        expect(sends[0]!.text).toContain(`- ${task.id} Task one: worker-completed (run:done)`);
+        expect(sends[0]!.text).toContain(`- ${task.id} Task one: worker-completed`);
         expect(sends[0]!.text).not.toContain("Quiet task");
         expect(sends[0]!.text).toContain("Reconcile with firstmate_task_list");
 
@@ -180,7 +180,7 @@ describe("FirstmateReactor", () => {
         yield* harness.reactor.sweep();
         const after = yield* Ref.get(harness.sends);
         expect(after).toHaveLength(2);
-        expect(after[1]!.text).toContain("worker-failed (run:retry)");
+        expect(after[1]!.text).toContain("Task one: worker-failed");
       }),
     ),
   );

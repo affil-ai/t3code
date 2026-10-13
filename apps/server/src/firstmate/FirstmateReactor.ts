@@ -59,7 +59,7 @@ export function wakeDigest(wakes: ReadonlyArray<FirstmateWake>): string {
     "Firstmate wake-up:",
     ...wakes.map(
       (wake) =>
-        `- ${wake.taskId} ${wake.title}: ${[wake.reason, ...(wake.additionalReasons ?? [])].join(", ")}${wake.runId === undefined ? "" : ` (${wake.runId})`}`,
+        `- ${wake.taskId} ${wake.title}: ${[wake.reason, ...(wake.additionalReasons ?? [])].join(", ")}`,
     ),
     "",
     "Reconcile with firstmate_task_list, update every task you touch, and tell the user only about outcomes and decisions.",
