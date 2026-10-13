@@ -45,7 +45,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { Spinner } from "../ui/spinner";
 import { FirstmateAppearanceDialog } from "./FirstmateAppearanceDialog";
-import { FirstmateArtifactList, FirstmateArtifactStrip } from "./FirstmateTaskArtifacts";
+import { FirstmateArtifactList } from "./FirstmateTaskArtifacts";
 import { useFirstmateCommands } from "./firstmateCommands";
 import {
   type FirstmateColumnId,
@@ -210,7 +210,6 @@ function TaskCard({
   readonly onOpen: () => void;
 }) {
   const closed = task.state === "done" || task.state === "dropped";
-  const coordinatorThreadId = use(CoordinatorThreadContext);
   return (
     <li
       className={cn(
@@ -261,13 +260,6 @@ function TaskCard({
               />
             ))}
           </div>
-        ) : null}
-        {coordinatorThreadId !== null && (task.artifacts?.length ?? 0) > 0 ? (
-          <FirstmateArtifactStrip
-            environmentId={environmentId}
-            threadId={coordinatorThreadId}
-            artifacts={task.artifacts ?? []}
-          />
         ) : null}
       </div>
     </li>
