@@ -223,6 +223,28 @@ describe("durable Treehouse workspaces", () => {
     ),
   );
 
+  it.effect("ignores a retired owner's cleanup after the same slot has a new owner", () =>
+    fixture(({ pool, cwd, slots, commands }) =>
+      Effect.gen(function* () {
+        const oldPath = yield* acquire(pool, cwd);
+        yield* pool.release(oldPath, owner);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO treehouse_thread_lease
+          (thread_id,cwd,path,lease_id,merge_ref,active)
+          VALUES (${other},${cwd},${oldPath},'replacement-lease','main',1)`;
+        slots[0]!.lease_id = "replacement-lease";
+        slots[0]!.lease_holder = "t3:" + other;
+        slots[0]!.branch = "feature/" + other;
+        const count = commands.length;
+        expect(yield* pool.release(oldPath, owner)).toBe(true);
+        expect(commands).toHaveLength(count);
+        expect(slots[0]!.lease_id).toBe("replacement-lease");
+        expect((yield* pool.release(oldPath, child).pipe(Effect.result))._tag).toBe("Failure");
+        expect(slots[0]!.lease_id).toBe("replacement-lease");
+      }),
+    ),
+  );
+
   it.effect("returns a finished lease and restores the branch in a newly owned slot", () =>
     fixture(({ pool, cwd, commands }) =>
       Effect.gen(function* () {

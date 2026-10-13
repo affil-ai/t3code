@@ -2056,7 +2056,7 @@ const layerWsRpc = (
             ),
           ),
         ...Firstmate.rpcHandlers(firstmate), // fork: firstmate
-        ...Office.rpcHandlers(office), // fork: office
+        ...Office.rpcHandlers(office, storageCleanup), // fork: office
         [WS_METHODS.scheduledTasksList]: (_input) =>
           scheduledTasks.list().pipe(Effect.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>

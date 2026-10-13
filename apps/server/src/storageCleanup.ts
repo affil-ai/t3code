@@ -2,6 +2,8 @@ import {
   GitCommandError,
   OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderSessionJson,
+  type OfficeWorktreeCleanupOutcome,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -162,6 +164,9 @@ export class StorageCleanup extends Context.Service<
     readonly latestReport: Effect.Effect<StorageCleanupReport | null>;
     readonly reports: Stream.Stream<StorageCleanupReport | null>;
     readonly drain: Effect.Effect<void>;
+    readonly releaseThreadWorktree: (
+      threadId: ThreadId,
+    ) => Effect.Effect<OfficeWorktreeCleanupOutcome>;
   }
 >()("t3/storageCleanup") {}
 
@@ -393,6 +398,118 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // Office can purge canonical history only after this succeeds. Resolve the
+  // checkout from native thread state; never trust a worker's stale path.
+  const releaseThreadWorktree = (threadId: ThreadId): Effect.Effect<OfficeWorktreeCleanupOutcome> =>
+    Effect.gen(function* () {
+      const initial = yield* readThreads();
+      const thread = initial.threads.find((entry) => entry.id === threadId);
+      if (thread === undefined || thread.worktreePath === null) return "completed";
+      const cwd = path.resolve(thread.worktreePath);
+      return yield* withWorkspaceLease(
+        cwd,
+        Effect.gen(function* () {
+          const snapshot = yield* readThreads();
+          const current = snapshot.threads.find((entry) => entry.id === threadId);
+          if (current === undefined) return "retry";
+          if (current.worktreePath !== thread.worktreePath || current.branch !== thread.branch)
+            return "busy";
+          if (
+            !storageCleanupThreadIdle(current, yield* Clock.currentTimeMillis) ||
+            hasTerminal(cwd)
+          )
+            return "busy";
+          // Deleting this thread must leave a shared checkout with its other owner.
+          if (
+            snapshot.threads.some(
+              (entry) =>
+                entry.id !== threadId &&
+                entry.worktreePath !== null &&
+                path.resolve(entry.worktreePath) === cwd,
+            )
+          )
+            return "completed";
+          const sessions = yield* sql<{ payload_json: string }>`SELECT payload_json
+          FROM orchestration_v2_projection_provider_sessions WHERE status != 'stopped'`;
+          for (const row of sessions) {
+            const session = yield* decodeCleanupSession(row.payload_json);
+            if (path.resolve(session.cwd) === cwd || inside(cwd, path.resolve(session.cwd)))
+              return "busy";
+          }
+          if (Option.isSome(pool) && (yield* pool.value.ownsPath(cwd))) {
+            const retired = yield* sql`SELECT 1 FROM treehouse_thread_lease
+            WHERE thread_id = ${threadId} AND path = ${cwd} AND active = 0`;
+            if (retired.length > 0) return "completed";
+          }
+          if (!(yield* fs.exists(cwd))) return "completed";
+          const project = snapshot.projects.find((entry) => entry.id === current.projectId);
+          if (project === undefined || (yield* containsProjectRoot(cwd, snapshot.projects)))
+            return "unsafe";
+          const target = yield* fs.realPath(cwd);
+          const parent = yield* fs.realPath(path.dirname(cwd));
+          if (
+            target !== path.join(parent, path.basename(cwd)) ||
+            (yield* fs.stat(path.join(cwd, ".git"))).type !== "File" ||
+            (yield* branchChanged(cwd, current.branch))
+          )
+            return "unsafe";
+          const commonDir = (root: string) =>
+            git
+              .execute({
+                operation: "StorageCleanup.commonDirectory",
+                cwd: root,
+                args: ["rev-parse", "--git-common-dir"],
+              })
+              .pipe(
+                Effect.flatMap((result) => fs.realPath(path.resolve(root, result.stdout.trim()))),
+              );
+          if ((yield* commonDir(cwd)) !== (yield* commonDir(project.workspaceRoot)))
+            return "unsafe";
+          const rules = {
+            ...resolveWorktreeCleanup(yield* settingsService.getSettings, current.projectId),
+            worktreeKeepWhen: "any-local-files" as const,
+          };
+          if ((yield* localChangesReason(cwd, rules)) !== null) return "dirty";
+          yield* cleanupGit(project.workspaceRoot, ["fetch", "--all", "--prune"], "git fetch");
+          const unpushed = yield* git.execute({
+            operation: "StorageCleanup.remoteBackup",
+            cwd,
+            args: ["rev-list", "--max-count=1", "HEAD", "--not", "--remotes"],
+            maxOutputBytes: 1024,
+          });
+          if (unpushed.stdoutTruncated || unpushed.stdout.trim() !== "") return "unpushed";
+          const final = yield* readThreads();
+          const latest = final.threads.find((entry) => entry.id === threadId);
+          if (
+            latest === undefined ||
+            latest.worktreePath !== current.worktreePath ||
+            latest.branch !== current.branch ||
+            storageCleanupActivityAt(latest) !== storageCleanupActivityAt(current) ||
+            !storageCleanupThreadIdle(latest, yield* Clock.currentTimeMillis) ||
+            hasTerminal(cwd) ||
+            final.threads.some(
+              (entry) =>
+                entry.id !== threadId &&
+                entry.worktreePath !== null &&
+                path.resolve(entry.worktreePath) === cwd,
+            )
+          )
+            return "busy";
+          if ((yield* localChangesReason(cwd, rules)) !== null) return "dirty";
+          if (Option.isSome(pool) && (yield* pool.value.ownsPath(cwd)))
+            yield* pool.value.release(cwd, threadId);
+          else
+            yield* cleanupGit(
+              project.workspaceRoot,
+              ["-c", "status.showUntrackedFiles=normal", "worktree", "remove", "--", cwd],
+              "git worktree remove",
+            );
+          yield* gitManager.invalidateStatus(project.workspaceRoot);
+          return "completed";
+        }),
+      );
+    }).pipe(Effect.catch(() => Effect.succeed("retry" as const)));
+
   const cleanWorktrees = Effect.fn("StorageCleanup.cleanWorktrees")(function* (
     serverSettings: ServerSettings,
     now: number,
@@ -616,7 +733,7 @@ const make = Effect.gen(function* () {
         )
           return keep("settings changed since check");
         if (Option.isSome(pool) && (yield* pool.value.ownsPath(worktreePath))) {
-          yield* pool.value.release(worktreePath);
+          yield* pool.value.release(worktreePath, thread.id);
           keep("returned to the worktree pool for reuse");
           yield* gitManager.invalidateStatus(project.workspaceRoot);
           return;
@@ -860,6 +977,7 @@ const make = Effect.gen(function* () {
   });
   yield* start();
   return StorageCleanup.of({
+    releaseThreadWorktree,
     runNow,
     latestReport: SubscriptionRef.get(reportRef),
     reports: SubscriptionRef.changes(reportRef),

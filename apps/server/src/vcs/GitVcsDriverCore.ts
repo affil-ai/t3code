@@ -3856,7 +3856,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "removeWorktree",
   )(function* (input) {
     if (Option.isSome(pool)) {
-      const returned = yield* withWorkspaceLease(input.path, pool.value.release(input.path)).pipe(
+      const returned = yield* withWorkspaceLease(
+        input.path,
+        pool.value.release(input.path, input.threadId),
+      ).pipe(
         Effect.mapError(
           (cause) =>
             new GitCommandError({

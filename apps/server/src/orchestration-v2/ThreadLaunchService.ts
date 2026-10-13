@@ -651,7 +651,12 @@ const make = Effect.gen(function* () {
             // removal leaves the directory for the user to clean up rather than
             // reusing a checkout that may be half written.
             yield* git
-              .removeWorktree({ cwd: project.workspaceRoot, path: removedPath, force: true })
+              .removeWorktree({
+                cwd: project.workspaceRoot,
+                path: removedPath,
+                threadId,
+                force: true,
+              })
               .pipe(
                 Effect.andThen(
                   threads

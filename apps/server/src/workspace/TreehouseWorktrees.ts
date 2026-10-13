@@ -45,7 +45,10 @@ export class TreehouseWorktrees extends Context.Service<
     }) => Effect.Effect<string | null, TreehouseWorktreeError>;
     readonly ownsPath: (path: string) => Effect.Effect<boolean, TreehouseWorktreeError>;
     /** False identifies an ordinary Git worktree. Never force a pool return. */
-    readonly release: (path: string) => Effect.Effect<boolean, TreehouseWorktreeError>;
+    readonly release: (
+      path: string,
+      expectedThreadId?: ThreadId,
+    ) => Effect.Effect<boolean, TreehouseWorktreeError>;
   }
 >()("t3/workspace/TreehouseWorktrees") {}
 
@@ -310,17 +313,34 @@ const make = Effect.gen(function* () {
           Effect.map((rows) => rows.length > 0),
         ),
       ),
-    release: (input) =>
+    release: (input, expectedThreadId) =>
       guard(
         Effect.gen(function* () {
+          const expected =
+            expectedThreadId === undefined ? null : yield* readBinding(expectedThreadId);
+          if (expected !== null) {
+            if (expected.path !== path.resolve(input))
+              return yield* new TreehouseWorktreeError({ operation: "owner-workspace-changed" });
+            // A retired owner must not release a slot another thread acquired.
+            if (expected.active === 0) return true;
+          }
           const rows =
             yield* sql<Binding>`SELECT * FROM treehouse_thread_lease WHERE path = ${path.resolve(input)} AND active = 1`;
           const value = rows[0];
           if (value === undefined) {
+            if (expected !== null)
+              return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
             const known =
               yield* sql`SELECT 1 FROM treehouse_thread_lease WHERE path = ${path.resolve(input)} LIMIT 1`;
+            if (known.length > 0 && expectedThreadId !== undefined)
+              return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
             return known.length > 0;
           }
+          if (
+            expectedThreadId !== undefined &&
+            (expected === null || expected.lease_id !== value.lease_id)
+          )
+            return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
           const slots = yield* readStatus(value.cwd);
           const slot = slots.find((entry) => path.resolve(entry.path) === value.path);
           if (
