@@ -54,6 +54,8 @@ export const WORK_THREAD_DRAG_TYPE = "application/x-t3work-threads";
 export const WORK_PROJECT_DRAG_TYPE = "application/x-t3work-project";
 
 export interface WorkThreadGroups {
+  /** Pinned threads, most recently pinned first. They leave their project or Chats. */
+  pinned: SidebarThreadSummary[];
   byProjectId: ReadonlyMap<string, SidebarThreadSummary[]>;
   /** Threads in no Work project. */
   chats: SidebarThreadSummary[];
@@ -64,7 +66,10 @@ export function groupWorkThreads(
   threads: ReadonlyArray<SidebarThreadSummary>,
   data: Pick<WorkModeData, "folders" | "threadFolderByKey">,
   sortOrder: SidebarThreadSortOrder,
+  pinnedThreadKeys: ReadonlyArray<string> = [],
 ): WorkThreadGroups {
+  const pinRank = new Map(pinnedThreadKeys.map((key, index) => [key, index] as const));
+  const pinned: SidebarThreadSummary[] = [];
   const byProjectId = new Map<string, SidebarThreadSummary[]>();
   const chats: SidebarThreadSummary[] = [];
   for (const thread of threads) {
@@ -80,10 +85,12 @@ export function groupWorkThreads(
     ) {
       continue;
     }
-    const projectId = resolveThreadWorkProjectId(
-      data,
-      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-    );
+    const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+    if (pinRank.has(threadKey)) {
+      pinned.push(thread);
+      continue;
+    }
+    const projectId = resolveThreadWorkProjectId(data, threadKey);
     if (projectId === null) {
       chats.push(thread);
     } else {
@@ -95,7 +102,10 @@ export function groupWorkThreads(
   for (const [projectId, list] of byProjectId) {
     byProjectId.set(projectId, sortThreads(list, sortOrder));
   }
-  return { byProjectId, chats: sortThreads(chats, sortOrder) };
+  const pinRankOf = (thread: SidebarThreadSummary) =>
+    pinRank.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))) ?? 0;
+  pinned.sort((left, right) => pinRankOf(left) - pinRankOf(right));
+  return { pinned, byProjectId, chats: sortThreads(chats, sortOrder) };
 }
 
 export function flattenFolderTree(nodes: ReadonlyArray<WorkFolderNode>): WorkFolderNode[] {

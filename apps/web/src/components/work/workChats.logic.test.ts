@@ -46,6 +46,18 @@ describe("groupWorkThreads", () => {
     expect(groups.chats.map((entry) => entry.id).toSorted()).toEqual(["b", "c"]);
   });
 
+  it("moves pinned threads into Pinned, most recently pinned first", () => {
+    const groups = groupWorkThreads(
+      [thread("a"), thread("b"), thread("c"), thread("d", { archivedAt: createdAt })],
+      { folders: projects, threadFolderByKey: { "env-1:a": "p2" } },
+      "updated_at",
+      ["env-1:c", "env-1:a", "env-1:d"],
+    );
+    expect(groups.pinned.map((entry) => entry.id)).toEqual(["c", "a"]);
+    expect(groups.byProjectId.get("p2")).toBeUndefined();
+    expect(groups.chats.map((entry) => entry.id)).toEqual(["b"]);
+  });
+
   it("keeps lineage threads out of both Projects and Chats", () => {
     const groups = groupWorkThreads(
       [
