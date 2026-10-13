@@ -15,6 +15,7 @@ import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { useEnvironments } from "../../state/environments";
 import { T3Wordmark } from "../T3Wordmark";
+import { OfficeWordmark } from "../OfficeWordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
   resolveSidebarStageBackdropVariant,
@@ -131,7 +132,7 @@ export function SidebarBrandWidthProbe({
   );
 }
 
-/** "T3 Code" / "T3 Work": the brand doubles as the switch between the two modes. */
+/** The brand also selects Code, Work, or Office. */
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
   const mode = useAppMode();
   const setMode = useWorkModeStore((state) => state.setMode);
@@ -139,7 +140,7 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
   return (
     <Menu>
       <MenuTrigger
-        aria-label={`T3 ${current.label}. Switch mode`}
+        aria-label={`${mode === "office" ? "Office" : `T3 ${current.label}`}. Switch mode`}
         data-app-mode={mode}
         render={
           <button
@@ -152,15 +153,21 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
         }
       >
         <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-          <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
-          <span
-            className={cn(
-              "truncate [text-box:trim-both_cap_alphabetic]",
-              onBackdrop ? "text-white/70" : "text-muted-foreground",
-            )}
-          >
-            {current.label}
-          </span>
+          {mode === "office" ? (
+            <OfficeWordmark aria-label="Office" className="h-[1cap] w-auto shrink-0" />
+          ) : (
+            <>
+              <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
+              <span
+                className={cn(
+                  "truncate [text-box:trim-both_cap_alphabetic]",
+                  onBackdrop ? "text-white/70" : "text-muted-foreground",
+                )}
+              >
+                {current.label}
+              </span>
+            </>
+          )}
         </span>
         <ChevronDownIcon
           className={cn(
@@ -173,7 +180,13 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
         {APP_MODE_OPTIONS.map((option) => (
           <MenuItem key={option.mode} onClick={() => setMode(option.mode)}>
             <span className="flex min-w-0 flex-1 flex-col">
-              <span className="font-medium">T3 {option.label}</span>
+              <span className="font-medium">
+                {option.mode === "office" ? (
+                  <OfficeWordmark aria-label="Office" className="h-[1cap] w-auto" />
+                ) : (
+                  `T3 ${option.label}`
+                )}
+              </span>
               <span className="text-xs text-muted-foreground">{option.description}</span>
             </span>
             {option.mode === mode ? <CheckIcon className="size-4 shrink-0" /> : null}
@@ -185,6 +198,14 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
 }
 
 function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
+  const mode = useAppMode();
+  if (mode === "office") {
+    return (
+      <span className="inline-flex min-w-0 items-baseline text-sm">
+        <OfficeWordmark aria-label="Office" className="h-[1cap] w-auto shrink-0" />
+      </span>
+    );
+  }
   return (
     // Center the visible capitals, without the font's ascender/descender space.
     // Padding keeps ascenders and round-letter overshoot inside the truncation clip.
