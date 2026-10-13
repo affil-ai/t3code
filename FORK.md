@@ -127,8 +127,13 @@ work. It records each request as a task on the server, starts one worker
 thread per task, and is woken when a worker finishes, fails, or needs input.
 It is also woken when a task's wake time passes or a task has no one working
 on it. The task list lives on the server, not in the coordinator's context.
-The coordinator's behavior comes from its prompt and skills, so customize it
-there rather than in the server.
+
+The coordinator chat runs in its own project, `~/firstmate` on the server
+(override with `T3CODE_FIRSTMATE_HOME`). Starting Firstmate seeds it with
+`AGENTS.md` (the standing instructions; `CLAUDE.md` imports it), `notes/` for
+its memory, and `.agents/skills/` (linked from `.claude/skills`), and commits
+them in a Git repository there. Customize Firstmate by editing those files,
+not the server; existing files are never overwritten.
 
 [`docs/firstmate/DESIGN.md`](docs/firstmate/DESIGN.md) specifies the data,
 tools, wake rules, and UI.
@@ -136,7 +141,7 @@ tools, wake rules, and UI.
 | Piece                                              | Location                                                                      |
 | -------------------------------------------------- | ----------------------------------------------------------------------------- |
 | Contracts                                          | `packages/contracts/src/firstmate.ts`                                         |
-| Server: task store, wake reactor, default prompt   | `apps/server/src/firstmate/`                                                  |
+| Server: task store, wake reactor, home project     | `apps/server/src/firstmate/`                                                  |
 | MCP tools (`firstmate_task_*`)                     | `apps/server/src/mcp/toolkits/firstmate/`                                     |
 | Tasks panel, sidebar link, route                   | `apps/web/src/components/firstmate/`, `apps/web/src/routes/_chat.firstmate.*` |
 | Tables (created at server start, not by migration) | `firstmate_task`, `firstmate_task_event`, `firstmate_config`                  |

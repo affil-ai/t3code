@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as FirstmateHome from "./FirstmateHome.ts";
 import { FirstmateReactor, reactorLayer } from "./FirstmateReactor.ts";
 import * as FirstmateService from "./FirstmateService.ts";
 
@@ -13,4 +14,8 @@ export const runtimeLayer = Layer.effectDiscard(
     const reactor = yield* FirstmateReactor;
     yield* reactor.start();
   }),
-).pipe(Layer.provideMerge(reactorLayer), Layer.provideMerge(FirstmateService.layer));
+).pipe(
+  Layer.provideMerge(reactorLayer),
+  Layer.provideMerge(FirstmateService.layer),
+  Layer.provide(FirstmateHome.layer),
+);

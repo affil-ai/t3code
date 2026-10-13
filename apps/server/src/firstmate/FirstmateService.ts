@@ -15,6 +15,7 @@ import {
   FirstmateSetAppearanceInput as AppearanceInput,
   MessageId,
   type ModelSelection,
+  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -27,10 +28,10 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 
-import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import { defaultCoordinatorPrompt } from "./coordinatorPrompt.ts";
+import { coordinatorKickoff } from "./coordinatorPrompt.ts";
+import * as FirstmateHome from "./FirstmateHome.ts";
 
 export type FirstmateTask = typeof ContractFirstmateTask.Type;
 export type FirstmateTaskEvent = typeof ContractFirstmateTaskEvent.Type;
@@ -92,6 +93,7 @@ interface TaskRow {
 
 interface ConfigRow {
   readonly coordinator_thread_id: string | null;
+  readonly home_project_id: string | null;
   readonly name: string;
   readonly icon: string;
 }
@@ -199,7 +201,7 @@ export const layer = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const crypto = yield* Crypto.Crypto;
     const changes = yield* PubSub.sliding<void>(1);
-    const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+    const home = yield* FirstmateHome.FirstmateHome;
     const launches = yield* ThreadLaunchService.ThreadLaunchService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
 
@@ -258,6 +260,9 @@ export const layer = Layer.effect(
         `ALTER TABLE firstmate_config ADD COLUMN icon TEXT NOT NULL DEFAULT '${FIRSTMATE_DEFAULT_ICON}'`,
       );
     }
+    if (!configColumns.has("home_project_id")) {
+      yield* sql.unsafe(`ALTER TABLE firstmate_config ADD COLUMN home_project_id TEXT`);
+    }
     yield* sql`INSERT OR IGNORE INTO firstmate_config(config_id, coordinator_thread_id) VALUES (1, NULL)`;
 
     const selectRows = (input?: FirstmateTaskListInput) => {
@@ -267,12 +272,13 @@ export const layer = Layer.effect(
       return sql<TaskRow>`SELECT * FROM firstmate_task WHERE state NOT IN ('done', 'dropped') ORDER BY updated_at DESC, task_id DESC`;
     };
     const readConfig = sql<ConfigRow>`
-      SELECT coordinator_thread_id, name, icon FROM firstmate_config WHERE config_id = 1
+      SELECT coordinator_thread_id, home_project_id, name, icon FROM firstmate_config WHERE config_id = 1
     `.pipe(
       Effect.map(
         (rows): ConfigRow =>
           rows[0] ?? {
             coordinator_thread_id: null,
+            home_project_id: null,
             name: FIRSTMATE_DEFAULT_NAME,
             icon: FIRSTMATE_DEFAULT_ICON,
           },
@@ -316,6 +322,8 @@ export const layer = Layer.effect(
                 config.coordinator_thread_id === null
                   ? null
                   : ThreadId.make(config.coordinator_thread_id),
+              homeProjectId:
+                config.home_project_id === null ? null : ProjectId.make(config.home_project_id),
               name: config.name,
               icon: config.icon,
               tasks: rows.map(publicTask),
@@ -516,13 +524,16 @@ export const layer = Layer.effect(
       );
     const start: FirstmateService["Service"]["start"] = (input) =>
       Effect.gen(function* () {
-        // Like an MCP `scratch: true` launch: the coordinator lives in the
-        // Scratch project, and a root launch there claims its own folder.
-        const { projectId } = yield* folders.ensureScratchProject.pipe(
-          Effect.mapError((cause) => error(cause.message, undefined, cause)),
-        );
         const { name } = yield* readConfig.pipe(
           Effect.mapError((cause) => error("Could not read Firstmate settings.", undefined, cause)),
+        );
+        // The coordinator runs at the home project's root, so the provider
+        // loads its AGENTS.md, notes, and skills like any project's.
+        const { projectId } = yield* home.ensure({ name });
+        yield* sql`UPDATE firstmate_config SET home_project_id = ${projectId} WHERE config_id = 1`.pipe(
+          Effect.mapError((cause) =>
+            error("Could not record the Firstmate project.", undefined, cause),
+          ),
         );
         const launched = yield* launches.launch({
           commandId: CommandId.make(`firstmate:start:${yield* crypto.randomUUIDv4}`),
@@ -534,7 +545,7 @@ export const layer = Layer.effect(
           workspaceStrategy: { type: "root" },
           initialMessage: {
             messageId: MessageId.make(`firstmate:prompt:${yield* crypto.randomUUIDv4}`),
-            text: defaultCoordinatorPrompt,
+            text: coordinatorKickoff(name),
             attachments: [],
           },
           createdBy: "user",
@@ -569,6 +580,7 @@ export const layer = Layer.effect(
         yield* notify;
         const coordinator = yield* readCoordinator;
         if (coordinator !== null) yield* renameCoordinator(ThreadId.make(coordinator), input.name);
+        yield* home.rename(input.name);
         return yield* snapshot();
       }).pipe(
         Effect.mapError((cause) =>

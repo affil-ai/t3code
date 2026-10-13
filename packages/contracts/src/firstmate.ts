@@ -9,6 +9,7 @@ import {
 import {
   ForwardCompatibleArray,
   IsoDateTime,
+  ProjectId,
   RunId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -99,6 +100,8 @@ export const FIRSTMATE_DEFAULT_ICON = "compass";
 
 export const FirstmateConfig = Schema.Struct({
   coordinatorThreadId: Schema.NullOr(ThreadId),
+  /** The project rooted at Firstmate's home folder, once a start has made it. Older servers omit it. */
+  homeProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   name: FirstmateName,
   icon: FirstmateIcon,
 });
@@ -216,7 +219,7 @@ export type FirstmateSetAppearanceInput = typeof FirstmateSetAppearanceInput.Typ
 export const FirstmateSetAppearanceResult = FirstmateSnapshot;
 export type FirstmateSetAppearanceResult = typeof FirstmateSetAppearanceResult.Type;
 
-/** The coordinator always starts in the Scratch project; the client picks the model. */
+/** The coordinator starts at the root of Firstmate's home project; the client picks the model. */
 export const FirstmateStartInput = Schema.Struct({
   modelSelection: ModelSelection,
 });
