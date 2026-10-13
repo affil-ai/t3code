@@ -8,6 +8,7 @@ import {
   FirstmateConfig,
   FirstmateGetTaskInput,
   FirstmateRpcs,
+  FirstmateSetAppearanceInput,
   FirstmateSetCoordinatorInput,
   FirstmateSnapshot,
   FirstmateStartInput,
@@ -49,6 +50,7 @@ const decodeList = Schema.decodeUnknownSync(FirstmateTaskListInput);
 const decodeGetTask = Schema.decodeUnknownSync(FirstmateGetTaskInput);
 const decodeSetCoordinator = Schema.decodeUnknownSync(FirstmateSetCoordinatorInput);
 const decodeConfig = Schema.decodeUnknownSync(FirstmateConfig);
+const decodeAppearance = Schema.decodeUnknownSync(FirstmateSetAppearanceInput);
 const decodeSnapshot = Schema.decodeUnknownSync(FirstmateSnapshot);
 const decodeStartInput = Schema.decodeUnknownSync(FirstmateStartInput);
 const decodeStart = Schema.decodeUnknownSync(FirstmateStartResult);
@@ -169,7 +171,7 @@ describe("Firstmate task contracts", () => {
 });
 
 describe("Firstmate RPC contracts", () => {
-  it("registers the four feature methods with the shared RPC group", () => {
+  it("registers every feature method with the shared RPC group", () => {
     expect(FirstmateRpcs.map((rpc) => rpc._tag)).toEqual(Object.values(FIRSTMATE_WS_METHODS));
     for (const method of Object.values(FIRSTMATE_WS_METHODS)) {
       expect(WsRpcGroup.requests.has(method)).toBe(true);
@@ -180,9 +182,8 @@ describe("Firstmate RPC contracts", () => {
     expect(decodeSetCoordinator({ threadId: "thread:1" })).toEqual({ threadId: "thread:1" });
     expect(decodeSetCoordinator({ threadId: null })).toEqual({ threadId: null });
     expect(() => decodeSetCoordinator({})).toThrow();
-    expect(decodeConfig({ coordinatorThreadId: null })).toEqual({
-      coordinatorThreadId: null,
-    });
+    const config = { coordinatorThreadId: null, name: "Firstmate", icon: "compass" };
+    expect(decodeConfig(config)).toEqual(config);
   });
 
   it("uses taskId for shared RPC and MCP lookups", () => {
@@ -193,7 +194,12 @@ describe("Firstmate RPC contracts", () => {
   });
 
   it("streams forward-compatible snapshots and returns the new thread from start", () => {
-    const snapshot = { coordinatorThreadId: "thread:1", tasks: [task] };
+    const snapshot = {
+      coordinatorThreadId: "thread:1",
+      name: "Firstmate",
+      icon: "compass",
+      tasks: [task],
+    };
     expect(
       decodeSnapshot({
         ...snapshot,
@@ -204,6 +210,19 @@ describe("Firstmate RPC contracts", () => {
       threadId: "thread:1",
       snapshot,
     });
+  });
+
+  it("sets a trimmed name and any short icon key, leaving unknown icons to the client", () => {
+    expect(decodeAppearance({ name: "  Jarvis ", icon: "rocket" })).toEqual({
+      name: "Jarvis",
+      icon: "rocket",
+    });
+    // An icon a newer client added still decodes; older clients draw the compass.
+    expect(decodeAppearance({ name: "Jarvis", icon: "future-icon" }).icon).toBe("future-icon");
+    expect(() => decodeAppearance({ name: " ", icon: "rocket" })).toThrow();
+    expect(() => decodeAppearance({ name: "Jarvis", icon: "" })).toThrow();
+    expect(() => decodeAppearance({ name: "x".repeat(61), icon: "rocket" })).toThrow();
+    expect(() => decodeAppearance({ name: "Jarvis" })).toThrow();
   });
 
   it("starts from a model selection alone, with no project", () => {
@@ -219,10 +238,12 @@ describe("Firstmate RPC contracts", () => {
       "firstmate.getTask": "orchestration:read",
       "firstmate.setCoordinator": "orchestration:operate",
       "firstmate.start": "orchestration:operate",
+      "firstmate.setAppearance": "orchestration:operate",
     });
     expect(FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES).toEqual({
       "firstmate.setCoordinator": "orchestration:operate",
       "firstmate.start": "orchestration:operate",
+      "firstmate.setAppearance": "orchestration:operate",
     });
   });
 });

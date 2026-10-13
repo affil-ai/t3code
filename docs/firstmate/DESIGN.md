@@ -16,12 +16,15 @@ This is a fork-only feature. Keep it modular so upstream merges stay easy.
   - `apps/server/src/mcp/toolkits/firstmate/`
   - `apps/web/src/components/firstmate/`
   - the new route file
-- Edits to upstream files are limited to one import plus one registration
-  each. Mark every such edit with a `// fork: firstmate` comment. Expected
-  touch points:
+- Edits to upstream files only add lines. Mark every such line with a
+  `// fork: firstmate` comment. Expected touch points:
   - contracts `index.ts` and `rpc.ts`
   - server `server.ts`, `ws.ts`, and `mcp/McpHttpServer.ts`
   - web `LegacySidebar.tsx` and the generated route tree
+  - the right panel's `firstmate` surface: a union member and singleton case
+    in `rightPanelStore.ts`, a title and icon case in `RightPanelTabs.tsx`,
+    and one render-chain branch in `ChatView.tsx`, each delegating to
+    `components/firstmate/firstmateTab.tsx`
 - Do not add to the shared migration list. Upstream numbers its migrations,
   and a fork migration would collide. Create the Firstmate tables at service
   start with `CREATE TABLE IF NOT EXISTS`. All table names start with
@@ -55,7 +58,9 @@ an actor (`coordinator`, `user`, or `system`), and a summary. Every create and
 update writes one row.
 
 `firstmate_config` is a single row holding `coordinatorThreadId`, which is
-null until set.
+null until set, plus the user's `name` (default "Firstmate") and `icon`
+(default "compass"). Columns added after the first release are added at
+service start when `PRAGMA table_info` shows them missing.
 
 ## Server
 
@@ -101,7 +106,7 @@ Mutations from any other thread return a clear error.
 
 Follow the `scheduledTasks.*` pattern in `rpc.ts` and `ws.ts`:
 
-- `firstmate.subscribe` streams `{ coordinatorThreadId, tasks }`.
+- `firstmate.subscribe` streams `{ coordinatorThreadId, name, icon, tasks }`.
 - `firstmate.getTask` returns a task with its events.
 - `firstmate.setCoordinator({ threadId | null })` sets or clears the
   coordinator.
@@ -111,7 +116,12 @@ Follow the `scheduledTasks.*` pattern in `rpc.ts` and `ws.ts`:
   folder). It reuses the thread-creation path that scheduled tasks use to
   start a fresh thread, sends `defaultCoordinatorPrompt` from
   `apps/server/src/firstmate/coordinatorPrompt.ts` as the first message, and
-  sets the new thread as coordinator.
+  sets the new thread as coordinator. The thread is titled with the
+  configured name.
+- `firstmate.setAppearance({ name, icon })` saves the name and icon and
+  renames the coordinator chat with a `thread.metadata.update` command, the
+  same path a thread rename takes. `icon` is any short key; clients draw a
+  key they do not know as the compass.
 
 ## Default coordinator prompt
 
@@ -137,26 +147,32 @@ rules.
 
 ## Web
 
-- Route `apps/web/src/routes/_chat.firstmate.$environmentId.tsx`, inside the
-  chat layout so the sidebar stays.
-- The page has a read-only board on the left and the coordinator chat on the
-  right. Mount the chat as `ChatView` in embedded mode, the way
-  `components/work/DockChatPanel.tsx` does.
-- Board columns, mapped in a pure, tested logic file:
+- Firstmate is the coordinator's normal chat route with the full `ChatView`.
+  Its task list is the right panel's `{ id: "firstmate", kind: "firstmate" }`
+  surface, a singleton tab like Agents. The tab is opened whenever the
+  coordinator chat becomes the route; the user can close it like any tab.
+  Clicking the sidebar row, or coming back to the chat, opens it again.
+- Route `apps/web/src/routes/_chat.firstmate.$environmentId.tsx` forwards to
+  the coordinator chat. With no coordinator set, it shows an empty state with
+  one "Start Firstmate" button. It calls `firstmate.start` with the model a
+  new Scratch chat would open with (`firstmateModel.ts` runs the composer's
+  own resolvers), then opens the new chat. A deleted coordinator gets a "Stop
+  using this chat" button instead.
+- The panel is narrow: sections stack vertically, mapped in a pure, tested
+  logic file:
   - Needs you: `nextActor` is `user`.
   - In progress: `nextActor` is `worker` or `coordinator`.
   - Waiting: `state` is `waiting`, or `nextActor` is `external`.
   - Done: `done` or `dropped`. Show the latest 20, collapsed by default.
 - A card shows the title, note, age, and next actor, plus links to the worker
-  thread and PRs. Clicking it opens a detail panel with the intent, the
-  definition of done, the close evidence, and the event log.
-- With no coordinator set, show an empty state with one "Start Firstmate"
-  button. It calls `firstmate.start` with the model a new Scratch chat would
-  open with (`firstmateModel.ts` runs the composer's own resolvers). The
-  board's menu offers "Open chat on its own" and "Stop using this chat",
-  which calls `setCoordinator(null)` and brings the button back.
+  thread and PRs. Clicking it drills into the task inside the panel, with a
+  back button: the intent, the definition of done, the close evidence, and
+  the event log.
+- The panel's menu offers "Name and icon…", a dialog with a name field and a
+  grid of twelve lucide icons (`firstmateIcons.tsx`), and "Stop using this
+  chat", which calls `setCoordinator(null)` and brings the Start button back.
 - Sidebar: in Work mode, directly below Search in `LegacySidebar.tsx`, render
-  `<FirstmateSidebarLink />` from `components/firstmate/`. It shows a
-  "Firstmate" row with a badge counting Needs-you tasks. It targets the first
-  connected environment whose server answers `firstmate.subscribe`, and it is
-  hidden when none does, as with a stock server.
+  `<FirstmateSidebarLink />` from `components/firstmate/`. It shows the
+  chosen name and icon with a badge counting Needs-you tasks. It targets the
+  first connected environment whose server answers `firstmate.subscribe`,
+  and it is hidden when none does, as with a stock server.

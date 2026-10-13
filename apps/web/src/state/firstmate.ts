@@ -6,6 +6,7 @@ import {
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  FIRSTMATE_DEFAULT_NAME,
   FIRSTMATE_WS_METHODS,
   type EnvironmentId,
   type FirstmateSnapshot,
@@ -14,6 +15,7 @@ import {
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { useEnvironmentQuery } from "./query";
 
@@ -42,6 +44,12 @@ function createFirstmateEnvironmentAtoms(runtime: typeof connectionAtomRuntime) 
     start: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:firstmate:start",
       tag: FIRSTMATE_WS_METHODS.firstmateStart,
+      scheduler,
+      concurrency,
+    }),
+    setAppearance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:firstmate:set-appearance",
+      tag: FIRSTMATE_WS_METHODS.firstmateSetAppearance,
       scheduler,
       concurrency,
     }),
@@ -93,4 +101,13 @@ const firstmateHomeAtom = Atom.make((get): FirstmateHome | null => {
 
 export function useFirstmateHome(): FirstmateHome | null {
   return useAtomValue(firstmateHomeAtom);
+}
+
+/**
+ * Firstmate's name for plain-text labels such as the Tasks tab title, which
+ * render outside a hook. Renaming also renames the coordinator chat, so the
+ * tab bar re-renders and picks the new name up.
+ */
+export function readFirstmateName(): string {
+  return appAtomRegistry.get(firstmateHomeAtom)?.snapshot.name ?? FIRSTMATE_DEFAULT_NAME;
 }

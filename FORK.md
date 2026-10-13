@@ -138,12 +138,13 @@ tools, wake rules, and UI.
 | Contracts                                          | `packages/contracts/src/firstmate.ts`                                         |
 | Server: task store, wake reactor, default prompt   | `apps/server/src/firstmate/`                                                  |
 | MCP tools (`firstmate_task_*`)                     | `apps/server/src/mcp/toolkits/firstmate/`                                     |
-| Board, sidebar link, route                         | `apps/web/src/components/firstmate/`, `apps/web/src/routes/_chat.firstmate.*` |
+| Tasks panel, sidebar link, route                   | `apps/web/src/components/firstmate/`, `apps/web/src/routes/_chat.firstmate.*` |
 | Tables (created at server start, not by migration) | `firstmate_task`, `firstmate_task_event`, `firstmate_config`                  |
 
 In Work mode, the **Firstmate** link sits below Search in the sidebar, with a
-badge counting the tasks waiting on the user. It opens the task board beside
-the coordinator chat.
+badge counting the tasks waiting on the user. It opens the coordinator chat
+with a **Tasks** tab in the right panel. The panel's menu renames Firstmate
+and changes its icon for every client, and renames the chat to match.
 
 Firstmate needs this fork's server: build and run the server from this
 repository, not the published `t3` package. The client hides Firstmate on any

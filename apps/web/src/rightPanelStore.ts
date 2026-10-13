@@ -33,6 +33,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "agents",
+  "firstmate", // fork: firstmate
   "chat",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
@@ -91,6 +92,7 @@ export type RightPanelSurface =
   /** The thread's linked pull requests, one singleton tab beside any number of `pull-request` tabs. */
   | { id: "pull-requests"; kind: "pull-requests" }
   | { id: "agents"; kind: "agents" }
+  | { id: "firstmate"; kind: "firstmate" } // fork: firstmate
   /**
    * Another chat, shown beside the main thread. The id is stable while
    * `threadId` moves from null (a new, unsent chat) to the thread created by
@@ -257,6 +259,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "agents":
       return { id: "agents", kind };
+    case "firstmate": // fork: firstmate
+      return { id: "firstmate", kind }; // fork: firstmate
     case "device":
       return { id: "device", kind };
   }
