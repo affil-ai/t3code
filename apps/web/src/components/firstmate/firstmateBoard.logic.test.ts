@@ -50,13 +50,13 @@ describe("firstmateColumnForTask", () => {
       user: "needs-you",
       worker: "in-progress",
       coordinator: "in-progress",
-      external: "waiting",
+      external: "in-review",
     },
     waiting: {
       user: "needs-you",
-      worker: "waiting",
-      coordinator: "waiting",
-      external: "waiting",
+      worker: "in-review",
+      coordinator: "in-review",
+      external: "in-review",
     },
     done: { user: "done", worker: "done", coordinator: "done", external: "done" },
     dropped: { user: "done", worker: "done", coordinator: "done", external: "done" },
@@ -79,7 +79,7 @@ describe("firstmateColumnForTask", () => {
   });
 
   it("moves a blocked worker out of In progress", () => {
-    expect(firstmateColumnForTask(task("t", "waiting", "worker"))).toBe("waiting");
+    expect(firstmateColumnForTask(task("t", "waiting", "worker"))).toBe("in-review");
   });
 });
 

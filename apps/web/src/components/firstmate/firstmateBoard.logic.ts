@@ -1,6 +1,6 @@
 import type { FirstmateTask } from "@t3tools/contracts";
 
-export const FIRSTMATE_COLUMN_IDS = ["needs-you", "in-progress", "waiting", "done"] as const;
+export const FIRSTMATE_COLUMN_IDS = ["needs-you", "in-progress", "in-review", "done"] as const;
 export type FirstmateColumnId = (typeof FIRSTMATE_COLUMN_IDS)[number];
 
 export type FirstmateBoardColumns = Readonly<Record<FirstmateColumnId, readonly FirstmateTask[]>>;
@@ -15,13 +15,14 @@ export const FIRSTMATE_DONE_LIMIT = 20;
  * 1. Done: the task is done or dropped, whoever was last named to act.
  * 2. Needs you: the user acts next, even on a waiting task, so the board
  *    never hides a decision behind a waiting state.
- * 3. Waiting: the task is waiting, or someone outside acts next.
+ * 3. In review: the task is waiting on reviews or checks (state `waiting`), or
+ *    someone outside acts next.
  * 4. In progress: the worker or the coordinator acts next.
  */
 export function firstmateColumnForTask(task: FirstmateTask): FirstmateColumnId {
   if (task.state === "done" || task.state === "dropped") return "done";
   if (task.nextActor === "user") return "needs-you";
-  if (task.state === "waiting" || task.nextActor === "external") return "waiting";
+  if (task.state === "waiting" || task.nextActor === "external") return "in-review";
   return "in-progress";
 }
 
@@ -48,7 +49,7 @@ export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoa
   const columns: Record<FirstmateColumnId, FirstmateTask[]> = {
     "needs-you": [],
     "in-progress": [],
-    waiting: [],
+    "in-review": [],
     done: [],
   };
   for (const task of tasks) {
