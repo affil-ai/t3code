@@ -586,10 +586,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       ? "sm:invisible"
       : "sm:group-hover/menu-sub-item:invisible sm:group-focus-within/menu-sub-item:invisible",
   );
+  // The actions take no room until hover, so titles use the full row; on hover
+  // they sit over the hidden icons and shorten the title only if they are wider.
   const workActionsClassName = cn(
     "flex items-center justify-end gap-1.5 sm:col-start-1 sm:row-start-1",
     !isConfirmingArchive &&
-      "sm:invisible sm:group-hover/menu-sub-item:visible sm:group-focus-within/menu-sub-item:visible",
+      "sm:hidden sm:group-hover/menu-sub-item:flex sm:group-focus-within/menu-sub-item:flex",
   );
   const isPinned = useIsThreadPinned(threadKey);
   const clearConfirmingArchive = useCallback(() => {
@@ -1009,7 +1011,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         </div>
         {isWorkMode ? (
           // Work mode stacks the row's icons and its hover actions in one cell,
-          // so hovering swaps them without moving anything or resizing the row.
+          // so hovering swaps them in place instead of pushing the icons aside.
           <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:grid sm:gap-0">
             <div className={workIndicatorsClassName}>
               {canOperatePreview && discoveredPorts.length > 0 && (

@@ -184,6 +184,8 @@ function EnvironmentNotifications({
             description: toastDescription,
             data: {
               hideCopyButton: true,
+              // "Open thread" sits on its own row at the bottom right, under the message.
+              actionLayout: "stacked-end",
               leadingIcon:
                 kind === "completion" ? (
                   <CircleCheckIcon aria-hidden className="size-4 text-success-foreground" />
