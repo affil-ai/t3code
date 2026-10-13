@@ -434,6 +434,12 @@ export interface ClaudeAgentSdkSessionForkInput {
   readonly options: ForkSessionOptions;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
+  /**
+   * The provider instance's environment. The SDK reads session files from
+   * `CLAUDE_CONFIG_DIR` in `process.env`, so an instance with its own config
+   * dir forks in a history worker process that has this environment.
+   */
+  readonly environment?: NodeJS.ProcessEnv;
 }
 
 export interface ClaudeAgentSdkSubagentLookupInput {
@@ -649,6 +655,59 @@ export function makeClaudeAgentSdkProtocolLogger(input: {
       )
       .pipe(Effect.ignore);
   };
+}
+
+// The SDK's history helpers read `CLAUDE_CONFIG_DIR` from `process.env`. An
+// instance with its own config dir (a separate Claude home) runs them in a
+// short-lived worker with that environment, rather than changing the server's
+// environment while other providers run. The npm bundle ships the worker as a
+// sibling script; the single executable hosts it as a hidden subcommand.
+const CLAUDE_HISTORY_WORKER_TIMEOUT_MS = 30_000;
+const decodeHistoryWorkerForkResult = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ sessionId: Schema.String })),
+);
+
+function runClaudeHistoryWorkerFork(input: {
+  readonly isExecutable: boolean;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly sessionId: string;
+  readonly options: ForkSessionOptions;
+}): Effect.Effect<ForkSessionResult, ClaudeAgentSdkQueryRunnerError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const { execFile } = await import("node:child_process");
+      const { fileURLToPath } = await import("node:url");
+      const workerArguments = input.isExecutable
+        ? ["__claude-history"]
+        : [
+            fileURLToPath(
+              new URL(
+                import.meta.url.endsWith(".ts")
+                  ? "../../claude-history-worker.ts"
+                  : "./claude-history-worker.mjs",
+                import.meta.url,
+              ),
+            ),
+          ];
+      const stdout = await new Promise<string>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          [...workerArguments, "forkSession", input.sessionId, JSON.stringify(input.options)],
+          {
+            env: { ...input.environment, ELECTRON_RUN_AS_NODE: "1" },
+            timeout: CLAUDE_HISTORY_WORKER_TIMEOUT_MS,
+            maxBuffer: 1024 * 1024,
+          },
+          (error, out, stderr) =>
+            error
+              ? reject(new Error(stderr.trim() || error.message, { cause: error }))
+              : resolve(out),
+        );
+      });
+      return decodeHistoryWorkerForkResult(stdout);
+    },
+    catch: (cause) => queryRunnerError(cause, "forkSession"),
+  });
 }
 
 export const layerQueryRunner: Layer.Layer<
@@ -889,10 +948,19 @@ export const layerQueryRunner: Layer.Layer<
             options: input.options,
           },
         });
-        const result = yield* Effect.tryPromise({
-          try: () => forkClaudeSession(input.sessionId, input.options),
-          catch: (cause) => queryRunnerError(cause, "forkSession"),
-        });
+        const configDir = input.environment?.CLAUDE_CONFIG_DIR;
+        const result =
+          input.environment === undefined || configDir === process.env.CLAUDE_CONFIG_DIR
+            ? yield* Effect.tryPromise({
+                try: () => forkClaudeSession(input.sessionId, input.options),
+                catch: (cause) => queryRunnerError(cause, "forkSession"),
+              })
+            : yield* runClaudeHistoryWorkerFork({
+                isExecutable: yield* HostProcess.IsExecutable,
+                environment: input.environment,
+                sessionId: input.sessionId,
+                options: input.options,
+              });
         yield* logProtocolEvent({
           direction: "incoming",
           stage: "decoded",
@@ -9146,6 +9214,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 options: forkOptions,
                 threadId: forkInput.targetThreadId,
                 providerSessionId: input.providerSessionId,
+                environment: adapterOptions.environment,
               });
               yield* Ref.update(openedNativeThreads, (current) => {
                 const updated = new Set(current);

@@ -1,8 +1,9 @@
 /**
- * Files agent-created chats in their parent chat's Work project (see
+ * Files forks and agent-created chats in their parent chat's Work project (see
  * `threadParent.logic.ts`). Each recent unfiled chat is checked once per app
- * session: its detail is loaded, and a parent marker at the start of its first
- * message files it where the parent is.
+ * session. A fork names its parent in its lineage; for other chats the detail
+ * is loaded, and a parent marker at the start of the first message files it
+ * where the parent is.
  */
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadState } from "@t3tools/client-runtime/state/threads";
@@ -14,6 +15,7 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { useThreadShells } from "../../state/entities";
 import { environmentThreadDetails } from "../../state/threads";
 import { useWorkModeStore } from "../../workModeStore";
+import { getSidebarForkParentThreadId } from "../Sidebar.logic";
 import {
   parseThreadParentMarker,
   resolveParentWorkProjectId,
@@ -102,6 +104,19 @@ export function useThreadParentFiling(): void {
   useEffect(() => {
     // Without a filed chat there is no parent to follow.
     if (Object.keys(threadFolderByKey).length === 0) return;
+    // A fork names its parent in its lineage, so it is filed beside the parent
+    // directly, without reading a marker from its first message.
+    const store = useWorkModeStore.getState();
+    for (const thread of threads) {
+      if (thread.archivedAt !== null) continue;
+      const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      if (checkedKeys.has(key) || threadFolderByKey[key] !== undefined) continue;
+      const parentThreadId = getSidebarForkParentThreadId(thread);
+      if (parentThreadId === null) continue;
+      checkedKeys.add(key);
+      const projectId = resolveParentWorkProjectId(store, thread.environmentId, parentThreadId);
+      if (projectId !== null) store.fileThreads([key], projectId);
+    }
     const candidates = selectThreadParentCandidates(
       threads.map((thread) => ({
         key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),

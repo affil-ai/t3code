@@ -74,14 +74,13 @@ export function groupWorkThreads(
   const chats: SidebarThreadSummary[] = [];
   for (const thread of threads) {
     if (thread.archivedAt !== null) continue;
-    // Work's sidebar is a user-facing inbox, not the lineage navigator. Keep
-    // subagents and forks reachable from the thread's Lineage section while
-    // preventing them from duplicating their host in Projects or Chats.
+    // Work's sidebar is a user-facing inbox, not the lineage navigator. Forks
+    // are chats the user started, so they stay in it; subagents and other
+    // agent-created children stay reachable from the thread's Lineage section.
     if (
       thread.lineage !== undefined &&
-      (thread.lineage.parentThreadId !== null ||
-        isSidebarSubagentThread(thread) ||
-        getSidebarForkParentThreadId(thread) !== null)
+      getSidebarForkParentThreadId(thread) === null &&
+      (thread.lineage.parentThreadId !== null || isSidebarSubagentThread(thread))
     ) {
       continue;
     }

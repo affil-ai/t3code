@@ -58,7 +58,7 @@ describe("groupWorkThreads", () => {
     expect(groups.chats.map((entry) => entry.id)).toEqual(["b"]);
   });
 
-  it("keeps lineage threads out of both Projects and Chats", () => {
+  it("keeps subagents out of the sidebar but lists forks like other chats", () => {
     const groups = groupWorkThreads(
       [
         thread("root"),
@@ -85,7 +85,7 @@ describe("groupWorkThreads", () => {
     );
 
     expect(groups.byProjectId.get("p1")).toBeUndefined();
-    expect(groups.byProjectId.get("p2")).toBeUndefined();
+    expect(groups.byProjectId.get("p2")?.map((entry) => entry.id)).toEqual(["fork"]);
     expect(groups.chats.map((entry) => entry.id)).toEqual(["root"]);
   });
 });

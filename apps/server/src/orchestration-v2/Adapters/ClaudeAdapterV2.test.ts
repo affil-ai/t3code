@@ -1849,6 +1849,8 @@ describe("ClaudeAdapterV2 native fork", () => {
             },
             threadId: targetThreadId,
             providerSessionId,
+            // The instance environment, so the fork reads its Claude home.
+            environment: {},
           },
         ]);
         assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, "forked-native-session");
