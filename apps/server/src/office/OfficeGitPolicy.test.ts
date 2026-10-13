@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHubCredentials";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -55,7 +56,11 @@ const withRepository = <A, E>(
     yield* fs.makeDirectory(githubBin, { recursive: true });
     yield* fs.makeDirectory(originalHooks);
     for (const name of ["gh", "git-credential-office-app"])
-      yield* fs.writeFileString(path.join(githubBin, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      yield* fs.writeFileString(
+        path.join(githubBin, name),
+        name === "gh" ? "#!/bin/sh\nprintf 'test-installation-token\\n'\n" : "#!/bin/sh\nexit 0\n",
+        { mode: 0o700 },
+      );
     const git = (args: ReadonlyArray<string>, env?: Readonly<Record<string, string>>) =>
       runner
         .run({
@@ -120,7 +125,7 @@ describe("Office Git identity", () => {
   it.effect(
     "terminals follow the active actor and child lineage while another request is queued",
     () =>
-      withRepository(({ cwd }) =>
+      withRepository(({ cwd, git }) =>
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           const office = yield* OfficeService.OfficeService;
@@ -155,6 +160,29 @@ describe("Office Git identity", () => {
           expect(
             yield* policy.environmentForThread({ threadId: ThreadId.make("personal"), cwd }),
           ).toBeUndefined();
+          const [officeName, personalName] = yield* Effect.all(
+            [
+              policy.withThreadExecution(
+                { threadId, cwd },
+                git(["config", "user.name"], { GIT_AUTHOR_NAME: "Caller" }),
+              ),
+              git(["config", "user.name"]),
+            ],
+            { concurrency: "unbounded" },
+          );
+          expect(officeName).toBe("office-of-the-cto[bot]");
+          expect(personalName).toBe("Personal User");
+          expect(
+            yield* policy.withThreadExecution(
+              { threadId, cwd },
+              GitHubCredentials.ScopedCredential,
+            ),
+          ).toMatchObject({ source: "gh", host: "github.com" });
+          yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${JSON.stringify({ lineage: { rootThreadId: threadId }, worktreePath: cwd })} WHERE thread_id = ${threadId}`;
+          const unscoped = yield* policy
+            .withThreadExecution({ cwd }, Effect.succeed("must not execute"))
+            .pipe(Effect.result);
+          expect(unscoped._tag).toBe("Failure");
         }),
       ),
   );

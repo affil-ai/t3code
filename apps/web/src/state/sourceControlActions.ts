@@ -43,6 +43,7 @@ export type SourceControlActionKind =
 export interface SourceControlActionScope {
   readonly environmentId: EnvironmentId | null;
   readonly cwd: string | null;
+  readonly threadId?: ThreadId | undefined;
 }
 
 interface SourceControlActionState<
@@ -209,7 +210,10 @@ export function useVcsPullAction(scope: SourceControlActionScope) {
     }
     return pull({
       environmentId: target.environmentId,
-      input: { cwd: target.cwd },
+      input: {
+        cwd: target.cwd,
+        ...(scope.threadId === undefined ? {} : { threadId: scope.threadId }),
+      },
     });
   }, [pull, scope]);
   return useAction({

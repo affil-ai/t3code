@@ -1057,8 +1057,8 @@ export default function GitActionsControl({
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<PendingDefaultBranchAction | null>(null);
   const sourceControlScope = useMemo(
-    () => ({ environmentId: activeEnvironmentId, cwd: gitCwd }),
-    [activeEnvironmentId, gitCwd],
+    () => ({ environmentId: activeEnvironmentId, cwd: gitCwd, threadId: activeServerThread?.id }),
+    [activeEnvironmentId, gitCwd, activeServerThread?.id],
   );
   const vcsActionState = useAtomValue(vcsActionManager.stateAtom(sourceControlScope));
   const visibleInlineSuccess = inlineSuccess?.scopeKey === successScopeKey ? inlineSuccess : null;

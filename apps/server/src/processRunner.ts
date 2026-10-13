@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   collectUint8StreamText,
   decodeUtf8,
@@ -276,20 +277,22 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
   const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const outputMode = input.outputMode ?? "error";
   const truncatedMarker = input.truncatedMarker ?? "";
-  const extendEnv = input.env !== undefined;
+  const scopedEnvironment = yield* HostProcess.ExecutionEnvironment;
+  const env = scopedEnvironment === undefined ? input.env : { ...input.env, ...scopedEnvironment };
+  const extendEnv = env !== undefined;
   const spawnCommand = yield* resolveSpawnCommand(
     input.command,
     input.args,
-    input.env === undefined ? {} : { env: input.env, extendEnv },
+    env === undefined ? {} : { env, extendEnv },
   );
 
   const child = yield* spawner
     .spawn(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         ...((input.spawnCwd ?? input.cwd) ? { cwd: input.spawnCwd ?? input.cwd } : {}),
-        ...(input.env !== undefined
+        ...(env !== undefined
           ? {
-              env: input.env,
+              env,
               extendEnv,
             }
           : {}),

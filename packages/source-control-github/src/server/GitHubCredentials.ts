@@ -35,6 +35,12 @@ export interface GitHubCredential {
   readonly fingerprint: string;
 }
 
+/** A caller's verified credential takes precedence without entering the personal cache. */
+export const ScopedCredential = Context.Reference<GitHubCredential | null>(
+  "@t3tools/source-control-github/server/GitHubCredentials/ScopedCredential",
+  { defaultValue: () => null },
+);
+
 /** Nothing in the environment, and no `gh` on PATH to ask. */
 export class GitHubCliMissingError extends Schema.TaggedError<GitHubCliMissingError>()(
   "GitHubCliMissingError",
@@ -242,6 +248,11 @@ export const make = Effect.gen(function* () {
   return GitHubCredentials.of({
     get: Effect.fn("GitHubCredentials.get")(function* (rawHost) {
       const host = normalizeHost(rawHost);
+      const scoped = yield* ScopedCredential;
+      if (scoped !== null) {
+        if (scoped.host !== host) return yield* new GitHubNotSignedInError({ host });
+        return scoped;
+      }
       const choice = yield* hostChoice(host);
       if (choice?.enabled === false) {
         return yield* new GitHubHostDisabledError({ host });
@@ -259,12 +270,14 @@ export const make = Effect.gen(function* () {
       }
       return yield* Cache.get(cache, cacheKey(host, choice?.account));
     }),
-    invalidate: (rawHost) => {
-      const host = normalizeHost(rawHost);
-      return hostChoice(host).pipe(
-        Effect.flatMap((choice) => Cache.invalidate(cache, cacheKey(host, choice?.account))),
-      );
-    },
+    invalidate: (rawHost) =>
+      Effect.gen(function* () {
+        if ((yield* ScopedCredential) !== null) return;
+        const host = normalizeHost(rawHost);
+        return yield* hostChoice(host).pipe(
+          Effect.flatMap((choice) => Cache.invalidate(cache, cacheKey(host, choice?.account))),
+        );
+      }),
   });
 });
 

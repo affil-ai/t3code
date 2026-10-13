@@ -85,6 +85,41 @@ describe("GitHubCredentials", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "uses a scoped bot credential without replacing a saved personal token or its cache",
+    () => {
+      const { layer, calls } = harness({}, [], { "github.com": "saved-personal-token" });
+      return Effect.gen(function* () {
+        const credentials = yield* GitHubCredentials.GitHubCredentials;
+        const bot = {
+          host: "github.com",
+          token: Redacted.make("bot-token"),
+          source: "gh" as const,
+          fingerprint: "bot-fingerprint",
+        };
+        const [office, personal] = yield* Effect.all(
+          [
+            credentials
+              .get("github.com")
+              .pipe(Effect.provideService(GitHubCredentials.ScopedCredential, bot)),
+            credentials.get("github.com"),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(Redacted.value(office.token)).toBe("bot-token");
+        expect(Redacted.value(personal.token)).toBe("saved-personal-token");
+        expect(Redacted.value((yield* credentials.get("github.com")).token)).toBe(
+          "saved-personal-token",
+        );
+        const foreign = yield* credentials
+          .get("other.example.test")
+          .pipe(Effect.provideService(GitHubCredentials.ScopedCredential, bot), Effect.result);
+        expect(foreign._tag).toBe("Failure");
+        expect(calls).toHaveLength(0);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("passes --user for an account pinned in Settings", () => {
     const { layer, calls } = harness({ "github.com": { account: "work" } });
     return Effect.gen(function* () {

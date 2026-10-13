@@ -2818,7 +2818,7 @@ const layerWsRpc = (
             .pipe(Effect.map((cancelled) => ({ cancelled }))),
         [WS_METHODS.vcsRefreshStatus]: (input) => vcsStatusBroadcaster.refreshStatus(input.cwd),
         [WS_METHODS.vcsPull]: (input) =>
-          gitWorkflow.pullCurrentBranch(input.cwd).pipe(
+          gitWorkflow.pullCurrentBranch(input.cwd, input.threadId).pipe(
             Effect.matchCauseEffect({
               onFailure: (cause) => Effect.failCause(cause),
               onSuccess: (result) =>

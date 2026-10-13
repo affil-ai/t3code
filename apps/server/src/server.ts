@@ -369,6 +369,7 @@ const layerGit = Layer.empty.pipe(
 );
 
 const layerGitWorkflow = GitWorkflowService.layer.pipe(
+  Layer.provide(OfficeGitPolicy.runtimeLayer),
   Layer.provideMerge(layerVcsDriverRegistry),
   Layer.provideMerge(layerGit),
 );

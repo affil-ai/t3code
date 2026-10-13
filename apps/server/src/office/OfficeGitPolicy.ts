@@ -9,6 +9,9 @@ import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
 import * as Hex from "effect/encoding/Hex";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Redacted from "effect/Redacted";
+import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHubCredentials";
+import { PinnedGitHubCredential } from "@t3tools/source-control-github/server/GitHubApi";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -28,6 +31,13 @@ export class OfficeGitPolicy extends Context.Service<
       readonly threadId: ThreadId;
       readonly cwd: string;
     }) => Effect.Effect<Readonly<Record<string, string>> | undefined, OfficeError>;
+    readonly withThreadExecution: <A, E, R>(
+      input: {
+        readonly threadId?: ThreadId | undefined;
+        readonly cwd: string;
+      },
+      operation: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | OfficeError, R>;
   }
 >()("t3/office/OfficeGitPolicy") {}
 
@@ -160,6 +170,61 @@ const make = Effect.gen(function* () {
   });
 
   const service: OfficeGitPolicy["Service"] = {
+    withThreadExecution: (input, operation) =>
+      Effect.gen(function* () {
+        if (input.threadId === undefined) {
+          const officeWorkspaces = yield* sql`SELECT 1 FROM orchestration_v2_projection_threads t
+          JOIN office_thread o ON o.thread_id = json_extract(t.payload_json,'$.lineage.rootThreadId')
+          WHERE t.deleted_at IS NULL AND json_extract(t.payload_json,'$.worktreePath') = ${input.cwd} LIMIT 1`.pipe(
+            Effect.mapError(
+              (cause) =>
+                new OfficeError({ message: "Could not resolve Office Git identity.", cause }),
+            ),
+          );
+          if (officeWorkspaces.length > 0)
+            return yield* new OfficeError({
+              message: "Select the Office chat for this Git operation.",
+            });
+          return yield* operation;
+        }
+        const env = yield* service.environmentForThread({ ...input, threadId: input.threadId });
+        if (env === undefined) return yield* operation;
+        const result = yield* processRunner
+          .run({
+            command: "gh",
+            args: ["auth", "token", "--hostname", "github.com"],
+            cwd: input.cwd,
+            env: { ...env, GH_DEBUG: "", GH_PROMPT_DISABLED: "1" },
+            timeout: "10 seconds",
+            maxOutputBytes: 4096,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OfficeError({ message: "Office GitHub access is unavailable.", cause }),
+            ),
+          );
+        if (result.code !== 0 || result.stdout.trim() === "" || result.stdoutTruncated)
+          return yield* new OfficeError({ message: "Office GitHub access is unavailable." });
+        const token = result.stdout.trim();
+        const digest = yield* crypto
+          .digest("SHA-256", new TextEncoder().encode(token))
+          .pipe(Effect.orDie);
+        return yield* operation.pipe(
+          Effect.provideService(HostProcess.ExecutionEnvironment, env),
+          Effect.provideService(GitHubCredentials.ScopedCredential, {
+            host: "github.com",
+            token: Redacted.make(token),
+            source: "gh",
+            fingerprint: "github.com:" + Hex.encode(digest),
+          }),
+          Effect.provideService(PinnedGitHubCredential, {
+            host: "github.com",
+            token: Redacted.make(token),
+            credentialFingerprint: "github.com:" + Hex.encode(digest),
+          }),
+        );
+      }),
     environmentForThread: (input) =>
       Effect.gen(function* () {
         const threads = yield* sql<{ root_id: string | null; message_id: string | null }>`

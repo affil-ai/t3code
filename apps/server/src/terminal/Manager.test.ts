@@ -434,6 +434,7 @@ it.layer(
         }).pipe(
           Effect.provideService(OfficeGitPolicy.OfficeGitPolicy, {
             environmentForMessage: () => Effect.die("unused"),
+            withThreadExecution: (_input, operation) => operation,
             environmentForThread: ({ threadId }) =>
               Effect.succeed(
                 threadId === "office:terminal"
@@ -471,6 +472,7 @@ it.layer(
       const { manager, ptyAdapter } = yield* createManager().pipe(
         Effect.provideService(OfficeGitPolicy.OfficeGitPolicy, {
           environmentForMessage: () => Effect.die("unused"),
+          withThreadExecution: (_input, operation) => operation,
           environmentForThread: () =>
             Effect.fail(new OfficeError({ message: "Office request identity is unavailable." })),
         }),

@@ -33,6 +33,12 @@ export const Environment = Context.Reference<NodeJS.ProcessEnv>(
   },
 );
 
+/** Per-operation overrides. They never mutate the host's process.env. */
+export const ExecutionEnvironment = Context.Reference<Readonly<Record<string, string>> | undefined>(
+  "@t3tools/shared/HostProcess/ExecutionEnvironment",
+  { defaultValue: () => undefined },
+);
+
 export const WorkingDirectory = Context.Reference<string>(
   "@t3tools/shared/HostProcess/WorkingDirectory",
   {

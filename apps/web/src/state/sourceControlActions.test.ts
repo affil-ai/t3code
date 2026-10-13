@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 const state = vi.hoisted(() => ({
   scopes: new Map<string, Set<string>>(),
   requests: [] as { action: string; environmentId: string | null }[],
+  inputs: [] as unknown[],
 }));
 
 vi.mock("react", () => ({ useCallback: (callback: unknown) => callback }));
@@ -29,7 +30,8 @@ vi.mock("./query", () => ({ useEnvironmentQuery: () => ({ refresh: () => {} }) }
 vi.mock("./use-atom-command", () => ({
   useAtomCommand:
     (command: { action: string; environmentId?: string }) =>
-    async (input: { environmentId?: string }) => {
+    async (input: { environmentId?: string; input?: unknown }) => {
+      state.inputs.push(input.input);
       state.requests.push({
         action: command.action,
         environmentId: input.environmentId ?? command.environmentId ?? null,
@@ -126,9 +128,17 @@ beforeEach(() => {
     [secondary, new Set<string>()],
   ]);
   state.requests = [];
+  state.inputs = [];
 });
 
 describe("source control callback grants", () => {
+  it("carries the Office chat identity through Pull without adding one to project-only actions", async () => {
+    state.scopes.get(secondary)!.add(AuthSourceControlWriteScope);
+    const officeThreadId = ThreadId.make("office:chat");
+    await useVcsPullAction({ ...scope, threadId: officeThreadId }).run();
+    await useVcsPullAction(scope).run();
+    expect(state.inputs).toEqual([{ cwd: "/repo", threadId: officeThreadId }, { cwd: "/repo" }]);
+  });
   it.each(cases)("$name uses the selected environment's permission", async ({ create }) => {
     const action = create();
     expect(action.isAllowed).toBe(false);
