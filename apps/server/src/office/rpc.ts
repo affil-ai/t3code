@@ -1,8 +1,8 @@
-import { OFFICE_WS_METHODS, type OfficeThread, type ThreadId } from "@t3tools/contracts";
+import { OFFICE_WS_METHODS, type OfficeUpsertThreadInput, type ThreadId } from "@t3tools/contracts";
 import type { OfficeService } from "./OfficeService.ts";
 export const rpcHandlers = (service: OfficeService["Service"]) => ({
   [OFFICE_WS_METHODS.subscribe]: (_input: {}) => service.subscribe(),
-  [OFFICE_WS_METHODS.upsertThread]: (input: OfficeThread) => service.upsertThread(input),
+  [OFFICE_WS_METHODS.upsertThread]: (input: OfficeUpsertThreadInput) => service.upsertThread(input),
   [OFFICE_WS_METHODS.removeThread]: (input: { readonly threadId: ThreadId }) =>
     service.removeThread(input),
 });

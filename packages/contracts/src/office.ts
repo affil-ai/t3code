@@ -5,7 +5,7 @@ import {
   AuthOrchestrationOperateScope,
   EnvironmentAuthorizationError,
 } from "./auth.ts";
-import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { MessageId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /** Organization metadata only. Office retains the conversation in Convex. */
 export const OfficeThread = Schema.Struct({
@@ -17,12 +17,26 @@ export const OfficeThread = Schema.Struct({
   label: TrimmedNonEmptyString,
 });
 export type OfficeThread = typeof OfficeThread.Type;
+export const OfficeRequester = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(128), Schema.isPattern(/^[^\r\n<>]+$/)),
+  email: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(254),
+    Schema.isPattern(/^[^\s<>@]+@[^\s<>@]+$/),
+  ),
+});
+export type OfficeRequester = typeof OfficeRequester.Type;
+export const OfficeUpsertThreadInput = Schema.Struct({
+  ...OfficeThread.fields,
+  request: Schema.Struct({ messageId: MessageId, requester: OfficeRequester }),
+});
+export type OfficeUpsertThreadInput = typeof OfficeUpsertThreadInput.Type;
 export const OfficeSnapshot = Schema.Struct({ threads: Schema.Array(OfficeThread) });
 export type OfficeSnapshot = typeof OfficeSnapshot.Type;
 export class OfficeError extends Schema.TaggedError<OfficeError>()("OfficeError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
+export const isOfficeError = Schema.is(OfficeError);
 export const OFFICE_WS_METHODS = {
   subscribe: "office.subscribe",
   upsertThread: "office.upsertThread",
@@ -45,7 +59,11 @@ export const OfficeRpcs = [
     error,
     stream: true,
   }),
-  Rpc.make(OFFICE_WS_METHODS.upsertThread, { payload: OfficeThread, success: Schema.Void, error }),
+  Rpc.make(OFFICE_WS_METHODS.upsertThread, {
+    payload: OfficeUpsertThreadInput,
+    success: Schema.Void,
+    error,
+  }),
   Rpc.make(OFFICE_WS_METHODS.removeThread, {
     payload: Schema.Struct({ threadId: ThreadId }),
     success: Schema.Void,
