@@ -1146,8 +1146,9 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           }),
         });
       }
+      const pinned = surface.kind === "firstmate"; // fork: firstmate
       items.push(
-        { id: "close", label: "Close" },
+        { id: "close", label: "Close", disabled: pinned }, // fork: firstmate
         {
           id: "close-others",
           label: "Close others",
@@ -1214,6 +1215,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       if (event.button !== 1) return;
       event.preventDefault();
       event.stopPropagation();
+      if (surface.kind === "firstmate") return; // fork: firstmate
       props.onCloseSurface(surface);
     },
     [props],
@@ -1332,25 +1334,31 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                         : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                     )}
                   >
-                    <PanelTabCloseButton
-                      label={`Close ${title}`}
-                      onClick={() => props.onCloseSurface(surface)}
-                    >
-                      <SurfaceIcon
-                        surface={surface}
-                        sessions={props.previewSessions}
-                        desktopByTabId={props.desktopByTabId}
-                        theme={resolvedTheme}
-                        environmentId={props.environmentId}
-                        pullRequestStatusSeeds={props.pullRequestStatusSeeds}
-                      />
-                      {pending ? (
-                        <span
-                          className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-current"
-                          aria-hidden
+                    {surface.kind === "firstmate" ? ( // fork: firstmate
+                      <span className="flex size-4 shrink-0 items-center justify-center">
+                        <FirstmateTabIcon />
+                      </span>
+                    ) : (
+                      <PanelTabCloseButton
+                        label={`Close ${title}`}
+                        onClick={() => props.onCloseSurface(surface)}
+                      >
+                        <SurfaceIcon
+                          surface={surface}
+                          sessions={props.previewSessions}
+                          desktopByTabId={props.desktopByTabId}
+                          theme={resolvedTheme}
+                          environmentId={props.environmentId}
+                          pullRequestStatusSeeds={props.pullRequestStatusSeeds}
                         />
-                      ) : null}
-                    </PanelTabCloseButton>
+                        {pending ? (
+                          <span
+                            className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-current"
+                            aria-hidden
+                          />
+                        ) : null}
+                      </PanelTabCloseButton>
+                    )}
                     {audio === "none" || !audioRuntimeTabId ? null : (
                       <Tooltip>
                         <TooltipTrigger

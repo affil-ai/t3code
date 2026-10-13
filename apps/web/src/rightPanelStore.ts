@@ -488,6 +488,17 @@ const userAction = (
     : {}),
 });
 
+/** Firstmate's Tasks tab stays open beside its chat; closing never removes it. */
+const isPinnedSurface = (surface: RightPanelSurface) => surface.kind === "firstmate"; // fork: firstmate
+
+// fork: firstmate
+function closeAllButPinned(current: ThreadRightPanelState): ThreadRightPanelState {
+  const surfaces = current.surfaces.filter(isPinnedSurface);
+  if (surfaces.length === 0)
+    return { ...current, isOpen: false, surfaces: [], activeSurfaceId: null };
+  return { ...current, surfaces, activeSurfaceId: surfaces[0]!.id };
+}
+
 const closeAction = (
   state: RightPanelStoreState,
   threadKey: string,
@@ -947,6 +958,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
           closeAction(state, scopedThreadKey(ref), (current) => {
             const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
             if (index < 0) return current;
+            if (isPinnedSurface(current.surfaces[index]!)) return current; // fork: firstmate
             const surfaces = current.surfaces.filter((surface) => surface.id !== surfaceId);
             const next = {
               ...current,
@@ -971,7 +983,9 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return {
               ...current,
               isOpen: true,
-              surfaces: [surface],
+              surfaces: current.surfaces.filter(
+                (entry) => entry === surface || isPinnedSurface(entry),
+              ), // fork: firstmate
               activeSurfaceId: surface.id,
             };
           }),
@@ -981,7 +995,9 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
           closeAction(state, scopedThreadKey(ref), (current) => {
             const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
             if (index < 0 || index === current.surfaces.length - 1) return current;
-            const surfaces = current.surfaces.slice(0, index + 1);
+            const surfaces = current.surfaces.filter(
+              (surface, position) => position <= index || isPinnedSurface(surface), // fork: firstmate
+            );
             const activeStillExists = surfaces.some(
               (surface) => surface.id === current.activeSurfaceId,
             );
@@ -994,10 +1010,10 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       closeAllSurfaces: (ref) =>
         set((state) =>
-          closeAction(state, scopedThreadKey(ref), (current) =>
-            current.surfaces.length === 0
-              ? current
-              : { ...current, isOpen: false, surfaces: [], activeSurfaceId: null },
+          closeAction(
+            state,
+            scopedThreadKey(ref),
+            (current) => (current.surfaces.length === 0 ? current : closeAllButPinned(current)), // fork: firstmate
           ),
         ),
       // Reordering is not a choice about what the panel shows, so it leaves the
