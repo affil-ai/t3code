@@ -1,7 +1,7 @@
 /**
  * The Firstmate page: the task board on the left and the coordinator chat on
  * the right. Narrow windows show one of the two at a time. Until a
- * coordinator is chosen, the page offers to start one or to adopt a chat.
+ * coordinator is set, the page offers one button that starts a fresh one.
  */
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -9,32 +9,22 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, FirstmateTask, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, FirstmateTask, ThreadId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { EllipsisIcon, MessageSquareTextIcon, ShipWheelIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { isElectron } from "~/env";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
-import { useProjects, useThreadShell, useThreadShells } from "~/state/entities";
+import { useThreadShell } from "~/state/entities";
 import { firstmateEnvironment, useFirstmateSnapshot } from "~/state/firstmate";
 import { useEnvironmentQuery } from "~/state/query";
 import { environmentShell } from "~/state/shell";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { formatRelativeTimeLabel } from "~/timestampFormat";
 import ChatView, { type ChatViewEmbedding } from "../ChatView";
 import { Button } from "../ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SidebarInset } from "../ui/sidebar";
 import { Spinner } from "../ui/spinner";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -42,7 +32,8 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { FirstmateBoard } from "./FirstmateBoard";
-import { countFirstmateNeedsYou, recentFirstmateChats } from "./firstmateBoard.logic";
+import { countFirstmateNeedsYou } from "./firstmateBoard.logic";
+import { useFirstmateModelSelection } from "./firstmateModel";
 
 const PAGE_CLASS = "h-dvh min-h-0 overflow-hidden overscroll-y-none";
 
@@ -92,146 +83,10 @@ function useFirstmateCommandRunner() {
   return { pending, start, setCoordinator, run };
 }
 
-/** The two ways to give Firstmate a chat, shared by the empty state and the change dialog. */
-function CoordinatorSetup({
-  environmentId,
-  excludeThreadId,
-  onDone,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly excludeThreadId?: ThreadId;
-  readonly onDone?: () => void;
-}) {
-  const allProjects = useProjects();
-  const projects = useMemo(
-    () => allProjects.filter((project) => project.environmentId === environmentId),
-    [allProjects, environmentId],
-  );
-  const allThreads = useThreadShells();
-  const chats = useMemo(
-    () =>
-      recentFirstmateChats(
-        allThreads.filter(
-          (thread) => thread.environmentId === environmentId && thread.id !== excludeThreadId,
-        ),
-      ),
-    [allThreads, environmentId, excludeThreadId],
-  );
-  const [projectId, setProjectId] = useState<ProjectId | null>(null);
-  const [threadId, setThreadId] = useState<ThreadId | null>(null);
-  const selectedProjectId = projectId ?? projects[0]?.id ?? null;
-  const selectedThreadId = threadId ?? chats[0]?.id ?? null;
-  const canOperate = useAtomValue(firstmateEnvironment.start.permissionAtom(environmentId));
-  const { pending, start, setCoordinator, run } = useFirstmateCommandRunner();
-  const busy = pending !== null;
-
-  const startFirstmate = async () => {
-    if (selectedProjectId === null) return;
-    const ok = await run(
-      "start",
-      () => start({ environmentId, input: { projectId: selectedProjectId } }),
-      "Could not start Firstmate",
-    );
-    if (ok) onDone?.();
-  };
-  const useChat = async () => {
-    if (selectedThreadId === null) return;
-    const ok = await run(
-      "setCoordinator",
-      () => setCoordinator({ environmentId, input: { threadId: selectedThreadId } }),
-      "Could not use that chat",
-    );
-    if (ok) onDone?.();
-  };
-
-  return (
-    <div className="grid w-full gap-3 text-left sm:grid-cols-2">
-      <section className="flex flex-col gap-3 rounded-xl border border-border/70 bg-card p-4 shadow-xs/5">
-        <div className="space-y-0.5">
-          <h2 className="text-sm font-medium">Start Firstmate</h2>
-          <p className="text-xs text-muted-foreground">Opens a new chat in a project.</p>
-        </div>
-        <Select
-          value={selectedProjectId ?? ""}
-          disabled={busy || projects.length === 0 || !canOperate}
-          onValueChange={(value) => {
-            if (value) setProjectId(value as ProjectId);
-          }}
-        >
-          <SelectTrigger size="sm" aria-label="Project">
-            <SelectValue placeholder="No projects">
-              {projects.find((project) => project.id === selectedProjectId)?.title}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectPopup>
-            {projects.map((project) => (
-              <SelectItem key={project.id} value={project.id}>
-                {project.title}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-        <Button
-          size="sm"
-          className="mt-auto"
-          disabled={busy || selectedProjectId === null || !canOperate}
-          onClick={() => void startFirstmate()}
-        >
-          {pending === "start" ? <Spinner className="size-3.5" /> : null}
-          Start Firstmate
-        </Button>
-      </section>
-      <section className="flex flex-col gap-3 rounded-xl border border-border/70 bg-card p-4 shadow-xs/5">
-        <div className="space-y-0.5">
-          <h2 className="text-sm font-medium">Use an existing chat</h2>
-          <p className="text-xs text-muted-foreground">Keeps its history and adds the board.</p>
-        </div>
-        <Select
-          value={selectedThreadId ?? ""}
-          disabled={busy || chats.length === 0 || !canOperate}
-          onValueChange={(value) => {
-            if (value) setThreadId(value as ThreadId);
-          }}
-        >
-          <SelectTrigger size="sm" aria-label="Chat">
-            <SelectValue placeholder="No recent chats">
-              {chats.find((chat) => chat.id === selectedThreadId)?.title}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectPopup>
-            {chats.map((chat) => (
-              <SelectItem key={chat.id} value={chat.id}>
-                <span className="flex min-w-0 items-center gap-3">
-                  <span className="min-w-0 flex-1 truncate">{chat.title}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {formatRelativeTimeLabel(chat.latestUserMessageAt ?? chat.updatedAt)}
-                  </span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-        <Button
-          size="sm"
-          variant="outline"
-          className="mt-auto"
-          disabled={busy || selectedThreadId === null || !canOperate}
-          onClick={() => void useChat()}
-        >
-          {pending === "setCoordinator" ? <Spinner className="size-3.5" /> : null}
-          Use this chat
-        </Button>
-      </section>
-      {!canOperate ? (
-        <p className="text-xs text-muted-foreground sm:col-span-2">
-          This connection can view Firstmate but not set it up.
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 function FirstmateSetupPage({ environmentId }: { readonly environmentId: EnvironmentId }) {
+  const modelSelection = useFirstmateModelSelection(environmentId);
+  const canOperate = useAtomValue(firstmateEnvironment.start.permissionAtom(environmentId));
+  const { pending, start, run } = useFirstmateCommandRunner();
   return (
     <SidebarInset className={PAGE_CLASS}>
       <PageHeader />
@@ -247,16 +102,27 @@ function FirstmateSetupPage({ environmentId }: { readonly environmentId: Environ
               it.
             </EmptyDescription>
           </EmptyHeader>
-          <div className="w-full max-w-xl">
-            <CoordinatorSetup environmentId={environmentId} />
-          </div>
+          <Button
+            disabled={pending !== null || modelSelection === null || !canOperate}
+            onClick={() => {
+              if (modelSelection === null) return;
+              void run(
+                "start",
+                () => start({ environmentId, input: { modelSelection } }),
+                "Could not start Firstmate",
+              );
+            }}
+          >
+            {pending === "start" ? <Spinner className="size-3.5" /> : null}
+            Start Firstmate
+          </Button>
         </Empty>
       </div>
     </SidebarInset>
   );
 }
 
-/** A quiet menu for changing or clearing the coordinator chat. */
+/** A quiet menu for opening or clearing the coordinator chat. */
 function CoordinatorMenu({
   environmentId,
   coordinatorThreadId,
@@ -264,75 +130,52 @@ function CoordinatorMenu({
   readonly environmentId: EnvironmentId;
   readonly coordinatorThreadId: ThreadId;
 }) {
-  const [changeOpen, setChangeOpen] = useState(false);
   const canOperate = useAtomValue(
     firstmateEnvironment.setCoordinator.permissionAtom(environmentId),
   );
   const { pending, setCoordinator, run } = useFirstmateCommandRunner();
   return (
-    <>
-      <Menu>
-        <MenuTrigger
+    <Menu>
+      <MenuTrigger
+        render={
+          <Button
+            size="icon-sm"
+            variant="ghost-muted"
+            className="shrink-0"
+            aria-label="Firstmate options"
+            disabled={pending !== null}
+          />
+        }
+      >
+        <EllipsisIcon />
+      </MenuTrigger>
+      <MenuPopup align="end">
+        <MenuItem
           render={
-            <Button
-              size="icon-sm"
-              variant="ghost-muted"
-              className="shrink-0"
-              aria-label="Firstmate options"
-              disabled={pending !== null}
+            <Link
+              to="/$environmentId/$threadId"
+              params={{ environmentId, threadId: coordinatorThreadId }}
             />
           }
         >
-          <EllipsisIcon />
-        </MenuTrigger>
-        <MenuPopup align="end">
-          <MenuItem
-            render={
-              <Link
-                to="/$environmentId/$threadId"
-                params={{ environmentId, threadId: coordinatorThreadId }}
-              />
-            }
-          >
-            <MessageSquareTextIcon />
-            Open chat on its own
-          </MenuItem>
-          <MenuSeparator />
-          <MenuItem disabled={!canOperate} onClick={() => setChangeOpen(true)}>
-            Change chat…
-          </MenuItem>
-          <MenuItem
-            disabled={!canOperate}
-            onClick={() =>
-              void run(
-                "setCoordinator",
-                () => setCoordinator({ environmentId, input: { threadId: null } }),
-                "Could not stop Firstmate",
-              )
-            }
-          >
-            Stop using this chat
-          </MenuItem>
-        </MenuPopup>
-      </Menu>
-      <Dialog open={changeOpen} onOpenChange={setChangeOpen}>
-        <DialogPopup className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Change Firstmate chat</DialogTitle>
-            <DialogDescription>Tasks stay as they are. Only the chat changes.</DialogDescription>
-          </DialogHeader>
-          <DialogPanel>
-            {changeOpen ? (
-              <CoordinatorSetup
-                environmentId={environmentId}
-                excludeThreadId={coordinatorThreadId}
-                onDone={() => setChangeOpen(false)}
-              />
-            ) : null}
-          </DialogPanel>
-        </DialogPopup>
-      </Dialog>
-    </>
+          <MessageSquareTextIcon />
+          Open chat on its own
+        </MenuItem>
+        <MenuSeparator />
+        <MenuItem
+          disabled={!canOperate}
+          onClick={() =>
+            void run(
+              "setCoordinator",
+              () => setCoordinator({ environmentId, input: { threadId: null } }),
+              "Could not stop Firstmate",
+            )
+          }
+        >
+          Stop using this chat
+        </MenuItem>
+      </MenuPopup>
+    </Menu>
   );
 }
 
@@ -362,7 +205,8 @@ function CoordinatorChat({
         <EmptyHeader>
           <EmptyTitle>This chat is gone</EmptyTitle>
           <EmptyDescription>
-            It was deleted or archived. Pick another chat from the menu above the board.
+            It was deleted or archived. Choose Stop using this chat in the menu above the board to
+            start a new one.
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
