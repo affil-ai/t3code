@@ -165,6 +165,15 @@ const make = Effect.gen(function* () {
       return yield* new TreehouseWorktreeError({ operation: "low-disk-space" });
     if (!(yield* fs.exists(emptyInclude)))
       yield* fs.writeFileString(emptyInclude, "", { mode: 0o600 });
+    // Treehouse accepts a branch, while T3 can pin the fetched origin commit.
+    // Resolve before allocation so a moving branch cannot change the start point.
+    const startCommit = input.existingBranch
+      ? null
+      : (yield* run(
+          "git",
+          ["rev-parse", "--verify", "--end-of-options", input.baseRef + "^{commit}"],
+          input.cwd,
+        )).trim();
     const result = yield* treehouse(
       [
         "get",
@@ -177,7 +186,7 @@ const make = Effect.gen(function* () {
         "--include-file",
         emptyInclude,
         "--base",
-        input.baseRef,
+        input.existingBranch ? input.baseRef : input.mergeRef,
         ...(input.existingBranch ? [] : ["--branch", input.branch]),
       ],
       input.cwd,
@@ -201,6 +210,8 @@ const make = Effect.gen(function* () {
     // Persist before checkout/progress callbacks. A crash keeps the slot held.
     yield* writeBinding(value);
     if (input.existingBranch) yield* run("git", ["switch", input.branch], allocatedPath);
+    else if (startCommit !== null)
+      yield* run("git", ["reset", "--hard", startCommit], allocatedPath);
     const slot = yield* currentLease(value);
     if (slot.branch !== input.branch)
       return yield* new TreehouseWorktreeError({ operation: "branch-changed" });

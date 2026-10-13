@@ -22,6 +22,7 @@ type Slot = {
   lease_id: string;
   lease_holder: string;
   branch: string;
+  head?: string;
   processes: Array<{ pid: number; name: string }>;
 };
 
@@ -99,7 +100,13 @@ const fixture = <A, E>(
               if (slot === undefined) code = 1;
               else slot.branch = args[1] ?? "";
             } else if (args.includes("status")) stdout = dirty ? " M source.ts\n" : "";
-            else if (args.includes("ls-files")) stdout = ignored;
+            else if (args[0] === "rev-parse")
+              stdout = args.at(-1)?.replace(/\^\{commit\}$/, "") + "\n";
+            else if (args[0] === "reset") {
+              const slot = slots.find((entry) => entry.path === input.cwd);
+              if (slot === undefined || args[2] === undefined) code = 1;
+              else slot.head = args[2];
+            } else if (args.includes("ls-files")) stdout = ignored;
             else if (args[0] === "merge-base") code = unmerged ? 1 : 0;
             else throw new Error("Unexpected Git command");
           } else throw new Error("Unexpected command");
@@ -164,6 +171,24 @@ const acquire = (
   pool.acquire({ threadId, cwd, baseRef: "main", branch: "feature/" + threadId, mergeRef: "main" });
 
 describe("durable Treehouse workspaces", () => {
+  it.effect("allocates from the base branch but checks out the exact fetched origin commit", () =>
+    fixture(({ pool, cwd, slots, commands }) =>
+      Effect.gen(function* () {
+        const commit = "1234567890123456789012345678901234567890";
+        const path = yield* pool.acquire({
+          threadId: owner,
+          cwd,
+          baseRef: commit,
+          branch: "feature/pinned",
+          mergeRef: "main",
+        });
+        const allocation = commands.find((command) => command.args.includes("get"));
+        expect(allocation?.args.at((allocation?.args.indexOf("--base") ?? -1) + 1)).toBe("main");
+        expect(slots.find((slot) => slot.path === path)?.head).toBe(commit);
+        expect(slots.find((slot) => slot.path === path)?.branch).toBe("feature/pinned");
+      }),
+    ),
+  );
   it.effect("restores the same held lease after the pool controller restarts", () =>
     fixture(({ pool, cwd, restart, commands }) =>
       Effect.gen(function* () {
