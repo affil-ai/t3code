@@ -8,7 +8,6 @@ import {
   firstmateColumnForTask,
   isPullRequestUrl,
   mapFirstmateBoard,
-  recentFirstmateChats,
   type FirstmateColumnId,
 } from "./firstmateBoard.logic";
 
@@ -142,31 +141,5 @@ describe("isPullRequestUrl", () => {
     expect(isPullRequestUrl("https://github.com/acme/app/pull/42")).toBe(true);
     expect(isPullRequestUrl("https://gitlab.com/acme/app/-/merge_requests/7")).toBe(true);
     expect(isPullRequestUrl("https://example.com/report.html")).toBe(false);
-  });
-});
-
-describe("recentFirstmateChats", () => {
-  it("drops archived chats and sorts by the latest user message", () => {
-    const chats = [
-      {
-        id: "old",
-        archivedAt: null,
-        updatedAt: "2026-10-12T09:00:00.000Z",
-        latestUserMessageAt: null,
-      },
-      {
-        id: "archived",
-        archivedAt: "2026-10-12T11:00:00.000Z",
-        updatedAt: "2026-10-12T11:00:00.000Z",
-        latestUserMessageAt: null,
-      },
-      {
-        id: "recent",
-        archivedAt: null,
-        updatedAt: "2026-10-12T08:00:00.000Z",
-        latestUserMessageAt: "2026-10-12T10:00:00.000Z",
-      },
-    ];
-    expect(recentFirstmateChats(chats).map((chat) => chat.id)).toEqual(["recent", "old"]);
   });
 });

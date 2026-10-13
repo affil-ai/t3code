@@ -1,11 +1,6 @@
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import {
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  type OrchestrationProjectShell,
-} from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -13,8 +8,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import * as ProjectService from "../project/ProjectService.ts";
-import * as ServerSettings from "../serverSettings.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import { defaultCoordinatorPrompt } from "./coordinatorPrompt.ts";
 import * as FirstmateService from "./FirstmateService.ts";
@@ -22,9 +16,8 @@ import * as FirstmateService from "./FirstmateService.ts";
 const coordinator = ThreadId.make("firstmate-coordinator");
 
 const layerDependencies = Layer.mergeAll(
-  Layer.mock(ProjectService.ProjectService)({}),
+  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
-  ServerSettings.layerTest(),
   NodeCrypto.layer,
   NodeSqliteClient.layer({ filename: ":memory:" }),
 );
@@ -212,22 +205,17 @@ describe("FirstmateService", () => {
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
-  it.effect("start launches a fresh coordinator thread with the default prompt", () =>
+  it.effect("start launches a fresh coordinator in the Scratch project", () =>
     Effect.gen(function* () {
-      const projectId = ProjectId.make("project:firstmate");
+      const projectId = ProjectId.make("project:scratch");
       const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
       const launched: ThreadLaunchService.ThreadLaunchInput[] = [];
       const layer = FirstmateService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.mock(ProjectService.ProjectService)({
-              getShell: () =>
-                Effect.succeed(
-                  Option.some({
-                    id: projectId,
-                    defaultModelSelection: modelSelection,
-                  } as OrchestrationProjectShell),
-                ),
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "",
+              ensureScratchProject: Effect.succeed({ projectId }),
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({
               launch: (input) => {
@@ -237,7 +225,6 @@ describe("FirstmateService", () => {
                 } as ThreadLaunchService.ThreadLaunchResult);
               },
             }),
-            ServerSettings.layerTest(),
             NodeCrypto.layer,
             NodeSqliteClient.layer({ filename: ":memory:" }),
           ),
@@ -245,10 +232,11 @@ describe("FirstmateService", () => {
       );
       const context = yield* Layer.build(layer);
       const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
-      const result = yield* service.start({ projectId });
+      const result = yield* service.start({ modelSelection });
       expect(result.threadId).toBe("launched-coordinator");
       expect(result.snapshot.coordinatorThreadId).toBe("launched-coordinator");
       expect(launched).toHaveLength(1);
+      // A root launch in Scratch: ThreadLaunchService claims the thread's own folder.
       expect(launched[0]).toMatchObject({
         projectId,
         modelSelection,
@@ -258,6 +246,42 @@ describe("FirstmateService", () => {
       // A fresh thread: no threadId requested and no reuse.
       expect(launched[0]!.threadId).toBeUndefined();
       expect(launched[0]!.reuseExistingThread).toBeUndefined();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("start fails without launching when Scratch is unavailable", () =>
+    Effect.gen(function* () {
+      const launched: ThreadLaunchService.ThreadLaunchInput[] = [];
+      const layer = FirstmateService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "",
+              ensureScratchProject: Effect.fail(
+                new ManagedProjectFolders.ScratchUnavailableError(),
+              ),
+            }),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+              launch: (input) => {
+                launched.push(input);
+                return Effect.die("unexpected launch");
+              },
+            }),
+            NodeCrypto.layer,
+            NodeSqliteClient.layer({ filename: ":memory:" }),
+          ),
+        ),
+      );
+      const context = yield* Layer.build(layer);
+      const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
+      const failure = yield* service
+        .start({ modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" } })
+        .pipe(Effect.flip);
+      expect(failure.message).toBe(
+        "Threads without a project are not available on this environment.",
+      );
+      expect(launched).toHaveLength(0);
+      expect((yield* snapshot(service)).coordinatorThreadId).toBeNull();
     }).pipe(Effect.scoped),
   );
 });

@@ -81,26 +81,3 @@ export function countFirstmateOpenTasks(tasks: readonly FirstmateTask[]): number
 export function isPullRequestUrl(url: string): boolean {
   return /\/(pull|pulls|merge_requests)\/\d+/.test(url);
 }
-
-/** Minimal thread fields for choosing an existing chat as the coordinator. */
-export interface FirstmateChatCandidate {
-  readonly id: string;
-  readonly archivedAt: string | null;
-  readonly updatedAt: string;
-  readonly latestUserMessageAt: string | null;
-}
-
-/** Recent, unarchived chats, most recently used first. */
-export function recentFirstmateChats<T extends FirstmateChatCandidate>(
-  threads: readonly T[],
-  limit = 20,
-): T[] {
-  return threads
-    .filter((thread) => thread.archivedAt === null)
-    .toSorted(
-      (left, right) =>
-        timestamp(right.latestUserMessageAt ?? right.updatedAt) -
-        timestamp(left.latestUserMessageAt ?? left.updatedAt),
-    )
-    .slice(0, limit);
-}

@@ -9,11 +9,11 @@ import {
 import {
   ForwardCompatibleArray,
   IsoDateTime,
-  ProjectId,
   RunId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
 
 export const FirstmateTaskId = TrimmedNonEmptyString.pipe(Schema.brand("FirstmateTaskId"));
 export type FirstmateTaskId = typeof FirstmateTaskId.Type;
@@ -189,8 +189,9 @@ export type FirstmateSetCoordinatorInput = typeof FirstmateSetCoordinatorInput.T
 export const FirstmateSetCoordinatorResult = FirstmateSnapshot;
 export type FirstmateSetCoordinatorResult = typeof FirstmateSetCoordinatorResult.Type;
 
+/** The coordinator always starts in the Scratch project; the client picks the model. */
 export const FirstmateStartInput = Schema.Struct({
-  projectId: ProjectId,
+  modelSelection: ModelSelection,
 });
 export type FirstmateStartInput = typeof FirstmateStartInput.Type;
 

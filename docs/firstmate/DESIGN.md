@@ -105,8 +105,10 @@ Follow the `scheduledTasks.*` pattern in `rpc.ts` and `ws.ts`:
 - `firstmate.getTask` returns a task with its events.
 - `firstmate.setCoordinator({ threadId | null })` sets or clears the
   coordinator.
-- `firstmate.start({ projectId })` creates a coordinator thread in that
-  project. It reuses the thread-creation path that scheduled tasks use to
+- `firstmate.start({ modelSelection })` creates a coordinator thread in the
+  Scratch project (`ManagedProjectFolders.ensureScratchProject`, as an MCP
+  `scratch: true` launch does; the root launch claims the thread's own
+  folder). It reuses the thread-creation path that scheduled tasks use to
   start a fresh thread, sends `defaultCoordinatorPrompt` from
   `apps/server/src/firstmate/coordinatorPrompt.ts` as the first message, and
   sets the new thread as coordinator.
@@ -148,9 +150,11 @@ rules.
 - A card shows the title, note, age, and next actor, plus links to the worker
   thread and PRs. Clicking it opens a detail panel with the intent, the
   definition of done, the close evidence, and the event log.
-- With no coordinator set, show an empty state. It offers "Start Firstmate"
-  (pick a project, then call `firstmate.start`) and "Use an existing chat"
-  (pick a recent thread, then call `setCoordinator`).
+- With no coordinator set, show an empty state with one "Start Firstmate"
+  button. It calls `firstmate.start` with the model a new Scratch chat would
+  open with (`firstmateModel.ts` runs the composer's own resolvers). The
+  board's menu offers "Open chat on its own" and "Stop using this chat",
+  which calls `setCoordinator(null)` and brings the button back.
 - Sidebar: in Work mode, directly below Search in `LegacySidebar.tsx`, render
   `<FirstmateSidebarLink />` from `components/firstmate/`. It shows a
   "Firstmate" row with a badge counting Needs-you tasks. It targets the first

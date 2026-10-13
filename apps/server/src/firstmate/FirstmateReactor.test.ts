@@ -17,8 +17,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import * as ProjectService from "../project/ProjectService.ts";
-import * as ServerSettings from "../serverSettings.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as FirstmateReactor from "./FirstmateReactor.ts";
 import * as FirstmateService from "./FirstmateService.ts";
 
@@ -99,9 +98,8 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const layerFirstmate = FirstmateService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
-        ServerSettings.layerTest(),
         NodeCrypto.layer,
         NodeSqliteClient.layer({ filename: ":memory:" }),
       ),

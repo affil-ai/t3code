@@ -11,7 +11,7 @@ import {
   FirstmateTaskListInput as TaskListInput,
   FirstmateTaskLink,
   MessageId,
-  ProjectId,
+  type ModelSelection,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -19,14 +19,12 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 
-import * as ProjectService from "../project/ProjectService.ts";
-import * as ServerSettings from "../serverSettings.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import { defaultCoordinatorPrompt } from "./coordinatorPrompt.ts";
 
@@ -44,7 +42,7 @@ export interface FirstmateSetCoordinatorInput {
   readonly threadId: ThreadId | null;
 }
 export interface FirstmateStartInput {
-  readonly projectId: ProjectId;
+  readonly modelSelection: ModelSelection;
 }
 
 export interface FirstmateTaskMutationResult {
@@ -182,8 +180,7 @@ export const layer = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const crypto = yield* Crypto.Crypto;
     const changes = yield* PubSub.sliding<void>(1);
-    const projects = yield* ProjectService.ProjectService;
-    const settings = yield* ServerSettings.ServerSettingsService;
+    const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
     const launches = yield* ThreadLaunchService.ThreadLaunchService;
 
     // Firstmate intentionally does not use the numbered migration list. The
@@ -470,17 +467,16 @@ export const layer = Layer.effect(
       );
     const start: FirstmateService["Service"]["start"] = (input) =>
       Effect.gen(function* () {
-        const shell = Option.getOrUndefined(yield* projects.getShell(input.projectId));
-        if (shell === undefined) return yield* error("The selected project was not found.");
-        const configured = (yield* settings.getSettings).defaultModelSelection;
-        const modelSelection = shell.defaultModelSelection ?? configured;
-        if (modelSelection === null || modelSelection === undefined)
-          return yield* error("The selected project has no default model.");
+        // Like an MCP `scratch: true` launch: the coordinator lives in the
+        // Scratch project, and a root launch there claims its own folder.
+        const { projectId } = yield* folders.ensureScratchProject.pipe(
+          Effect.mapError((cause) => error(cause.message, undefined, cause)),
+        );
         const launched = yield* launches.launch({
           commandId: CommandId.make(`firstmate:start:${yield* crypto.randomUUIDv4}`),
-          projectId: input.projectId,
+          projectId,
           title: "Firstmate",
-          modelSelection,
+          modelSelection: input.modelSelection,
           runtimeMode: "full-access",
           interactionMode: "default",
           workspaceStrategy: { type: "root" },

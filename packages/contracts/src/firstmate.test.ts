@@ -10,6 +10,7 @@ import {
   FirstmateRpcs,
   FirstmateSetCoordinatorInput,
   FirstmateSnapshot,
+  FirstmateStartInput,
   FirstmateStartResult,
   FirstmateStoredTask,
   FirstmateTask,
@@ -49,6 +50,7 @@ const decodeGetTask = Schema.decodeUnknownSync(FirstmateGetTaskInput);
 const decodeSetCoordinator = Schema.decodeUnknownSync(FirstmateSetCoordinatorInput);
 const decodeConfig = Schema.decodeUnknownSync(FirstmateConfig);
 const decodeSnapshot = Schema.decodeUnknownSync(FirstmateSnapshot);
+const decodeStartInput = Schema.decodeUnknownSync(FirstmateStartInput);
 const decodeStart = Schema.decodeUnknownSync(FirstmateStartResult);
 
 describe("Firstmate task contracts", () => {
@@ -202,6 +204,13 @@ describe("Firstmate RPC contracts", () => {
       threadId: "thread:1",
       snapshot,
     });
+  });
+
+  it("starts from a model selection alone, with no project", () => {
+    const modelSelection = { instanceId: "codex", model: "gpt-5" };
+    expect(decodeStartInput({ modelSelection })).toEqual({ modelSelection });
+    expect(() => decodeStartInput({})).toThrow();
+    expect(() => decodeStartInput({ projectId: "project:1" })).toThrow();
   });
 
   it("declares read scopes for reads and operate scopes for mutations", () => {
