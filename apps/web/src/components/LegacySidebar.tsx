@@ -248,6 +248,7 @@ import {
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
+import { FirstmateSidebarLink } from "./firstmate/FirstmateSidebarLink"; // fork: firstmate
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -3975,6 +3976,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               </CommandDialogTrigger>
             </SidebarMenuItem>
           </SidebarMenu>
+          {isWorkMode ? <FirstmateSidebarLink /> : null /* fork: firstmate */}
         </SidebarGroup>
       }
     >
