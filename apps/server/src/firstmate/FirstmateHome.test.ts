@@ -208,3 +208,28 @@ it.effect("follows T3CODE_FIRSTMATE_HOME and renames the project", () =>
     { T3CODE_FIRSTMATE_HOME: "~/agents/mate" },
   ),
 );
+
+it.effect("keeps a copy of a review image under artifacts/, outside Git", () =>
+  withHome(({ homeDir }) =>
+    Effect.gen(function* () {
+      const home = yield* FirstmateHome.FirstmateHome;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* home.ensure({ name: "Firstmate" });
+      const source = path.join(homeDir, "worktree", "shot.png");
+      yield* fileSystem.makeDirectory(path.dirname(source), { recursive: true });
+      yield* fileSystem.writeFileString(source, "png bytes");
+      const kept = yield* home.keepImage({ taskId: "firstmate-task:abc", path: source });
+      const folder = path.join(homeDir, "firstmate", FirstmateHome.ARTIFACTS_FOLDER);
+      assert.isTrue(kept.startsWith(path.join(folder, "firstmate-task-abc") + path.sep));
+      assert.isTrue(kept.endsWith("-shot.png"));
+      assert.strictEqual(yield* fileSystem.readFileString(kept), "png bytes");
+      // A path already kept is not copied again.
+      assert.strictEqual(yield* home.keepImage({ taskId: "firstmate-task:abc", path: kept }), kept);
+      assert.strictEqual(
+        yield* gitOutput(path.join(homeDir, "firstmate"), ["status", "--porcelain"]),
+        "",
+      );
+    }),
+  ),
+);

@@ -52,6 +52,21 @@ export const FirstmateTaskLink = Schema.Struct({
 });
 export type FirstmateTaskLink = typeof FirstmateTaskLink.Type;
 
+/**
+ * Something the user should look at to review a task: a link (PR, preview,
+ * deck) or an image (a screenshot). An image's `url` is an absolute path on
+ * the server; the server copies it into Firstmate's folder when it is added,
+ * so it outlives the worker's worktree.
+ */
+export const FirstmateTaskArtifact = Schema.Struct({
+  kind: Schema.Literals(["link", "image"]),
+  label: TrimmedNonEmptyString,
+  url: TrimmedNonEmptyString,
+  /** One line on what to check, e.g. "the empty state". */
+  caption: Schema.optional(Schema.String),
+});
+export type FirstmateTaskArtifact = typeof FirstmateTaskArtifact.Type;
+
 /** Public task model; reactor bookkeeping stays on the server. */
 export const FirstmateTask = Schema.Struct({
   id: FirstmateTaskId,
@@ -64,6 +79,8 @@ export const FirstmateTask = Schema.Struct({
   wakeAt: Schema.NullOr(IsoDateTime),
   workerThreadId: Schema.NullOr(ThreadId),
   links: Schema.Array(FirstmateTaskLink),
+  /** Older servers omit it; read it as empty. */
+  artifacts: Schema.optional(Schema.Array(FirstmateTaskArtifact)),
   closeEvidence: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -162,6 +179,10 @@ export const FirstmateTaskCreateInput = Schema.Struct({
   wakeAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   workerThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   links: Schema.optional(Schema.Array(FirstmateTaskLink)),
+  artifacts: Schema.optional(Schema.Array(FirstmateTaskArtifact)).annotate({
+    description:
+      "Review artifacts: links and screenshots the user should look at. Images take an absolute file path.",
+  }),
   summary: Schema.optional(TrimmedNonEmptyString).annotate({
     description: "Summary for the create event. Omit for the default creation summary.",
   }),
@@ -183,6 +204,14 @@ export const FirstmateTaskUpdateInput = Schema.Struct({
   wakeAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   workerThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   links: Schema.optional(Schema.Array(FirstmateTaskLink)),
+  artifacts: Schema.optional(Schema.Array(FirstmateTaskArtifact)).annotate({
+    description:
+      "Replaces all review artifacts. Review artifacts: links and screenshots the user should look at. Images take an absolute file path.",
+  }),
+  addArtifacts: Schema.optional(Schema.Array(FirstmateTaskArtifact)).annotate({
+    description:
+      "Appends review artifacts, after any replacement. Review artifacts: links and screenshots the user should look at. Images take an absolute file path.",
+  }),
   closeEvidence: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).annotate({
     description: "Required when moving to done or dropped. Evidence of the outcome or decision.",
   }),

@@ -12,6 +12,7 @@ import {
   FirstmateTaskUpdateInput as TaskUpdateInput,
   FirstmateTaskListInput as TaskListInput,
   FirstmateTaskLink,
+  FirstmateTaskArtifact,
   FirstmateSetAppearanceInput as AppearanceInput,
   MessageId,
   type ModelSelection,
@@ -83,6 +84,7 @@ interface TaskRow {
   readonly wake_at: string | null;
   readonly worker_thread_id: string | null;
   readonly links_json: string;
+  readonly artifacts_json: string;
   readonly close_evidence: string | null;
   readonly created_at: string;
   readonly updated_at: string;
@@ -121,6 +123,9 @@ const isFirstmateError = Schema.is(ContractFirstmateError);
 const linksJson = Schema.fromJsonString(Schema.Array(FirstmateTaskLink));
 const decodeLinks = Schema.decodeUnknownSync(linksJson);
 const encodeLinks = Schema.encodeSync(linksJson);
+const artifactsJson = Schema.fromJsonString(Schema.Array(FirstmateTaskArtifact));
+const decodeArtifacts = Schema.decodeUnknownSync(artifactsJson);
+const encodeArtifacts = Schema.encodeSync(artifactsJson);
 // Service callers are typed, but MCP and tests can bypass trimming; decode re-checks it.
 const decodeCreateInput = Schema.decodeUnknownEffect(TaskCreateInput);
 const decodeUpdateInput = Schema.decodeUnknownEffect(TaskUpdateInput);
@@ -141,6 +146,7 @@ function taskFromRow(row: TaskRow): StoredTask {
     wakeAt: row.wake_at,
     workerThreadId: row.worker_thread_id === null ? null : ThreadId.make(row.worker_thread_id),
     links: parseLinks(row.links_json),
+    artifacts: decodeArtifacts(row.artifacts_json),
     closeEvidence: row.close_evidence,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -227,6 +233,15 @@ export const layer = Layer.effect(
         orphan_notified_at TEXT
       )
     `;
+    // Added after the first release; SQLite has no ADD COLUMN IF NOT EXISTS.
+    const taskColumns = new Set(
+      (yield* sql<{ name: string }>`PRAGMA table_info(firstmate_task)`).map((row) => row.name),
+    );
+    if (!taskColumns.has("artifacts_json")) {
+      yield* sql.unsafe(
+        `ALTER TABLE firstmate_task ADD COLUMN artifacts_json TEXT NOT NULL DEFAULT '[]'`,
+      );
+    }
     yield* sql`CREATE INDEX IF NOT EXISTS firstmate_task_state_updated ON firstmate_task(state, updated_at)`;
     yield* sql`CREATE INDEX IF NOT EXISTS firstmate_task_worker ON firstmate_task(worker_thread_id)`;
     yield* sql`
@@ -286,6 +301,21 @@ export const layer = Layer.effect(
     );
     const readCoordinator = readConfig.pipe(Effect.map((row) => row.coordinator_thread_id));
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
+    // Screenshots usually sit in a worker's worktree, which is recycled; keep a copy.
+    const keepArtifacts = (
+      taskId: FirstmateTask["id"],
+      artifacts: ReadonlyArray<FirstmateTaskArtifact>,
+    ) =>
+      Effect.forEach(artifacts, (artifact) =>
+        artifact.kind === "image"
+          ? home.keepImage({ taskId, path: artifact.url }).pipe(
+              Effect.map((url) => ({ ...artifact, url })),
+              Effect.mapError((cause) =>
+                error(`Could not save the review image ${artifact.url}.`, taskId, cause),
+              ),
+            )
+          : Effect.succeed(artifact),
+      );
     const readStored = (): Effect.Effect<ReadonlyArray<StoredTask>, ContractFirstmateError> =>
       selectRows().pipe(
         Effect.map((rows) => rows.map(taskFromRow)),
@@ -413,6 +443,7 @@ export const layer = Layer.effect(
               wakeAt: input.wakeAt ?? null,
               workerThreadId: input.workerThreadId ?? null,
               links: input.links ?? [],
+              artifacts: yield* keepArtifacts(taskId, input.artifacts ?? []),
               closeEvidence: null,
               createdAt: now,
               updatedAt: now,
@@ -432,6 +463,7 @@ export const layer = Layer.effect(
             wake_at: task.wakeAt,
             worker_thread_id: task.workerThreadId,
             links_json: encodeLinks(task.links),
+            artifacts_json: encodeArtifacts(task.artifacts ?? []),
             close_evidence: task.closeEvidence,
             created_at: task.createdAt,
             updated_at: task.updatedAt,
@@ -486,6 +518,12 @@ export const layer = Layer.effect(
                 ? {}
                 : { workerThreadId: input.workerThreadId }),
               ...(input.links === undefined ? {} : { links: input.links }),
+              artifacts: [
+                ...(input.artifacts === undefined
+                  ? (existing.artifacts ?? [])
+                  : yield* keepArtifacts(existing.id, input.artifacts)),
+                ...(yield* keepArtifacts(existing.id, input.addArtifacts ?? [])),
+              ],
               closeEvidence: evidence,
               updatedAt: now,
               closedAt: closing ? (existing.closedAt ?? now) : null,
@@ -496,6 +534,7 @@ export const layer = Layer.effect(
             title = ${next.title}, intent = ${next.intent}, definition_of_done = ${next.definitionOfDone},
             state = ${next.state}, next_actor = ${next.nextActor}, note = ${next.note}, wake_at = ${next.wakeAt},
             worker_thread_id = ${next.workerThreadId}, links_json = ${encodeLinks(next.links)},
+            artifacts_json = ${encodeArtifacts(next.artifacts ?? [])},
             close_evidence = ${next.closeEvidence}, updated_at = ${next.updatedAt}, closed_at = ${next.closedAt},
             orphan_notified_at = NULL
           WHERE task_id = ${next.id}

@@ -29,6 +29,10 @@ You coordinate; workers do the project work. Start one worker thread per task wi
 
 The server wakes you with a digest when a worker finishes, fails, or needs input, when a task's \`wakeAt\` passes, and when a task has nobody working on it. After every wake, reconcile from \`firstmate_task_list\` rather than from memory. Every open task has a \`nextActor\`, plus either a running worker or a \`wakeAt\`.
 
+## Review artifacts
+
+When work is ready for the user to look at, attach what they should review to the task with \`addArtifacts\` on \`firstmate_task_update\`: the PR and preview links, and screenshots of what changed. Give each a short \`label\`, and a \`caption\` saying what to check. A screenshot takes \`kind: "image"\` and an absolute file path; the server keeps a copy, so the worker's worktree can be recycled. Ask workers for the paths of the screenshots they take. Replace stale artifacts with \`artifacts\` after a new round of changes.
+
 ## Closing tasks
 
 Close a task only with evidence: a merged PR, a delivered report, or the user's acceptance. Merging a PR or discarding work waits for the user's explicit word. A decision for the user is a task whose \`nextActor\` is \`user\`.
@@ -92,6 +96,8 @@ export const FIRSTMATE_HOME_FILES: ReadonlyArray<{
   { path: "README.md", content: README },
   { path: "notes/README.md", content: NOTES_README },
   { path: ".agents/skills/README.md", content: SKILLS_README },
+  // Review images are copies kept for the Tasks panel, not history.
+  { path: ".gitignore", content: "/artifacts/\n" },
 ];
 
 /** Claude Code's skills folder, a link to the shared one. */

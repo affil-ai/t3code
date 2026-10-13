@@ -31,6 +31,8 @@ import {
 
 export const FIRSTMATE_HOME_ENV = "T3CODE_FIRSTMATE_HOME";
 const SEED_COMMIT_MESSAGE = "Add Firstmate home files";
+/** Review images live here, outside Git (see the seeded `.gitignore`). */
+export const ARTIFACTS_FOLDER = "artifacts";
 const FALLBACK_AUTHOR = { name: "Firstmate", email: "firstmate@localhost" };
 
 export class FirstmateHome extends Context.Service<
@@ -45,6 +47,14 @@ export class FirstmateHome extends Context.Service<
     }) => Effect.Effect<{ readonly projectId: ProjectId }, FirstmateError>;
     /** Retitles the home project. Does nothing before the project exists. */
     readonly rename: (name: string) => Effect.Effect<void, FirstmateError>;
+    /**
+     * Copies a review image into `artifacts/<task>/` in the folder and returns
+     * the copy's absolute path. A path already in the folder is returned as is.
+     */
+    readonly keepImage: (input: {
+      readonly taskId: string;
+      readonly path: string;
+    }) => Effect.Effect<string, FirstmateError>;
   }
 >()("t3/firstmate/FirstmateHome") {}
 
@@ -240,7 +250,25 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return FirstmateHome.of({ ensure, rename });
+  const keepImage: FirstmateHome["Service"]["keepImage"] = Effect.fn("FirstmateHome.keepImage")(
+    function* (input) {
+      const source = path.resolve(input.path);
+      const artifactsRoot = path.join(workspaceRoot, ARTIFACTS_FOLDER);
+      if (source.startsWith(`${artifactsRoot}${path.sep}`)) return source;
+      // Task ids carry a colon; keep the folder name portable.
+      const folder = path.join(artifactsRoot, input.taskId.replace(/[^A-Za-z0-9._-]+/g, "-"));
+      yield* fileSystem.makeDirectory(folder, { recursive: true });
+      const stamp = (yield* crypto.randomUUIDv4).slice(0, 8);
+      const target = path.join(folder, `${stamp}-${path.basename(source)}`);
+      yield* fileSystem.copyFile(source, target);
+      return target;
+    },
+    Effect.mapError(
+      (cause) => new FirstmateError({ message: "Could not save the review image.", cause }),
+    ),
+  );
+
+  return FirstmateHome.of({ ensure, rename, keepImage });
 });
 
 export const layer = Layer.effect(FirstmateHome, make);

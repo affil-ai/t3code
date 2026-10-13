@@ -24,7 +24,7 @@ import {
   MessageSquareTextIcon,
   PencilIcon,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { createContext, type ReactNode, use, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { usePullRequestPreviewTarget } from "~/lib/openPullRequestLink";
@@ -45,6 +45,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { Spinner } from "../ui/spinner";
 import { FirstmateAppearanceDialog } from "./FirstmateAppearanceDialog";
+import { FirstmateArtifactList, FirstmateArtifactStrip } from "./FirstmateTaskArtifacts";
 import { useFirstmateCommands } from "./firstmateCommands";
 import {
   type FirstmateColumnId,
@@ -55,6 +56,9 @@ import {
   isSlackUrl,
   mapFirstmateBoard,
 } from "./firstmateBoard.logic";
+
+/** The coordinator chat beside the panel; artifact images are signed against it. */
+const CoordinatorThreadContext = createContext<ThreadId | null>(null);
 
 const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
   "needs-you": "Needs you",
@@ -206,6 +210,7 @@ function TaskCard({
   readonly onOpen: () => void;
 }) {
   const closed = task.state === "done" || task.state === "dropped";
+  const coordinatorThreadId = use(CoordinatorThreadContext);
   return (
     <li
       className={cn(
@@ -256,6 +261,13 @@ function TaskCard({
               />
             ))}
           </div>
+        ) : null}
+        {coordinatorThreadId !== null && (task.artifacts?.length ?? 0) > 0 ? (
+          <FirstmateArtifactStrip
+            environmentId={environmentId}
+            threadId={coordinatorThreadId}
+            artifacts={task.artifacts ?? []}
+          />
         ) : null}
       </div>
     </li>
@@ -529,42 +541,44 @@ export function FirstmateTasksPanel({
       : (snapshot.tasks.find((task) => task.id === selectedTaskId) ?? null);
   const needsYou = countFirstmateNeedsYou(snapshot.tasks);
   return (
-    <div className="@container/tasks flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
-      {selectedTask ? (
-        <>
-          <PanelHeader>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="-ms-1 min-w-0"
-              onClick={() => setSelectedTaskId(null)}
-            >
-              <ArrowLeftIcon />
-              Tasks
-            </Button>
-          </PanelHeader>
-          <TaskDetail environmentId={environmentId} task={selectedTask} />
-        </>
-      ) : (
-        <>
-          <PanelHeader>
-            <ListChecksIcon className="ms-1 size-4 shrink-0 text-muted-foreground" />
-            <h2 className="min-w-0 flex-1 truncate text-sm font-medium">Tasks</h2>
-            {needsYou > 0 ? (
-              <Badge variant="warning" size="sm" aria-label={`${needsYou} need you`}>
-                {needsYou}
-              </Badge>
-            ) : null}
-            <TasksMenu environmentId={environmentId} snapshot={snapshot} />
-          </PanelHeader>
-          <TaskSections
-            environmentId={environmentId}
-            tasks={snapshot.tasks}
-            onOpen={(task) => setSelectedTaskId(task.id)}
-          />
-        </>
-      )}
-    </div>
+    <CoordinatorThreadContext value={threadId}>
+      <div className="@container/tasks flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        {selectedTask ? (
+          <>
+            <PanelHeader>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="-ms-1 min-w-0"
+                onClick={() => setSelectedTaskId(null)}
+              >
+                <ArrowLeftIcon />
+                Tasks
+              </Button>
+            </PanelHeader>
+            <TaskDetail environmentId={environmentId} task={selectedTask} />
+          </>
+        ) : (
+          <>
+            <PanelHeader>
+              <ListChecksIcon className="ms-1 size-4 shrink-0 text-muted-foreground" />
+              <h2 className="min-w-0 flex-1 truncate text-sm font-medium">Tasks</h2>
+              {needsYou > 0 ? (
+                <Badge variant="warning" size="sm" aria-label={`${needsYou} need you`}>
+                  {needsYou}
+                </Badge>
+              ) : null}
+              <TasksMenu environmentId={environmentId} snapshot={snapshot} />
+            </PanelHeader>
+            <TaskSections
+              environmentId={environmentId}
+              tasks={snapshot.tasks}
+              onOpen={(task) => setSelectedTaskId(task.id)}
+            />
+          </>
+        )}
+      </div>
+    </CoordinatorThreadContext>
   );
 }
 
@@ -603,6 +617,7 @@ function TaskDetail({
   const events = detailQuery.data?.events ?? null;
   const column = firstmateColumnForTask(task);
   const hasLinks = task.workerThreadId !== null || task.links.length > 0;
+  const coordinatorThreadId = use(CoordinatorThreadContext);
   return (
     <ScrollArea className="min-h-0 flex-1" scrollFade>
       <div className="space-y-5 px-4 pt-3 pb-6">
@@ -624,6 +639,15 @@ function TaskDetail({
         {task.closeEvidence ? (
           <DetailSection title={task.state === "dropped" ? "Why it was dropped" : "Evidence"}>
             <DetailText>{task.closeEvidence}</DetailText>
+          </DetailSection>
+        ) : null}
+        {coordinatorThreadId !== null && (task.artifacts?.length ?? 0) > 0 ? (
+          <DetailSection title="Review">
+            <FirstmateArtifactList
+              environmentId={environmentId}
+              threadId={coordinatorThreadId}
+              artifacts={task.artifacts ?? []}
+            />
           </DetailSection>
         ) : null}
         {hasLinks ? (

@@ -26,7 +26,10 @@ import * as FirstmateService from "./FirstmateService.ts";
 const coordinator = ThreadId.make("firstmate-coordinator");
 
 const layerDependencies = Layer.mergeAll(
-  Layer.mock(FirstmateHome.FirstmateHome)({ rename: () => Effect.void }),
+  Layer.mock(FirstmateHome.FirstmateHome)({
+    rename: () => Effect.void,
+    keepImage: ({ taskId, path }) => Effect.succeed(`/kept/${taskId}/${path.split("/").pop()}`),
+  }),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(ThreadManagement.ThreadManagementService)({}),
   NodeCrypto.layer,
@@ -76,6 +79,52 @@ describe("FirstmateService", () => {
       const detail = yield* service.get({ taskId: task.id });
       expect(detail.task.title).toBe("Valid");
       expect(detail.events).toHaveLength(1);
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
+  it.effect("keeps review artifacts, copying images, and appends or replaces them", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const { task } = yield* service.create({
+        title: "Dashboards",
+        intent: "Build them",
+        definitionOfDone: "Merged",
+        artifacts: [{ kind: "link", label: "PR #1", url: "https://example.com/pull/1" }],
+      });
+      expect(task.artifacts).toEqual([
+        { kind: "link", label: "PR #1", url: "https://example.com/pull/1" },
+      ]);
+      const added = yield* service.update({
+        taskId: task.id,
+        summary: "Added a screenshot.",
+        addArtifacts: [
+          {
+            kind: "image",
+            label: "Board",
+            url: "/worktree/shots/board.png",
+            caption: "Check the empty column",
+          },
+        ],
+      });
+      expect(added.task.artifacts).toEqual([
+        { kind: "link", label: "PR #1", url: "https://example.com/pull/1" },
+        {
+          kind: "image",
+          label: "Board",
+          url: `/kept/${task.id}/board.png`,
+          caption: "Check the empty column",
+        },
+      ]);
+      // Untouched by an update that names neither field.
+      const renamed = yield* service.update({ taskId: task.id, summary: "Retitled.", title: "B" });
+      expect(renamed.task.artifacts).toHaveLength(2);
+      const replaced = yield* service.update({
+        taskId: task.id,
+        summary: "New round.",
+        artifacts: [{ kind: "link", label: "Preview", url: "https://example.com/preview" }],
+      });
+      expect(replaced.task.artifacts?.map((artifact) => artifact.label)).toEqual(["Preview"]);
+      expect((yield* service.get({ taskId: task.id })).task.artifacts).toHaveLength(1);
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
@@ -231,6 +280,7 @@ describe("FirstmateService", () => {
                 return Effect.succeed({ projectId });
               },
               rename: () => Effect.void,
+              keepImage: ({ path }) => Effect.succeed(path),
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({
               launch: (input) => {
