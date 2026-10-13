@@ -81,3 +81,13 @@ export function countFirstmateOpenTasks(tasks: readonly FirstmateTask[]): number
 export function isPullRequestUrl(url: string): boolean {
   return /\/(pull|pulls|merge_requests)\/\d+/.test(url);
 }
+
+/** True for links into a Slack workspace, which get the Slack icon. */
+export function isSlackUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "slack.com" || host.endsWith(".slack.com");
+  } catch {
+    return false;
+  }
+}

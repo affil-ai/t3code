@@ -27,9 +27,14 @@ import {
 import { type ReactNode, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import { usePullRequestPreviewTarget } from "~/lib/openPullRequestLink";
 import { firstmateEnvironment, useFirstmateSnapshot, useFirstmateTask } from "~/state/firstmate";
+import { linkedPullRequestDetailAtom } from "~/state/pullRequests";
+import { useEnvironmentQuery } from "~/state/query";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
+import { SlackIcon } from "../Icons";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
+import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
 import { useRelativeTimeTick } from "../settings/settingsLayout";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -47,6 +52,7 @@ import {
   countFirstmateNeedsYou,
   firstmateTaskActivityAt,
   isPullRequestUrl,
+  isSlackUrl,
   mapFirstmateBoard,
 } from "./firstmateBoard.logic";
 
@@ -123,19 +129,50 @@ function WorkerThreadLink({
       onClick={stopPropagation}
     >
       <MessageSquareTextIcon className="size-3 shrink-0" />
-      <span className="truncate">Worker chat</span>
+      <span className="truncate">Chat</span>
     </Link>
   );
 }
 
+/**
+ * A pull request link's icon, drawn like the sidebar's: the state's glyph in
+ * its color (open, draft, merged, closed). Until the state loads, or when no
+ * project here can read the repository, it is the plain open glyph.
+ */
+function PullRequestLinkIcon({
+  environmentId,
+  url,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly url: string;
+}) {
+  const target = usePullRequestPreviewTarget(environmentId, url);
+  const summary = useEnvironmentQuery(
+    target === null ? null : linkedPullRequestDetailAtom(target),
+  ).data;
+  if (!summary) return <PullRequestGlyph.pullRequest className="size-3 shrink-0" />;
+  const state = resolvePullRequestState({
+    state: summary.state,
+    isDraft: summary.isDraft === true,
+  });
+  return (
+    <state.Icon
+      data-tone
+      className={cn("size-3 shrink-0", state.toneClassName)}
+      aria-label={`Pull request ${state.label.toLowerCase()}`}
+    />
+  );
+}
+
 function ExternalTaskLink({
+  environmentId,
   link,
   className,
 }: {
+  readonly environmentId: EnvironmentId;
   readonly link: FirstmateTask["links"][number];
   readonly className?: string;
 }) {
-  const Icon = isPullRequestUrl(link.url) ? PullRequestGlyph.pullRequest : LinkIcon;
   return (
     <a
       className={className}
@@ -144,7 +181,13 @@ function ExternalTaskLink({
       rel="noreferrer"
       onClick={stopPropagation}
     >
-      <Icon className="size-3 shrink-0" />
+      {isPullRequestUrl(link.url) ? (
+        <PullRequestLinkIcon environmentId={environmentId} url={link.url} />
+      ) : isSlackUrl(link.url) ? (
+        <SlackIcon className="size-3 shrink-0" />
+      ) : (
+        <LinkIcon className="size-3 shrink-0" />
+      )}
       <span className="truncate">{link.label}</span>
     </a>
   );
@@ -163,7 +206,6 @@ function TaskCard({
   readonly onOpen: () => void;
 }) {
   const closed = task.state === "done" || task.state === "dropped";
-  const hasLinks = task.workerThreadId !== null || task.links.length > 0;
   return (
     <li
       className={cn(
@@ -189,29 +231,30 @@ function TaskCard({
         {task.note.trim().length > 0 ? (
           <p className="mt-0.5 line-clamp-2 text-xs leading-4 text-muted-foreground">{task.note}</p>
         ) : null}
-        <p className="mt-1.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground/80">
-          <span className="truncate">{taskStatusLabel(task)}</span>
-          <span aria-hidden>·</span>
-          <span className="shrink-0 tabular-nums">
-            {relativeAge(firstmateTaskActivityAt(task))}
-          </span>
-        </p>
-        {hasLinks ? (
+        {task.links.length > 0 ? (
           <div className="pointer-events-auto -mx-1 mt-1 flex min-w-0 flex-wrap gap-x-0.5">
-            <WorkerThreadLink
-              environmentId={environmentId}
-              task={task}
-              className={CARD_LINK_CLASS}
-            />
             {task.links.map((link) => (
               <ExternalTaskLink
                 key={`${link.label}:${link.url}`}
+                environmentId={environmentId}
                 link={link}
                 className={CARD_LINK_CLASS}
               />
             ))}
           </div>
         ) : null}
+        <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground/80">
+          <span className="truncate">{taskStatusLabel(task)}</span>
+          <span aria-hidden>·</span>
+          <span className="shrink-0 tabular-nums">
+            {relativeAge(firstmateTaskActivityAt(task))}
+          </span>
+          <WorkerThreadLink
+            environmentId={environmentId}
+            task={task}
+            className={cn(CARD_LINK_CLASS, "pointer-events-auto -me-1 ms-auto shrink-0")}
+          />
+        </div>
       </div>
     </li>
   );
@@ -543,7 +586,7 @@ function DetailText({ children }: { readonly children: string }) {
 }
 
 const DETAIL_LINK_CLASS =
-  "flex h-8 min-w-0 items-center gap-2 rounded-md px-2 text-sm text-foreground transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&>svg]:size-3.5 [&>svg]:text-muted-foreground";
+  "flex h-8 min-w-0 items-center gap-2 rounded-md px-2 text-sm text-foreground transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&>svg]:size-3.5 [&>svg:not([data-tone])]:text-muted-foreground";
 
 function TaskDetail({
   environmentId,
@@ -595,6 +638,7 @@ function TaskDetail({
               {task.links.map((link) => (
                 <ExternalTaskLink
                   key={`${link.label}:${link.url}`}
+                  environmentId={environmentId}
                   link={link}
                   className={DETAIL_LINK_CLASS}
                 />

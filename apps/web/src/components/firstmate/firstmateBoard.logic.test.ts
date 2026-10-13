@@ -7,6 +7,7 @@ import {
   countFirstmateOpenTasks,
   firstmateColumnForTask,
   isPullRequestUrl,
+  isSlackUrl,
   mapFirstmateBoard,
   type FirstmateColumnId,
 } from "./firstmateBoard.logic";
@@ -141,5 +142,14 @@ describe("isPullRequestUrl", () => {
     expect(isPullRequestUrl("https://github.com/acme/app/pull/42")).toBe(true);
     expect(isPullRequestUrl("https://gitlab.com/acme/app/-/merge_requests/7")).toBe(true);
     expect(isPullRequestUrl("https://example.com/report.html")).toBe(false);
+  });
+});
+
+describe("isSlackUrl", () => {
+  it("recognizes Slack workspace links only", () => {
+    expect(isSlackUrl("https://affil.slack.com/archives/C123/p1700000000000100")).toBe(true);
+    expect(isSlackUrl("https://app.slack.com/client/T1/C2")).toBe(true);
+    expect(isSlackUrl("https://example.com/slack.com")).toBe(false);
+    expect(isSlackUrl("not a url")).toBe(false);
   });
 });
