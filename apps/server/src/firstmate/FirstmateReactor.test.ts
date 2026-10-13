@@ -100,6 +100,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
       Layer.mergeAll(
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        layerThreads,
         NodeCrypto.layer,
         NodeSqliteClient.layer({ filename: ":memory:" }),
       ),

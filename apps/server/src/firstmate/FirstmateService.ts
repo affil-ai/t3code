@@ -1,5 +1,7 @@
 import {
   CommandId,
+  FIRSTMATE_DEFAULT_ICON,
+  FIRSTMATE_DEFAULT_NAME,
   FirstmateError as ContractFirstmateError,
   FirstmateSnapshot as ContractFirstmateSnapshot,
   FirstmateTask as ContractFirstmateTask,
@@ -10,6 +12,7 @@ import {
   FirstmateTaskUpdateInput as TaskUpdateInput,
   FirstmateTaskListInput as TaskListInput,
   FirstmateTaskLink,
+  FirstmateSetAppearanceInput as AppearanceInput,
   MessageId,
   type ModelSelection,
   ThreadId,
@@ -26,6 +29,7 @@ import * as Schema from "effect/Schema";
 
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { defaultCoordinatorPrompt } from "./coordinatorPrompt.ts";
 
 export type FirstmateTask = typeof ContractFirstmateTask.Type;
@@ -40,6 +44,10 @@ export interface FirstmateTaskGetInput {
 }
 export interface FirstmateSetCoordinatorInput {
   readonly threadId: ThreadId | null;
+}
+export interface FirstmateSetAppearanceInput {
+  readonly name: string;
+  readonly icon: string;
 }
 export interface FirstmateStartInput {
   readonly modelSelection: ModelSelection;
@@ -82,6 +90,12 @@ interface TaskRow {
   readonly orphan_notified_at: string | null;
 }
 
+interface ConfigRow {
+  readonly coordinator_thread_id: string | null;
+  readonly name: string;
+  readonly icon: string;
+}
+
 interface EventRow {
   readonly event_id: string;
   readonly task_id: string;
@@ -108,6 +122,7 @@ const encodeLinks = Schema.encodeSync(linksJson);
 // Service callers are typed, but MCP and tests can bypass trimming; decode re-checks it.
 const decodeCreateInput = Schema.decodeUnknownEffect(TaskCreateInput);
 const decodeUpdateInput = Schema.decodeUnknownEffect(TaskUpdateInput);
+const decodeAppearanceInput = Schema.decodeUnknownEffect(AppearanceInput);
 function parseLinks(value: string): FirstmateTask["links"] {
   return decodeLinks(value);
 }
@@ -160,6 +175,10 @@ export class FirstmateService extends Context.Service<
     readonly start: (
       input: FirstmateStartInput,
     ) => Effect.Effect<FirstmateStartResult, ContractFirstmateError>;
+    /** Renames Firstmate and its coordinator chat, and sets its icon. */
+    readonly setAppearance: (
+      input: FirstmateSetAppearanceInput,
+    ) => Effect.Effect<FirstmateSnapshot, ContractFirstmateError>;
     /** Internal reactor hook. It updates only the dedupe markers, not task history. */
     readonly markReportedRun: (
       taskId: FirstmateTask["id"],
@@ -182,6 +201,7 @@ export const layer = Layer.effect(
     const changes = yield* PubSub.sliding<void>(1);
     const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
     const launches = yield* ThreadLaunchService.ThreadLaunchService;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
 
     // Firstmate intentionally does not use the numbered migration list. The
     // tables are fork-only and are safe to create on every service startup.
@@ -223,6 +243,21 @@ export const layer = Layer.effect(
         coordinator_thread_id TEXT
       )
     `;
+    // Columns added after the first release. SQLite has no ADD COLUMN IF NOT
+    // EXISTS, so check the table's shape and add only what is missing.
+    const configColumns = new Set(
+      (yield* sql<{ name: string }>`PRAGMA table_info(firstmate_config)`).map((row) => row.name),
+    );
+    if (!configColumns.has("name")) {
+      yield* sql.unsafe(
+        `ALTER TABLE firstmate_config ADD COLUMN name TEXT NOT NULL DEFAULT '${FIRSTMATE_DEFAULT_NAME}'`,
+      );
+    }
+    if (!configColumns.has("icon")) {
+      yield* sql.unsafe(
+        `ALTER TABLE firstmate_config ADD COLUMN icon TEXT NOT NULL DEFAULT '${FIRSTMATE_DEFAULT_ICON}'`,
+      );
+    }
     yield* sql`INSERT OR IGNORE INTO firstmate_config(config_id, coordinator_thread_id) VALUES (1, NULL)`;
 
     const selectRows = (input?: FirstmateTaskListInput) => {
@@ -231,9 +266,19 @@ export const layer = Layer.effect(
       }
       return sql<TaskRow>`SELECT * FROM firstmate_task WHERE state NOT IN ('done', 'dropped') ORDER BY updated_at DESC, task_id DESC`;
     };
-    const readCoordinator = sql<{ coordinator_thread_id: string | null }>`
-      SELECT coordinator_thread_id FROM firstmate_config WHERE config_id = 1
-    `.pipe(Effect.map((rows) => rows[0]?.coordinator_thread_id ?? null));
+    const readConfig = sql<ConfigRow>`
+      SELECT coordinator_thread_id, name, icon FROM firstmate_config WHERE config_id = 1
+    `.pipe(
+      Effect.map(
+        (rows): ConfigRow =>
+          rows[0] ?? {
+            coordinator_thread_id: null,
+            name: FIRSTMATE_DEFAULT_NAME,
+            icon: FIRSTMATE_DEFAULT_ICON,
+          },
+      ),
+    );
+    const readCoordinator = readConfig.pipe(Effect.map((row) => row.coordinator_thread_id));
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
     const readStored = (): Effect.Effect<ReadonlyArray<StoredTask>, ContractFirstmateError> =>
       selectRows().pipe(
@@ -263,12 +308,16 @@ export const layer = Layer.effect(
         ),
       );
     const snapshot = (): Effect.Effect<FirstmateSnapshot, ContractFirstmateError> =>
-      Effect.all({ coordinatorThreadId: readCoordinator, rows: readSnapshotTasks() }).pipe(
+      Effect.all({ config: readConfig, rows: readSnapshotTasks() }).pipe(
         Effect.map(
-          ({ coordinatorThreadId, rows }) =>
+          ({ config, rows }) =>
             ({
               coordinatorThreadId:
-                coordinatorThreadId === null ? null : ThreadId.make(coordinatorThreadId),
+                config.coordinator_thread_id === null
+                  ? null
+                  : ThreadId.make(config.coordinator_thread_id),
+              name: config.name,
+              icon: config.icon,
               tasks: rows.map(publicTask),
             }) as FirstmateSnapshot,
         ),
@@ -472,10 +521,13 @@ export const layer = Layer.effect(
         const { projectId } = yield* folders.ensureScratchProject.pipe(
           Effect.mapError((cause) => error(cause.message, undefined, cause)),
         );
+        const { name } = yield* readConfig.pipe(
+          Effect.mapError((cause) => error("Could not read Firstmate settings.", undefined, cause)),
+        );
         const launched = yield* launches.launch({
           commandId: CommandId.make(`firstmate:start:${yield* crypto.randomUUIDv4}`),
           projectId,
-          title: "Firstmate",
+          title: name,
           modelSelection: input.modelSelection,
           runtimeMode: "full-access",
           interactionMode: "default",
@@ -494,6 +546,35 @@ export const layer = Layer.effect(
       }).pipe(
         Effect.mapError((cause) =>
           isFirstmateError(cause) ? cause : error("Could not start Firstmate.", undefined, cause),
+        ),
+      );
+    /** Renames the coordinator chat the way a thread rename does, when it still exists. */
+    const renameCoordinator = (threadId: ThreadId, title: string) =>
+      Effect.gen(function* () {
+        const shell = yield* threads.getThreadShell(threadId);
+        if (shell === null || shell.deletedAt !== null || shell.title === title) return;
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`firstmate:rename:${yield* crypto.randomUUIDv4}`),
+          threadId,
+          title,
+        });
+      }).pipe(
+        Effect.mapError((cause) => error("Could not rename the Firstmate chat.", undefined, cause)),
+      );
+    const setAppearance: FirstmateService["Service"]["setAppearance"] = (raw) =>
+      Effect.gen(function* () {
+        const input = yield* decodeAppearanceInput(raw);
+        yield* sql`UPDATE firstmate_config SET name = ${input.name}, icon = ${input.icon} WHERE config_id = 1`;
+        yield* notify;
+        const coordinator = yield* readCoordinator;
+        if (coordinator !== null) yield* renameCoordinator(ThreadId.make(coordinator), input.name);
+        return yield* snapshot();
+      }).pipe(
+        Effect.mapError((cause) =>
+          isFirstmateError(cause)
+            ? cause
+            : error("Could not save the Firstmate name and icon.", undefined, cause),
         ),
       );
     const markReportedRun: FirstmateService["Service"]["markReportedRun"] = (taskId, runId) =>
@@ -525,6 +606,7 @@ export const layer = Layer.effect(
       update,
       setCoordinator,
       start,
+      setAppearance,
       markReportedRun,
       markOrphanNotified,
       listStored: readStored,

@@ -82,8 +82,25 @@ export const FirstmateTaskEvent = Schema.Struct({
 });
 export type FirstmateTaskEvent = typeof FirstmateTaskEvent.Type;
 
+/** What the app calls Firstmate, shown in the sidebar, the Tasks panel, and the chat title. */
+export const FirstmateName = TrimmedNonEmptyString.check(Schema.isMaxLength(60));
+export type FirstmateName = typeof FirstmateName.Type;
+
+/**
+ * A key from the web client's fixed icon set. The contract accepts any short
+ * key so a newer icon never fails the board stream; clients draw unknown keys
+ * as the default compass.
+ */
+export const FirstmateIcon = TrimmedNonEmptyString.check(Schema.isMaxLength(40));
+export type FirstmateIcon = typeof FirstmateIcon.Type;
+
+export const FIRSTMATE_DEFAULT_NAME = "Firstmate";
+export const FIRSTMATE_DEFAULT_ICON = "compass";
+
 export const FirstmateConfig = Schema.Struct({
   coordinatorThreadId: Schema.NullOr(ThreadId),
+  name: FirstmateName,
+  icon: FirstmateIcon,
 });
 export type FirstmateConfig = typeof FirstmateConfig.Type;
 
@@ -189,6 +206,16 @@ export type FirstmateSetCoordinatorInput = typeof FirstmateSetCoordinatorInput.T
 export const FirstmateSetCoordinatorResult = FirstmateSnapshot;
 export type FirstmateSetCoordinatorResult = typeof FirstmateSetCoordinatorResult.Type;
 
+/** Renames Firstmate and its coordinator chat, and sets its icon. */
+export const FirstmateSetAppearanceInput = Schema.Struct({
+  name: FirstmateName,
+  icon: FirstmateIcon,
+});
+export type FirstmateSetAppearanceInput = typeof FirstmateSetAppearanceInput.Type;
+
+export const FirstmateSetAppearanceResult = FirstmateSnapshot;
+export type FirstmateSetAppearanceResult = typeof FirstmateSetAppearanceResult.Type;
+
 /** The coordinator always starts in the Scratch project; the client picks the model. */
 export const FirstmateStartInput = Schema.Struct({
   modelSelection: ModelSelection,
@@ -213,6 +240,7 @@ export const FIRSTMATE_WS_METHODS = {
   firstmateGetTask: "firstmate.getTask",
   firstmateSetCoordinator: "firstmate.setCoordinator",
   firstmateStart: "firstmate.start",
+  firstmateSetAppearance: "firstmate.setAppearance",
 } as const;
 
 /** Spread into the server's authorization table without duplicating feature policy. */
@@ -221,12 +249,14 @@ export const FIRSTMATE_RPC_REQUIRED_SCOPES = {
   [FIRSTMATE_WS_METHODS.firstmateGetTask]: AuthOrchestrationReadScope,
   [FIRSTMATE_WS_METHODS.firstmateSetCoordinator]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateStart]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.firstmateSetAppearance]: AuthOrchestrationOperateScope,
 } as const;
 
 /** Incremental client guards for mutations; the server authorizes every RPC independently. */
 export const FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES = {
   [FIRSTMATE_WS_METHODS.firstmateSetCoordinator]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateStart]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.firstmateSetAppearance]: AuthOrchestrationOperateScope,
 } as const;
 
 const FirstmateRpcError = Schema.Union([FirstmateError, EnvironmentAuthorizationError]);
@@ -252,6 +282,11 @@ export const FirstmateRpcs = [
   Rpc.make(FIRSTMATE_WS_METHODS.firstmateStart, {
     payload: FirstmateStartInput,
     success: FirstmateStartResult,
+    error: FirstmateRpcError,
+  }),
+  Rpc.make(FIRSTMATE_WS_METHODS.firstmateSetAppearance, {
+    payload: FirstmateSetAppearanceInput,
+    success: FirstmateSetAppearanceResult,
     error: FirstmateRpcError,
   }),
 ] as const;

@@ -96,6 +96,7 @@ import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
+import { FirstmateTabIcon, firstmateTabTitle } from "./firstmate/firstmateTab"; // fork: firstmate
 
 interface RightPanelTabsProps {
   mode: PreviewPanelMode;
@@ -675,6 +676,8 @@ function surfaceTitle(
       return "Pull requests";
     case "agents":
       return "Agents";
+    case "firstmate": // fork: firstmate
+      return firstmateTabTitle(); // fork: firstmate
     case "chat":
       return chatTitlesById?.get(surface.id) ?? "Chat";
     case "device":
@@ -762,6 +765,8 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "firstmate": // fork: firstmate
+      return <FirstmateTabIcon />; // fork: firstmate
     case "chat":
       return <MessageSquare className="size-3 shrink-0" />;
     case "device":

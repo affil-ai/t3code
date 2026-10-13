@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import * as FirstmateService from "../../../firstmate/FirstmateService.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -37,6 +38,7 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
       Layer.mergeAll(
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        Layer.mock(ThreadManagement.ThreadManagementService)({}),
         NodeCrypto.layer,
         NodeSqliteClient.layer({ filename: ":memory:" }),
       ),

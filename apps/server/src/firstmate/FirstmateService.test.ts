@@ -1,14 +1,23 @@
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  type OrchestrationV2ServerCommand,
+  type OrchestrationV2ThreadShell,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import type * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import { defaultCoordinatorPrompt } from "./coordinatorPrompt.ts";
 import * as FirstmateService from "./FirstmateService.ts";
@@ -18,6 +27,7 @@ const coordinator = ThreadId.make("firstmate-coordinator");
 const layerDependencies = Layer.mergeAll(
   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+  Layer.mock(ThreadManagement.ThreadManagementService)({}),
   NodeCrypto.layer,
   NodeSqliteClient.layer({ filename: ":memory:" }),
 );
@@ -225,6 +235,7 @@ describe("FirstmateService", () => {
                 } as ThreadLaunchService.ThreadLaunchResult);
               },
             }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({}),
             NodeCrypto.layer,
             NodeSqliteClient.layer({ filename: ":memory:" }),
           ),
@@ -267,6 +278,7 @@ describe("FirstmateService", () => {
                 return Effect.die("unexpected launch");
               },
             }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({}),
             NodeCrypto.layer,
             NodeSqliteClient.layer({ filename: ":memory:" }),
           ),
@@ -282,6 +294,116 @@ describe("FirstmateService", () => {
       );
       expect(launched).toHaveLength(0);
       expect((yield* snapshot(service)).coordinatorThreadId).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("defaults the name and icon and saves new ones for every subscriber", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      expect(yield* snapshot(service)).toMatchObject({ name: "Firstmate", icon: "compass" });
+      const saved = yield* service.setAppearance({ name: "  Jarvis ", icon: "rocket" });
+      expect(saved).toMatchObject({ name: "Jarvis", icon: "rocket" });
+      expect(yield* snapshot(service)).toMatchObject({ name: "Jarvis", icon: "rocket" });
+      expect(
+        yield* service.setAppearance({ name: " ", icon: "rocket" }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "FirstmateError" });
+      expect(yield* snapshot(service)).toMatchObject({ name: "Jarvis" });
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
+  it.effect("renames the coordinator chat through a thread metadata update", () =>
+    Effect.gen(function* () {
+      const dispatched: OrchestrationV2ServerCommand[] = [];
+      const titles = new Map<string, string>([[coordinator, "Firstmate"]]);
+      const layer = FirstmateService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (threadId) =>
+                Effect.succeed(
+                  titles.has(threadId)
+                    ? ({
+                        id: threadId,
+                        title: titles.get(threadId),
+                        deletedAt: null,
+                      } as OrchestrationV2ThreadShell)
+                    : null,
+                ),
+              dispatch: (command) => {
+                dispatched.push(command);
+                return Effect.succeed({} as Orchestrator.OrchestratorV2DispatchResult);
+              },
+            }),
+            NodeCrypto.layer,
+            NodeSqliteClient.layer({ filename: ":memory:" }),
+          ),
+        ),
+      );
+      const context = yield* Layer.build(layer);
+      const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
+      // No coordinator yet: only the setting changes.
+      yield* service.setAppearance({ name: "Jarvis", icon: "bot" });
+      expect(dispatched).toHaveLength(0);
+      yield* service.setCoordinator({ threadId: coordinator });
+      yield* service.setAppearance({ name: "Jarvis", icon: "bot" });
+      expect(dispatched).toEqual([
+        expect.objectContaining({
+          type: "thread.metadata.update",
+          threadId: coordinator,
+          title: "Jarvis",
+        }),
+      ]);
+      // An unchanged title or a missing chat sends nothing.
+      titles.set(coordinator, "Jarvis");
+      yield* service.setAppearance({ name: "Jarvis", icon: "star" });
+      yield* service.setCoordinator({ threadId: ThreadId.make("gone") });
+      yield* service.setAppearance({ name: "Mate", icon: "star" });
+      expect(dispatched).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("adds the name and icon columns to a config table from before they existed", () =>
+    Effect.gen(function* () {
+      const sqlite = yield* Layer.build(NodeSqliteClient.layer({ filename: ":memory:" }));
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          CREATE TABLE firstmate_config (
+            config_id INTEGER PRIMARY KEY CHECK (config_id = 1),
+            coordinator_thread_id TEXT
+          )
+        `;
+        yield* sql`INSERT INTO firstmate_config(config_id, coordinator_thread_id) VALUES (1, ${coordinator})`;
+      }).pipe(Effect.provide(sqlite));
+      const layer = FirstmateService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "" }),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: () => Effect.succeed(null),
+            }),
+            NodeCrypto.layer,
+            Layer.succeedContext(sqlite),
+          ),
+        ),
+      );
+      const service = yield* FirstmateService.FirstmateService.pipe(
+        Effect.provide(yield* Layer.build(layer)),
+      );
+      expect(yield* snapshot(service)).toMatchObject({
+        coordinatorThreadId: coordinator,
+        name: "Firstmate",
+        icon: "compass",
+      });
+      // A second start leaves the columns, and the saved values, alone.
+      yield* service.setAppearance({ name: "Jarvis", icon: "anchor" });
+      const again = yield* FirstmateService.FirstmateService.pipe(
+        Effect.provide(yield* Layer.build(layer)),
+      );
+      expect(yield* snapshot(again)).toMatchObject({ name: "Jarvis", icon: "anchor" });
     }).pipe(Effect.scoped),
   );
 });
