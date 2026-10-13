@@ -45,6 +45,7 @@ import {
 } from "../git/remoteRefs.ts";
 import * as ServerConfig from "../config.ts";
 import * as TreehouseWorktrees from "../workspace/TreehouseWorktrees.ts";
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const gitProcesses = Semaphore.makeUnsafe(8);
@@ -3855,7 +3856,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "removeWorktree",
   )(function* (input) {
     if (Option.isSome(pool)) {
-      const returned = yield* pool.value.release(input.path).pipe(
+      const returned = yield* withWorkspaceLease(input.path, pool.value.release(input.path)).pipe(
         Effect.mapError(
           (cause) =>
             new GitCommandError({

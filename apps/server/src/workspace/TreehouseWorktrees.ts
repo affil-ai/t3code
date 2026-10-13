@@ -336,7 +336,10 @@ const make = Effect.gen(function* () {
             thread_id: string;
           }>`SELECT thread_id FROM orchestration_v2_projection_threads
         WHERE deleted_at IS NULL AND json_extract(payload_json,'$.worktreePath') = ${value.path}`;
-          if (references.length > 1)
+          if (
+            references.length > 1 ||
+            references.some((entry) => "t3:" + entry.thread_id !== slot.lease_holder)
+          )
             return yield* new TreehouseWorktreeError({ operation: "shared-worktree" });
           const runs = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
         WHERE thread_id IN (SELECT thread_id FROM treehouse_thread_lease WHERE lease_id = ${value.lease_id})

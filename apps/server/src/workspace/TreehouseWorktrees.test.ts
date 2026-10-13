@@ -268,6 +268,7 @@ describe("durable Treehouse workspaces", () => {
     "changed-lease",
     "active-run",
     "shared",
+    "remaining-child",
   ] as const)("preserves a slot with %s and never calls return", (reason) =>
     fixture(({ pool, cwd, commands, slots, setChanges }) =>
       Effect.gen(function* () {
@@ -285,6 +286,10 @@ describe("durable Treehouse workspaces", () => {
         if (reason === "shared") {
           const payload = JSON.stringify({ worktreePath: path });
           yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${owner},NULL,${payload}),(${child},NULL,${payload})`;
+        }
+        if (reason === "remaining-child") {
+          const payload = JSON.stringify({ worktreePath: path });
+          yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${child},NULL,${payload})`;
         }
         expect((yield* pool.release(path).pipe(Effect.result))._tag).toBe("Failure");
         expect(commands.some((input) => input.args.includes("return"))).toBe(false);
