@@ -560,7 +560,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // Asks T3 Connect to deliver webhooks it held while this environment was offline.
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
-  StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+  StorageCleanup.layer.pipe(
+    Layer.provide(ProjectionStoreV2.layer),
+    Layer.provide(OfficeGitPolicy.runtimeLayer),
+  ),
   layerThreadPullRequestWorker,
   Layer.effectDiscard(
     Effect.gen(function* () {

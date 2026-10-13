@@ -48,6 +48,7 @@ import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirect
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as OfficeGitPolicy from "./office/OfficeGitPolicy.ts";
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
@@ -183,6 +184,15 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const pool = yield* Effect.serviceOption(TreehouseWorktrees.TreehouseWorktrees);
+  const officeGit = yield* Effect.serviceOption(OfficeGitPolicy.OfficeGitPolicy);
+  const withThreadGit = <A, E, R>(
+    threadId: ThreadId,
+    cwd: string,
+    operation: Effect.Effect<A, E, R>,
+  ) =>
+    Option.isNone(officeGit)
+      ? operation
+      : officeGit.value.withThreadExecution({ threadId, cwd }, operation);
   const liveTerminals = new Map<string, Map<string, TerminalSummary>>();
   const noteTerminal = (terminal: TerminalSummary) => {
     const threadTerminals =
@@ -470,7 +480,11 @@ const make = Effect.gen(function* () {
             worktreeKeepWhen: "any-local-files" as const,
           };
           if ((yield* localChangesReason(cwd, rules)) !== null) return "dirty";
-          yield* cleanupGit(project.workspaceRoot, ["fetch", "--all", "--prune"], "git fetch");
+          yield* withThreadGit(
+            threadId,
+            cwd,
+            cleanupGit(project.workspaceRoot, ["fetch", "--all", "--prune"], "git fetch"),
+          );
           const unpushed = yield* git.execute({
             operation: "StorageCleanup.remoteBackup",
             cwd,
@@ -753,6 +767,7 @@ const make = Effect.gen(function* () {
         // from that branch when the thread is resumed.
         yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
       }).pipe(
+        (effect) => withThreadGit(thread.id, worktreePath, effect),
         (effect) => withWorkspaceLease(worktreePath, effect),
         Effect.catch((error) =>
           Effect.gen(function* () {
