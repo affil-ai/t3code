@@ -231,6 +231,23 @@ function TaskCard({
         {task.note.trim().length > 0 ? (
           <p className="mt-0.5 line-clamp-2 text-xs leading-4 text-muted-foreground">{task.note}</p>
         ) : null}
+        <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground/80">
+          {task.workerThreadId !== null ? (
+            <>
+              <WorkerThreadLink
+                environmentId={environmentId}
+                task={task}
+                className={cn(CARD_LINK_CLASS, "pointer-events-auto -ms-1 shrink-0")}
+              />
+              <span aria-hidden>·</span>
+            </>
+          ) : null}
+          <span className="truncate">{taskStatusLabel(task)}</span>
+          <span aria-hidden>·</span>
+          <span className="shrink-0 tabular-nums">
+            {relativeAge(firstmateTaskActivityAt(task))}
+          </span>
+        </div>
         {task.links.length > 0 ? (
           <div className="pointer-events-auto -mx-1 mt-1 flex min-w-0 flex-wrap gap-x-0.5">
             {task.links.map((link) => (
@@ -243,18 +260,6 @@ function TaskCard({
             ))}
           </div>
         ) : null}
-        <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground/80">
-          <span className="truncate">{taskStatusLabel(task)}</span>
-          <span aria-hidden>·</span>
-          <span className="shrink-0 tabular-nums">
-            {relativeAge(firstmateTaskActivityAt(task))}
-          </span>
-          <WorkerThreadLink
-            environmentId={environmentId}
-            task={task}
-            className={cn(CARD_LINK_CLASS, "pointer-events-auto -me-1 ms-auto shrink-0")}
-          />
-        </div>
       </div>
     </li>
   );
