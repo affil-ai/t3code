@@ -1,16 +1,18 @@
+import { AGENT_DEFAULT_COLOR, FIRSTMATE_AGENT_ID } from "@t3tools/contracts";
 import { Link, useParams } from "@tanstack/react-router";
-import { PencilIcon } from "lucide-react";
 import { type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { readLocalApi } from "~/localApi";
+import { useAgentsHome } from "~/state/agents";
 import { resolveThreadRouteRef } from "~/threadRoutes";
 import { useFirstmateHome } from "../../state/firstmate";
+import { AgentSidebarRow } from "../agents/AgentSidebarRow";
+import { AgentRowSubtitle } from "../agents/AgentsSidebar";
 import { Badge } from "../ui/badge";
-import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
+import { SidebarMenu } from "../ui/sidebar";
 import { countFirstmateNeedsYou } from "./firstmateBoard.logic";
 import { openFirstmateTasks } from "./firstmateCommands";
 import { FirstmateAppearanceDialog } from "./FirstmateAppearanceDialog";
-import { FirstmateIcon } from "./firstmateIcons";
 
 /**
  * Opens the Tasks tab each time the coordinator chat becomes the route, so
@@ -39,8 +41,9 @@ function useOpenTasksBesideCoordinator(
 }
 
 /**
- * The Work sidebar's Firstmate row, under Search, with the user's chosen name
- * and icon. It opens the coordinator chat with its Tasks tab, or the start
+ * The Work sidebar's Firstmate row, under Search, drawn like an agent in
+ * Agents mode (icon tile, name, status, and its open tasks folded under it)
+ * so it doesn't read as an ordinary chat. It opens the coordinator chat with its Tasks tab, or the start
  * page when there is no coordinator, on the first environment that serves
  * Firstmate. It is absent when none does.
  */
@@ -55,6 +58,7 @@ export function FirstmateSidebarLink() {
     : null;
   useOpenTasksBesideCoordinator(home, routeKey);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const profile = useAgentsHome()?.agents.find((agent) => agent.id === FIRSTMATE_AGENT_ID) ?? null;
   if (home === null) return null;
   const { environmentId, snapshot } = home;
   const coordinatorThreadId = snapshot.coordinatorThreadId;
@@ -80,44 +84,49 @@ export function FirstmateSidebarLink() {
   return (
     // A second menu under Search: mt-1 matches the gap between rows in one menu.
     <SidebarMenu className="mt-1">
-      <SidebarMenuItem onContextMenu={showRowMenu}>
-        <SidebarMenuButton
-          render={
-            coordinatorThreadId === null ? (
-              <Link
-                to="/firstmate/$environmentId"
-                params={{ environmentId }}
-                activeProps={{ "data-active": true }}
-              />
-            ) : (
-              <Link
-                to="/$environmentId/$threadId"
-                params={{ environmentId, threadId: coordinatorThreadId }}
-                onClick={() => openFirstmateTasks(environmentId, coordinatorThreadId)}
-                {...(onCoordinator ? { "data-active": true } : {})}
-              />
-            )
-          }
-        >
-          <FirstmateIcon icon={snapshot.icon} />
-          <span className="flex-1 truncate">{snapshot.name}</span>
-          {needsYou > 0 ? (
-            <span className="transition-opacity group-focus-within/menu-item:opacity-0 group-hover/menu-item:opacity-0">
-              <Badge variant="warning" size="sm" aria-label={`${needsYou} need you`}>
-                {needsYou}
-              </Badge>
-            </span>
-          ) : null}
-        </SidebarMenuButton>
-        <button
-          type="button"
-          aria-label={`Change ${snapshot.name}'s name and icon`}
-          onClick={() => setAppearanceOpen(true)}
-          className="absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring group-hover/menu-item:opacity-100 pointer-coarse:opacity-100"
-        >
-          <PencilIcon className="size-3.5" />
-        </button>
-      </SidebarMenuItem>
+      <AgentSidebarRow
+        className="mb-0"
+        environmentId={environmentId}
+        icon={snapshot.icon}
+        color={profile?.color ?? AGENT_DEFAULT_COLOR}
+        name={snapshot.name}
+        subtitle={
+          <AgentRowSubtitle
+            environmentId={environmentId}
+            agent={{ coordinatorThreadId, role: profile?.role ?? "" }}
+            fallback="Your coordinator"
+          />
+        }
+        trailing={
+          needsYou > 0 ? (
+            <Badge variant="warning" size="sm" aria-label={`${needsYou} need you`}>
+              {needsYou}
+            </Badge>
+          ) : null
+        }
+        active={onCoordinator}
+        coordinatorThreadId={coordinatorThreadId}
+        tasks={snapshot.tasks}
+        activeRouteKey={routeKey}
+        defaultExpanded={false}
+        onContextMenu={showRowMenu}
+        link={
+          coordinatorThreadId === null ? (
+            <Link
+              to="/firstmate/$environmentId"
+              params={{ environmentId }}
+              activeProps={{ "data-active": true }}
+            />
+          ) : (
+            <Link
+              to="/$environmentId/$threadId"
+              params={{ environmentId, threadId: coordinatorThreadId }}
+              onClick={() => openFirstmateTasks(environmentId, coordinatorThreadId)}
+              {...(onCoordinator ? { "data-active": true } : {})}
+            />
+          )
+        }
+      />
       <FirstmateAppearanceDialog
         environmentId={environmentId}
         name={snapshot.name}

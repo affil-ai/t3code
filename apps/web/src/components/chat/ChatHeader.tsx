@@ -57,6 +57,7 @@ import {
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { useIsWorkMode } from "~/workModeStore";
+import { useIsAgentCoordinatorChat } from "../firstmate/agentCoordinatorChat"; // fork: firstmate
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { Button } from "../ui/button";
 import { Menu, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
@@ -175,6 +176,8 @@ export const ChatHeader = memo(function ChatHeader({
   );
   const remoteOpenState = useRemoteOpenState(activeThreadEnvironmentId);
   const isWorkMode = useIsWorkMode();
+  // fork: firstmate — an agent's chat already carries the name of its home project.
+  const isAgentChat = useIsAgentCoordinatorChat(activeThreadEnvironmentId, activeThreadId);
   const showOpenInPicker = shouldShowOpenInPicker({
     activeProjectName,
     activeThreadEnvironmentId,
@@ -447,7 +450,10 @@ export const ChatHeader = memo(function ChatHeader({
         {/* The project always leads the header: knowing which project a
             thread lives in is priority zero, and the thread title alone
             doesn't answer it. */}
-        {activeProject ? (
+        {isAgentChat && isWorkMode ? ( // fork: firstmate
+          <ChatHeaderEnvironmentIcon environmentId={activeThreadEnvironmentId} />
+        ) : null}
+        {activeProject && !isAgentChat /* fork: firstmate */ ? (
           <>
             <WorkspaceBreadcrumbItem className="shrink gap-1.5">
               {isWorkMode ? (

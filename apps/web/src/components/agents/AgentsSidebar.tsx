@@ -1,7 +1,7 @@
 /**
  * Agents mode's sidebar: one large row per agent, with a colored icon tile,
  * the agent's name, and its role or status underneath, the way Grok Bot lists
- * its bots. There is no search; a "+" in the header creates an agent, and a
+ * its bots. There is no search or header; a "New agent" row under the list creates one, and a
  * right-click offers edit and archive. Firstmate has its own place in Work
  * mode, so it is left out here.
  */
@@ -18,7 +18,7 @@ import { type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
-import { useAgentsHome } from "~/state/agents";
+import { useAgentsHome, useAgentTasks } from "~/state/agents";
 import { useThreadShell } from "~/state/entities";
 import { resolveThreadRouteRef } from "~/threadRoutes";
 import { useFirstmateModelSelection } from "../firstmate/firstmateModel";
@@ -34,10 +34,9 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
-import { SidebarContent, SidebarGroup, SidebarMenu, SidebarMenuItem } from "../ui/sidebar";
+import { SidebarContent, SidebarGroup, SidebarMenu } from "../ui/sidebar";
 import { Spinner } from "../ui/spinner";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { AgentAvatar } from "./AgentAvatar";
+import { AgentSidebarRow } from "./AgentSidebarRow";
 import { openAgentTasks, useAgentCommands } from "./agentCommands";
 import { AgentDialog } from "./AgentDialog";
 
@@ -71,12 +70,14 @@ function useOpenTasksBesideAgent(
 }
 
 /** The role on one line, or the chat's live status when it is doing something. */
-function AgentRowSubtitle({
+export function AgentRowSubtitle({
   environmentId,
   agent,
+  fallback = "Agent",
 }: {
   readonly environmentId: EnvironmentId;
-  readonly agent: AgentProfile;
+  readonly agent: Pick<AgentProfile, "coordinatorThreadId" | "role">;
+  readonly fallback?: string;
 }) {
   const shell = useThreadShell(
     agent.coordinatorThreadId === null
@@ -111,7 +112,7 @@ function AgentRowSubtitle({
   }
   return (
     <span className="truncate text-xs text-sidebar-muted-foreground/80">
-      {agent.role.split("\n")[0] || "Agent"}
+      {agent.role.split("\n")[0] || fallback}
     </span>
   );
 }
@@ -120,75 +121,65 @@ function AgentRow({
   environmentId,
   agent,
   active,
+  routeKey,
   onMenu,
 }: {
   readonly environmentId: EnvironmentId;
   readonly agent: AgentProfile;
   readonly active: boolean;
+  readonly routeKey: string | null;
   readonly onMenu: (agent: AgentProfile, event: MouseEvent) => void;
 }) {
   const navigate = useNavigate();
   const modelSelection = useFirstmateModelSelection(environmentId);
   const { pending, start, run } = useAgentCommands();
-  const rowClass = cn(
-    "flex h-14 w-full cursor-pointer items-center gap-3 rounded-xl px-2 text-left outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
-    active && "bg-sidebar-row-selected",
-  );
-  const body = (
-    <>
-      <AgentAvatar icon={agent.icon} color={agent.color} />
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span
-          className={cn(
-            "truncate text-sm font-medium text-sidebar-foreground",
-            !active && "text-sidebar-foreground/90",
-          )}
-        >
-          {agent.name}
-        </span>
-        <AgentRowSubtitle environmentId={environmentId} agent={agent} />
-      </span>
-      {pending === "start" ? <Spinner className="size-3.5" /> : null}
-    </>
-  );
+  const tasks = useAgentTasks(environmentId, agent.id).data?.tasks ?? null;
   return (
-    <SidebarMenuItem className="mb-1" onContextMenu={(event) => onMenu(agent, event)}>
-      {agent.coordinatorThreadId === null ? (
-        // An agent whose chat is gone, or that never started: a click starts one.
-        <button
-          type="button"
-          className={rowClass}
-          disabled={pending !== null || modelSelection === null}
-          onClick={() => {
-            if (modelSelection === null) return;
-            void run(
-              "start",
-              () => start({ environmentId, input: { agentId: agent.id, modelSelection } }),
-              `Could not start ${agent.name}`,
-            ).then((started) => {
-              if (started === null) return;
-              openAgentTasks(environmentId, started.threadId);
-              void navigate({
-                to: "/$environmentId/$threadId",
-                params: { environmentId, threadId: started.threadId },
+    <AgentSidebarRow
+      environmentId={environmentId}
+      icon={agent.icon}
+      color={agent.color}
+      name={agent.name}
+      subtitle={<AgentRowSubtitle environmentId={environmentId} agent={agent} />}
+      trailing={pending === "start" ? <Spinner className="size-3.5" /> : null}
+      active={active}
+      coordinatorThreadId={agent.coordinatorThreadId}
+      tasks={tasks}
+      activeRouteKey={routeKey}
+      defaultExpanded
+      onContextMenu={(event) => onMenu(agent, event)}
+      link={
+        agent.coordinatorThreadId === null ? (
+          // An agent whose chat is gone, or that never started: a click starts one.
+          <button
+            type="button"
+            disabled={pending !== null || modelSelection === null}
+            onClick={() => {
+              if (modelSelection === null) return;
+              void run(
+                "start",
+                () => start({ environmentId, input: { agentId: agent.id, modelSelection } }),
+                `Could not start ${agent.name}`,
+              ).then((started) => {
+                if (started === null) return;
+                openAgentTasks(environmentId, started.threadId);
+                void navigate({
+                  to: "/$environmentId/$threadId",
+                  params: { environmentId, threadId: started.threadId },
+                });
               });
-            });
-          }}
-        >
-          {body}
-        </button>
-      ) : (
-        <Link
-          to="/$environmentId/$threadId"
-          params={{ environmentId, threadId: agent.coordinatorThreadId }}
-          className={rowClass}
-          onClick={() => openAgentTasks(environmentId, agent.coordinatorThreadId as ThreadId)}
-          {...(active ? { "data-active": true } : {})}
-        >
-          {body}
-        </Link>
-      )}
-    </SidebarMenuItem>
+            }}
+          />
+        ) : (
+          <Link
+            to="/$environmentId/$threadId"
+            params={{ environmentId, threadId: agent.coordinatorThreadId }}
+            onClick={() => openAgentTasks(environmentId, agent.coordinatorThreadId as ThreadId)}
+            {...(active ? { "data-active": true } : {})}
+          />
+        )
+      }
+    />
   );
 }
 
@@ -231,32 +222,7 @@ export function AgentsSidebar() {
 
   const environmentId = home?.environmentId ?? null;
   return (
-    <SidebarContent
-      fixedHeader={
-        <SidebarGroup className="z-[1]">
-          <div className="flex h-8 items-center justify-between pl-2 pr-1">
-            <span className="text-xs font-medium text-sidebar-muted-foreground/80">Agents</span>
-            {environmentId !== null ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      size="icon-xs"
-                      variant="ghost"
-                      aria-label="New agent"
-                      onClick={() => setDialog({ agent: null })}
-                    />
-                  }
-                >
-                  <PlusIcon className="size-3.5" />
-                </TooltipTrigger>
-                <TooltipPopup>New agent</TooltipPopup>
-              </Tooltip>
-            ) : null}
-          </div>
-        </SidebarGroup>
-      }
-    >
+    <SidebarContent>
       <SidebarGroup>
         {home === null ? (
           <Empty size="compact">
@@ -291,9 +257,22 @@ export function AgentsSidebar() {
                   agent.coordinatorThreadId !== null &&
                   routeKey === `${home.environmentId}:${agent.coordinatorThreadId}`
                 }
+                routeKey={routeKey}
                 onMenu={showRowMenu}
               />
             ))}
+            <li>
+              <button
+                type="button"
+                onClick={() => setDialog({ agent: null })}
+                className="flex h-10 w-full cursor-pointer items-center gap-3 rounded-xl px-2 text-left text-sm text-sidebar-muted-foreground outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset"
+              >
+                <span className="inline-flex size-9 shrink-0 items-center justify-center">
+                  <PlusIcon className="size-4" />
+                </span>
+                New agent
+              </button>
+            </li>
           </SidebarMenu>
         )}
       </SidebarGroup>
