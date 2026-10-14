@@ -151,7 +151,7 @@ export function FirstmateSidebarTasks() {
   const coordinatorThreadId = home?.snapshot.coordinatorThreadId ?? null;
   if (home === null || coordinatorThreadId === null) return null;
   return (
-    <SidebarGroup aria-label={`${home.snapshot.name}'s tasks`} className="pb-3">
+    <SidebarGroup aria-label={`${home.snapshot.name}'s tasks`} className="mb-3">
       <AgentTaskTree
         environmentId={home.environmentId}
         coordinatorThreadId={coordinatorThreadId}
