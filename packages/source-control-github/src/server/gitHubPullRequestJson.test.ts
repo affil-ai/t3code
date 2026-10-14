@@ -2,6 +2,7 @@ import * as Result from "effect/Result";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  decodePullRequestCheckContextsJson,
   buildPullRequestSummariesGraphQlQuery,
   buildPullRequestWatchFingerprintsGraphQlQuery,
   decodePullRequestSummariesJson,
@@ -2147,5 +2148,75 @@ describe("pull request watch fingerprints", () => {
     expect(replied.remarks).not.toBe(before.remarks);
     // A pull request GitHub had no answer for is left for a full read.
     expect(decode(null, pullRequest(base)).has(0)).toBe(false);
+  });
+});
+
+describe("check contexts a fine-grained token cannot read", () => {
+  const body = (errors: ReadonlyArray<unknown> | undefined) =>
+    JSON.stringify({
+      ...(errors ? { errors } : {}),
+      data: {
+        repository: {
+          pullRequest: {
+            headRefOid: "f557e6d926",
+            commits: {
+              nodes: [
+                {
+                  commit: {
+                    status: {
+                      contexts: [
+                        { context: "vercel", state: "SUCCESS", targetUrl: null, description: null },
+                      ],
+                    },
+                    statusCheckRollup: {
+                      state: "SUCCESS",
+                      contexts: errors
+                        ? null
+                        : { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+  const forbidden = [
+    {
+      type: "FORBIDDEN",
+      message: "Resource not accessible by personal access token",
+      path: [
+        "repository",
+        "pullRequest",
+        "commits",
+        "nodes",
+        0,
+        "commit",
+        "statusCheckRollup",
+        "contexts",
+        "nodes",
+      ],
+    },
+  ];
+
+  it("falls back to legacy statuses and the rollup state", () => {
+    const decoded = decodePullRequestCheckContextsJson(body(forbidden));
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (!Result.isSuccess(decoded)) return;
+    expect(decoded.success.checkContextsForbidden).toBe(true);
+    expect(decoded.success.nextCursor).toBeNull();
+    expect(decoded.success.contexts.map((context) => context.state)).toEqual([
+      "SUCCESS",
+      "SUCCESS",
+    ]);
+  });
+
+  it("reads a full response as before", () => {
+    const decoded = decodePullRequestCheckContextsJson(body(undefined));
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (!Result.isSuccess(decoded)) return;
+    expect(decoded.success.checkContextsForbidden).toBe(false);
+    expect(decoded.success.contexts).toEqual([]);
   });
 });

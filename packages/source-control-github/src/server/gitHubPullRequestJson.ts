@@ -703,7 +703,41 @@ const RawRepositoryAccessSchema = Schema.Struct({
   viewerPermission: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
+const RawCheckContextNodeSchema = Schema.Struct({
+  ...RawCheckSchema.fields,
+  checkSuite: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        workflowRun: Schema.NullOr(
+          Schema.Struct({ workflow: Schema.NullOr(Schema.Struct({ name: Schema.String })) }),
+        ),
+      }),
+    ),
+  ),
+});
+
+const RawCommitChecksSchema = Schema.Struct({
+  status: Schema.optional(Schema.NullOr(Schema.Struct({ contexts: Schema.Array(RawCheckSchema) }))),
+  statusCheckRollup: Schema.NullOr(
+    Schema.Struct({
+      state: Schema.optional(Schema.NullOr(Schema.String)),
+      contexts: Schema.optional(
+        Schema.NullOr(
+          Schema.Struct({
+            nodes: Schema.optional(
+              Schema.NullOr(Schema.Array(Schema.NullOr(RawCheckContextNodeSchema))),
+            ),
+            pageInfo: Schema.optional(Schema.NullOr(RawPageInfoSchema)),
+          }),
+        ),
+      ),
+    }),
+  ),
+});
+
 const RawCoreSchema = Schema.Struct({
+  // The transport admits errors only after checking every forbidden field path.
+  errors: Schema.optional(Schema.Array(Schema.Unknown)),
   data: Schema.Struct({
     repository: Schema.Struct({
       ...RawRepositoryAccessSchema.fields,
@@ -725,31 +759,7 @@ const RawCoreSchema = Schema.Struct({
         commits: Schema.Struct({
           nodes: Schema.Array(
             Schema.Struct({
-              commit: Schema.Struct({
-                statusCheckRollup: Schema.NullOr(
-                  Schema.Struct({
-                    contexts: Schema.Struct({
-                      nodes: Schema.Array(
-                        Schema.Struct({
-                          ...RawCheckSchema.fields,
-                          checkSuite: Schema.optional(
-                            Schema.NullOr(
-                              Schema.Struct({
-                                workflowRun: Schema.NullOr(
-                                  Schema.Struct({
-                                    workflow: Schema.NullOr(Schema.Struct({ name: Schema.String })),
-                                  }),
-                                ),
-                              }),
-                            ),
-                          ),
-                        }),
-                      ),
-                      pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean }),
-                    }),
-                  }),
-                ),
-              }),
+              commit: RawCommitChecksSchema,
             }),
           ),
         }),
@@ -839,7 +849,9 @@ export const pullRequestCoreGraphQlQuery = (host: string) => {
       }
       labels(first: 100) { nodes { name color } }
       commits(last: 1) {
-        nodes { commit { statusCheckRollup { contexts(first: 100) {
+        nodes { commit {
+          status { contexts { context state targetUrl description } }
+          statusCheckRollup { state contexts(first: 100) {
           ${checkContextNodesSelection(host)}
           pageInfo { hasNextPage }
         } } } }
@@ -2305,6 +2317,8 @@ export interface GitHubPullRequestCore extends GitHubPullRequestDetail {
   readonly viewerAccess: GitHubViewerAccess & GitHubRepositoryAccess;
   readonly comparison: GitHubBaseComparison | null;
   readonly checksTruncated: boolean;
+  /** The token could not read individual check runs; checks come from the rollup state. */
+  readonly checkContextsForbidden?: boolean;
 }
 
 export function decodePullRequestCoreJson(
@@ -2314,7 +2328,9 @@ export function decodePullRequestCoreJson(
   if (!Result.isSuccess(decoded)) return Result.fail(decoded.failure);
   const repository = decoded.success.data.repository;
   const pr = repository.pullRequest;
-  const contexts = pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts;
+  const commit = pr.commits.nodes[0]?.commit;
+  const contexts = commit?.statusCheckRollup?.contexts;
+  const checkContextsForbidden = (decoded.success.errors?.length ?? 0) > 0;
   return Result.succeed({
     ...toDetail({
       ...pr,
@@ -2322,8 +2338,14 @@ export function decodePullRequestCoreJson(
         requestedReviewer === null ? [] : [requestedReviewer],
       ),
       labels: pr.labels.nodes,
-      statusCheckRollup: toCheckContexts(contexts?.nodes ?? []),
+      statusCheckRollup: [
+        ...toCheckContexts(contexts?.nodes ?? []),
+        ...(checkContextsForbidden ? (commit?.status?.contexts ?? []) : []),
+      ],
     }),
+    ...(checkContextsForbidden && commit?.statusCheckRollup?.state != null
+      ? { checksState: rollupChecksState([{ state: commit.statusCheckRollup.state }]) }
+      : {}),
     viewerAccess: {
       canWrite: toCanWrite(repository.viewerPermission),
       canTriage: toCanTriage(repository.viewerPermission),
@@ -2341,7 +2363,8 @@ export function decodePullRequestCoreJson(
             behindBy: pr.baseRef.compare.behindBy,
             viewerCanUpdate: pr.viewerCanUpdateBranch,
           },
-    checksTruncated: contexts?.pageInfo.hasNextPage === true,
+    checksTruncated: checkContextsForbidden || contexts?.pageInfo?.hasNextPage === true,
+    checkContextsForbidden,
   });
 }
 
@@ -2457,7 +2480,9 @@ export const pullRequestCheckContextsGraphQlQuery = (host: string) =>
     pullRequest(number: $number) {
       headRefOid
       commits(last: 1) {
-        nodes { commit { statusCheckRollup { contexts(first: 100, after: $after) {
+        nodes { commit {
+          status { contexts { context state targetUrl description } }
+          statusCheckRollup { state contexts(first: 100, after: $after) {
           ${checkContextNodesSelection(host)}
           pageInfo { hasNextPage endCursor }
         } } } }
@@ -2466,21 +2491,9 @@ export const pullRequestCheckContextsGraphQlQuery = (host: string) =>
   }
 }`;
 
-const RawCheckContextNodeSchema = Schema.Struct({
-  ...RawCheckSchema.fields,
-  checkSuite: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        workflowRun: Schema.NullOr(
-          Schema.Struct({ workflow: Schema.NullOr(Schema.Struct({ name: Schema.String })) }),
-        ),
-      }),
-    ),
-  ),
-});
-
 const decodeCheckContexts = decodeJsonResult(
   Schema.Struct({
+    errors: Schema.optional(Schema.Array(Schema.Unknown)),
     data: Schema.Struct({
       repository: Schema.Struct({
         pullRequest: Schema.Struct({
@@ -2488,16 +2501,7 @@ const decodeCheckContexts = decodeJsonResult(
           commits: Schema.Struct({
             nodes: Schema.Array(
               Schema.Struct({
-                commit: Schema.Struct({
-                  statusCheckRollup: Schema.NullOr(
-                    Schema.Struct({
-                      contexts: Schema.Struct({
-                        nodes: Schema.Array(RawCheckContextNodeSchema),
-                        pageInfo: RawPageInfoSchema,
-                      }),
-                    }),
-                  ),
-                }),
+                commit: RawCommitChecksSchema,
               }),
             ),
           }),
@@ -2511,12 +2515,14 @@ const decodeCheckContexts = decodeJsonResult(
 export type GitHubCheckContext = Schema.Schema.Type<typeof RawCheckSchema>;
 
 function toCheckContexts(
-  nodes: ReadonlyArray<Schema.Schema.Type<typeof RawCheckContextNodeSchema>>,
+  nodes: ReadonlyArray<Schema.Schema.Type<typeof RawCheckContextNodeSchema> | null>,
 ): ReadonlyArray<GitHubCheckContext> {
-  return nodes.map((check) => ({
-    ...check,
-    workflowName: check.checkSuite?.workflowRun?.workflow?.name ?? null,
-  }));
+  return nodes
+    .filter((check) => check !== null)
+    .map((check) => ({
+      ...check,
+      workflowName: check.checkSuite?.workflowRun?.workflow?.name ?? null,
+    }));
 }
 
 export function decodePullRequestCheckContextsJson(raw: string): Result.Result<
@@ -2524,17 +2530,27 @@ export function decodePullRequestCheckContextsJson(raw: string): Result.Result<
     readonly headSha: string;
     readonly contexts: ReadonlyArray<GitHubCheckContext>;
     readonly nextCursor: string | null;
+    readonly checkContextsForbidden: boolean;
   },
   DecodeFailure
 > {
   const decoded = decodeCheckContexts(raw);
   if (!Result.isSuccess(decoded)) return Result.fail(decoded.failure);
   const pr = decoded.success.data.repository.pullRequest;
-  const contexts = pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts;
+  const commit = pr.commits.nodes[0]?.commit;
+  const contexts = commit?.statusCheckRollup?.contexts;
+  const checkContextsForbidden = (decoded.success.errors?.length ?? 0) > 0;
   return Result.succeed({
     headSha: pr.headRefOid,
-    contexts: toCheckContexts(contexts?.nodes ?? []),
-    nextCursor: nextCursorOf(contexts?.pageInfo),
+    contexts: [
+      ...toCheckContexts(contexts?.nodes ?? []),
+      ...(checkContextsForbidden ? (commit?.status?.contexts ?? []) : []),
+      ...(checkContextsForbidden && commit?.statusCheckRollup?.state != null
+        ? [{ state: commit.statusCheckRollup.state }]
+        : []),
+    ],
+    nextCursor: checkContextsForbidden ? null : nextCursorOf(contexts?.pageInfo ?? undefined),
+    checkContextsForbidden,
   });
 }
 

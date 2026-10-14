@@ -1297,6 +1297,7 @@ export const make = Effect.gen(function* () {
     readonly host: string;
     readonly operation: string;
     readonly allowReserve?: boolean | undefined;
+    readonly allowForbiddenCheckContexts?: boolean;
     readonly variables?: Readonly<Record<string, unknown>>;
     readonly query: string;
     readonly decode: (raw: string) => Result.Result<A, unknown>;
@@ -1308,6 +1309,9 @@ export const make = Effect.gen(function* () {
         query: input.query,
         ...(input.variables === undefined ? {} : { variables: input.variables }),
         ...(input.allowReserve === true ? { allowReserve: true } : {}),
+        ...(input.allowForbiddenCheckContexts === true
+          ? { allowForbiddenCheckContexts: true }
+          : {}),
       })
       .pipe(Effect.flatMap((raw) => decodeWith(input.cwd, input.operation, input.decode, raw)));
 
@@ -1501,6 +1505,7 @@ export const make = Effect.gen(function* () {
             allowReserve,
             variables: { owner, name, number: input.number, after },
             query: pullRequestCheckContextsGraphQlQuery(input.host),
+            allowForbiddenCheckContexts: true,
             decode: decodePullRequestCheckContextsJson,
           }).pipe(
             // Each page names the head it read, so a push mid-walk fails rather than mixing
@@ -1520,7 +1525,7 @@ export const make = Effect.gen(function* () {
       return {
         headSha: pages[0]?.headSha ?? null,
         contexts: pages.flatMap((page) => page.contexts),
-        truncated,
+        truncated: truncated || pages.some((page) => page.checkContextsForbidden),
       };
     });
 
@@ -1540,12 +1545,13 @@ export const make = Effect.gen(function* () {
             headRef: `refs/pull/${input.number}/head`,
           },
           query: pullRequestCoreGraphQlQuery(input.host),
+          allowForbiddenCheckContexts: true,
           decode: decodePullRequestCoreJson,
         }).pipe(
           // Past a hundred checks the first page would let the rest imply success, so the whole
           // rollup is walked instead.
           Effect.filterOrElse(
-            (core) => !core.checksTruncated,
+            (core) => !core.checksTruncated || core.checkContextsForbidden === true,
             (core) =>
               readAllCheckContexts(input, allowReserve).pipe(
                 Effect.filterOrFail(

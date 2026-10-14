@@ -139,6 +139,8 @@ export interface GitHubGraphQlInput {
   readonly variables?: Readonly<Record<string, unknown>>;
   readonly allowReserve?: boolean;
   readonly maxResponseBytes?: number;
+  /** PR detail can use the rollup state when the token cannot read CheckRun contexts. */
+  readonly allowForbiddenCheckContexts?: boolean;
 }
 
 export class GitHubApi extends Context.Service<
@@ -225,10 +227,12 @@ function retryAtFrom(
 const decodeGraphQlErrors = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({
+      data: Schema.optional(Schema.Unknown),
       errors: Schema.NonEmptyArray(
         Schema.Struct({
           type: Schema.optional(Schema.String),
           message: Schema.optional(Schema.String),
+          path: Schema.optional(Schema.Unknown),
         }),
       ),
     }),
@@ -296,11 +300,11 @@ function classify(input: {
   readonly body: string;
   readonly graphql: boolean;
   readonly acceptNotModified: boolean;
+  readonly allowForbiddenCheckContexts?: boolean | undefined;
 }): Answer {
   const { status, headers, body } = input;
-  const errors = input.graphql
-    ? Option.getOrUndefined(decodeGraphQlErrors(body))?.errors
-    : undefined;
+  const decoded = input.graphql ? Option.getOrUndefined(decodeGraphQlErrors(body)) : undefined;
+  const errors = decoded?.errors;
   const types = errors?.flatMap((error) => (error.type === undefined ? [] : [error.type])) ?? [];
   const messages = errors?.flatMap((error) => (error.message === undefined ? [] : [error.message]));
   if (
@@ -326,7 +330,34 @@ function classify(input: {
   ) {
     return Answer.NotFound();
   }
-  if (errors !== undefined) return Answer.Failed({ messages });
+  if (errors !== undefined) {
+    // Fine-grained PATs can read the state and legacy statuses, but GitHub refuses CheckRuns
+    // inside this connection. Only these two PR reads opt in; every other error stays fatal.
+    const prefix = ["repository", "pullRequest", "commits", "nodes"];
+    if (
+      input.allowForbiddenCheckContexts === true &&
+      status >= 200 &&
+      status < 300 &&
+      decoded?.data !== null &&
+      typeof decoded?.data === "object" &&
+      errors.every((error) => {
+        const path = error.path;
+        return (
+          error.type === "FORBIDDEN" &&
+          Array.isArray(path) &&
+          prefix.every((part, index) => path[index] === part) &&
+          Number.isInteger(path[4]) &&
+          path[4] >= 0 &&
+          path[5] === "commit" &&
+          path[6] === "statusCheckRollup" &&
+          path[7] === "contexts"
+        );
+      })
+    ) {
+      return Answer.Ok();
+    }
+    return Answer.Failed({ messages });
+  }
   if ((status >= 200 && status < 300) || (status === 304 && input.acceptNotModified)) {
     return Answer.Ok();
   }
@@ -374,6 +405,7 @@ export const make = Effect.gen(function* () {
     readonly acceptNotModified: boolean;
     /** Reads the body for GraphQL `errors`, which GitHub sends with HTTP 200. */
     readonly graphql?: boolean;
+    readonly allowForbiddenCheckContexts?: boolean | undefined;
   }) {
     const host = normalizeHost(input.host);
     // Only the path: a query string can carry a SHA or a branch, and never needs to be in a trace.
@@ -455,6 +487,7 @@ export const make = Effect.gen(function* () {
           body: collected.text,
           graphql: input.graphql === true,
           acceptNotModified: input.acceptNotModified,
+          allowForbiddenCheckContexts: input.allowForbiddenCheckContexts,
         }),
         {
           Ok: () =>
@@ -558,6 +591,7 @@ export const make = Effect.gen(function* () {
         allowReserve,
         acceptNotModified: false,
         graphql: true,
+        allowForbiddenCheckContexts: input.allowForbiddenCheckContexts,
       });
       // A body cut at the byte cap hides any `errors` past the cut and cannot be decoded.
       if (response.truncated) {
