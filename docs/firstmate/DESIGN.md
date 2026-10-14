@@ -165,7 +165,7 @@ provider harness loads it the way it loads any project's
   follows (`AGENTS.md`, with `CLAUDE.md` importing it), shared `notes/` and
   `.agents/skills/` (linked from `.claude/skills`), and `artifacts/` for kept
   review images, which Git ignores.
-- Each agent owns `agents/<slug>/`: its own `AGENTS.md` (the role between
+- Each agent owns `crew/<slug>/`: its own `AGENTS.md` (the role between
   `<!-- role -->` markers, then its standing instructions), `CLAUDE.md`,
   `notes/`, and `.agents/skills/` with the same `.claude/skills` link. The
   agent's chat runs in a T3 project rooted there, so Claude Code walks up to
@@ -180,13 +180,18 @@ provider harness loads it the way it loads any project's
 - The project is found by workspace root, or created with
   `ProjectService.bootstrap` and titled with the agent's name.
 - **One-time move.** A `~/firstmate` (or `T3CODE_FIRSTMATE_HOME`) from before
-  agents is moved into `agents/firstmate` at the first service start that
+  agents is moved into `crew/firstmate` at the first service start that
   finds no `~/agents`. Its `.git` moves up to become the repository's, so
   Firstmate's history is kept and the move is one commit of renames; its
   kept images move to the root `artifacts/`, their stored paths are
   rewritten, the shared root files are seeded, and Firstmate's project is
   repointed with `project.update`. A copy of the old folder stays as
   `~/firstmate.bak-<time>` until the user deletes it.
+- **Move into `crew/`.** Agents' folders were first under `agents/`, so the
+  repository read as `~/agents/agents/<slug>`. Each start moves any
+  `agents/<slug>` without a `crew/<slug>` into `crew/`, commits only those
+  paths as renames, removes the emptied `agents/`, and repoints each agent's
+  project.
 
 The shared instructions cover the task rules: every request is a task
 recorded verbatim with a definition of done, one worker per task in a new

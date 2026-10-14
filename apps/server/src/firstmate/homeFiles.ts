@@ -1,19 +1,19 @@
 /**
  * The files seeded into the agents repository: shared ones at its root, and
- * each agent's own in `agents/<slug>/`. Each is written only when missing, so
+ * each agent's own in `crew/<slug>/`. Each is written only when missing, so
  * the user's edits always win. Paths use `/`.
  */
 
 const SHARED_AGENTS_MD = `# Agents
 
-This repository is home to the user's agents. Each agent is one coordinator chat with its own task board; it turns the user's requests into tracked tasks and runs worker chats for them. You are one of them: your folder under \`agents/\` names you and holds your role.
+This repository is home to the user's agents. Each agent is one coordinator chat with its own task board; it turns the user's requests into tracked tasks and runs worker chats for them. You are one of them: your folder under \`crew/\` names you and holds your role.
 
 The user steers you by editing this repository:
 
 - \`AGENTS.md\` (this file): instructions every agent follows.
-- \`agents/<you>/AGENTS.md\`: your role and your own standing instructions.
-- \`agents/<you>/notes/\`: your memory across sessions.
-- \`agents/<you>/.agents/skills/\`: your reusable procedures. \`.claude/skills\` is the same folder.
+- \`crew/<you>/AGENTS.md\`: your role and your own standing instructions.
+- \`crew/<you>/notes/\`: your memory across sessions.
+- \`crew/<you>/.agents/skills/\`: your reusable procedures. \`.claude/skills\` is the same folder.
 - \`notes/\` and \`.agents/skills/\` at the root: memory and procedures shared by every agent. Read them too.
 
 ## Every session
@@ -61,14 +61,14 @@ const CLAUDE_MD = "@AGENTS.md\n";
 
 const SHARED_NOTES_README = `# Shared notes
 
-Memory every agent reads at the start of each session: your preferences, facts about your projects and people, and lessons that apply to all of them. Each agent keeps its own notes in \`agents/<name>/notes/\`.
+Memory every agent reads at the start of each session: your preferences, facts about your projects and people, and lessons that apply to all of them. Each agent keeps its own notes in \`crew/<name>/notes/\`.
 
 Keep one topic per file, in plain Markdown. You can edit or delete these files yourself; the agents pick up the change in their next session.
 `;
 
 const SHARED_SKILLS_README = `# Shared skills
 
-Reusable procedures every agent can use. Codex loads skills from this folder, and Claude Code loads them through \`.claude/skills\`, which points here. Each agent also has its own skills in \`agents/<name>/.agents/skills/\`.
+Reusable procedures every agent can use. Codex loads skills from this folder, and Claude Code loads them through \`.claude/skills\`, which points here. Each agent also has its own skills in \`crew/<name>/.agents/skills/\`.
 
 To add a skill, create \`<name>/SKILL.md\`:
 
@@ -87,7 +87,7 @@ The description decides when the skill is used, so name the situations that call
 
 const SHARED_README = `# Agents
 
-This repository is home to your T3 Code agents. Each agent is a chat with its own task board; it follows \`AGENTS.md\` here and its own \`agents/<name>/AGENTS.md\` (\`CLAUDE.md\` points Claude Code at the same files), keeps its memory in \`notes/\`, and loads reusable procedures from \`.agents/skills/\`. Edit any of these to change how an agent works; its next session picks up the change. The repository is under Git, so \`git log\` shows what the agents changed and \`git revert\` undoes it. T3 Code recreates a missing file here but never overwrites one.
+This repository is home to your T3 Code agents. Each agent is a chat with its own task board; it follows \`AGENTS.md\` here and its own \`crew/<name>/AGENTS.md\` (\`CLAUDE.md\` points Claude Code at the same files), keeps its memory in \`notes/\`, and loads reusable procedures from \`.agents/skills/\`. Edit any of these to change how an agent works; its next session picks up the change. The repository is under Git, so \`git log\` shows what the agents changed and \`git revert\` undoes it. T3 Code recreates a missing file here but never overwrites one.
 `;
 
 export const SHARED_HOME_FILES: ReadonlyArray<{
@@ -138,7 +138,7 @@ Reusable procedures for ${name}. Codex loads skills from this folder, and Claude
 To add a skill, create \`<name>/SKILL.md\` with a \`name\` and a \`description\` in its front matter, followed by the steps. The description decides when the skill is used, so name the situations that call for it.
 `;
 
-/** An agent's own seed files, relative to `agents/<slug>/`. */
+/** An agent's own seed files, relative to `crew/<slug>/`. */
 export function agentHomeFiles(
   name: string,
   role: string,

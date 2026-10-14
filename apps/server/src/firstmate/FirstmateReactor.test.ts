@@ -144,7 +144,10 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const layerFirstmate = FirstmateService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(FirstmateHome.FirstmateHome)({ migrateLegacyHome: () => Effect.succeed(null) }),
+        Layer.mock(FirstmateHome.FirstmateHome)({
+          migrateLegacyHome: () => Effect.succeed(null),
+          migrateAgentsFolder: () => Effect.succeed([]),
+        }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         layerThreads,
         NodeCrypto.layer,

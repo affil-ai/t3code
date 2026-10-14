@@ -80,16 +80,13 @@ export function ScheduledSection({
               key={task.id}
               className="group/row flex items-center gap-2 rounded-lg border border-border/70 bg-card px-2.5 py-2 text-card-foreground shadow-xs/5"
             >
-              <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
-                <CalendarClockIcon className="size-3.5 text-muted-foreground" />
-                <span
-                  aria-hidden
-                  className={cn(
-                    "absolute -top-0.5 -right-0.5 size-1.5 rounded-full",
-                    STATUS_DOT_CLASS[task.lastRunStatus],
-                  )}
-                />
-              </span>
+              <span
+                aria-hidden
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  STATUS_DOT_CLASS[task.lastRunStatus],
+                )}
+              />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm leading-5 font-medium">{task.title}</p>
                 <p className="truncate text-2xs text-muted-foreground/80">

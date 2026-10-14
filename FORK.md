@@ -137,21 +137,23 @@ and a right-click edits or archives it.
 
 Every agent's chat runs in its folder of one repository, `~/agents` on the
 server (override with `T3CODE_AGENTS_HOME`): shared `AGENTS.md`, `notes/`,
-and `.agents/skills/` at the root, and `agents/<slug>/` per agent with its own
+and `.agents/skills/` at the root, and `crew/<slug>/` per agent with its own
 `AGENTS.md` (its role at the top), `notes/`, and skills. Seed files are
 committed there and never overwritten. A pre-agents `~/firstmate` is moved
-into `agents/firstmate` once, keeping its history and project.
+into `crew/firstmate` once, keeping its history and project. Agents' folders
+were first under `agents/`, which read as `~/agents/agents/<slug>`; they move
+to `crew/` once, in one commit of renames, with their projects repointed.
 
 [`docs/firstmate/DESIGN.md`](docs/firstmate/DESIGN.md) specifies the data,
 tools, wake rules, and UI.
 
-| Piece                                              | Location                                                                      |
-| -------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Contracts                                          | `packages/contracts/src/firstmate.ts`                                         |
-| Server: agents, task store, wake reactor, home     | `apps/server/src/firstmate/`                                                  |
-| MCP tools (`firstmate_task_*`)                     | `apps/server/src/mcp/toolkits/firstmate/`                                     |
-| Tasks panel, sidebar link, route                   | `apps/web/src/components/firstmate/`, `apps/web/src/routes/_chat.firstmate.*` |
-| Agents mode sidebar and dialog                     | `apps/web/src/components/agents/`, `apps/web/src/state/agents.ts`             |
+| Piece                                              | Location                                                                        |
+| -------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Contracts                                          | `packages/contracts/src/firstmate.ts`                                           |
+| Server: agents, task store, wake reactor, home     | `apps/server/src/firstmate/`                                                    |
+| MCP tools (`firstmate_task_*`)                     | `apps/server/src/mcp/toolkits/firstmate/`                                       |
+| Tasks panel, sidebar link, route                   | `apps/web/src/components/firstmate/`, `apps/web/src/routes/_chat.firstmate.*`   |
+| Agents mode sidebar and dialog                     | `apps/web/src/components/agents/`, `apps/web/src/state/agents.ts`               |
 | Tables (created at server start, not by migration) | `firstmate_agent`, `firstmate_task`, `firstmate_task_event`, `firstmate_config` |
 
 In Work mode, the **Firstmate** link sits below Search in the sidebar, with a

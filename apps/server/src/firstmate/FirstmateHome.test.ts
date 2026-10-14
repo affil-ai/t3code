@@ -113,7 +113,7 @@ it.effect(
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const repo = path.join(homeDir, "agents");
-        const folder = path.join(repo, "agents", "jarvis");
+        const folder = path.join(repo, "crew", "jarvis");
 
         const { projectId } = yield* home.ensure({
           slug: "jarvis",
@@ -170,7 +170,7 @@ it.effect("keeps the user's edits and reuses the project on a second start", () 
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const repo = path.join(homeDir, "agents");
-      const root = path.join(repo, "agents", "firstmate");
+      const root = path.join(repo, "crew", "firstmate");
       // A folder the user already started, with their own instructions.
       yield* fileSystem.makeDirectory(root, { recursive: true });
       yield* fileSystem.writeFileString(path.join(root, "AGENTS.md"), "My rules.\n");
@@ -180,7 +180,7 @@ it.effect("keeps the user's edits and reuses the project on a second start", () 
       assert.equal(yield* gitOutput(repo, ["log", "--format=%s"]), "Add home files for Firstmate");
       assert.equal(
         yield* gitOutput(repo, ["status", "--porcelain"]),
-        "?? agents/firstmate/AGENTS.md",
+        "?? crew/firstmate/AGENTS.md",
       );
 
       // Edits and deletions after the seed: only the missing file comes back.
@@ -197,7 +197,7 @@ it.effect("keeps the user's edits and reuses the project on a second start", () 
       assert.equal(yield* gitOutput(repo, ["rev-list", "--count", "HEAD"]), "1");
       assert.equal(
         yield* gitOutput(repo, ["status", "--porcelain"]),
-        "M agents/firstmate/notes/README.md\n?? agents/firstmate/AGENTS.md",
+        "M crew/firstmate/notes/README.md\n?? crew/firstmate/AGENTS.md",
       );
 
       // Notes the agent added later are never touched.
@@ -226,7 +226,7 @@ it.effect("follows T3CODE_AGENTS_HOME, renames the project, and rewrites the rol
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const repo = path.join(homeDir, "mates");
-        const folder = path.join(repo, "agents", "firstmate");
+        const folder = path.join(repo, "crew", "firstmate");
         // Before the project exists a rename does nothing.
         yield* home.rename({ slug: "firstmate", name: "Jarvis" });
 
@@ -279,7 +279,7 @@ it.effect("keeps a copy of a review image under artifacts/, outside Git", () =>
 );
 
 it.effect(
-  "moves a pre-agents ~/firstmate into agents/firstmate, keeping its history and project",
+  "moves a pre-agents ~/firstmate into crew/firstmate, keeping its history and project",
   () =>
     withHome(({ homeDir }) =>
       Effect.gen(function* () {
@@ -289,7 +289,7 @@ it.effect(
         const path = yield* Path.Path;
         const legacy = path.join(homeDir, "firstmate");
         const repo = path.join(homeDir, "agents");
-        const target = path.join(repo, "agents", "firstmate");
+        const target = path.join(repo, "crew", "firstmate");
 
         // Nothing to move: a fresh machine.
         assert.isNull(yield* home.migrateLegacyHome());
@@ -329,7 +329,7 @@ it.effect(
         // History is the repository's now: the old commit, then the move, then the shared files.
         assert.equal(
           yield* gitOutput(repo, ["log", "--format=%s", "--reverse"]),
-          "Old history\nMove Firstmate into agents/firstmate\nAdd the shared agents home files",
+          "Old history\nMove Firstmate into crew/firstmate\nAdd the shared agents home files",
         );
         assert.equal(yield* gitOutput(repo, ["status", "--porcelain"]), "");
         assert.isTrue(yield* fileSystem.exists(path.join(repo, "AGENTS.md")));
@@ -351,4 +351,69 @@ it.effect(
         assert.equal(projectId, project.id);
       }),
     ),
+);
+
+it.effect("moves agents' folders from agents/ to crew/, keeping history and projects", () =>
+  withHome(({ homeDir }) =>
+    Effect.gen(function* () {
+      const home = yield* FirstmateHome.FirstmateHome;
+      const projects = yield* ProjectService.ProjectService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repo = path.join(homeDir, "agents");
+      const from = path.join(repo, "agents", "firstmate");
+      const to = path.join(repo, "crew", "firstmate");
+
+      // Nothing to move: a fresh machine.
+      assert.deepEqual(yield* home.migrateAgentsFolder(), []);
+
+      // A repository from before crew/: the agent's folder, committed, with a project.
+      yield* fileSystem.makeDirectory(path.join(from, "notes"), { recursive: true });
+      yield* fileSystem.writeFileString(path.join(from, "AGENTS.md"), "# Firstmate\n");
+      yield* fileSystem.writeFileString(path.join(from, "notes", "people.md"), "Ana: PM\n");
+      yield* fileSystem.writeFileString(path.join(repo, "AGENTS.md"), "# Agents\n");
+      yield* gitOutput(repo, ["init", "--initial-branch=main"]);
+      yield* gitOutput(repo, ["add", "."]);
+      yield* gitOutput(repo, [
+        "-c",
+        "user.name=Me",
+        "-c",
+        "user.email=me@example.com",
+        "commit",
+        "-m",
+        "Old layout",
+      ]);
+      // The user's uncommitted work outside the agent's folder stays out of the move.
+      yield* fileSystem.writeFileString(path.join(repo, "AGENTS.md"), "# Agents\nDraft.\n");
+      const { project } = yield* projects.bootstrap({
+        commandId: "cmd:old-layout" as never,
+        projectId: "project:old-layout" as never,
+        title: "Firstmate",
+        workspaceRoot: from,
+      });
+
+      assert.deepEqual(yield* home.migrateAgentsFolder(), [{ from, to }]);
+      assert.isFalse(yield* fileSystem.exists(path.join(repo, "agents")));
+      assert.equal(
+        yield* fileSystem.readFileString(path.join(to, "notes", "people.md")),
+        "Ana: PM\n",
+      );
+      assert.equal(
+        yield* gitOutput(repo, ["log", "--format=%s", "--reverse"]),
+        "Old layout\nMove agents' folders into crew/",
+      );
+      assert.equal(
+        yield* gitOutput(repo, ["show", "--format=", "--name-status", "-M", "HEAD"]),
+        "R100\tagents/firstmate/AGENTS.md\tcrew/firstmate/AGENTS.md\n" +
+          "R100\tagents/firstmate/notes/people.md\tcrew/firstmate/notes/people.md",
+      );
+      assert.equal(yield* gitOutput(repo, ["status", "--porcelain"]), "M AGENTS.md");
+      assert.equal(Option.getOrThrow(yield* projects.getById(project.id)).workspaceRoot, to);
+
+      // Done once: a second call finds nothing to move, and ensure reuses the project.
+      assert.deepEqual(yield* home.migrateAgentsFolder(), []);
+      const { projectId } = yield* home.ensure(firstmate);
+      assert.equal(projectId, project.id);
+    }),
+  ),
 );

@@ -32,6 +32,7 @@ const coordinator = ThreadId.make("firstmate-coordinator");
 const layerDependencies = Layer.mergeAll(
   Layer.mock(FirstmateHome.FirstmateHome)({
     migrateLegacyHome: () => Effect.succeed(null),
+    migrateAgentsFolder: () => Effect.succeed([]),
     rename: () => Effect.void,
     keepImage: ({ taskId, path }) => Effect.succeed(`/kept/${taskId}/${path.split("/").pop()}`),
   }),
@@ -287,6 +288,7 @@ describe("FirstmateService", () => {
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
               migrateLegacyHome: () => Effect.succeed(null),
+              migrateAgentsFolder: () => Effect.succeed([]),
               ensure: ({ name }) => {
                 ensured.push(name);
                 return Effect.succeed({ projectId });
@@ -341,6 +343,7 @@ describe("FirstmateService", () => {
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
               migrateLegacyHome: () => Effect.succeed(null),
+              migrateAgentsFolder: () => Effect.succeed([]),
               ensure: () =>
                 Effect.fail(
                   new FirstmateError({ message: "Could not set up the Firstmate folder." }),
@@ -395,6 +398,7 @@ describe("FirstmateService", () => {
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
               migrateLegacyHome: () => Effect.succeed(null),
+              migrateAgentsFolder: () => Effect.succeed([]),
               rename: ({ name }) => Effect.sync(() => void projectRenames.push(name)),
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
@@ -477,6 +481,7 @@ describe("FirstmateService", () => {
             Layer.mock(FirstmateHome.FirstmateHome)({
               rename: () => Effect.void,
               migrateLegacyHome: () => Effect.succeed(null),
+              migrateAgentsFolder: () => Effect.succeed([]),
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -594,6 +599,7 @@ describe("FirstmateService", () => {
               rename: () => Effect.void,
               writeRole: () => Effect.void,
               migrateLegacyHome: () => Effect.succeed(null),
+              migrateAgentsFolder: () => Effect.succeed([]),
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({
               launch: (input) => {

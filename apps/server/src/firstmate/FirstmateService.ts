@@ -245,6 +245,8 @@ export const layer = Layer.effect(
         WHERE artifacts_json LIKE ${`%${moved.from}%`}
       `;
     }
+    // Agents' folders move from `agents/` to `crew/` once.
+    yield* home.migrateAgentsFolder();
 
     const now = () => Effect.map(isoNow, (at) => DateTime.formatIso(DateTime.toUtc(at)));
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);

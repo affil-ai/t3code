@@ -2,12 +2,14 @@
  * FirstmateHome - the agents repository and the folder each agent's
  * coordinator chat runs in. The repository (`~/agents`, or
  * `T3CODE_AGENTS_HOME`) holds the instructions, memory, and skills shared by
- * every agent; `agents/<slug>/` holds one agent's own, and is the root of the
+ * every agent; `crew/<slug>/` holds one agent's own, and is the root of the
  * T3 project its chat runs in. The provider harness loads the shared files and
  * the agent's own on its own, so the user steers agents by editing files.
  *
  * Firstmate's folder from before agents existed (`~/firstmate`, or
  * `T3CODE_FIRSTMATE_HOME`) moves into the repository once, keeping its history.
+ * Agents' folders were under `agents/`, which read as `~/agents/agents/<slug>`;
+ * they move to `crew/` once.
  *
  * @module FirstmateHome
  */
@@ -42,7 +44,9 @@ const AGENTS_HOME_ENV = "T3CODE_AGENTS_HOME";
 /** Where Firstmate lived before the shared repository. Read only to move it. */
 const FIRSTMATE_HOME_ENV = "T3CODE_FIRSTMATE_HOME";
 /** Agents' folders live under this, inside the repository. */
-const AGENTS_FOLDER = "agents";
+const CREW_FOLDER = "crew";
+/** Where agents' folders lived before `crew/`. Read only to move them. */
+const LEGACY_AGENTS_FOLDER = "agents";
 /** Review images live here, outside Git (see the seeded `.gitignore`). */
 export const ARTIFACTS_FOLDER = "artifacts";
 const FALLBACK_AUTHOR = { name: "Firstmate", email: "firstmate@localhost" };
@@ -81,12 +85,20 @@ export class FirstmateHome extends Context.Service<
       readonly path: string;
     }) => Effect.Effect<string, FirstmateError>;
     /**
-     * Moves a pre-agents `~/firstmate` into `agents/firstmate`, keeping its
+     * Moves a pre-agents `~/firstmate` into `crew/firstmate`, keeping its
      * Git history as the repository's, and repoints Firstmate's project.
      * Returns the old and new folder when it moved something, else null.
      */
     readonly migrateLegacyHome: () => Effect.Effect<
       { readonly from: string; readonly to: string } | null,
+      FirstmateError
+    >;
+    /**
+     * Moves each agent's folder from `agents/<slug>` to `crew/<slug>` in one
+     * commit, and repoints each agent's project. Returns the folders it moved.
+     */
+    readonly migrateAgentsFolder: () => Effect.Effect<
+      ReadonlyArray<{ readonly from: string; readonly to: string }>,
       FirstmateError
     >;
   }
@@ -125,7 +137,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const repoRoot = yield* resolveRepoRoot();
   const legacyRoot = yield* resolveLegacyRoot();
-  const agentFolder = (slug: string) => path.join(repoRoot, AGENTS_FOLDER, slug);
+  const agentFolder = (slug: string) => path.join(repoRoot, CREW_FOLDER, slug);
 
   const folderError = (what: string) => (cause: unknown) =>
     new FirstmateError({ message: `Could not set up ${what} at ${repoRoot}.`, cause });
@@ -362,7 +374,7 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * `~/firstmate` becomes `agents/firstmate` in the repository. Its `.git`
+   * `~/firstmate` becomes `crew/firstmate` in the repository. Its `.git`
    * moves up to the repository root, so Firstmate's history is the
    * repository's, and the move is one commit Git shows as renames. A copy of
    * the old folder is kept beside it until the user deletes it.
@@ -404,7 +416,7 @@ const make = Effect.gen(function* () {
       ) {
         yield* fileSystem.rename(movedGit, path.join(repoRoot, ".git"));
         // Stage the whole tree as it stands now: the old root paths are gone and
-        // the same files sit under agents/firstmate, which Git records as renames.
+        // the same files sit under crew/firstmate, which Git records as renames.
         yield* git.execute({
           operation: "FirstmateHome.moveAdd",
           cwd: repoRoot,
@@ -414,7 +426,7 @@ const make = Effect.gen(function* () {
         const result = yield* git.execute({
           operation: "FirstmateHome.moveCommit",
           cwd: repoRoot,
-          args: ["commit", "--message", "Move Firstmate into agents/firstmate"],
+          args: ["commit", "--message", "Move Firstmate into crew/firstmate"],
           env: yield* identityEnv,
           allowNonZeroExit: true,
           timeoutMs: 30_000,
@@ -448,7 +460,100 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return FirstmateHome.of({ ensure, rename, writeRole, keepImage, migrateLegacyHome });
+  /**
+   * `agents/<slug>` becomes `crew/<slug>`. Only the moved folders are staged, as
+   * one commit Git shows as renames; an agent whose `crew/` folder already
+   * exists is left where it is.
+   */
+  const migrateAgentsFolder: FirstmateHome["Service"]["migrateAgentsFolder"] = Effect.fn(
+    "FirstmateHome.migrateAgentsFolder",
+  )(
+    function* () {
+      const legacyFolder = path.join(repoRoot, LEGACY_AGENTS_FOLDER);
+      if (!(yield* fileSystem.exists(legacyFolder))) return [];
+      if ((yield* fileSystem.stat(legacyFolder)).type !== "Directory") return [];
+      const moved: Array<{ readonly from: string; readonly to: string }> = [];
+      for (const slug of yield* fileSystem.readDirectory(legacyFolder)) {
+        const from = path.join(legacyFolder, slug);
+        const to = agentFolder(slug);
+        if ((yield* fileSystem.stat(from)).type !== "Directory") continue;
+        if (yield* fileSystem.exists(to)) continue;
+        // Looked up before the move: the root must exist for the lookup to resolve it.
+        const project = yield* projects
+          .getByWorkspaceRoot(from)
+          .pipe(Effect.catchTags({ ProjectOperationError: () => Effect.succeedNone }));
+        yield* Effect.logInfo("Moving an agent's folder into crew/", { from, to });
+        yield* fileSystem.makeDirectory(path.dirname(to), { recursive: true });
+        yield* fileSystem.rename(from, to);
+        if (Option.isSome(project)) {
+          const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+          yield* projects.update({
+            commandId: CommandId.make(`firstmate-home-crew:${id}`),
+            projectId: project.value.id,
+            workspaceRoot: to,
+          });
+        }
+        moved.push({ from, to });
+      }
+      // Checked empty first, so the recursive remove takes only the folder itself.
+      if ((yield* fileSystem.readDirectory(legacyFolder)).length === 0) {
+        yield* fileSystem.remove(legacyFolder, { recursive: true });
+      }
+      if (moved.length === 0 || !(yield* fileSystem.exists(path.join(repoRoot, ".git")))) {
+        return moved;
+      }
+      const paths = moved.flatMap(({ from, to }) => [
+        path.relative(repoRoot, from),
+        path.relative(repoRoot, to),
+      ]);
+      yield* git
+        .execute({
+          operation: "FirstmateHome.crewAdd",
+          cwd: repoRoot,
+          args: ["add", "--all", "--", ...paths],
+          timeoutMs: 30_000,
+        })
+        .pipe(
+          Effect.andThen(
+            git.execute({
+              operation: "FirstmateHome.crewCommit",
+              cwd: repoRoot,
+              args: ["commit", "--message", "Move agents' folders into crew/", "--", ...paths],
+              env: yield* identityEnv,
+              allowNonZeroExit: true,
+              timeoutMs: 30_000,
+            }),
+          ),
+          Effect.flatMap((result) =>
+            result.exitCode === 0
+              ? Effect.void
+              : Effect.logWarning("Could not commit the move into crew/", {
+                  stderr: result.stderr.trim(),
+                }),
+          ),
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not record the move into crew/ in Git", { cause }),
+          ),
+        );
+      return moved;
+    },
+    Effect.mapError(
+      (cause) =>
+        new FirstmateError({
+          message: `Could not move the agents' folders into ${path.join(repoRoot, CREW_FOLDER)}.`,
+          cause,
+        }),
+    ),
+  );
+
+  return FirstmateHome.of({
+    ensure,
+    rename,
+    writeRole,
+    keepImage,
+    migrateLegacyHome,
+    migrateAgentsFolder,
+  });
 });
 
 export const layer = Layer.effect(FirstmateHome, make);
