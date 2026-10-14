@@ -3133,7 +3133,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           "",
         ],
         ["preserves missing-thread errors", "thread not found", 3, "thread not found"],
-        ["preserves missing-rollout errors", "no rollout found", 3, "no rollout found"],
         ["preserves authentication errors", "authentication failed", 3, "authentication failed"],
         [
           "preserves archived-workspace errors",
@@ -3273,6 +3272,68 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         assert.equal(resumed.status, "idle");
         assert.equal(DateTime.toEpochMillis(resumed.updatedAt), 1782622450000);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("starts a fresh native thread when resume finds no rollout", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeThreadId = "saved-thread";
+        const runtime = {
+          cwd: CODEX_TEST_RUNTIME_POLICY.cwd,
+          model: CODEX_TEST_MODEL_SELECTION.model,
+          config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+        };
+        const entries: Array<CodexReplay.CodexAppServerReplayEntry> = [
+          ...codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5),
+          {
+            type: "expect_outbound",
+            label: "resume thread without a rollout",
+            frame: {
+              id: 3,
+              method: "thread/resume",
+              params: { threadId: nativeThreadId, excludeTurns: true, ...runtime },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "no rollout",
+            frame: {
+              id: 3,
+              error: { code: -32600, message: `no rollout found for thread id ${nativeThreadId}` },
+            },
+          },
+          {
+            type: "expect_outbound",
+            label: "start a fresh thread",
+            frame: { id: 4, method: "thread/start", params: runtime },
+          },
+          {
+            type: "emit_inbound",
+            label: "fresh thread",
+            frame: { id: 4, result: { thread: { id: "fresh-thread", updatedAt: 1782622450 } } },
+          },
+        ];
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({ scenario: "resume-no-rollout", entries }),
+        );
+        const resumed = yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+        assert.equal(resumed.id, harness.providerThread.id);
+        assert.equal(resumed.nativeThreadRef?.nativeId, "fresh-thread");
+        assert.equal(resumed.status, "idle");
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

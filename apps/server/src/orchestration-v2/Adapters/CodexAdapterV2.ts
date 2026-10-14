@@ -6541,27 +6541,34 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           resumeThread: (threadInput) =>
             Effect.gen(function* () {
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
+              const runtimeParams = codexThreadRuntimeParams({
+                mcpSession: yield* readMcpSession(
+                  threadInput.threadId ?? threadInput.providerThread.appThreadId,
+                ),
+                ...(threadInput.modelSelection === undefined
+                  ? {}
+                  : { modelSelection: threadInput.modelSelection }),
+                ...(threadInput.runtimePolicy === undefined
+                  ? {}
+                  : { runtimePolicy: threadInput.runtimePolicy }),
+              });
               // excludeTurns is not in the generated request schema yet.
               const resume = client.raw.request("thread/resume", {
                 threadId: nativeThreadId,
                 excludeTurns: true,
-                ...codexThreadRuntimeParams({
-                  mcpSession: yield* readMcpSession(
-                    threadInput.threadId ?? threadInput.providerThread.appThreadId,
-                  ),
-                  ...(threadInput.modelSelection === undefined
-                    ? {}
-                    : { modelSelection: threadInput.modelSelection }),
-                  ...(threadInput.runtimePolicy === undefined
-                    ? {}
-                    : { runtimePolicy: threadInput.runtimePolicy }),
-                }),
+                ...runtimeParams,
               });
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
                   resume.pipe(
                     Effect.catchTags({
                       CodexAppServerRequestError: (cause) => {
+                        // Codex writes a thread's rollout only once a turn runs, so a
+                        // thread that never ran one has no history to resume: start it
+                        // fresh. The returned thread carries its new native ID.
+                        if (/\bno rollout found\b/i.test(cause.errorMessage)) {
+                          return client.raw.request("thread/start", runtimeParams);
+                        }
                         if (
                           !/\bsession \S+ is archived\b|\bcodex unarchive\b/i.test(
                             cause.errorMessage,
