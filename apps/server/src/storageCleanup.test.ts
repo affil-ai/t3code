@@ -41,6 +41,7 @@ import * as DateTime from "effect/DateTime";
 import {
   storageCleanupActivityAt,
   storageCleanupPullRequestMerged,
+  storageCleanupSharedOwner,
   storageCleanupThreadIdle,
 } from "./storageCleanup.ts";
 
@@ -180,6 +181,48 @@ describe("V2 storage cleanup eligibility", () => {
   function candidateWithStatus(status: OrchestrationV2ThreadShell["status"]) {
     return { ...candidate(), status };
   }
+});
+
+// fork: treehouse-shared-lineage
+describe("worktrees shared with delegated tasks", () => {
+  const owner = shell({ branch: "feature", worktreePath: "/worktrees/feature" });
+  const task = (id: string, overrides: Partial<OrchestrationV2ThreadShell> = {}) =>
+    shell({
+      id: ThreadId.make(id),
+      branch: "feature",
+      worktreePath: "/worktrees/feature",
+      lineage: {
+        rootThreadId: owner.id,
+        parentThreadId: owner.id,
+        relationshipToParent: "subagent",
+      },
+      ...overrides,
+    });
+
+  it("treats a worktree as the owner's once every delegated task is idle", () => {
+    expect(storageCleanupSharedOwner([task("a"), owner, task("b")], NOW_MS)).toBe(owner);
+  });
+
+  it("keeps a worktree a delegated task is still running in", () => {
+    expect(
+      storageCleanupSharedOwner([owner, task("a", { status: "running" })], NOW_MS),
+    ).toBeUndefined();
+  });
+
+  it("keeps a worktree shared with an unrelated thread", () => {
+    const stranger = shell({
+      id: ThreadId.make("stranger"),
+      branch: "feature",
+      worktreePath: "/worktrees/feature",
+      lineage: {
+        rootThreadId: ThreadId.make("stranger"),
+        parentThreadId: null,
+        relationshipToParent: null,
+      },
+    });
+    expect(storageCleanupSharedOwner([owner, stranger], NOW_MS)).toBeUndefined();
+    expect(storageCleanupSharedOwner([task("a"), task("b")], NOW_MS)).toBeUndefined();
+  });
 });
 
 describe("merged pull request cleanup", () => {
@@ -743,7 +786,16 @@ describe("storage cleanup reports and local file policies", () => {
           expect((yield* service.runNow).entries[0]?.reason).toContain("Thread is running");
           setThreads([
             shell({ branch: "feature", worktreePath: worktree }),
-            shell({ id: ThreadId.make("thread-2"), branch: "feature", worktreePath: worktree }),
+            shell({
+              id: ThreadId.make("thread-2"),
+              branch: "feature",
+              worktreePath: worktree,
+              lineage: {
+                rootThreadId: ThreadId.make("thread-2"),
+                parentThreadId: null,
+                relationshipToParent: null,
+              },
+            }),
           ]);
           expect((yield* service.runNow).entries[0]?.reason).toBe("Shared by 2 threads");
           fixture.disable();

@@ -397,6 +397,35 @@ describe("durable Treehouse workspaces", () => {
     ),
   );
 
+  // fork: treehouse-shared-lineage
+  it.effect("returns a slot its finished delegated tasks still point at", () =>
+    fixture(({ pool, cwd, commands }) =>
+      Effect.gen(function* () {
+        const path = yield* acquire(pool, cwd);
+        const sql = yield* SqlClient.SqlClient;
+        const own = JSON.stringify({ worktreePath: path, lineage: { rootThreadId: owner } });
+        yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${owner},NULL,${own}),(${child},NULL,${own})`;
+        yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES (${child},'completed')`;
+        expect(yield* pool.release(path)).toBe(true);
+        expect(commands.some((input) => input.args.includes("return"))).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("keeps a slot while a delegated task sharing it still runs", () =>
+    fixture(({ pool, cwd, commands }) =>
+      Effect.gen(function* () {
+        const path = yield* acquire(pool, cwd);
+        const sql = yield* SqlClient.SqlClient;
+        const own = JSON.stringify({ worktreePath: path, lineage: { rootThreadId: owner } });
+        yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${owner},NULL,${own}),(${child},NULL,${own})`;
+        yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES (${child},'running')`;
+        expect((yield* pool.release(path).pipe(Effect.result))._tag).toBe("Failure");
+        expect(commands.some((input) => input.args.includes("return"))).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("refuses a stale or unrelated chat instead of entering another lease", () =>
     fixture(({ pool, cwd, slots }) =>
       Effect.gen(function* () {

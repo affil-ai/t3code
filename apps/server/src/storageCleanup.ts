@@ -119,6 +119,27 @@ export function storageCleanupThreadIdle(thread: OrchestrationV2ThreadShell, now
   );
 }
 
+// fork: treehouse-shared-lineage
+/**
+ * The thread that owns a worktree its delegated tasks share. Every sharer must belong to that
+ * thread's lineage and be idle, so cleanup can treat the worktree as the owner's alone.
+ */
+export function storageCleanupSharedOwner(
+  group: ReadonlyArray<OrchestrationV2ThreadShell>,
+  now: number,
+): OrchestrationV2ThreadShell | undefined {
+  if (group.length === 1) return group[0];
+  const owner = group.find((thread) => thread.lineage.rootThreadId === thread.id);
+  if (owner === undefined) return undefined;
+  return group.every(
+    (thread) =>
+      thread.lineage.rootThreadId === owner.id &&
+      (thread === owner || storageCleanupThreadIdle(thread, now)),
+  )
+    ? owner
+    : undefined;
+}
+
 /** PR metadata refreshes must not reset the inactivity clock. */
 export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): number {
   return Math.max(
@@ -379,11 +400,37 @@ const make = Effect.gen(function* () {
       maxOutputBytes: 64 * 1024,
     });
     if (ignored.stdoutTruncated) return "ignored files exceed the inspection limit";
-    const file = ignored.stdout
+    // fork: treehouse-env-copies — copies of the main checkout's files lose nothing.
+    const checkout = yield* mainCheckout(cwd);
+    const entries = ignored.stdout
       .split("\0")
-      .find((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry));
-    return file === undefined ? null : `has ignored files (${file})`;
+      .filter((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry));
+    const kept = yield* Effect.findFirst(entries, (entry) =>
+      checkout === null
+        ? Effect.succeed(true)
+        : TreehouseWorktrees.disposableIgnoredEntry(cwd, checkout, entry).pipe(
+            Effect.map((disposable) => !disposable),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+          ),
+    );
+    return Option.isNone(kept) ? null : `has ignored files (${kept.value})`;
   });
+
+  // fork: treehouse-env-copies
+  /** The repository's main checkout, which a linked worktree's setup copies files from. */
+  const mainCheckout = (cwd: string) =>
+    git
+      .execute({
+        operation: "StorageCleanup.mainCheckout",
+        cwd,
+        args: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        maxOutputBytes: 4096,
+      })
+      .pipe(
+        Effect.map((result) => path.dirname(result.stdout.trim())),
+        Effect.orElseSucceed(() => null),
+      );
 
   const cleanupGit = Effect.fn("StorageCleanup.cleanupGit")(function* (
     cwd: string,
@@ -561,7 +608,8 @@ const make = Effect.gen(function* () {
       (thread) => path.resolve(thread.worktreePath!),
     );
     const candidates = [
-      ...[...groups.values()].map((group) => group[0]!),
+      // fork: treehouse-shared-lineage — a worktree shared with delegated tasks is its owner's.
+      ...[...groups.values()].map((group) => storageCleanupSharedOwner(group, now) ?? group[0]!),
       ...deletedThreads.filter((thread) => !groups.has(path.resolve(thread.worktreePath!))),
     ];
     for (const thread of candidates) {
@@ -586,8 +634,10 @@ const make = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         if (!(yield* fs.exists(worktreePath))) return;
         if (deleted && !settings.worktreeOnDelete) return keep("no rules apply");
-        const shared = groups.get(worktreePath)?.length ?? 0;
-        if (shared > 1) return keep(`shared by ${shared} threads`);
+        const group = groups.get(worktreePath) ?? [];
+        // fork: treehouse-shared-lineage
+        if (group.length > 1 && storageCleanupSharedOwner(group, now)?.id !== thread.id)
+          return keep(`shared by ${group.length} threads`);
         if (project === undefined) return keep("project is unavailable");
         if (!deleted && !storageCleanupThreadIdle(thread, now))
           return keep("thread is running or has pending work");
@@ -695,13 +745,16 @@ const make = Effect.gen(function* () {
               WHERE thread_id = ${thread.id} AND status NOT IN ('succeeded', 'cancelled') LIMIT 1
             `;
             if (pendingCleanup.length > 0) return "thread deletion is still pending";
-          } else if (
-            latest.length !== 1 ||
-            latest[0]!.id !== thread.id ||
-            !storageCleanupThreadIdle(latest[0]!, now) ||
-            storageCleanupActivityAt(latest[0]!) !== storageCleanupActivityAt(thread)
-          )
-            return "thread activity or shared worktree changed since check";
+          } else {
+            // fork: treehouse-shared-lineage — delegated tasks may still share it, idle.
+            const owner = storageCleanupSharedOwner(latest, now);
+            if (
+              owner?.id !== thread.id ||
+              !storageCleanupThreadIdle(owner, now) ||
+              storageCleanupActivityAt(owner) !== storageCleanupActivityAt(thread)
+            )
+              return "thread activity or shared worktree changed since check";
+          }
           // Sessions can outlive their run and can be shared across app threads.
           const sessionRows = yield* sql<{ payload_json: string }>`
             SELECT payload_json FROM orchestration_v2_projection_provider_sessions

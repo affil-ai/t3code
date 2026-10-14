@@ -85,6 +85,30 @@ const binding = Schema.Struct({
 });
 type Binding = typeof binding.Type;
 
+// fork: treehouse-env-copies
+/**
+ * An ignored entry whose removal loses nothing the main checkout does not still hold: an exact
+ * copy of a checkout file (a setup script's .env copy), an empty folder, or a TypeScript build
+ * cache. Anything else, or anything that cannot be read, is kept.
+ */
+export const disposableIgnoredEntry = (worktree: string, checkout: string, entry: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    if (entry.endsWith("/")) {
+      const children = yield* fs.readDirectory(path.join(worktree, entry));
+      return children.length === 0;
+    }
+    if (entry.endsWith(".tsbuildinfo")) return true;
+    const original = path.join(checkout, entry);
+    if (!(yield* fs.exists(original))) return false;
+    const [copy, source] = yield* Effect.all([
+      fs.readFile(path.join(worktree, entry)),
+      fs.readFile(original),
+    ]);
+    return copy.length === source.length && copy.every((byte, index) => byte === source[index]);
+  }).pipe(Effect.orElseSucceed(() => false));
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const runner = yield* ProcessRunner.ProcessRunner;
@@ -164,23 +188,6 @@ const make = Effect.gen(function* () {
           : Effect.succeed(slot);
       }),
     );
-  // fork: treehouse-env-copies
-  /** An ignored entry whose removal loses nothing the main checkout does not still hold. */
-  const disposableIgnored = (slotPath: string, checkout: string, entry: string) =>
-    Effect.gen(function* () {
-      if (entry.endsWith("/")) {
-        const children = yield* fs.readDirectory(path.join(slotPath, entry));
-        return children.length === 0;
-      }
-      if (entry.endsWith(".tsbuildinfo")) return true;
-      const original = path.join(checkout, entry);
-      if (!(yield* fs.exists(original))) return false;
-      const [copy, source] = yield* Effect.all([
-        fs.readFile(path.join(slotPath, entry)),
-        fs.readFile(original),
-      ]);
-      return copy.length === source.length && copy.every((byte, index) => byte === source[index]);
-    }).pipe(Effect.orElseSucceed(() => false));
   const allocate = Effect.fn("TreehouseWorktrees.allocate")(function* (input: {
     readonly threadId: ThreadId;
     readonly cwd: string;
@@ -401,15 +408,22 @@ const make = Effect.gen(function* () {
             return yield* new TreehouseWorktreeError({ operation: "busy-or-changed" });
           const references = yield* sql<{
             thread_id: string;
-          }>`SELECT thread_id FROM orchestration_v2_projection_threads
+            root_thread_id: string | null;
+          }>`SELECT thread_id, json_extract(payload_json,'$.lineage.rootThreadId') AS root_thread_id
+        FROM orchestration_v2_projection_threads
         WHERE deleted_at IS NULL AND json_extract(payload_json,'$.worktreePath') = ${value.path}`;
+          // fork: treehouse-shared-lineage — the holder's delegated tasks may share its slot.
+          const holder = slot.lease_holder.slice("t3:".length);
           if (
-            references.length > 1 ||
-            references.some((entry) => "t3:" + entry.thread_id !== slot.lease_holder)
+            references.some(
+              (entry) => entry.thread_id !== holder && entry.root_thread_id !== holder,
+            )
           )
             return yield* new TreehouseWorktreeError({ operation: "shared-worktree" });
           const runs = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
-        WHERE thread_id IN (SELECT thread_id FROM treehouse_thread_lease WHERE lease_id = ${value.lease_id})
+        WHERE (thread_id IN (SELECT thread_id FROM treehouse_thread_lease WHERE lease_id = ${value.lease_id})
+          OR thread_id IN (SELECT thread_id FROM orchestration_v2_projection_threads
+            WHERE deleted_at IS NULL AND json_extract(payload_json,'$.worktreePath') = ${value.path}))
         AND status NOT IN ('completed','cancelled','failed','interrupted') LIMIT 1`;
           if (runs.length > 0)
             return yield* new TreehouseWorktreeError({ operation: "active-run" });
@@ -440,7 +454,11 @@ const make = Effect.gen(function* () {
               .split("\0")
               .filter((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry)),
             (entry) =>
-              disposableIgnored(value.path, value.cwd, entry).pipe(Effect.map((ok) => !ok)),
+              disposableIgnoredEntry(value.path, value.cwd, entry).pipe(
+                Effect.map((ok) => !ok),
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, path),
+              ),
           );
           if (protectedEntries.length > 0)
             return yield* new TreehouseWorktreeError({ operation: "protected-ignored-files" });
