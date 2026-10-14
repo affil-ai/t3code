@@ -798,11 +798,14 @@ const make = Effect.gen(function* () {
       // A queued message's user turn item is deliberately not emitted at
       // dispatch time — it materializes when the queued turn actually starts,
       // so it can map onto the provider turn. Every other dispatch mode still
-      // produces its turn item transactionally with the run.
+      // produces its turn item transactionally with the run. A notification's
+      // turn item is a notification row rather than a user message, so it is
+      // not in this read; its run alone shows how it was delivered.
+      const isNotification = message?.notification !== undefined;
       if (
         message === undefined ||
         run === undefined ||
-        (turnItem === null && run.status !== "queued")
+        (turnItem === null && run.status !== "queued" && !isNotification)
       ) {
         return yield* new ThreadManagementDurableRunProjectionError({
           threadId: input.threadId,
@@ -810,13 +813,19 @@ const make = Effect.gen(function* () {
         });
       }
       const delivery: ThreadManagementSendResult["delivery"] =
-        turnItem === null || turnItem.inputIntent === "queued_turn"
+        run.status === "queued" || turnItem?.inputIntent === "queued_turn"
           ? "queued"
-          : turnItem.inputIntent === "turn_start"
-            ? "started"
-            : input.mode === "restart"
+          : turnItem === null
+            ? input.mode === "restart"
               ? "restarted"
-              : "steered";
+              : run.id === steerableRun?.id
+                ? "steered"
+                : "started"
+            : turnItem.inputIntent === "turn_start"
+              ? "started"
+              : input.mode === "restart"
+                ? "restarted"
+                : "steered";
       return { dispatch: dispatched, projection, message, run, turnItem, delivery };
     });
 
