@@ -1,5 +1,5 @@
 /**
- * An agent's open tasks under its sidebar row, in the Tasks panel's sections
+ * An agent's open tasks in the sidebar, in the Tasks panel's sections
  * (Needs you, Ready for deployment, In progress, In review). A task with a
  * worker opens the worker's chat, with a dot for what the worker is doing; a
  * task without one opens the agent's own chat. Closed tasks stay in the panel.
@@ -68,7 +68,7 @@ function TaskRow({
               to="/$environmentId/$threadId"
               params={{ environmentId, threadId }}
               className={cn(
-                "flex h-7 w-full min-w-0 items-center gap-2 rounded-md pr-2 pl-3 text-xs text-sidebar-foreground/80 outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset",
+                "flex h-7 w-full min-w-0 items-center gap-2 rounded-md pr-2 pl-5 text-xs text-sidebar-foreground/80 outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset",
                 active && "bg-sidebar-row-selected text-sidebar-foreground",
               )}
               {...(active ? { "data-active": true } : {})}
@@ -111,10 +111,10 @@ export function AgentTaskTree({
     );
   }
   return (
-    <div className="flex flex-col gap-1 pb-2 pl-11">
+    <div className="flex flex-col gap-1">
       {sections.map((column) => (
         <section key={column} aria-label={COLUMN_LABELS[column]}>
-          <h3 className="flex h-6 items-center gap-1.5 pl-3 text-2xs font-medium text-sidebar-muted-foreground/80">
+          <h3 className="flex h-6 items-center gap-1.5 px-2 text-2xs font-medium text-sidebar-muted-foreground/80">
             <span
               aria-hidden
               className={cn("size-1.5 shrink-0 rounded-full", COLUMN_DOT[column])}

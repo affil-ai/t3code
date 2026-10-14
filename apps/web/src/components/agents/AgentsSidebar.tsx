@@ -18,7 +18,7 @@ import { type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
-import { useAgentsHome, useAgentTasks } from "~/state/agents";
+import { useAgentsHome } from "~/state/agents";
 import { useThreadShell } from "~/state/entities";
 import { resolveThreadRouteRef } from "~/threadRoutes";
 import { useFirstmateModelSelection } from "../firstmate/firstmateModel";
@@ -121,32 +121,24 @@ function AgentRow({
   environmentId,
   agent,
   active,
-  routeKey,
   onMenu,
 }: {
   readonly environmentId: EnvironmentId;
   readonly agent: AgentProfile;
   readonly active: boolean;
-  readonly routeKey: string | null;
   readonly onMenu: (agent: AgentProfile, event: MouseEvent) => void;
 }) {
   const navigate = useNavigate();
   const modelSelection = useFirstmateModelSelection(environmentId);
   const { pending, start, run } = useAgentCommands();
-  const tasks = useAgentTasks(environmentId, agent.id).data?.tasks ?? null;
   return (
     <AgentSidebarRow
-      environmentId={environmentId}
       icon={agent.icon}
       color={agent.color}
       name={agent.name}
       subtitle={<AgentRowSubtitle environmentId={environmentId} agent={agent} />}
       trailing={pending === "start" ? <Spinner className="size-3.5" /> : null}
       active={active}
-      coordinatorThreadId={agent.coordinatorThreadId}
-      tasks={tasks}
-      activeRouteKey={routeKey}
-      defaultExpanded
       onContextMenu={(event) => onMenu(agent, event)}
       link={
         agent.coordinatorThreadId === null ? (
@@ -257,7 +249,6 @@ export function AgentsSidebar() {
                   agent.coordinatorThreadId !== null &&
                   routeKey === `${home.environmentId}:${agent.coordinatorThreadId}`
                 }
-                routeKey={routeKey}
                 onMenu={showRowMenu}
               />
             ))}

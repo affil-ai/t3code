@@ -7,9 +7,10 @@ import { useAgentsHome } from "~/state/agents";
 import { resolveThreadRouteRef } from "~/threadRoutes";
 import { useFirstmateHome } from "../../state/firstmate";
 import { AgentSidebarRow } from "../agents/AgentSidebarRow";
+import { AgentTaskTree } from "../agents/AgentTaskTree";
 import { AgentRowSubtitle } from "../agents/AgentsSidebar";
 import { Badge } from "../ui/badge";
-import { SidebarMenu } from "../ui/sidebar";
+import { SidebarGroup, SidebarMenu } from "../ui/sidebar";
 import { countFirstmateNeedsYou } from "./firstmateBoard.logic";
 import { openFirstmateTasks } from "./firstmateCommands";
 import { FirstmateAppearanceDialog } from "./FirstmateAppearanceDialog";
@@ -42,8 +43,8 @@ function useOpenTasksBesideCoordinator(
 
 /**
  * The Work sidebar's Firstmate row, under Search, drawn like an agent in
- * Agents mode (icon tile, name, status, and its open tasks folded under it)
- * so it doesn't read as an ordinary chat. It opens the coordinator chat with its Tasks tab, or the start
+ * Agents mode (icon tile, name, status) so it doesn't read as an ordinary
+ * chat. Its open tasks follow in `FirstmateSidebarTasks`. It opens the coordinator chat with its Tasks tab, or the start
  * page when there is no coordinator, on the first environment that serves
  * Firstmate. It is absent when none does.
  */
@@ -86,7 +87,6 @@ export function FirstmateSidebarLink() {
     <SidebarMenu className="mt-1">
       <AgentSidebarRow
         className="mb-0"
-        environmentId={environmentId}
         icon={snapshot.icon}
         color={profile?.color ?? AGENT_DEFAULT_COLOR}
         name={snapshot.name}
@@ -105,10 +105,6 @@ export function FirstmateSidebarLink() {
           ) : null
         }
         active={onCoordinator}
-        coordinatorThreadId={coordinatorThreadId}
-        tasks={snapshot.tasks}
-        activeRouteKey={routeKey}
-        defaultExpanded={false}
         onContextMenu={showRowMenu}
         link={
           coordinatorThreadId === null ? (
@@ -135,5 +131,33 @@ export function FirstmateSidebarLink() {
         onOpenChange={setAppearanceOpen}
       />
     </SidebarMenu>
+  );
+}
+
+/**
+ * Firstmate's open tasks, the first group of the Work sidebar's list: under
+ * the Firstmate row and ahead of Pinned, Projects, and Chats. A task opens its
+ * worker's chat. It is absent until Firstmate has a chat.
+ */
+export function FirstmateSidebarTasks() {
+  const home = useFirstmateHome();
+  const routeKey = useParams({
+    strict: false,
+    select: (params) => {
+      const ref = resolveThreadRouteRef(params);
+      return ref ? `${ref.environmentId}:${ref.threadId}` : null;
+    },
+  });
+  const coordinatorThreadId = home?.snapshot.coordinatorThreadId ?? null;
+  if (home === null || coordinatorThreadId === null) return null;
+  return (
+    <SidebarGroup aria-label={`${home.snapshot.name}'s tasks`}>
+      <AgentTaskTree
+        environmentId={home.environmentId}
+        coordinatorThreadId={coordinatorThreadId}
+        tasks={home.snapshot.tasks}
+        activeRouteKey={routeKey}
+      />
+    </SidebarGroup>
   );
 }

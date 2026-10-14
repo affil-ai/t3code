@@ -249,7 +249,7 @@ import {
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
-import { FirstmateSidebarLink } from "./firstmate/FirstmateSidebarLink"; // fork: firstmate
+import { FirstmateSidebarLink, FirstmateSidebarTasks } from "./firstmate/FirstmateSidebarLink"; // fork: firstmate
 import { AgentsSidebar } from "./agents/AgentsSidebar"; // fork: agents
 import { useOfficeThreads } from "../state/office"; // fork: office
 import { officeFolders } from "./work/officeGroups"; // fork: office
@@ -4084,6 +4084,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         </SidebarGroup>
       ) : null}
       <LocalSecondaryStatus />
+      {
+        useWorkModeStore.getState().mode === "work" ? (
+          <FirstmateSidebarTasks />
+        ) : null /* fork: firstmate */
+      }
       {isWorkMode ? (
         <SidebarWorkSections
           routeThreadKey={routeThreadKey}
