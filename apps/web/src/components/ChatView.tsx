@@ -7908,6 +7908,7 @@ export default function ChatView(props: ChatViewProps) {
                 </Fragment>
               );
             }),
+      keepActionsInline: true,
       actions: (
         <Button
           size="xs"

@@ -804,6 +804,10 @@ function ScheduledTaskEditorDialog({
   const upsertTask = useAtomCommand(serverEnvironment.upsertScheduledTask, {
     label: "scheduled task upsert",
   });
+  const runTaskNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
+    label: "scheduled task run now",
+  });
+  const [running, setRunning] = useState(false);
   const [draft, setDraft] = useState<DraftState>(() =>
     task ? taskToDraft(task) : { ...EMPTY_DRAFT, projectId: projects[0]?.id ?? "" },
   );
@@ -861,6 +865,21 @@ function ScheduledTaskEditorDialog({
     );
   };
 
+  const runNow = async (target: ScheduledTask) => {
+    if (running || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+    setRunning(true);
+    const result = await runTaskNow({ environmentId, input: { id: target.id } });
+    setRunning(false);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not run the scheduled task",
+          description: String(squashAtomCommandFailure(result)),
+        }),
+      );
+    }
+  };
   const submit = async () => {
     if (
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
@@ -1370,6 +1389,19 @@ function ScheduledTaskEditorDialog({
         </DialogPanel>
 
         <DialogFooter>
+          {/* Runs the saved task, not the draft; a webhook task runs from its URL. */}
+          {liveTask && liveTask.schedule.type !== "webhook" ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="sm:mr-auto"
+              disabled={!canOperate || running || liveTask.lastRunStatus === "running"}
+              onClick={() => void runNow(liveTask)}
+            >
+              <PlayIcon />
+              Run now
+            </Button>
+          ) : null}
           <DialogClose render={<Button variant="outline" size="sm" disabled={saving} />}>
             Cancel
           </DialogClose>
