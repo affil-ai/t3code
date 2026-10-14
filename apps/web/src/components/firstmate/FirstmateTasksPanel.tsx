@@ -5,43 +5,27 @@
  * talking to the chat. A card drills into the task's intent, definition of
  * done, evidence, links, and event log, with a back button to the list.
  */
-import { useAtomValue } from "@effect/atom-react";
 import {
-  type AgentProfile,
   type EnvironmentId,
   FIRSTMATE_AGENT_ID,
-  type FirstmateSnapshot,
   type FirstmateTask,
   type ThreadId,
 } from "@t3tools/contracts";
-import {
-  ArrowLeftIcon,
-  ChevronRightIcon,
-  CircleSlashIcon,
-  EllipsisIcon,
-  ListChecksIcon,
-  PencilIcon,
-} from "lucide-react";
+import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { useAgentsHome, useAgentTasks } from "~/state/agents";
-import { firstmateEnvironment, useFirstmateSnapshot } from "~/state/firstmate";
-import { AgentDialog } from "../agents/AgentDialog";
+import { useFirstmateSnapshot } from "~/state/firstmate";
 import { ScheduledSection } from "./FirstmateScheduledSection";
 import { useRelativeTimeTick } from "../settings/settingsLayout";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Spinner } from "../ui/spinner";
-import { FirstmateAppearanceDialog } from "./FirstmateAppearanceDialog";
-import { useFirstmateCommands } from "./firstmateCommands";
 import {
   type FirstmateColumnId,
-  countFirstmateNeedsYou,
   firstmateTaskActivityAt,
   mapFirstmateBoard,
 } from "./firstmateBoard.logic";
@@ -282,84 +266,6 @@ function PanelHeader({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/**
- * Rename, change the icon, or stop using the coordinator chat. For an agent
- * other than Firstmate the first item opens the agent editor, which also
- * takes the role and color.
- */
-function TasksMenu({
-  environmentId,
-  snapshot,
-  agent,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly snapshot: FirstmateSnapshot;
-  readonly agent: AgentProfile | null;
-}) {
-  const canOperate = useAtomValue(
-    firstmateEnvironment.setCoordinator.permissionAtom(environmentId),
-  );
-  const { pending, setCoordinator, run } = useFirstmateCommands();
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
-  const isFirstmate = agent === null || agent.id === FIRSTMATE_AGENT_ID;
-  return (
-    <>
-      <Menu>
-        <MenuTrigger
-          render={
-            <Button
-              size="icon-sm"
-              variant="ghost-muted"
-              className="shrink-0"
-              aria-label={`${snapshot.name} options`}
-              disabled={pending !== null}
-            />
-          }
-        >
-          {pending === "setCoordinator" ? <Spinner className="size-3.5" /> : <EllipsisIcon />}
-        </MenuTrigger>
-        <MenuPopup align="end">
-          <MenuItem disabled={!canOperate} onClick={() => setAppearanceOpen(true)}>
-            <PencilIcon />
-            {isFirstmate ? "Name and icon…" : "Name, role, and icon…"}
-          </MenuItem>
-          {isFirstmate ? (
-            <MenuItem
-              disabled={!canOperate}
-              onClick={() =>
-                void run(
-                  "setCoordinator",
-                  () => setCoordinator({ environmentId, input: { threadId: null } }),
-                  `Could not stop ${snapshot.name}`,
-                )
-              }
-            >
-              <CircleSlashIcon />
-              Stop using this chat
-            </MenuItem>
-          ) : null}
-        </MenuPopup>
-      </Menu>
-      {isFirstmate ? (
-        <FirstmateAppearanceDialog
-          environmentId={environmentId}
-          name={snapshot.name}
-          icon={snapshot.icon}
-          open={appearanceOpen}
-          onOpenChange={setAppearanceOpen}
-        />
-      ) : (
-        <AgentDialog
-          environmentId={environmentId}
-          agent={agent}
-          open={appearanceOpen}
-          onOpenChange={setAppearanceOpen}
-        />
-      )}
-    </>
-  );
-}
-
 function PanelMessage({ title, children }: { readonly title: string; readonly children: string }) {
   return (
     <Empty size="compact" className="min-h-0 flex-1">
@@ -424,7 +330,6 @@ export function FirstmateTasksPanel({
     selectedTaskId === null
       ? null
       : (snapshot.tasks.find((task) => task.id === selectedTaskId) ?? null);
-  const needsYou = countFirstmateNeedsYou(snapshot.tasks);
   return (
     <CoordinatorThreadContext value={threadId}>
       <div className="@container/tasks flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
@@ -445,16 +350,6 @@ export function FirstmateTasksPanel({
           </>
         ) : (
           <>
-            <PanelHeader>
-              <ListChecksIcon className="ms-1 size-4 shrink-0 text-muted-foreground" />
-              <h2 className="min-w-0 flex-1 truncate text-sm font-medium">Tasks</h2>
-              {needsYou > 0 ? (
-                <Badge variant="warning" size="sm" aria-label={`${needsYou} need you`}>
-                  {needsYou}
-                </Badge>
-              ) : null}
-              <TasksMenu environmentId={environmentId} snapshot={snapshot} agent={agent} />
-            </PanelHeader>
             <TaskSections
               environmentId={environmentId}
               threadId={threadId}
