@@ -293,6 +293,7 @@ import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { FirstmateTasksSurface } from "./firstmate/firstmateTab"; // fork: firstmate
+import { useIsAgentCoordinatorChat } from "./firstmate/agentCoordinatorChat"; // fork: firstmate
 import { AgentsPanel } from "./AgentsPanel";
 import {
   deriveAgentPanelModel,
@@ -5686,6 +5687,16 @@ export default function ChatView(props: ChatViewProps) {
     }
     useRightPanelStore.getState().open(activeThreadRef, "device");
   }, [activeThreadRef, deviceState.onboardingCompleted, deviceState.hostStatus]);
+  // fork: firstmate — the Tasks board opens only when asked, never on its own,
+  // so a coordinator chat on a phone starts as just the chat.
+  const isCoordinatorChat = useIsAgentCoordinatorChat(
+    activeThreadRef?.environmentId ?? null,
+    activeThreadRef?.threadId,
+  );
+  const addTasksSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().open(activeThreadRef, "firstmate");
+  }, [activeThreadRef]);
   // A device the agent opens floats over chat like an agent-driven browser,
   // or becomes a panel tab when floating previews are off. Sessions opened by
   // another client arrive the same way; sheet layouts get neither. The first
@@ -13118,6 +13129,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequests={addPullRequestsSurface}
           onAddDevice={addDeviceSurface}
           onAddChat={chatSurfaceAvailable ? addChatSurface : undefined}
+          onAddTasks={isCoordinatorChat ? addTasksSurface : undefined} // fork: firstmate
           codingSurfacesHidden={isWorkMode}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
@@ -13179,6 +13191,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequests={addPullRequestsSurface}
             onAddDevice={addDeviceSurface}
             onAddChat={chatSurfaceAvailable ? addChatSurface : undefined}
+            onAddTasks={isCoordinatorChat ? addTasksSurface : undefined} // fork: firstmate
             codingSurfacesHidden={isWorkMode}
             browserAvailable={canOperatePreview && browserAvailable}
             terminalAvailable={activeProject !== null && canOperateTerminal}

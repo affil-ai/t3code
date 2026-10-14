@@ -4,10 +4,8 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { type EnvironmentId, type ThreadId } from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { useCallback, useState } from "react";
 
-import { useRightPanelStore } from "~/rightPanelStore";
 import { firstmateEnvironment } from "~/state/firstmate";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -52,9 +50,4 @@ export function useFirstmateCommands() {
     [],
   );
   return { pending, start, setCoordinator, setAppearance, run };
-}
-
-/** Shows the Tasks tab beside the coordinator chat. */
-export function openFirstmateTasks(environmentId: EnvironmentId, threadId: ThreadId) {
-  useRightPanelStore.getState().open(scopeThreadRef(environmentId, threadId), "firstmate");
 }

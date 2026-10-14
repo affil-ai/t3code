@@ -5,7 +5,12 @@
  * @module firstmateSurface
  */
 
-/** Firstmate's Tasks tab stays open beside its chat; closing never removes it. */
-export function isPinnedRightPanelSurface(surface: { readonly kind: string }): boolean {
-  return surface.kind === "firstmate";
+/**
+ * The Tasks tab used to be pinned and opened itself on every coordinator chat,
+ * which forced the right panel open on phones. It is now an ordinary tab the
+ * user opens from the panel's add menu and closes like any other, so nothing
+ * is pinned. The hook stays so the store keeps one place to ask.
+ */
+export function isPinnedRightPanelSurface(_surface: { readonly kind: string }): boolean {
+  return false;
 }

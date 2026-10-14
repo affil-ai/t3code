@@ -11,15 +11,16 @@ import { type AgentsHome, useAgentsHome } from "~/state/agents";
 
 export function isAgentCoordinatorChat(
   home: AgentsHome | null,
-  environmentId: EnvironmentId,
+  environmentId: EnvironmentId | null,
   threadId: ThreadId | null | undefined,
 ): boolean {
-  if (home === null || threadId == null || home.environmentId !== environmentId) return false;
+  if (home === null || environmentId === null || threadId == null) return false;
+  if (home.environmentId !== environmentId) return false;
   return home.agents.some((agent) => agent.coordinatorThreadId === threadId);
 }
 
 export function useIsAgentCoordinatorChat(
-  environmentId: EnvironmentId,
+  environmentId: EnvironmentId | null,
   threadId: ThreadId | null | undefined,
 ): boolean {
   return isAgentCoordinatorChat(useAgentsHome(), environmentId, threadId);

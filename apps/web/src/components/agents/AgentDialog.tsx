@@ -33,7 +33,7 @@ import { Spinner } from "../ui/spinner";
 import { Textarea } from "../ui/textarea";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { AgentAvatar } from "./AgentAvatar";
-import { openAgentTasks, useAgentCommands } from "./agentCommands";
+import { useAgentCommands } from "./agentCommands";
 
 const NAME_MAX_LENGTH = 60;
 const ROLE_MAX_LENGTH = 2000;
@@ -102,7 +102,6 @@ function AgentForm({
       ).then((created) => {
         if (created === null) return;
         onDone();
-        openAgentTasks(environmentId, created.threadId);
         void navigate({
           to: "/$environmentId/$threadId",
           params: { environmentId, threadId: created.threadId },

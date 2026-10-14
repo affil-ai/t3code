@@ -21,7 +21,7 @@ import { SidebarInset } from "../ui/sidebar";
 import { Spinner } from "../ui/spinner";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
-import { openFirstmateTasks, useFirstmateCommands } from "./firstmateCommands";
+import { useFirstmateCommands } from "./firstmateCommands";
 import { FirstmateIcon } from "./firstmateIcons";
 import { useFirstmateModelSelection } from "./firstmateModel";
 
@@ -82,7 +82,6 @@ function FirstmateSetup({
             `Could not start ${snapshot.name}`,
           ).then((started) => {
             if (started === null) return;
-            openFirstmateTasks(environmentId, started.threadId);
             void navigate({
               to: "/$environmentId/$threadId",
               params: { environmentId, threadId: started.threadId },
@@ -157,7 +156,6 @@ function ForwardToCoordinator({
   const gone = threadShell === null && bootstrapComplete;
   useEffect(() => {
     if (gone) return;
-    openFirstmateTasks(environmentId, coordinatorThreadId);
     void navigate({
       to: "/$environmentId/$threadId",
       params: { environmentId, threadId: coordinatorThreadId },

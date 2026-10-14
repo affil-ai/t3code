@@ -3,11 +3,9 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useCallback, useState } from "react";
 
-import { useRightPanelStore } from "~/rightPanelStore";
 import { agentsEnvironment } from "~/state/agents";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -49,9 +47,4 @@ export function useAgentCommands() {
     [],
   );
   return { pending, create, update, archive, start, run };
-}
-
-/** Shows the Tasks tab beside an agent's chat. Agents share Firstmate's pinned surface. */
-export function openAgentTasks(environmentId: EnvironmentId, threadId: ThreadId) {
-  useRightPanelStore.getState().open(scopeThreadRef(environmentId, threadId), "firstmate");
 }

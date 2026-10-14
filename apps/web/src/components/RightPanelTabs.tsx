@@ -34,6 +34,7 @@ import {
   FileDiff,
   Files,
   Globe2,
+  ListChecks, // fork: firstmate
   MessageSquare,
   Plus,
   TerminalSquare,
@@ -131,6 +132,8 @@ interface RightPanelTabsProps {
   onCloseOtherSurfaces: (surface: RightPanelSurface) => void;
   onCloseSurfacesToRight: (surface: RightPanelSurface) => void;
   onCloseAllSurfaces: () => void;
+  /** Present only for a Firstmate or agent chat, whose Tasks board can open beside it. */
+  onAddTasks?: (() => void) | undefined; // fork: firstmate
   /** Tabs are draggable only when the owner can persist the new order. */
   onMoveSurface?: (surfaceId: string, toIndex: number) => void;
   onCopyFilePath: (relativePath: string) => void;
@@ -224,10 +227,29 @@ function arrangeSurfaceActions<Action extends { label: string }>(
   actions: readonly Action[],
   chatAction: Action | null,
   codingSurfacesHidden: boolean,
+  tasksAction: Action | null = null, // fork: firstmate
 ): Action[] {
-  return [...(chatAction ? [chatAction] : []), ...actions].filter(
-    (action) => !codingSurfacesHidden || !CODING_SURFACE_LABELS.has(action.label),
-  );
+  return [
+    ...(tasksAction ? [tasksAction] : []), // fork: firstmate
+    ...(chatAction ? [chatAction] : []),
+    ...actions,
+  ].filter((action) => !codingSurfacesHidden || !CODING_SURFACE_LABELS.has(action.label));
+}
+
+// fork: firstmate — the Tasks board of a Firstmate or agent chat, offered only there.
+function tasksLauncherAction(onAddTasks: (() => void) | undefined) {
+  return onAddTasks
+    ? {
+        label: "Tasks" as const,
+        description: "Open this chat's task board.",
+        icon: ListChecks,
+        shortcut: "K" as const,
+        available: true as const,
+        disabledReason: "",
+        onClick: onAddTasks,
+        badgeCount: 0 as const,
+      }
+    : null;
 }
 
 type TabContextMenuAction =
@@ -352,10 +374,10 @@ function SurfaceMenuItem(props: {
 }
 
 interface ChatLauncherAction {
-  label: "Chat";
+  label: "Chat" | "Tasks"; // fork: firstmate — Tasks shares the chat action's shape
   description: string;
   icon: typeof MessageSquare;
-  shortcut: "C";
+  shortcut: "C" | "K"; // fork: firstmate
   available: true;
   disabledReason: string;
   onClick: () => void;
@@ -380,6 +402,7 @@ function RightPanelEmptyState(props: {
   onAddPullRequests: () => void;
   onAddDevice: () => void;
   onAddChat?: (() => void) | undefined;
+  onAddTasks?: (() => void) | undefined; // fork: firstmate
   codingSurfacesHidden?: boolean | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
@@ -466,6 +489,7 @@ function RightPanelEmptyState(props: {
         }
       : null,
     props.codingSurfacesHidden === true,
+    tasksLauncherAction(props.onAddTasks), // fork: firstmate
   );
 
   type SurfaceAction = (typeof actions)[number];
@@ -1100,6 +1124,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         }
       : null,
     props.codingSurfacesHidden === true,
+    tasksLauncherAction(props.onAddTasks), // fork: firstmate
   );
 
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1606,6 +1631,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
             onAddChat={props.onAddChat}
+            onAddTasks={props.onAddTasks} // fork: firstmate
             codingSurfacesHidden={props.codingSurfacesHidden}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}

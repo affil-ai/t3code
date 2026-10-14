@@ -14,7 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
-import { type MouseEvent, useEffect, useRef, useState } from "react";
+import { type MouseEvent, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
@@ -37,37 +37,10 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { SidebarContent, SidebarGroup, SidebarMenu } from "../ui/sidebar";
 import { Spinner } from "../ui/spinner";
 import { AgentSidebarRow } from "./AgentSidebarRow";
-import { openAgentTasks, useAgentCommands } from "./agentCommands";
+import { useAgentCommands } from "./agentCommands";
 import { AgentDialog } from "./AgentDialog";
 
 type RowMenuAction = "edit" | "archive";
-
-/** Opens the Tasks tab each time an agent's chat becomes the route. */
-function useOpenTasksBesideAgent(
-  environmentId: EnvironmentId | null,
-  agents: ReadonlyArray<AgentProfile>,
-  routeKey: string | null,
-) {
-  const openedFor = useRef<string | null>(null);
-  useEffect(() => {
-    if (environmentId === null || routeKey === null) {
-      openedFor.current = null;
-      return;
-    }
-    const agent = agents.find(
-      (candidate) =>
-        candidate.coordinatorThreadId !== null &&
-        `${environmentId}:${candidate.coordinatorThreadId}` === routeKey,
-    );
-    if (agent === undefined || agent.coordinatorThreadId === null) {
-      openedFor.current = null;
-      return;
-    }
-    if (openedFor.current === routeKey) return;
-    openedFor.current = routeKey;
-    openAgentTasks(environmentId, agent.coordinatorThreadId);
-  }, [agents, environmentId, routeKey]);
-}
 
 /** The role on one line, or the chat's live status when it is doing something. */
 export function AgentRowSubtitle({
@@ -154,7 +127,6 @@ function AgentRow({
                 `Could not start ${agent.name}`,
               ).then((started) => {
                 if (started === null) return;
-                openAgentTasks(environmentId, started.threadId);
                 void navigate({
                   to: "/$environmentId/$threadId",
                   params: { environmentId, threadId: started.threadId },
@@ -166,7 +138,6 @@ function AgentRow({
           <Link
             to="/$environmentId/$threadId"
             params={{ environmentId, threadId: agent.coordinatorThreadId }}
-            onClick={() => openAgentTasks(environmentId, agent.coordinatorThreadId as ThreadId)}
             {...(active ? { "data-active": true } : {})}
           />
         )
@@ -185,7 +156,6 @@ export function AgentsSidebar() {
     ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}`
     : null;
   const agents = (home?.agents ?? []).filter((agent) => agent.id !== FIRSTMATE_AGENT_ID);
-  useOpenTasksBesideAgent(home?.environmentId ?? null, agents, routeKey);
   const [dialog, setDialog] = useState<{ agent: AgentProfile | null } | null>(null);
   const [archiving, setArchiving] = useState<AgentProfile | null>(null);
   const { pending, archive, run } = useAgentCommands();

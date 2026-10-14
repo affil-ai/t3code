@@ -1,6 +1,6 @@
 import { AGENT_DEFAULT_COLOR, FIRSTMATE_AGENT_ID } from "@t3tools/contracts";
 import { Link, useParams } from "@tanstack/react-router";
-import { type MouseEvent, useEffect, useRef, useState } from "react";
+import { type MouseEvent, useState } from "react";
 
 import { readLocalApi } from "~/localApi";
 import { useAgentsHome } from "~/state/agents";
@@ -12,39 +12,12 @@ import { AgentRowSubtitle } from "../agents/AgentsSidebar";
 import { Badge } from "../ui/badge";
 import { SidebarGroup, SidebarMenu } from "../ui/sidebar";
 import { countFirstmateNeedsYou } from "./firstmateBoard.logic";
-import { openFirstmateTasks } from "./firstmateCommands";
 import { FirstmateAppearanceDialog } from "./FirstmateAppearanceDialog";
-
-/**
- * Opens the Tasks tab each time the coordinator chat becomes the route, so
- * it is there however the user got to the chat. Closing the tab sticks until
- * the user leaves the chat and comes back.
- */
-function useOpenTasksBesideCoordinator(
-  home: ReturnType<typeof useFirstmateHome>,
-  routeKey: string | null,
-) {
-  const coordinatorKey =
-    home?.snapshot.coordinatorThreadId == null
-      ? null
-      : `${home.environmentId}:${home.snapshot.coordinatorThreadId}`;
-  const openedFor = useRef<string | null>(null);
-  useEffect(() => {
-    const onCoordinator = coordinatorKey !== null && routeKey === coordinatorKey;
-    if (!onCoordinator) {
-      openedFor.current = null;
-      return;
-    }
-    if (openedFor.current === coordinatorKey || !home?.snapshot.coordinatorThreadId) return;
-    openedFor.current = coordinatorKey;
-    openFirstmateTasks(home.environmentId, home.snapshot.coordinatorThreadId);
-  }, [coordinatorKey, home, routeKey]);
-}
 
 /**
  * The Work sidebar's Firstmate row, under Search, drawn like an agent in
  * Agents mode (icon tile, name, status) so it doesn't read as an ordinary
- * chat. Its open tasks follow in `FirstmateSidebarTasks`. It opens the coordinator chat with its Tasks tab, or the start
+ * chat. Its open tasks follow in `FirstmateSidebarTasks`. It opens the coordinator chat, or the start
  * page when there is no coordinator, on the first environment that serves
  * Firstmate. It is absent when none does.
  */
@@ -57,7 +30,6 @@ export function FirstmateSidebarLink() {
   const routeKey = routeThreadRef
     ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}`
     : null;
-  useOpenTasksBesideCoordinator(home, routeKey);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const profile = useAgentsHome()?.agents.find((agent) => agent.id === FIRSTMATE_AGENT_ID) ?? null;
   if (home === null) return null;
@@ -117,7 +89,6 @@ export function FirstmateSidebarLink() {
             <Link
               to="/$environmentId/$threadId"
               params={{ environmentId, threadId: coordinatorThreadId }}
-              onClick={() => openFirstmateTasks(environmentId, coordinatorThreadId)}
               {...(onCoordinator ? { "data-active": true } : {})}
             />
           )

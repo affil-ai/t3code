@@ -104,7 +104,7 @@ describe("rightPanelStore", () => {
   });
 
   // fork: firstmate
-  it("keeps the Firstmate Tasks tab through every kind of close", () => {
+  it("closes the Firstmate Tasks tab like any other tab", () => {
     const store = useRightPanelStore.getState();
     const ids = () =>
       selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.map(
@@ -114,17 +114,12 @@ describe("rightPanelStore", () => {
     store.open(refA, "firstmate");
     store.open(refA, "diff");
     store.closeSurface(refA, "firstmate");
-    expect(ids()).toEqual(["files", "firstmate", "diff"]);
-    store.closeOtherSurfaces(refA, "diff");
-    expect(ids()).toEqual(["firstmate", "diff"]);
-    store.open(refA, "device");
-    store.closeSurfacesToRight(refA, "firstmate");
-    expect(ids()).toEqual(["firstmate"]);
-    store.open(refA, "files");
+    expect(ids()).toEqual(["files", "diff"]);
+    store.open(refA, "firstmate");
     store.closeAllSurfaces(refA);
     const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
-    expect(state.surfaces.map((surface) => surface.id)).toEqual(["firstmate"]);
-    expect(state.activeSurfaceId).toBe("firstmate");
+    expect(state.surfaces).toEqual([]);
+    expect(state.isOpen).toBe(false);
   });
 
   it("reopens the active tab first after a bulk close", () => {
