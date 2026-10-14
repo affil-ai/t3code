@@ -147,6 +147,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
         Layer.mock(FirstmateHome.FirstmateHome)({
           migrateLegacyHome: () => Effect.succeed(null),
           migrateAgentsFolder: () => Effect.succeed([]),
+          artifactsRoot: "/agents/artifacts",
         }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         layerThreads,

@@ -55,6 +55,8 @@ const isFirstmateError = Schema.is(FirstmateError);
 export class FirstmateHome extends Context.Service<
   FirstmateHome,
   {
+    /** The repository's `artifacts/` folder, where kept review images live. */
+    readonly artifactsRoot: string;
     /**
      * Creates the repository and the agent's folder with any missing seed
      * file, commits what it added, and finds or creates the project rooted at
@@ -547,6 +549,7 @@ const make = Effect.gen(function* () {
   );
 
   return FirstmateHome.of({
+    artifactsRoot: path.join(repoRoot, ARTIFACTS_FOLDER),
     ensure,
     rename,
     writeRole,

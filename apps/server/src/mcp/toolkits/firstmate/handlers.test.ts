@@ -43,7 +43,11 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
   const layerFirstmate = FirstmateService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(FirstmateHome.FirstmateHome)({ migrateLegacyHome: () => Effect.succeed(null) }),
+        Layer.mock(FirstmateHome.FirstmateHome)({
+          migrateLegacyHome: () => Effect.succeed(null),
+          migrateAgentsFolder: () => Effect.succeed([]),
+          artifactsRoot: "/agents/artifacts",
+        }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
         NodeCrypto.layer,

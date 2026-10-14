@@ -238,15 +238,28 @@ export const layer = Layer.effect(
     yield* Store.ensureSchema;
     // A `~/firstmate` from before agents moves into the shared repository once.
     // Kept review images move with it, so their stored paths follow.
+    // Images kept under a moved folder now sit in the repository's artifacts/,
+    // so their stored paths go there; any other path follows the folder.
+    const repointArtifacts = (from: string, to: string) =>
+      Effect.gen(function* () {
+        const keptFrom = `${from}/artifacts/`;
+        const keptTo = `${home.artifactsRoot}/`;
+        yield* sql`
+          UPDATE firstmate_task SET artifacts_json = replace(artifacts_json, ${keptFrom}, ${keptTo})
+          WHERE artifacts_json LIKE ${`%${keptFrom}%`}
+        `;
+        yield* sql`
+          UPDATE firstmate_task SET artifacts_json = replace(artifacts_json, ${`${from}/`}, ${`${to}/`})
+          WHERE artifacts_json LIKE ${`%${from}/%`}
+        `;
+      });
     const moved = yield* home.migrateLegacyHome();
-    if (moved !== null) {
-      yield* sql`
-        UPDATE firstmate_task SET artifacts_json = replace(artifacts_json, ${moved.from}, ${moved.to})
-        WHERE artifacts_json LIKE ${`%${moved.from}%`}
-      `;
+    if (moved !== null) yield* repointArtifacts(moved.from, moved.to);
+    // Agents' folders move from `agents/` to `crew/` once. The first move left
+    // kept images' paths under `agents/firstmate/artifacts/`; this repairs them.
+    for (const folder of yield* home.migrateAgentsFolder()) {
+      yield* repointArtifacts(folder.from, folder.to);
     }
-    // Agents' folders move from `agents/` to `crew/` once.
-    yield* home.migrateAgentsFolder();
 
     const now = () => Effect.map(isoNow, (at) => DateTime.formatIso(DateTime.toUtc(at)));
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
