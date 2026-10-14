@@ -1,7 +1,6 @@
 import {
   AgentCreateResult,
   AgentCreateToolInput,
-  AgentListToolInput,
   AgentListToolResult,
   AgentProfile,
   AgentTasksToolInput,
@@ -84,7 +83,7 @@ const AgentListTool = Tool.make("agent_list", {
   ...shared,
   description:
     "List the user's agents: each one's id, name, role, and coordinator chat. Only an agent's coordinator chat may call it.",
-  parameters: AgentListToolInput,
+  // No `parameters`: Tool.make defaults to Tool.EmptyParams, which MCP accepts as an empty object.
   success: AgentListToolResult,
 })
   .annotate(Tool.Title, "List agents")

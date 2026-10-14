@@ -354,9 +354,6 @@ export type AgentUpdateInput = typeof AgentUpdateInput.Type;
 
 // --- agent MCP tools -------------------------------------------------------
 
-export const AgentListToolInput = Schema.Struct({});
-export type AgentListToolInput = typeof AgentListToolInput.Type;
-
 export const AgentListToolResult = Schema.Struct({
   agents: ForwardCompatibleArray(AgentProfile),
 });
