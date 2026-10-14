@@ -30,11 +30,16 @@ import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAd
 import { ServerActivation } from "./serverActivation.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  EventId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   RunId,
   RuntimeRequestId,
   ThreadId,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderSession,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -297,15 +302,23 @@ const cleanupFixture = Effect.gen(function* () {
   yield* fs.makeDirectory(config.worktreesDir, { recursive: true });
   const worktree = `${config.worktreesDir}/feature`;
   yield* command(repo, ["worktree", "add", "-b", "feature", worktree]);
+  // worktreeOnDelete lets domain events request sweeps once a test calls activate.
   let settings: import("@t3tools/contracts").ServerSettings = {
     ...DEFAULT_SERVER_SETTINGS,
-    storageCleanup: { ...DEFAULT_SERVER_SETTINGS.storageCleanup, worktreeAfterDays: 8 },
+    storageCleanup: {
+      ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+      worktreeAfterDays: 8,
+      worktreeOnDelete: true,
+    },
   };
   let threads = [shell({ branch: "feature", worktreePath: worktree })];
   let editBeforeRemoval = false;
   let openSessionCwd: string | null = null;
   let fullStatusCalls = 0;
   let officeAccessUnavailable = false;
+  let snapshotReads = 0;
+  let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
+  const activated = yield* Deferred.make<void>();
   const context = yield* Layer.build(StorageCleanup.layer).pipe(
     Effect.provideService(OfficeGitPolicy.OfficeGitPolicy, {
       environmentForMessage: () => Effect.sync(() => undefined),
@@ -342,6 +355,8 @@ const cleanupFixture = Effect.gen(function* () {
       getShellSnapshot: (input?: { location?: string }) =>
         // The real store splits threads by archivedAt, whatever the location.
         Effect.sync(() => {
+          // fork: a sweep reads the active and archive snapshots; count sweeps.
+          if (input?.location !== "archive") snapshotReads++;
           const scoped = threads.filter((thread) =>
             input?.location === "archive"
               ? thread.archivedAt !== null
@@ -354,9 +369,20 @@ const cleanupFixture = Effect.gen(function* () {
             archivedThreads: scoped.filter((thread) => thread.archivedAt !== null),
           };
         }),
+      // Like the real store: active threads only.
+      getThreadWorktreePaths: () =>
+        Effect.sync(() =>
+          threads.flatMap((thread) =>
+            thread.worktreePath === null || thread.archivedAt !== null
+              ? []
+              : [{ threadId: thread.id, worktreePath: thread.worktreePath }],
+          ),
+        ),
+      getThreadShell: (threadId: ThreadId) =>
+        Effect.sync(() => threads.find((thread) => thread.id === threadId) ?? null),
     } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
     Effect.provideService(Orchestrator.OrchestratorV2, {
-      streamDomainEvents: Stream.empty,
+      streamDomainEvents: Stream.suspend(() => events),
     } as unknown as Orchestrator.OrchestratorV2["Service"]),
     Effect.provideService(SqlClient.SqlClient, ((strings: TemplateStringsArray) =>
       Effect.sync(() =>
@@ -385,7 +411,7 @@ const cleanupFixture = Effect.gen(function* () {
     Effect.provideService(TerminalManager.TerminalManager, {
       subscribeMetadata: () => Effect.succeed(() => {}),
     } as unknown as TerminalManager.TerminalManager["Service"]),
-    Effect.provideService(ServerActivation, Effect.never),
+    Effect.provideService(ServerActivation, Deferred.await(activated)),
   );
   return {
     service: Context.get(context, StorageCleanup.StorageCleanup),
@@ -416,7 +442,11 @@ const cleanupFixture = Effect.gen(function* () {
     disable: () => {
       settings = {
         ...settings,
-        storageCleanup: { ...settings.storageCleanup, worktreeAfterDays: null },
+        storageCleanup: {
+          ...settings.storageCleanup,
+          worktreeAfterDays: null,
+          worktreeOnDelete: false,
+        },
       };
     },
     setThreads: (next: typeof threads) => {
@@ -426,7 +456,56 @@ const cleanupFixture = Effect.gen(function* () {
       openSessionCwd = cwd;
     },
     fullStatusCalls: () => fullStatusCalls,
+    snapshotReads: () => snapshotReads,
+    /** Starts the hourly sweep and the subscription to `domainEvents`, which wait until now. */
+    activate: (domainEvents: Stream.Stream<OrchestrationV2DomainEvent>) => {
+      events = domainEvents;
+      return Deferred.succeed(activated, undefined);
+    },
   };
+});
+/** The fixture, with the size walk of its worktree held until `resume` succeeds. */
+const pausedMeasurementFixture = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const measuring = yield* Deferred.make<void>();
+  const resume = yield* Deferred.make<void>();
+  let measuredPath: string | undefined;
+  const fixture = yield* cleanupFixture.pipe(
+    Effect.provideService(FileSystem.FileSystem, {
+      ...fs,
+      readDirectory: (directory, options) =>
+        Effect.gen(function* () {
+          if (directory === measuredPath) {
+            yield* Deferred.succeed(measuring, undefined);
+            yield* Deferred.await(resume);
+          }
+          return yield* fs.readDirectory(directory, options);
+        }),
+    }),
+  );
+  measuredPath = yield* fs.realPath(fixture.worktree);
+  return { ...fixture, measuring, resume };
+});
+const sessionUpdated = (
+  index: number,
+  status: OrchestrationV2ProviderSession["status"],
+): OrchestrationV2DomainEvent => ({
+  id: EventId.make(`event-${index}`),
+  type: "provider-session.updated",
+  threadId: ThreadId.make("thread-1"),
+  occurredAt: at(0),
+  payload: {
+    id: ProviderSessionId.make(`session-${index}`),
+    driver: ProviderDriverKind.make("codex"),
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    status,
+    cwd: "/elsewhere",
+    model: null,
+    capabilities: CodexProviderCapabilitiesV2,
+    createdAt: at(0),
+    updatedAt: at(0),
+    lastError: null,
+  },
 });
 const cleanupTestLayer = GitVcsDriver.layer.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "storage-cleanup-" })),
@@ -549,35 +628,41 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live("keeps a worktree when its thread starts during size measurement", () =>
+  it.live.each([
+    [
+      "its thread starts",
+      (worktree: string) => [
+        shell({ branch: "feature", worktreePath: worktree, status: "running" }),
+      ],
+    ],
+    [
+      "another thread starts using it",
+      (worktree: string) => [
+        shell({ branch: "feature", worktreePath: worktree }),
+        // fork: an unrelated thread, not an idle delegated task of thread-1.
+        shell({
+          id: ThreadId.make("thread-2"),
+          branch: "feature",
+          worktreePath: worktree,
+          lineage: {
+            rootThreadId: ThreadId.make("thread-2"),
+            parentThreadId: null,
+            relationshipToParent: null,
+          },
+        }),
+      ],
+    ],
+  ] as const)("keeps a worktree when %s during size measurement", ([, threadsWhileMeasuring]) =>
     runCleanupTest(
       Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const measuring = yield* Deferred.make<void>();
-        const resume = yield* Deferred.make<void>();
-        let measuredPath: string | undefined;
-        const fixture = yield* cleanupFixture.pipe(
-          Effect.provideService(FileSystem.FileSystem, {
-            ...fs,
-            readDirectory: (directory) =>
-              Effect.gen(function* () {
-                if (directory === measuredPath) {
-                  yield* Deferred.succeed(measuring, undefined);
-                  yield* Deferred.await(resume);
-                }
-                return yield* fs.readDirectory(directory);
-              }),
-          }),
-        );
-        measuredPath = yield* fs.realPath(fixture.worktree);
+        const fixture = yield* pausedMeasurementFixture;
+        const { fs, worktree } = fixture;
         fixture.setPolicy("tracked-changes");
-        yield* fs.writeFileString(`${fixture.worktree}/notes.txt`, "untracked\n");
+        yield* fs.writeFileString(`${worktree}/notes.txt`, "untracked\n");
         const cleanup = yield* fixture.service.runNow.pipe(Effect.forkChild);
-        yield* Deferred.await(measuring);
-        fixture.setThreads([
-          shell({ branch: "feature", worktreePath: fixture.worktree, status: "running" }),
-        ]);
-        yield* Deferred.succeed(resume, undefined);
+        yield* Deferred.await(fixture.measuring);
+        fixture.setThreads(threadsWhileMeasuring(worktree));
+        yield* Deferred.succeed(fixture.resume, undefined);
         const report = yield* Fiber.join(cleanup);
         expect(report.entries[0]).toMatchObject({
           outcome: "kept",
@@ -585,10 +670,47 @@ describe("storage cleanup reports and local file policies", () => {
           bytes: null,
         });
         expect(report.bytesFreed).toBe(0);
-        expect(yield* fs.exists(fixture.worktree)).toBe(true);
-        expect(yield* fs.readFileString(`${fixture.worktree}/notes.txt`)).toBe("untracked\n");
+        expect(yield* fs.exists(worktree)).toBe(true);
+        expect(yield* fs.readFileString(`${worktree}/notes.txt`)).toBe("untracked\n");
       }),
     ),
+  );
+  it.live("reads the thread snapshot once per sweep, not per worktree", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, snapshotReads } = yield* cleanupFixture;
+        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
+        expect(snapshotReads()).toBe(1);
+      }),
+    ),
+  );
+  it.live.each([
+    ["running", "ready", 1],
+    ["stopped", "error", 2],
+  ] as const)(
+    "session updates to %s or %s during a sweep make %i sweep(s) in total",
+    ([first, second, sweeps]) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fixture = yield* pausedMeasurementFixture;
+          const handled = yield* Deferred.make<void>();
+          // 20 updates arrive while the first automatic sweep measures the worktree.
+          yield* fixture.activate(
+            Stream.fromEffect(Deferred.await(fixture.measuring)).pipe(
+              Stream.flatMap(() => Stream.range(0, 19)),
+              Stream.map((index) => sessionUpdated(index, index % 2 === 0 ? first : second)),
+              Stream.concat(
+                Stream.fromEffect(Deferred.succeed(handled, undefined)).pipe(Stream.drain),
+              ),
+            ),
+          );
+          yield* Deferred.await(handled);
+          yield* Deferred.succeed(fixture.resume, undefined);
+          yield* fixture.service.drain;
+          // One snapshot read per sweep.
+          expect(fixture.snapshotReads()).toBe(sweeps);
+        }),
+      ),
   );
   it.live("does not measure a worktree kept for an open provider session", () =>
     runCleanupTest(
