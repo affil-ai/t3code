@@ -11985,6 +11985,7 @@ export default function ChatView(props: ChatViewProps) {
                         {!composerMounted ? null : (
                           <ChatComposer
                             canOperateThread={canOperateThread}
+                            threadPullRequests={(activeThreadShell ?? activeThread)?.pullRequests}
                             reportedModelSelection={reportedModelSelection}
                             multipleModelSelections={multipleModelSelections}
                             supportsMultipleModels={
