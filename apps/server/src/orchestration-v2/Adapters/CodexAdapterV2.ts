@@ -1877,6 +1877,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const pendingRootTurns = yield* Ref.make(
           new Map<string, ProviderAdapter.ProviderAdapterV2TurnInput>(),
         );
+        // Codex rejects thread/resume until a turn writes a thread's rollout. Until
+        // then this holds the execution environment the thread was started with.
+        const unmaterializedThreadEnvironments = new Map<string, string>();
+        const environmentKey = (environment: Readonly<Record<string, string>> | undefined) =>
+          JSON.stringify(
+            Object.entries(environment ?? {}).toSorted(([a], [b]) => a.localeCompare(b)),
+          );
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
         const subagentSelections = new Map<string, Omit<ModelSelection, "instanceId">>();
@@ -6219,7 +6226,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
             // turn/start cannot set shell environment. Reapply this run's values
             // to the loaded root; already spawned children keep their own config.
-            if (turnInput.runtimePolicy.executionEnvironment !== undefined) {
+            // A thread with no turn yet cannot be resumed; thread/start already
+            // applied its environment, so it needs no reapply when that matches.
+            const startedEnvironment = unmaterializedThreadEnvironments.get(threadId);
+            if (
+              turnInput.runtimePolicy.executionEnvironment !== undefined &&
+              startedEnvironment !== environmentKey(turnInput.runtimePolicy.executionEnvironment)
+            ) {
               yield* client.raw.request("thread/resume", {
                 threadId,
                 excludeTurns: true,
@@ -6254,6 +6267,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return next;
             });
             const started = yield* client.request("turn/start", turnStartParams);
+            unmaterializedThreadEnvironments.delete(threadId);
             yield* registerRootTurn({
               turnInput,
               nativeTurnId: started.turn.id,
@@ -6519,6 +6533,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }),
                 ),
               ),
+              Effect.tap((response) =>
+                Effect.sync(() =>
+                  unmaterializedThreadEnvironments.set(
+                    response.thread.id,
+                    environmentKey(threadInput.runtimePolicy.executionEnvironment),
+                  ),
+                ),
+              ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
                   appThreadId: threadInput.threadId,
@@ -6567,7 +6589,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         // thread that never ran one has no history to resume: start it
                         // fresh. The returned thread carries its new native ID.
                         if (/\bno rollout found\b/i.test(cause.errorMessage)) {
-                          return client.raw.request("thread/start", runtimeParams);
+                          return client.raw.request("thread/start", runtimeParams).pipe(
+                            Effect.tap((started) =>
+                              Effect.sync(() => {
+                                const id = (started as { thread?: { id?: unknown } }).thread?.id;
+                                if (typeof id === "string")
+                                  unmaterializedThreadEnvironments.set(
+                                    id,
+                                    environmentKey(threadInput.runtimePolicy?.executionEnvironment),
+                                  );
+                              }),
+                            ),
+                          );
                         }
                         if (
                           !/\bsession \S+ is archived\b|\bcodex unarchive\b/i.test(

@@ -1966,6 +1966,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
+    threadRuntimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = CODEX_TEST_RUNTIME_POLICY,
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -2030,7 +2031,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection: CODEX_TEST_MODEL_SELECTION,
-        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        runtimePolicy: threadRuntimePolicy,
       });
       const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
       const firstTerminal = yield* Deferred.make<void>();
@@ -3108,6 +3109,87 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               providerThread: harness.providerThread,
               now: yield* DateTime.now,
               attemptId: RunAttemptId.make("office-git-attempt"),
+              text: prompt,
+            }),
+            runtimePolicy,
+          });
+          yield* harness.firstTerminal;
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
+    "starts the first Office turn without resuming a Codex thread that has no rollout yet",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = "codex-office-git-first-turn";
+          const nativeThreadId = "native-office-git-first-turn";
+          const nativeTurnId = "native-office-git-first-turn-turn";
+          const prompt = "Commit the requested change";
+          const executionEnvironment = {
+            GIT_AUTHOR_NAME: "office-of-the-cto[bot]",
+            OFFICE_GIT_COAUTHOR: "Vivek <vivek@example.test>",
+          };
+          const runtimePolicy = { ...CODEX_TEST_RUNTIME_POLICY, executionEnvironment };
+          const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt });
+          const transcript = makeCodexReplayTranscript({
+            scenario,
+            entries: [
+              ...preamble.slice(0, 3),
+              {
+                type: "expect_outbound",
+                label: "thread/start",
+                frame: {
+                  id: 2,
+                  method: "thread/start",
+                  params: {
+                    config: {
+                      ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                      shell_environment_policy: {
+                        inherit: "all",
+                        experimental_use_profile: false,
+                        set: executionEnvironment,
+                      },
+                      "features.apps": false,
+                    },
+                  },
+                },
+              },
+              // Real Codex answers thread/resume here with "no rollout found", so
+              // the next request must be the prompt itself.
+              ...preamble.slice(4),
+              {
+                type: "emit_inbound",
+                label: "Office completion",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            undefined,
+            undefined,
+            runtimePolicy,
+          );
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("office-git-first-turn-attempt"),
               text: prompt,
             }),
             runtimePolicy,
