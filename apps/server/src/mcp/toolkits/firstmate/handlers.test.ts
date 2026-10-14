@@ -165,4 +165,48 @@ describe("Firstmate toolkit handlers", () => {
       }),
     ),
   );
+
+  it.effect("lets a coordinator list agents and read a board, and refuses workers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const { task } = yield* harness.service.create(FM, {
+          ...createParams,
+          workerThreadId: WORKER,
+        });
+        const listed = yield* harness.call("agent_list", {}, COORDINATOR);
+        expect(listed.isFailure).toBe(false);
+        expect(listed.result).toMatchObject({
+          agents: [{ id: FM, coordinatorThreadId: COORDINATOR }],
+        });
+        const board = yield* harness.call("agent_tasks", { agentId: FM }, COORDINATOR);
+        expect(board.isFailure).toBe(false);
+        expect(board.result).toMatchObject({ tasks: [{ id: task.id }] });
+        // A worker may read its own agent's board through the task tools, not the agent tools.
+        for (const result of [
+          yield* harness.call("agent_list", {}, WORKER),
+          yield* harness.call("agent_tasks", { agentId: FM }, WORKER),
+        ]) {
+          expect(result.isFailure).toBe(true);
+          expect(result.result).toMatchObject({ code: "capability_denied" });
+        }
+      }),
+    ),
+  );
+
+  it.effect("asks for a model when creating an agent and the caller has none recorded", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const result = yield* harness.call(
+          "agent_create",
+          { name: "Scout", role: "Watches things." },
+          COORDINATOR,
+        );
+        expect(result.isFailure).toBe(true);
+        expect(result.result).toMatchObject({ code: "model_unavailable" });
+        expect(yield* harness.service.listAgents()).toHaveLength(1);
+      }),
+    ),
+  );
 });

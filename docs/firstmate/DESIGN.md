@@ -134,6 +134,17 @@ These live in `apps/server/src/mcp/toolkits/firstmate/`. Follow the
 
 Mutations from any other thread return a clear error.
 
+The agent tools let one agent watch and shape the others, for example a chief
+agent that monitors the rest. Each is open to any agent's coordinator chat and
+refused to workers and other threads.
+
+| Tool           | Purpose                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `agent_list`   | The unarchived agents: id, name, role, icon, color, coordinator chat                                                           |
+| `agent_tasks`  | Another agent's board, read-only, filtered by state like `firstmate_task_list`                                                 |
+| `agent_create` | Same as `agents.create`. Icon defaults to `bot`, color to the agent default, and the model to the calling agent's recorded one |
+| `agent_update` | Same as `agents.update`: name, icon, color, or role                                                                            |
+
 ## Client RPC
 
 Follow the `scheduledTasks.*` pattern in `rpc.ts` and `ws.ts`:

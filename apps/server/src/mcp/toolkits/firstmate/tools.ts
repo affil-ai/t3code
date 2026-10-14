@@ -1,4 +1,11 @@
 import {
+  AgentCreateResult,
+  AgentCreateToolInput,
+  AgentListToolInput,
+  AgentListToolResult,
+  AgentProfile,
+  AgentTasksToolInput,
+  AgentUpdateInput,
   FirstmateError,
   FirstmateTaskCreateInput,
   FirstmateTaskGetInput,
@@ -73,9 +80,55 @@ const FirstmateTaskUpdateTool = Tool.make("firstmate_task_update", {
   .annotate(Tool.Title, "Update task")
   .annotate(Tool.Destructive, true);
 
+const AgentListTool = Tool.make("agent_list", {
+  ...shared,
+  description:
+    "List the user's agents: each one's id, name, role, and coordinator chat. Only an agent's coordinator chat may call it.",
+  parameters: AgentListToolInput,
+  success: AgentListToolResult,
+})
+  .annotate(Tool.Title, "List agents")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const AgentTasksTool = Tool.make("agent_tasks", {
+  ...shared,
+  description:
+    "Read another agent's task board, read-only. Omit state to list every task that is not done or dropped. Only an agent's coordinator chat may call it.",
+  parameters: AgentTasksToolInput,
+  success: FirstmateTaskListResult,
+})
+  .annotate(Tool.Title, "Read an agent's tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const AgentCreateTool = Tool.make("agent_create", {
+  ...shared,
+  description:
+    "Create an agent: records it, seeds its folder under crew/ in the agents repository, and starts its coordinator chat. Returns the agent and its chat's thread id. Only an agent's coordinator chat may call it.",
+  parameters: AgentCreateToolInput,
+  success: AgentCreateResult,
+})
+  .annotate(Tool.Title, "Create agent")
+  .annotate(Tool.Destructive, false);
+
+const AgentUpdateTool = Tool.make("agent_update", {
+  ...shared,
+  description:
+    "Change an agent's name, icon, color, or role. Omitted fields are unchanged; a new role rewrites the top of its AGENTS.md. Only an agent's coordinator chat may call it.",
+  parameters: AgentUpdateInput,
+  success: AgentProfile,
+})
+  .annotate(Tool.Title, "Update agent")
+  .annotate(Tool.Destructive, true);
+
 export const FirstmateToolkit = Toolkit.make(
   FirstmateTaskListTool,
   FirstmateTaskGetTool,
   FirstmateTaskCreateTool,
   FirstmateTaskUpdateTool,
+  AgentListTool,
+  AgentTasksTool,
+  AgentCreateTool,
+  AgentUpdateTool,
 );

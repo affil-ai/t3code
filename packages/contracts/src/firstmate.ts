@@ -352,6 +352,44 @@ export const AgentUpdateInput = Schema.Struct({
 });
 export type AgentUpdateInput = typeof AgentUpdateInput.Type;
 
+// --- agent MCP tools -------------------------------------------------------
+
+export const AgentListToolInput = Schema.Struct({});
+export type AgentListToolInput = typeof AgentListToolInput.Type;
+
+export const AgentListToolResult = Schema.Struct({
+  agents: ForwardCompatibleArray(AgentProfile),
+});
+export type AgentListToolResult = typeof AgentListToolResult.Type;
+
+export const AgentTasksToolInput = Schema.Struct({
+  agentId: AgentProfileId,
+  state: Schema.optional(FirstmateTaskState).annotate({
+    description: "Filter by state. Omit to list every task that is not done or dropped.",
+  }),
+});
+export type AgentTasksToolInput = typeof AgentTasksToolInput.Type;
+
+/** Icon and color default to the agent defaults; the model defaults to the calling agent's. */
+export const AgentCreateToolInput = Schema.Struct({
+  name: FirstmateName,
+  role: AgentRole.annotate({
+    description: "One or two sentences that become the top of the new agent's AGENTS.md.",
+  }),
+  icon: Schema.optional(FirstmateIcon).annotate({
+    description:
+      "One of compass, ship-wheel, anchor, sparkles, bot, rocket, star, zap, brain, heart, flag, crown. Defaults to bot.",
+  }),
+  color: Schema.optional(ProjectIconColor),
+  modelSelection: Schema.optional(ModelSelection).annotate({
+    description:
+      "The new agent's model, as orchestrator_capabilities lists it. Omit to use the calling agent's model.",
+  }),
+});
+export type AgentCreateToolInput = typeof AgentCreateToolInput.Type;
+
+export const AGENT_DEFAULT_ICON = "bot";
+
 export const AgentArchiveInput = Schema.Struct({
   agentId: AgentProfileId,
 });
