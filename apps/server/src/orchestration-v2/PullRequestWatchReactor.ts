@@ -18,6 +18,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -35,6 +36,7 @@ import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { evaluatePullRequestWatch, pullRequestWatchMessage } from "./pullRequestWatch.ts";
+import { isPullRequestWatchQuiet, pullRequestWatchQuietMessage } from "./pullRequestWatchQuiet.ts"; // fork: pr-watch-quiet
 
 /**
  * Minutes between passes. Checks take minutes, so a faster pass mostly spends the host's rate
@@ -124,6 +126,7 @@ type WatchEndReason =
   | "comment-limit"
   | "settled"
   | "subagent"
+  | "quiet" // fork: pr-watch-quiet
   | "stopped";
 
 /**
@@ -206,7 +209,8 @@ function watchesEqual(left: ThreadPullRequestWatch, right: ThreadPullRequestWatc
     left.remarksThrough === right.remarksThrough &&
     left.remarkIds.join("\n") === right.remarkIds.join("\n") &&
     left.conflicting === right.conflicting &&
-    left.wakes === right.wakes
+    left.wakes === right.wakes &&
+    left.changedAt === right.changedAt // fork: pr-watch-quiet
   );
 }
 
@@ -407,7 +411,10 @@ export const make = Effect.gen(function* () {
     );
 
   /** Why a watch ends without a host read; the rest are read once per pull request. */
-  const endsWithoutRead = ({ thread, link }: WatchTarget): WatchEndReason | undefined =>
+  const endsWithoutRead = (
+    { thread, link, watch }: WatchTarget,
+    now: number,
+  ): WatchEndReason | undefined =>
     // A merged pull request cannot reopen. Settling and archiving end watches, and a subagent
     // cannot start one; a watch left from before those rules ends here.
     link.snapshot?.state === "merged"
@@ -416,7 +423,10 @@ export const make = Effect.gen(function* () {
         ? "settled"
         : thread.lineage.relationshipToParent === "subagent"
           ? "subagent"
-          : undefined;
+          : // fork: pr-watch-quiet — checked every pass, since a quiet pull request is not read.
+            isPullRequestWatchQuiet(watch, now)
+            ? "quiet"
+            : undefined;
 
   /**
    * Runs one thread's step for each thread in a group, so one refusal does not skip the rest.
@@ -548,7 +558,12 @@ export const make = Effect.gen(function* () {
       remarks: fingerprint?.remarks ?? null,
     });
     yield* eachTarget(group, (target) => {
-      const report = evaluatePullRequestWatch(target.watch, detail, remarks);
+      const report = evaluatePullRequestWatch(
+        target.watch,
+        detail,
+        remarks,
+        DateTime.formatIso(DateTime.makeUnsafe(now)), // fork: pr-watch-quiet
+      );
       if (report.changes.length > 0) {
         return record(
           target,
@@ -584,10 +599,11 @@ export const make = Effect.gen(function* () {
       { discard: true },
     );
     for (const target of targets) lifeOf(target);
+    const now = yield* Clock.currentTimeMillis;
     const byPullRequest = new Map<string, Array<WatchTarget>>();
     const ending: Array<readonly [WatchTarget, WatchEndReason]> = [];
     for (const target of targets) {
-      const reason = endsWithoutRead(target);
+      const reason = endsWithoutRead(target, now);
       if (reason !== undefined) {
         ending.push([target, reason]);
         continue;
@@ -608,7 +624,14 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       ending,
       ([target, reason]) =>
-        record(target, null).pipe(
+        record(
+          target,
+          null,
+          // fork: pr-watch-quiet — the agent hears that watching stopped, so it hands back.
+          reason === "quiet"
+            ? pullRequestWatchQuietMessage({ number: target.link.number, url: target.link.url })
+            : undefined,
+        ).pipe(
           Effect.tap(() => ended(target, reason)),
           Effect.catchCause(
             logFailure("pull request watch stop failed", {

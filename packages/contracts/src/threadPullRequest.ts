@@ -121,6 +121,11 @@ export const ThreadPullRequestWatch = Schema.Struct({
   conflicting: Schema.Boolean,
   /** Comment-only wakes in a row. Watching stops at a limit, so bots cannot loop it. */
   wakes: NonNegativeInt,
+  /**
+   * When a pass last saw the pull request change: a push, a check, a conflict, or a remark.
+   * Absent on watches saved before this field existed; their next pass sets it.
+   */
+  changedAt: Schema.optional(IsoDateTime), // fork: pr-watch-quiet
 });
 export type ThreadPullRequestWatch = typeof ThreadPullRequestWatch.Type;
 

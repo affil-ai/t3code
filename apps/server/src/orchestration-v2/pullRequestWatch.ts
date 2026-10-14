@@ -6,6 +6,8 @@ import type {
   ThreadPullRequestWatch,
 } from "@t3tools/contracts";
 
+import { remarkActiveAt } from "./pullRequestWatchQuiet.ts"; // fork: pr-watch-quiet
+
 /**
  * Wakes in a row that bring only comments. Check, conflict, or push news resets the count, so
  * this only stops a chatty bot looping an agent that is replying to it.
@@ -45,6 +47,7 @@ export function evaluatePullRequestWatch(
   watch: ThreadPullRequestWatch,
   detail: Pick<PullRequestDetail, "headSha" | "checks" | "mergeability" | "viewer" | "author">,
   remarks: ReadonlyArray<PullRequestComment> | null,
+  now?: string, // fork: pr-watch-quiet
 ): PullRequestWatchReport {
   const changes: Array<PullRequestWatchChange> = [];
   const headSha = detail.headSha ?? null;
@@ -80,7 +83,8 @@ export function evaluatePullRequestWatch(
   const own = (detail.viewer ?? detail.author?.login)?.toLowerCase();
   const through = Date.parse(watch.remarksThrough);
   // An edit counts as new activity, so bots that rewrite one summary comment still wake the agent.
-  const activeAt = (remark: PullRequestComment) => remark.editedAt ?? remark.createdAt;
+  // fork: pr-watch-quiet — except a bot's plain comment, which deploy bots rewrite on every deploy.
+  const activeAt = remarkActiveAt;
   // GitHub times are per second, so remarks at the boundary time are told apart by ID.
   const fresh = (remarks ?? []).filter((remark) => {
     const at = Date.parse(activeAt(remark));
@@ -108,6 +112,9 @@ export function evaluatePullRequestWatch(
   const commentsOnly = changes.length > 0 && changes.every((change) => change.kind === "remarks");
   const progress = headMoved || (changes.length > 0 && !commentsOnly);
   const wakes = (progress ? 0 : watch.wakes) + (commentsOnly ? 1 : 0);
+  // fork: pr-watch-quiet — the quiet period counts from the last change of any kind.
+  const changedAt =
+    now !== undefined && (headMoved || changes.length > 0) ? now : (watch.changedAt ?? now);
   return {
     changes,
     next: {
@@ -120,6 +127,7 @@ export function evaluatePullRequestWatch(
       remarkIds,
       conflicting,
       wakes,
+      ...(changedAt === undefined ? {} : { changedAt }), // fork: pr-watch-quiet
     },
     exhausted: commentsOnly && wakes >= PULL_REQUEST_WATCH_WAKE_LIMIT,
   };
