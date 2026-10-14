@@ -290,7 +290,8 @@ const make = Effect.gen(function* () {
     const active = yield* projections.getShellSnapshot();
     const archived = yield* projections.getShellSnapshot({ location: "archive" });
     const projects = yield* projectStore.listShells();
-    return { projects, threads: [...active.threads, ...archived.threads] };
+    // An archive snapshot returns its threads under archivedThreads.
+    return { projects, threads: [...active.threads, ...archived.archivedThreads] };
   });
 
   // Local threads under another project need not have a worktreePath of their own.
