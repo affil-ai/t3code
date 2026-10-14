@@ -68,7 +68,7 @@ function TaskRow({
               to="/$environmentId/$threadId"
               params={{ environmentId, threadId }}
               className={cn(
-                "flex h-7 w-full min-w-0 items-center gap-2 rounded-md pr-2 pl-5 text-xs text-sidebar-foreground/80 outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset",
+                "flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-sm text-sidebar-foreground/80 outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset",
                 active && "bg-sidebar-row-selected text-sidebar-foreground",
               )}
               {...(active ? { "data-active": true } : {})}
@@ -106,15 +106,13 @@ export function AgentTaskTree({
   const columns = mapFirstmateBoard(tasks);
   const sections = OPEN_COLUMNS.filter((column) => columns[column].length > 0);
   if (sections.length === 0) {
-    return (
-      <p className="pt-0.5 pb-1.5 pl-14 text-xs text-sidebar-muted-foreground/70">No open tasks</p>
-    );
+    return <p className="px-2 py-1 text-sm text-sidebar-muted-foreground/70">No open tasks</p>;
   }
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-3">
       {sections.map((column) => (
         <section key={column} aria-label={COLUMN_LABELS[column]}>
-          <h3 className="flex h-6 items-center gap-1.5 px-2 text-2xs font-medium text-sidebar-muted-foreground/80">
+          <h3 className="mb-1 flex h-6 items-center gap-1.5 pr-1.5 pl-2 text-xs font-medium text-sidebar-muted-foreground/80">
             <span
               aria-hidden
               className={cn("size-1.5 shrink-0 rounded-full", COLUMN_DOT[column])}
