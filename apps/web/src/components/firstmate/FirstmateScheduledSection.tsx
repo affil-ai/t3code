@@ -2,17 +2,24 @@
  * The Tasks panel's last section: the scheduled tasks bound to the agent's
  * coordinator chat, live from the server's scheduled-task subscription. Each
  * row shows the schedule and next run; editing, run-now, and pause live in the
- * edit dialog. The section lists only this chat's tasks; the settings page has
+ * edit dialog, which opens over the panel. The section lists only this chat's tasks; the settings page has
  * them all.
  */
 import { type EnvironmentId, type ScheduledTask, type ThreadId } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
 import { CalendarClockIcon, PencilIcon, PlusIcon } from "lucide-react";
 
+import { useState } from "react";
+
 import { cn } from "~/lib/utils";
+import { useThreadShell } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
-import { relativeLabel, scheduleLabel } from "../settings/ScheduledTasksSettings";
+import {
+  ScheduledTaskEditorDialog,
+  relativeLabel,
+  scheduleLabel,
+} from "../settings/ScheduledTasksSettings";
+import { SettingsScopeProvider } from "../settings/SettingsScopeContext";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -30,17 +37,13 @@ export function ScheduledSection({
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
-  const navigate = useNavigate();
+  const coordinator = useThreadShell({ environmentId, threadId });
   const tasksQuery = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
   const tasks = (tasksQuery.data?.tasks ?? []).filter((task) => task.threadId === threadId);
-
-  const openSettings = (taskId?: ScheduledTask["id"]) =>
-    void navigate({
-      to: "/settings/scheduled-tasks",
-      search: { environmentId, ...(taskId === undefined ? {} : { taskId }) },
-    });
+  // The editor opens over the panel; null task creates one bound to this chat.
+  const [editing, setEditing] = useState<{ readonly task: ScheduledTask | null } | null>(null);
 
   return (
     <section aria-label="Scheduled" className="flex min-w-0 flex-col">
@@ -56,7 +59,7 @@ export function ScheduledSection({
                 variant="ghost-muted"
                 className="ml-auto"
                 aria-label="New scheduled task"
-                onClick={() => openSettings()}
+                onClick={() => setEditing({ task: null })}
               />
             }
           >
@@ -105,7 +108,7 @@ export function ScheduledSection({
                       size="icon-xs"
                       variant="ghost-muted"
                       aria-label={`Edit ${task.title}`}
-                      onClick={() => openSettings(task.id)}
+                      onClick={() => setEditing({ task })}
                     />
                   }
                 >
@@ -117,6 +120,21 @@ export function ScheduledSection({
           ))}
         </ul>
       )}
+      {editing ? (
+        // The editor reads a settings scope; an empty one spans every project.
+        <SettingsScopeProvider search={EMPTY_SCOPE_SEARCH} onChange={ignoreScopeChange}>
+          <ScheduledTaskEditorDialog
+            key={editing.task?.id ?? "new"}
+            initialEnvironmentId={environmentId}
+            task={editing.task}
+            newTaskTarget={coordinator ? { projectId: coordinator.projectId, threadId } : undefined}
+            onClose={() => setEditing(null)}
+          />
+        </SettingsScopeProvider>
+      ) : null}
     </section>
   );
 }
+
+const EMPTY_SCOPE_SEARCH = {};
+const ignoreScopeChange = () => {};

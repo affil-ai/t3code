@@ -768,13 +768,16 @@ function WebhookDeliveryMode({ environmentId }: { readonly environmentId: Enviro
   );
 }
 
-function ScheduledTaskEditorDialog({
+export function ScheduledTaskEditorDialog({
   initialEnvironmentId,
   task,
+  newTaskTarget,
   onClose,
 }: {
   readonly initialEnvironmentId: EnvironmentId;
   readonly task: ScheduledTask | null;
+  /** A new task's project and chat, when it is created from that chat. */
+  readonly newTaskTarget?: { readonly projectId: string; readonly threadId: string } | undefined;
   readonly onClose: () => void;
 }) {
   const { scope, connectedEnvironments } = useSettingsScope();
@@ -809,7 +812,9 @@ function ScheduledTaskEditorDialog({
   });
   const [running, setRunning] = useState(false);
   const [draft, setDraft] = useState<DraftState>(() =>
-    task ? taskToDraft(task) : { ...EMPTY_DRAFT, projectId: projects[0]?.id ?? "" },
+    task
+      ? taskToDraft(task)
+      : { ...EMPTY_DRAFT, projectId: projects[0]?.id ?? "", ...newTaskTarget },
   );
   const [saving, setSaving] = useState(false);
   const submissionPending = useRef(false);
