@@ -39,6 +39,7 @@ const fixture = <A, E>(
       unmerged?: boolean;
       lowDisk?: boolean;
       poolFull?: boolean;
+      staleLocalBase?: boolean;
     }) => void;
   }) => Effect.Effect<A, E, SqlClient.SqlClient | FileSystem.FileSystem>,
 ) =>
@@ -53,6 +54,7 @@ const fixture = <A, E>(
     let unmerged = false;
     let lowDisk = false;
     let poolFull = false;
+    let staleLocalBase = false;
     let sequence = 0;
     const runner = ProcessRunner.ProcessRunner.of({
       run: (input) =>
@@ -106,6 +108,8 @@ const fixture = <A, E>(
               if (slot === undefined) code = 1;
               else slot.branch = args[1] ?? "";
             } else if (args.includes("status")) stdout = dirty ? " M source.ts\n" : "";
+            else if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "HEAD")
+              stdout = "HEAD\n";
             else if (args[0] === "rev-parse")
               stdout = args.at(-1)?.replace(/\^\{commit\}$/, "") + "\n";
             else if (args[0] === "reset") {
@@ -113,7 +117,9 @@ const fixture = <A, E>(
               if (slot === undefined || args[2] === undefined) code = 1;
               else slot.head = args[2];
             } else if (args.includes("ls-files")) stdout = ignored;
-            else if (args[0] === "merge-base") code = unmerged ? 1 : 0;
+            else if (args[0] === "merge-base")
+              code =
+                unmerged || (staleLocalBase && !args.at(-1)?.startsWith("refs/remotes/")) ? 1 : 0;
             else throw new Error("Unexpected Git command");
           } else throw new Error("Unexpected command");
           return {
@@ -157,6 +163,7 @@ const fixture = <A, E>(
           ignored = changes.ignored ?? "";
           unmerged = changes.unmerged ?? false;
           poolFull = changes.poolFull ?? false;
+          staleLocalBase = changes.staleLocalBase ?? false;
         },
       });
     }).pipe(
@@ -393,6 +400,37 @@ describe("durable Treehouse workspaces", () => {
         setChanges({ ignored: ".env\0" });
         expect((yield* pool.release(path).pipe(Effect.result))._tag).toBe("Failure");
         expect(commands.some((input) => input.args.includes("return"))).toBe(false);
+      }),
+    ),
+  );
+
+  // fork: treehouse-merge-ref
+  it.effect("returns a slot merged into origin when the local base branch is stale", () =>
+    fixture(({ pool, cwd, commands, setChanges }) =>
+      Effect.gen(function* () {
+        const path = yield* acquire(pool, cwd);
+        setChanges({ staleLocalBase: true });
+        expect(yield* pool.release(path)).toBe(true);
+        const checks = commands.filter((input) => input.args[0] === "merge-base");
+        expect(checks.map((input) => input.args.at(-1))).toEqual([
+          "main",
+          "refs/remotes/origin/main",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("returns a squash-merged slot only for the commit whose pull request merged", () =>
+    fixture(({ pool, cwd, commands, setChanges }) =>
+      Effect.gen(function* () {
+        const path = yield* acquire(pool, cwd);
+        setChanges({ unmerged: true });
+        expect((yield* pool.release(path, owner, "other").pipe(Effect.result))._tag).toBe(
+          "Failure",
+        );
+        expect(commands.some((input) => input.args.includes("return"))).toBe(false);
+        expect(yield* pool.release(path, owner, "HEAD")).toBe(true);
+        expect(commands.some((input) => input.args.includes("return"))).toBe(true);
       }),
     ),
   );

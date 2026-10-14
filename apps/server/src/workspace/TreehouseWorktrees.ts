@@ -51,6 +51,11 @@ export class TreehouseWorktrees extends Context.Service<
     readonly release: (
       path: string,
       expectedThreadId?: ThreadId,
+      /**
+       * fork: treehouse-merge-ref — the caller confirmed this exact commit's pull request
+       * merged, so a squash merge that left HEAD outside the base branch loses nothing.
+       */
+      mergedHead?: string,
     ) => Effect.Effect<boolean, TreehouseWorktreeError>;
   }
 >()("t3/workspace/TreehouseWorktrees") {}
@@ -367,7 +372,7 @@ const make = Effect.gen(function* () {
           Effect.map((rows) => rows.length > 0),
         ),
       ),
-    release: (input, expectedThreadId) =>
+    release: (input, expectedThreadId, mergedHead) =>
       guard(
         Effect.gen(function* () {
           const expected =
@@ -462,7 +467,30 @@ const make = Effect.gen(function* () {
           );
           if (protectedEntries.length > 0)
             return yield* new TreehouseWorktreeError({ operation: "protected-ignored-files" });
-          yield* run("git", ["merge-base", "--is-ancestor", "HEAD", value.merge_ref], value.path);
+          // fork: treehouse-merge-ref — a local base branch can lag far behind origin, where
+          // a branch cut from origin was merged. Either one holding HEAD loses no commits.
+          yield* run(
+            "git",
+            ["merge-base", "--is-ancestor", "HEAD", value.merge_ref],
+            value.path,
+          ).pipe(
+            Effect.catch(() =>
+              run(
+                "git",
+                ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/" + value.merge_ref],
+                value.path,
+              ),
+            ),
+            Effect.catch((cause) =>
+              mergedHead === undefined
+                ? Effect.fail(cause)
+                : run("git", ["rev-parse", "--verify", "HEAD"], value.path).pipe(
+                    Effect.flatMap((head) =>
+                      head.trim() === mergedHead ? Effect.void : Effect.fail(cause),
+                    ),
+                  ),
+            ),
+          );
           // Treehouse rechecks this exact lease under its own pool lock. No --force,
           // --all, prune, or orphan recovery can affect another thread's slot.
           yield* treehouse(["return", value.path, "--if-lease-id", value.lease_id], value.cwd);

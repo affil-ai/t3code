@@ -665,6 +665,8 @@ const make = Effect.gen(function* () {
           settings.worktreeAfterDays !== null &&
           storageCleanupActivityAt(thread) < now - settings.worktreeAfterDays * DAY_MS;
         let eligible = deleted || old;
+        // fork: treehouse-merge-ref — lets the pool take back a squash-merged branch.
+        let mergedPullRequest = false;
         let removalReason = deleted
           ? "thread was deleted"
           : `inactive for ${Math.floor((now - storageCleanupActivityAt(thread)) / DAY_MS)} days`;
@@ -702,12 +704,13 @@ const make = Effect.gen(function* () {
               { cwd: worktreePath, branch: thread.branch },
               { refresh: true },
             );
-            eligible = storageCleanupPullRequestMerged(pullRequest, {
+            mergedPullRequest = storageCleanupPullRequestMerged(pullRequest, {
               branch: thread.branch,
               defaultBranch: branch,
               headSha: head.commitSha,
               integrated,
             });
+            eligible = mergedPullRequest;
             if (eligible) removalReason = "pull request was merged";
           }
         }
@@ -800,7 +803,11 @@ const make = Effect.gen(function* () {
         )
           return keep("settings changed since check");
         if (Option.isSome(pool) && (yield* pool.value.ownsPath(worktreePath))) {
-          yield* pool.value.release(worktreePath, thread.id);
+          yield* pool.value.release(
+            worktreePath,
+            thread.id,
+            mergedPullRequest ? head.commitSha : undefined,
+          );
           keep("returned to the worktree pool for reuse");
           yield* gitManager.invalidateStatus(project.workspaceRoot);
           return;
