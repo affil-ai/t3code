@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - realpathSync.native resolves Windows 8.3 short names, which the Effect realPath does not.
 import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, it, describe } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -38,6 +39,7 @@ import {
   windowsLongPathConfigEnv,
 } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import * as TreehouseWorktrees from "../workspace/TreehouseWorktrees.ts";
 
 const encodeGitCommandError = Schema.encodeEffect(Schema.fromJsonString(GitCommandError));
 
@@ -3213,6 +3215,48 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           )
           .pipe(Effect.flip);
         assert.match(rootError.detail, /not a drive root/);
+      }),
+    );
+
+    // fork: treehouse-pool-full
+    it.effect("creates an ordinary worktree when every pool slot is leased", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const worktreesDirectory = yield* makeTmpDir("pool-full-worktrees-");
+        const acquired: Array<string> = [];
+        const pool = TreehouseWorktrees.TreehouseWorktrees.of({
+          enabled: true,
+          acquire: (input) =>
+            Effect.sync(() => acquired.push(input.branch)).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new TreehouseWorktrees.TreehouseWorktreeError({ operation: "pool-full" }),
+                ),
+              ),
+            ),
+          ensure: () => Effect.succeed(null),
+          ownsPath: () => Effect.succeed(false),
+          release: () => Effect.succeed(false),
+        });
+        const driver = yield* GitVcsDriver.make.pipe(
+          Effect.provideService(TreehouseWorktrees.TreehouseWorktrees, pool),
+          Effect.provide(layerServerConfig),
+        );
+        const created = yield* driver.createWorktree(
+          { cwd, path: null, refName: initialBranch, newRefName: "feature/pool-full" },
+          { worktreesDirectory, ownerThreadId: ThreadId.make("thread:pool-full") },
+        );
+        const expected = pathService.join(
+          worktreesDirectory,
+          pathService.basename(cwd),
+          "feature-pool-full",
+        );
+        assert.deepEqual(acquired, ["feature/pool-full"]);
+        assert.equal(created.worktree.path, expected);
+        assert.equal(yield* fileSystem.exists(expected), true);
       }),
     );
 

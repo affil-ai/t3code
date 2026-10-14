@@ -38,8 +38,9 @@ const fixture = <A, E>(
       ignored?: string;
       unmerged?: boolean;
       lowDisk?: boolean;
+      poolFull?: boolean;
     }) => void;
-  }) => Effect.Effect<A, E, SqlClient.SqlClient>,
+  }) => Effect.Effect<A, E, SqlClient.SqlClient | FileSystem.FileSystem>,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -51,6 +52,7 @@ const fixture = <A, E>(
     let ignored = "";
     let unmerged = false;
     let lowDisk = false;
+    let poolFull = false;
     let sequence = 0;
     const runner = ProcessRunner.ProcessRunner.of({
       run: (input) =>
@@ -58,10 +60,14 @@ const fixture = <A, E>(
           commands.push(input);
           const args = input.args;
           let stdout = "";
+          let stderr = "";
           let code = 0;
           if (input.command === "/test/treehouse") {
             const verb = args[2];
-            if (verb === "get") {
+            if (verb === "get" && poolFull) {
+              code = 1;
+              stderr = "all 8 worktrees are in use or dirty (max_trees = 8).";
+            } else if (verb === "get") {
               sequence++;
               const branchIndex = args.indexOf("--branch");
               const slot: Slot = {
@@ -113,7 +119,7 @@ const fixture = <A, E>(
           return {
             code: ChildProcessSpawner.ExitCode(code),
             stdout,
-            stderr: "",
+            stderr,
             timedOut: false,
             stdoutTruncated: false,
             stderrTruncated: false,
@@ -150,6 +156,7 @@ const fixture = <A, E>(
           lowDisk = changes.lowDisk ?? false;
           ignored = changes.ignored ?? "";
           unmerged = changes.unmerged ?? false;
+          poolFull = changes.poolFull ?? false;
         },
       });
     }).pipe(
@@ -338,6 +345,52 @@ describe("durable Treehouse workspaces", () => {
           const payload = JSON.stringify({ worktreePath: path });
           yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${child},NULL,${payload})`;
         }
+        expect((yield* pool.release(path).pipe(Effect.result))._tag).toBe("Failure");
+        expect(commands.some((input) => input.args.includes("return"))).toBe(false);
+      }),
+    ),
+  );
+
+  // fork: treehouse-pool-full
+  it.effect("names a full pool so the caller can fall back to an ordinary worktree", () =>
+    fixture(({ pool, cwd, setChanges }) =>
+      Effect.gen(function* () {
+        setChanges({ poolFull: true });
+        const result = yield* acquire(pool, cwd).pipe(Effect.flip);
+        expect(result.operation).toBe("pool-full");
+        expect(result.message).toContain("pool is leased");
+      }),
+    ),
+  );
+
+  // fork: treehouse-env-copies
+  it.effect("returns a slot whose only ignored files are exact copies from the checkout", () =>
+    fixture(({ pool, cwd, commands, setChanges }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* acquire(pool, cwd);
+        yield* fs.makeDirectory(path + "/apps/web", { recursive: true });
+        yield* fs.makeDirectory(path + "/.scratch", { recursive: true });
+        yield* fs.makeDirectory(cwd + "/apps/web", { recursive: true });
+        yield* fs.writeFileString(cwd + "/apps/web/.env.local", "KEY=1\n");
+        yield* fs.writeFileString(path + "/apps/web/.env.local", "KEY=1\n");
+        yield* fs.writeFileString(path + "/apps/web/tsconfig.tsbuildinfo", "{}");
+        setChanges({ ignored: "apps/web/.env.local\0apps/web/tsconfig.tsbuildinfo\0.scratch/\0" });
+        expect(yield* pool.release(path)).toBe(true);
+        expect(commands.some((input) => input.args.includes("return"))).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("keeps a slot whose ignored file differs from the checkout", () =>
+    fixture(({ pool, cwd, commands, setChanges }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* acquire(pool, cwd);
+        yield* fs.makeDirectory(path, { recursive: true });
+        yield* fs.writeFileString(cwd + "/.env", "KEY=1\n");
+        yield* fs.writeFileString(path + "/.env", "KEY=2\n");
+        setChanges({ ignored: ".env\0" });
         expect((yield* pool.release(path).pipe(Effect.result))._tag).toBe("Failure");
         expect(commands.some((input) => input.args.includes("return"))).toBe(false);
       }),

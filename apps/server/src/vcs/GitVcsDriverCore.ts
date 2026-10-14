@@ -3442,7 +3442,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const sanitizedBranch = targetBranch.replace(/\//g, "-");
     const repoName = path.basename(input.cwd);
     let worktreePath = input.path;
-    const pooled =
+    let pooled =
       worktreePath == null &&
       options?.ownerThreadId !== undefined &&
       Option.isSome(pool) &&
@@ -3457,6 +3457,19 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           mergeRef: input.baseRefName ?? input.refName,
         })
         .pipe(
+          // fork: treehouse-pool-full — a full pool falls back to an ordinary worktree.
+          Effect.catchIf(
+            (cause) => cause.operation === "pool-full",
+            (cause) =>
+              Effect.logWarning("Treehouse pool is full; creating an ordinary worktree", {
+                cwd: input.cwd,
+                branch: targetBranch,
+                cause,
+              }).pipe(
+                Effect.tap(() => Effect.sync(() => (pooled = false))),
+                Effect.as(null),
+              ),
+          ),
           Effect.mapError(
             (cause) =>
               new GitCommandError({

@@ -19,6 +19,9 @@ export class TreehouseWorktreeError extends Schema.TaggedError<TreehouseWorktree
   override get message() {
     if (this.operation === "low-disk-space")
       return "At least 20 GiB of free disk space is required to create another worktree.";
+    // fork: treehouse-pool-full
+    if (this.operation === "pool-full")
+      return "Every agent worktree in the pool is leased, so a new one cannot be allocated.";
     return "Could not safely reuse the agent worktree. Its lease and files were preserved.";
   }
 }
@@ -111,7 +114,13 @@ const make = Effect.gen(function* () {
     ON CONFLICT(thread_id) DO UPDATE SET cwd=excluded.cwd,path=excluded.path,
       lease_id=excluded.lease_id,merge_ref=excluded.merge_ref,active=excluded.active
   `.pipe(Effect.asVoid);
-  const run = (command: string, args: ReadonlyArray<string>, cwd: string) =>
+  const run = (
+    command: string,
+    args: ReadonlyArray<string>,
+    cwd: string,
+    // fork: treehouse-pool-full — names a known failure from its output.
+    classify?: (stderr: string) => string | undefined,
+  ) =>
     runner
       .run({
         command,
@@ -125,13 +134,21 @@ const make = Effect.gen(function* () {
         Effect.flatMap((result) =>
           result.code === 0 && !result.stdoutTruncated
             ? Effect.succeed(result.stdout)
-            : Effect.fail(new TreehouseWorktreeError({ operation: "command" })),
+            : Effect.fail(
+                new TreehouseWorktreeError({
+                  operation: classify?.(result.stderr) ?? "command",
+                }),
+              ),
         ),
       );
-  const treehouse = (args: ReadonlyArray<string>, cwd: string) =>
+  const treehouse = (
+    args: ReadonlyArray<string>,
+    cwd: string,
+    classify?: (stderr: string) => string | undefined,
+  ) =>
     binary === undefined
       ? Effect.fail(new TreehouseWorktreeError({ operation: "not-configured" }))
-      : run(binary, ["--root", poolRoot, ...args], cwd);
+      : run(binary, ["--root", poolRoot, ...args], cwd, classify);
   const readStatus = (cwd: string) =>
     treehouse(["status", "--json"], cwd).pipe(Effect.flatMap(Schema.decodeUnknownEffect(status)));
   const currentLease = (value: Binding) =>
@@ -147,6 +164,23 @@ const make = Effect.gen(function* () {
           : Effect.succeed(slot);
       }),
     );
+  // fork: treehouse-env-copies
+  /** An ignored entry whose removal loses nothing the main checkout does not still hold. */
+  const disposableIgnored = (slotPath: string, checkout: string, entry: string) =>
+    Effect.gen(function* () {
+      if (entry.endsWith("/")) {
+        const children = yield* fs.readDirectory(path.join(slotPath, entry));
+        return children.length === 0;
+      }
+      if (entry.endsWith(".tsbuildinfo")) return true;
+      const original = path.join(checkout, entry);
+      if (!(yield* fs.exists(original))) return false;
+      const [copy, source] = yield* Effect.all([
+        fs.readFile(path.join(slotPath, entry)),
+        fs.readFile(original),
+      ]);
+      return copy.length === source.length && copy.every((byte, index) => byte === source[index]);
+    }).pipe(Effect.orElseSucceed(() => false));
   const allocate = Effect.fn("TreehouseWorktrees.allocate")(function* (input: {
     readonly threadId: ThreadId;
     readonly cwd: string;
@@ -190,6 +224,8 @@ const make = Effect.gen(function* () {
         ...(input.existingBranch ? [] : ["--branch", input.branch]),
       ],
       input.cwd,
+      // fork: treehouse-pool-full — Treehouse refuses a get once max_trees slots are held.
+      (stderr) => (/worktrees are in use/.test(stderr) ? "pool-full" : undefined),
     ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(allocation)));
     const allocatedPath = path.resolve(result.path);
     const root = path.join(poolRoot, ".treehouse") + path.sep;
@@ -397,11 +433,16 @@ const make = Effect.gen(function* () {
           );
           // Preserve ignored source, credentials and local state. Dependencies are
           // the only ignored directory this adapter permits Treehouse to retain.
-          if (
+          // fork: treehouse-env-copies — a setup script's exact copy of a file in the
+          // main checkout, an empty folder, or a TypeScript build cache loses nothing.
+          const protectedEntries = yield* Effect.filter(
             ignored
               .split("\0")
-              .some((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry))
-          )
+              .filter((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry)),
+            (entry) =>
+              disposableIgnored(value.path, value.cwd, entry).pipe(Effect.map((ok) => !ok)),
+          );
+          if (protectedEntries.length > 0)
             return yield* new TreehouseWorktreeError({ operation: "protected-ignored-files" });
           yield* run("git", ["merge-base", "--is-ancestor", "HEAD", value.merge_ref], value.path);
           // Treehouse rechecks this exact lease under its own pool lock. No --force,
