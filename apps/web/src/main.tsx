@@ -6,6 +6,7 @@ import "./index.css";
 
 import { prepareProviderAuthDelivery } from "./providerAuthDelivery";
 import { isElectron } from "./env";
+import { initializeHostedAppMode } from "./hostedAppMode";
 import { hasCloudPublicConfig } from "./cloud/publicConfig";
 import { getRouter } from "./router";
 import {
@@ -62,6 +63,7 @@ const managedAuthShellModule =
 export const startup = Promise.all([
   managedAuthShellModule?.then((module) => module.default) ?? null,
   router.load(),
+  initializeHostedAppMode(),
 ])
   .then(([ManagedAuthShell]) => {
     // A route chunk failure still resolves router.load(): the error is parked in

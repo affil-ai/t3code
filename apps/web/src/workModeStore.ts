@@ -323,8 +323,7 @@ export function sanitizePersistedData(value: unknown): WorkModeData {
         )
       : {};
   return {
-    mode:
-      raw.mode === "work" || raw.mode === "office" || raw.mode === "agents" ? raw.mode : "code",
+    mode: raw.mode === "work" || raw.mode === "office" || raw.mode === "agents" ? raw.mode : "code",
     folders,
     threadFolderByKey,
     collapsedFolderIds: Array.isArray(raw.collapsedFolderIds)
@@ -347,11 +346,13 @@ export function sanitizeWorkSharedData(value: unknown): WorkSharedData {
 }
 
 interface WorkModeStore extends WorkModeData {
+  hasExplicitMode: boolean;
   /** Operations are transient and let the sync layer rebase local edits. */
   pendingOperations: WorkModeOperation[];
   /** Work project whose name is being edited inline. Not persisted. */
   editingFolderId: string | null;
   setMode: (mode: AppMode) => void;
+  applyIdentityDefault: (mode: AppMode) => void;
   createFolder: (name: string, parentId: string | null) => string;
   renameFolder: (folderId: string, name: string) => void;
   deleteFolder: (folderId: string) => void;
@@ -372,6 +373,20 @@ const pickData = (state: WorkModeStore): WorkModeData => ({
   collapsedFolderIds: state.collapsedFolderIds,
   defaultProjectKey: state.defaultProjectKey,
 });
+
+function hasPersistedExplicitMode(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const raw = value as { mode?: unknown; hasExplicitMode?: unknown };
+  // Saved modes from before this flag was added remain device-local choices.
+  return (
+    raw.hasExplicitMode === true ||
+    (raw.hasExplicitMode !== false &&
+      (raw.mode === "code" ||
+        raw.mode === "work" ||
+        raw.mode === "office" ||
+        raw.mode === "agents"))
+  );
+}
 
 function workDataChanged(left: WorkModeData, right: WorkModeData): boolean {
   return (
@@ -400,9 +415,11 @@ export const useWorkModeStore = create<WorkModeStore>()(
   persist(
     (set) => ({
       ...initialWorkModeData,
+      hasExplicitMode: false,
       pendingOperations: [],
       editingFolderId: null,
-      setMode: (mode) => set({ mode }),
+      setMode: (mode) => set({ mode, hasExplicitMode: true }),
+      applyIdentityDefault: (mode) => set((state) => (state.hasExplicitMode ? state : { mode })),
       createFolder: (name, parentId) => {
         const id = randomUUID();
         const operation: WorkModeOperation = {
@@ -459,8 +476,12 @@ export const useWorkModeStore = create<WorkModeStore>()(
       storage: createJSONStorage(() =>
         resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined),
       ),
-      partialize: pickData,
-      merge: (persisted, current) => ({ ...current, ...sanitizePersistedData(persisted) }),
+      partialize: (state) => ({ ...pickData(state), hasExplicitMode: state.hasExplicitMode }),
+      merge: (persisted, current) => ({
+        ...current,
+        ...sanitizePersistedData(persisted),
+        hasExplicitMode: hasPersistedExplicitMode(persisted),
+      }),
     },
   ),
 );
