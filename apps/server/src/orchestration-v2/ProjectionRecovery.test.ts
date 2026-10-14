@@ -612,6 +612,47 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
   }).pipe(Effect.provide(layerTest)),
 );
 
+// fork: stale-provider-sessions
+it.effect("recovers an open session that lost its thread binding", () =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = yield* createThread("unbound-session");
+    const providerSessionId = ProviderSessionId.make("session:recovery:unbound");
+    yield* projections.apply({
+      id: EventId.make("event:recovery:unbound-session"),
+      type: "provider-session.attached",
+      threadId,
+      driver,
+      providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: providerSessionId,
+        driver,
+        providerInstanceId,
+        status: "ready",
+        cwd: "/workspace",
+        model: modelSelection.model,
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      },
+    });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      DELETE FROM orchestration_v2_projection_provider_session_bindings
+      WHERE provider_session_id = ${providerSessionId}
+    `;
+    assert.include(yield* projections.getRecoveryThreadIds("runtime"), threadId);
+    const state = yield* projections.getRuntimeRecoveryProjection(threadId);
+    assert.deepEqual(
+      state.providerSessions.map((session) => session.id),
+      [providerSessionId],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("reads the run that owns a background roster, not a queued or resumed one", () =>
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;

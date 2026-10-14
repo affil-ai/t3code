@@ -3656,6 +3656,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ON bindings.provider_session_id = sessions.provider_session_id
                 WHERE sessions.status NOT IN ('stopped', 'error')
                 UNION
+                -- fork: stale-provider-sessions — a session left open by a lost process can
+                -- outlive its bindings; its own thread still has to mark it stopped.
+                SELECT thread_id FROM orchestration_v2_projection_provider_sessions
+                WHERE status NOT IN ('stopped', 'error') AND thread_id IS NOT NULL
+                UNION
                 SELECT thread_id FROM pending_provider_threads
                 UNION
                 SELECT nodes.thread_id FROM pending_provider_threads
@@ -4115,9 +4120,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           sql<PayloadRow>`
               SELECT DISTINCT session.payload_json
               FROM orchestration_v2_projection_provider_sessions AS session
-              JOIN orchestration_v2_projection_provider_session_bindings AS binding
+              LEFT JOIN orchestration_v2_projection_provider_session_bindings AS binding
                 ON binding.provider_session_id = session.provider_session_id
-              WHERE binding.thread_id = ${threadId}
+              -- fork: stale-provider-sessions — or a session of this thread with no binding left.
+              WHERE (binding.thread_id = ${threadId} OR session.thread_id = ${threadId})
                 AND (
                   session.status NOT IN ('stopped', 'error')
                   OR session.provider_session_id IN (
