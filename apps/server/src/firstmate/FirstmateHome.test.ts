@@ -103,53 +103,63 @@ const gitOutput = (cwd: string, args: ReadonlyArray<string>) =>
 
 const firstmate = { slug: "firstmate", name: "Firstmate", role: "" };
 
-it.effect("seeds ~/agents as one committed repository with the agent's folder, and registers it as a project", () =>
-  withHome(({ homeDir }) =>
-    Effect.gen(function* () {
-      const home = yield* FirstmateHome.FirstmateHome;
-      const projects = yield* ProjectService.ProjectService;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const repo = path.join(homeDir, "agents");
-      const folder = path.join(repo, "agents", "jarvis");
+it.effect(
+  "seeds ~/agents as one committed repository with the agent's folder, and registers it as a project",
+  () =>
+    withHome(({ homeDir }) =>
+      Effect.gen(function* () {
+        const home = yield* FirstmateHome.FirstmateHome;
+        const projects = yield* ProjectService.ProjectService;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const repo = path.join(homeDir, "agents");
+        const folder = path.join(repo, "agents", "jarvis");
 
-      const { projectId } = yield* home.ensure({
-        slug: "jarvis",
-        name: "Jarvis",
-        role: "You run the growth team.",
-      });
+        const { projectId } = yield* home.ensure({
+          slug: "jarvis",
+          name: "Jarvis",
+          role: "You run the growth team.",
+        });
 
-      for (const file of SHARED_HOME_FILES) {
-        assert.equal(yield* fileSystem.readFileString(path.join(repo, file.path)), file.content);
-      }
-      for (const file of agentHomeFiles("Jarvis", "You run the growth team.")) {
-        assert.equal(yield* fileSystem.readFileString(path.join(folder, file.path)), file.content);
-      }
-      assert.include(
-        yield* fileSystem.readFileString(path.join(folder, "AGENTS.md")),
-        "You run the growth team.",
-      );
-      assert.equal(yield* fileSystem.readFileString(path.join(folder, "CLAUDE.md")), "@AGENTS.md\n");
-      for (const base of [repo, folder]) {
-        assert.equal(
-          yield* fileSystem.readLink(path.join(base, ".claude", "skills")),
-          "../.agents/skills",
+        for (const file of SHARED_HOME_FILES) {
+          assert.equal(yield* fileSystem.readFileString(path.join(repo, file.path)), file.content);
+        }
+        for (const file of agentHomeFiles("Jarvis", "You run the growth team.")) {
+          assert.equal(
+            yield* fileSystem.readFileString(path.join(folder, file.path)),
+            file.content,
+          );
+        }
+        assert.include(
+          yield* fileSystem.readFileString(path.join(folder, "AGENTS.md")),
+          "You run the growth team.",
         );
-        assert.isTrue(yield* fileSystem.exists(path.join(base, ".claude", "skills", "README.md")));
-      }
-      assert.isFalse(yield* fileSystem.exists(path.join(folder, ".git")));
+        assert.equal(
+          yield* fileSystem.readFileString(path.join(folder, "CLAUDE.md")),
+          "@AGENTS.md\n",
+        );
+        for (const base of [repo, folder]) {
+          assert.equal(
+            yield* fileSystem.readLink(path.join(base, ".claude", "skills")),
+            "../.agents/skills",
+          );
+          assert.isTrue(
+            yield* fileSystem.exists(path.join(base, ".claude", "skills", "README.md")),
+          );
+        }
+        assert.isFalse(yield* fileSystem.exists(path.join(folder, ".git")));
 
-      assert.equal(
-        yield* gitOutput(repo, ["log", "--format=%s|%an <%ae>"]),
-        "Add home files for Jarvis|Firstmate <firstmate@localhost>",
-      );
-      assert.equal(yield* gitOutput(repo, ["status", "--porcelain"]), "");
+        assert.equal(
+          yield* gitOutput(repo, ["log", "--format=%s|%an <%ae>"]),
+          "Add home files for Jarvis|Firstmate <firstmate@localhost>",
+        );
+        assert.equal(yield* gitOutput(repo, ["status", "--porcelain"]), "");
 
-      const project = Option.getOrThrow(yield* projects.getById(projectId));
-      assert.equal(project.title, "Jarvis");
-      assert.equal(project.workspaceRoot, folder);
-    }),
-  ),
+        const project = Option.getOrThrow(yield* projects.getById(projectId));
+        assert.equal(project.title, "Jarvis");
+        assert.equal(project.workspaceRoot, folder);
+      }),
+    ),
 );
 
 it.effect("keeps the user's edits and reuses the project on a second start", () =>
@@ -168,7 +178,10 @@ it.effect("keeps the user's edits and reuses the project on a second start", () 
       const first = yield* home.ensure(firstmate);
       assert.equal(yield* fileSystem.readFileString(path.join(root, "AGENTS.md")), "My rules.\n");
       assert.equal(yield* gitOutput(repo, ["log", "--format=%s"]), "Add home files for Firstmate");
-      assert.equal(yield* gitOutput(repo, ["status", "--porcelain"]), "?? agents/firstmate/AGENTS.md");
+      assert.equal(
+        yield* gitOutput(repo, ["status", "--porcelain"]),
+        "?? agents/firstmate/AGENTS.md",
+      );
 
       // Edits and deletions after the seed: only the missing file comes back.
       yield* fileSystem.writeFileString(path.join(root, "notes", "README.md"), "Edited.\n");
@@ -234,10 +247,7 @@ it.effect("follows T3CODE_AGENTS_HOME, renames the project, and rewrites the rol
         assert.include(agentsMd, "New role.");
         assert.notInclude(agentsMd, "Old role.");
         assert.include(agentsMd, "User line.");
-        assert.equal(
-          yield* gitOutput(repo, ["log", "--format=%s", "-1"]),
-          "Update Jarvis's role",
-        );
+        assert.equal(yield* gitOutput(repo, ["log", "--format=%s", "-1"]), "Update Jarvis's role");
       }),
     { T3CODE_AGENTS_HOME: "~/mates" },
   ),
@@ -268,72 +278,77 @@ it.effect("keeps a copy of a review image under artifacts/, outside Git", () =>
   ),
 );
 
-it.effect("moves a pre-agents ~/firstmate into agents/firstmate, keeping its history and project", () =>
-  withHome(({ homeDir }) =>
-    Effect.gen(function* () {
-      const home = yield* FirstmateHome.FirstmateHome;
-      const projects = yield* ProjectService.ProjectService;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const legacy = path.join(homeDir, "firstmate");
-      const repo = path.join(homeDir, "agents");
-      const target = path.join(repo, "agents", "firstmate");
+it.effect(
+  "moves a pre-agents ~/firstmate into agents/firstmate, keeping its history and project",
+  () =>
+    withHome(({ homeDir }) =>
+      Effect.gen(function* () {
+        const home = yield* FirstmateHome.FirstmateHome;
+        const projects = yield* ProjectService.ProjectService;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const legacy = path.join(homeDir, "firstmate");
+        const repo = path.join(homeDir, "agents");
+        const target = path.join(repo, "agents", "firstmate");
 
-      // Nothing to move: a fresh machine.
-      assert.isNull(yield* home.migrateLegacyHome());
+        // Nothing to move: a fresh machine.
+        assert.isNull(yield* home.migrateLegacyHome());
 
-      // A Firstmate folder with its own history, notes, a kept image, and a project.
-      yield* fileSystem.makeDirectory(path.join(legacy, "notes"), { recursive: true });
-      yield* fileSystem.writeFileString(path.join(legacy, "AGENTS.md"), "# Firstmate\n");
-      yield* fileSystem.writeFileString(path.join(legacy, "notes", "people.md"), "Ana: PM\n");
-      yield* fileSystem.makeDirectory(path.join(legacy, "artifacts", "t"), { recursive: true });
-      yield* fileSystem.writeFileString(path.join(legacy, "artifacts", "t", "shot.png"), "png");
-      yield* fileSystem.writeFileString(path.join(legacy, ".gitignore"), "/artifacts/\n");
-      yield* gitOutput(legacy, ["init", "--initial-branch=main"]);
-      yield* gitOutput(legacy, ["add", "AGENTS.md", "notes", ".gitignore"]);
-      yield* gitOutput(legacy, [
-        "-c", "user.name=Me", "-c", "user.email=me@example.com", "commit", "-m", "Old history",
-      ]);
-      const { project } = yield* projects.bootstrap({
-        commandId: "cmd:legacy" as never,
-        projectId: "project:legacy" as never,
-        title: "Firstmate",
-        workspaceRoot: legacy,
-      });
+        // A Firstmate folder with its own history, notes, a kept image, and a project.
+        yield* fileSystem.makeDirectory(path.join(legacy, "notes"), { recursive: true });
+        yield* fileSystem.writeFileString(path.join(legacy, "AGENTS.md"), "# Firstmate\n");
+        yield* fileSystem.writeFileString(path.join(legacy, "notes", "people.md"), "Ana: PM\n");
+        yield* fileSystem.makeDirectory(path.join(legacy, "artifacts", "t"), { recursive: true });
+        yield* fileSystem.writeFileString(path.join(legacy, "artifacts", "t", "shot.png"), "png");
+        yield* fileSystem.writeFileString(path.join(legacy, ".gitignore"), "/artifacts/\n");
+        yield* gitOutput(legacy, ["init", "--initial-branch=main"]);
+        yield* gitOutput(legacy, ["add", "AGENTS.md", "notes", ".gitignore"]);
+        yield* gitOutput(legacy, [
+          "-c",
+          "user.name=Me",
+          "-c",
+          "user.email=me@example.com",
+          "commit",
+          "-m",
+          "Old history",
+        ]);
+        const { project } = yield* projects.bootstrap({
+          commandId: "cmd:legacy" as never,
+          projectId: "project:legacy" as never,
+          title: "Firstmate",
+          workspaceRoot: legacy,
+        });
 
-      const moved = yield* home.migrateLegacyHome();
-      assert.deepEqual(moved, { from: legacy, to: target });
-      assert.isFalse(yield* fileSystem.exists(legacy));
-      assert.equal(
-        yield* fileSystem.readFileString(path.join(target, "notes", "people.md")),
-        "Ana: PM\n",
-      );
-      // History is the repository's now: the old commit, then the move, then the shared files.
-      assert.equal(
-        yield* gitOutput(repo, ["log", "--format=%s", "--reverse"]),
-        "Old history\nMove Firstmate into agents/firstmate\nAdd the shared agents home files",
-      );
-      assert.equal(yield* gitOutput(repo, ["status", "--porcelain"]), "");
-      assert.isTrue(yield* fileSystem.exists(path.join(repo, "AGENTS.md")));
-      // Kept images move to the repository's artifacts folder.
-      assert.equal(
-        yield* fileSystem.readFileString(path.join(repo, "artifacts", "t", "shot.png")),
-        "png",
-      );
-      // The project follows the folder; a backup of the old folder stays beside it.
-      assert.equal(
-        Option.getOrThrow(yield* projects.getById(project.id)).workspaceRoot,
-        target,
-      );
-      const backups = (yield* fileSystem.readDirectory(homeDir)).filter((name) =>
-        name.startsWith("firstmate.bak-"),
-      );
-      assert.lengthOf(backups, 1);
+        const moved = yield* home.migrateLegacyHome();
+        assert.deepEqual(moved, { from: legacy, to: target });
+        assert.isFalse(yield* fileSystem.exists(legacy));
+        assert.equal(
+          yield* fileSystem.readFileString(path.join(target, "notes", "people.md")),
+          "Ana: PM\n",
+        );
+        // History is the repository's now: the old commit, then the move, then the shared files.
+        assert.equal(
+          yield* gitOutput(repo, ["log", "--format=%s", "--reverse"]),
+          "Old history\nMove Firstmate into agents/firstmate\nAdd the shared agents home files",
+        );
+        assert.equal(yield* gitOutput(repo, ["status", "--porcelain"]), "");
+        assert.isTrue(yield* fileSystem.exists(path.join(repo, "AGENTS.md")));
+        // Kept images move to the repository's artifacts folder.
+        assert.equal(
+          yield* fileSystem.readFileString(path.join(repo, "artifacts", "t", "shot.png")),
+          "png",
+        );
+        // The project follows the folder; a backup of the old folder stays beside it.
+        assert.equal(Option.getOrThrow(yield* projects.getById(project.id)).workspaceRoot, target);
+        const backups = (yield* fileSystem.readDirectory(homeDir)).filter((name) =>
+          name.startsWith("firstmate.bak-"),
+        );
+        assert.lengthOf(backups, 1);
 
-      // Done once: a second call finds nothing to move.
-      assert.isNull(yield* home.migrateLegacyHome());
-      const { projectId } = yield* home.ensure(firstmate);
-      assert.equal(projectId, project.id);
-    }),
-  ),
+        // Done once: a second call finds nothing to move.
+        assert.isNull(yield* home.migrateLegacyHome());
+        const { projectId } = yield* home.ensure(firstmate);
+        assert.equal(projectId, project.id);
+      }),
+    ),
 );

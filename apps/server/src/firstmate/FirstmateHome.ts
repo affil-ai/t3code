@@ -46,6 +46,7 @@ export const AGENTS_FOLDER = "agents";
 /** Review images live here, outside Git (see the seeded `.gitignore`). */
 export const ARTIFACTS_FOLDER = "artifacts";
 const FALLBACK_AUTHOR = { name: "Firstmate", email: "firstmate@localhost" };
+const isFirstmateError = Schema.is(FirstmateError);
 
 export class FirstmateHome extends Context.Service<
   FirstmateHome,
@@ -293,7 +294,7 @@ const make = Effect.gen(function* () {
       return yield* ensureProject(folder, input.name);
     },
     Effect.mapError((cause) =>
-      Schema.is(FirstmateError)(cause) ? cause : folderError("the agent's folder")(cause),
+      isFirstmateError(cause) ? cause : folderError("the agent's folder")(cause),
     ),
   );
 

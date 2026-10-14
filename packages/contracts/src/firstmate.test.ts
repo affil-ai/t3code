@@ -249,11 +249,21 @@ describe("Firstmate RPC contracts", () => {
       "firstmate.setCoordinator": "orchestration:operate",
       "firstmate.start": "orchestration:operate",
       "firstmate.setAppearance": "orchestration:operate",
+      "agents.subscribe": "orchestration:read",
+      "agents.tasks.subscribe": "orchestration:read",
+      "agents.create": "orchestration:operate",
+      "agents.update": "orchestration:operate",
+      "agents.archive": "orchestration:operate",
+      "agents.start": "orchestration:operate",
     });
     expect(FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES).toEqual({
       "firstmate.setCoordinator": "orchestration:operate",
       "firstmate.start": "orchestration:operate",
       "firstmate.setAppearance": "orchestration:operate",
+      "agents.create": "orchestration:operate",
+      "agents.update": "orchestration:operate",
+      "agents.archive": "orchestration:operate",
+      "agents.start": "orchestration:operate",
     });
   });
 });

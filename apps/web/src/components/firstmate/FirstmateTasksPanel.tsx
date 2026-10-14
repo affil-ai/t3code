@@ -1,12 +1,19 @@
 /**
- * Firstmate's Tasks panel, a right-panel surface beside the coordinator chat.
+ * An agent's Tasks panel, a right-panel surface beside its coordinator chat.
  * Tasks stack in sections (Needs you, Ready for deployment, In progress,
  * In review, and a folded Done), newest activity first. It is read-only: the user changes tasks by
  * talking to the chat. A card drills into the task's intent, definition of
  * done, evidence, links, and event log, with a back button to the list.
  */
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, FirstmateSnapshot, FirstmateTask, ThreadId } from "@t3tools/contracts";
+import {
+  type AgentProfile,
+  type EnvironmentId,
+  FIRSTMATE_AGENT_ID,
+  type FirstmateSnapshot,
+  type FirstmateTask,
+  type ThreadId,
+} from "@t3tools/contracts";
 import {
   ArrowLeftIcon,
   ChevronRightIcon,
@@ -18,7 +25,10 @@ import {
 import { type ReactNode, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import { useAgentsHome, useAgentTasks } from "~/state/agents";
 import { firstmateEnvironment, useFirstmateSnapshot } from "~/state/firstmate";
+import { AgentDialog } from "../agents/AgentDialog";
+import { ScheduledSection } from "./FirstmateScheduledSection";
 import { useRelativeTimeTick } from "../settings/settingsLayout";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -231,10 +241,13 @@ function DoneSection({
 
 function TaskSections({
   environmentId,
+  threadId,
   tasks,
   onOpen,
 }: {
   readonly environmentId: EnvironmentId;
+  /** The coordinator chat, whose scheduled tasks the last section lists. */
+  readonly threadId: ThreadId;
   readonly tasks: readonly FirstmateTask[];
   readonly onOpen: (task: FirstmateTask) => void;
 }) {
@@ -252,6 +265,7 @@ function TaskSections({
           />
         ))}
         <DoneSection environmentId={environmentId} tasks={columns.done} onOpen={onOpen} />
+        <ScheduledSection environmentId={environmentId} threadId={threadId} />
       </div>
     </ScrollArea>
   );
@@ -266,19 +280,26 @@ function PanelHeader({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/** Rename, change the icon, or stop using the coordinator chat. */
+/**
+ * Rename, change the icon, or stop using the coordinator chat. For an agent
+ * other than Firstmate the first item opens the agent editor, which also
+ * takes the role and color.
+ */
 function TasksMenu({
   environmentId,
   snapshot,
+  agent,
 }: {
   readonly environmentId: EnvironmentId;
   readonly snapshot: FirstmateSnapshot;
+  readonly agent: AgentProfile | null;
 }) {
   const canOperate = useAtomValue(
     firstmateEnvironment.setCoordinator.permissionAtom(environmentId),
   );
   const { pending, setCoordinator, run } = useFirstmateCommands();
   const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const isFirstmate = agent === null || agent.id === FIRSTMATE_AGENT_ID;
   return (
     <>
       <Menu>
@@ -298,30 +319,41 @@ function TasksMenu({
         <MenuPopup align="end">
           <MenuItem disabled={!canOperate} onClick={() => setAppearanceOpen(true)}>
             <PencilIcon />
-            Name and icon…
+            {isFirstmate ? "Name and icon…" : "Name, role, and icon…"}
           </MenuItem>
-          <MenuItem
-            disabled={!canOperate}
-            onClick={() =>
-              void run(
-                "setCoordinator",
-                () => setCoordinator({ environmentId, input: { threadId: null } }),
-                `Could not stop ${snapshot.name}`,
-              )
-            }
-          >
-            <CircleSlashIcon />
-            Stop using this chat
-          </MenuItem>
+          {isFirstmate ? (
+            <MenuItem
+              disabled={!canOperate}
+              onClick={() =>
+                void run(
+                  "setCoordinator",
+                  () => setCoordinator({ environmentId, input: { threadId: null } }),
+                  `Could not stop ${snapshot.name}`,
+                )
+              }
+            >
+              <CircleSlashIcon />
+              Stop using this chat
+            </MenuItem>
+          ) : null}
         </MenuPopup>
       </Menu>
-      <FirstmateAppearanceDialog
-        environmentId={environmentId}
-        name={snapshot.name}
-        icon={snapshot.icon}
-        open={appearanceOpen}
-        onOpenChange={setAppearanceOpen}
-      />
+      {isFirstmate ? (
+        <FirstmateAppearanceDialog
+          environmentId={environmentId}
+          name={snapshot.name}
+          icon={snapshot.icon}
+          open={appearanceOpen}
+          onOpenChange={setAppearanceOpen}
+        />
+      ) : (
+        <AgentDialog
+          environmentId={environmentId}
+          agent={agent}
+          open={appearanceOpen}
+          onOpenChange={setAppearanceOpen}
+        />
+      )}
     </>
   );
 }
@@ -338,8 +370,9 @@ function PanelMessage({ title, children }: { readonly title: string; readonly ch
 }
 
 /**
- * The right-panel surface for `{ kind: "firstmate" }`. It shows tasks only
- * beside the current coordinator chat; anywhere else it says so.
+ * The right-panel surface for `{ kind: "firstmate" }`: the board of whichever
+ * agent's coordinator chat is open, Firstmate's or another agent's. Beside any
+ * other chat it says so.
  */
 export function FirstmateTasksPanel({
   environmentId,
@@ -350,13 +383,25 @@ export function FirstmateTasksPanel({
 }) {
   // Ages on the cards stay current without a new snapshot.
   useRelativeTimeTick(60_000);
-  const snapshotQuery = useFirstmateSnapshot(environmentId);
+  const agentsHome = useAgentsHome();
+  const agent =
+    agentsHome?.environmentId === environmentId
+      ? (agentsHome.agents.find((candidate) => candidate.coordinatorThreadId === threadId) ?? null)
+      : null;
+  // Firstmate's own stream is the fallback for a server that predates agents.
+  const firstmateQuery = useFirstmateSnapshot(environmentId);
+  const agentQuery = useAgentTasks(
+    environmentId,
+    agent === null || agent.id === FIRSTMATE_AGENT_ID ? null : agent.id,
+  );
+  const snapshotQuery =
+    agent !== null && agent.id !== FIRSTMATE_AGENT_ID ? agentQuery : firstmateQuery;
   const snapshot = snapshotQuery.data;
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   if (snapshot === null) {
     return snapshotQuery.error ? (
       <PanelMessage title="Tasks aren't available">
-        This server doesn't run Firstmate, or it couldn't be reached.
+        This server doesn't run agents, or it couldn't be reached.
       </PanelMessage>
     ) : (
       <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
@@ -406,10 +451,11 @@ export function FirstmateTasksPanel({
                   {needsYou}
                 </Badge>
               ) : null}
-              <TasksMenu environmentId={environmentId} snapshot={snapshot} />
+              <TasksMenu environmentId={environmentId} snapshot={snapshot} agent={agent} />
             </PanelHeader>
             <TaskSections
               environmentId={environmentId}
+              threadId={threadId}
               tasks={snapshot.tasks}
               onOpen={(task) => setSelectedTaskId(task.id)}
             />

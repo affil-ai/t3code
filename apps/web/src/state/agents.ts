@@ -1,0 +1,109 @@
+/**
+ * Fork-only Agents mode atoms: the agent list and each agent's task board,
+ * read from the same environment that serves Firstmate. Kept out of the
+ * upstream environment state.
+ */
+import { useAtomValue } from "@effect/atom-react";
+import {
+  createAtomCommandScheduler,
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcSubscriptionAtomFamily,
+} from "@t3tools/client-runtime/state/runtime";
+import {
+  FIRSTMATE_WS_METHODS,
+  type AgentProfile,
+  type AgentProfileId,
+  type EnvironmentId,
+} from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
+
+import { connectionAtomRuntime } from "../connection/runtime";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { environmentPresentations } from "./presentation";
+import { useEnvironmentQuery } from "./query";
+
+function createAgentsEnvironmentAtoms(runtime: typeof connectionAtomRuntime) {
+  const scheduler = createAtomCommandScheduler();
+  const concurrency = {
+    mode: "serial" as const,
+    key: ({ environmentId }: { readonly environmentId: string }) => environmentId,
+  };
+  return {
+    live: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:agents:live",
+      tag: FIRSTMATE_WS_METHODS.agentsSubscribe,
+    }),
+    tasks: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:agents:tasks",
+      tag: FIRSTMATE_WS_METHODS.agentTasksSubscribe,
+    }),
+    create: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:agents:create",
+      tag: FIRSTMATE_WS_METHODS.agentCreate,
+      scheduler,
+      concurrency,
+    }),
+    update: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:agents:update",
+      tag: FIRSTMATE_WS_METHODS.agentUpdate,
+      scheduler,
+      concurrency,
+    }),
+    archive: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:agents:archive",
+      tag: FIRSTMATE_WS_METHODS.agentArchive,
+      scheduler,
+      concurrency,
+    }),
+    start: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:agents:start",
+      tag: FIRSTMATE_WS_METHODS.agentStart,
+      scheduler,
+      concurrency,
+    }),
+  };
+}
+
+export const agentsEnvironment = createAgentsEnvironmentAtoms(connectionAtomRuntime);
+
+export interface AgentsHome {
+  readonly environmentId: EnvironmentId;
+  /** Every unarchived agent, Firstmate included, in creation order. */
+  readonly agents: ReadonlyArray<AgentProfile>;
+}
+
+/**
+ * The first connected environment, in catalog order, whose server answers
+ * `agents.subscribe`. An environment still answering holds the place, so a
+ * slow fork server is not skipped for a later one; null means none has it.
+ */
+const agentsHomeAtom = Atom.make((get): AgentsHome | null => {
+  for (const [environmentId, presentation] of get(environmentPresentations.presentationsAtom)) {
+    if (presentation.connection.phase !== "connected" || presentation.serverConfig === null) {
+      continue;
+    }
+    const result = get(agentsEnvironment.live({ environmentId, input: {} }));
+    if (AsyncResult.isSuccess(result)) return { environmentId, agents: result.value.agents };
+    if (AsyncResult.isFailure(result)) continue;
+    return null;
+  }
+  return null;
+}).pipe(Atom.withLabel("agents:home"));
+
+export function useAgentsHome(): AgentsHome | null {
+  return useAtomValue(agentsHomeAtom);
+}
+
+/** The current agents home, read once outside React, as event handlers do. */
+export function readAgentsHome(): AgentsHome | null {
+  return appAtomRegistry.get(agentsHomeAtom);
+}
+
+/** One agent's board, shaped like Firstmate's snapshot. */
+export function useAgentTasks(environmentId: EnvironmentId | null, agentId: AgentProfileId | null) {
+  return useEnvironmentQuery(
+    environmentId === null || agentId === null
+      ? null
+      : agentsEnvironment.tasks({ environmentId, input: { agentId } }),
+  );
+}

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { EnvironmentId, FIRSTMATE_AGENT_ID, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  FIRSTMATE_AGENT_ID,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -109,7 +114,9 @@ describe("Firstmate toolkit handlers", () => {
         );
         expect(result.isFailure).toBe(true);
         expect(result.result).toMatchObject({ code: "capability_denied" });
-        expect((yield* harness.service.get(FM, { taskId: task.id })).task.title).toBe("Ship the board");
+        expect((yield* harness.service.get(FM, { taskId: task.id })).task.title).toBe(
+          "Ship the board",
+        );
       }),
     ),
   );

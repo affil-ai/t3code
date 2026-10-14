@@ -17,7 +17,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { resolveStorage } from "./lib/storage";
 import { randomUUID } from "./lib/utils";
 
-export type AppMode = "code" | "work" | "office";
+export type AppMode = "code" | "work" | "office" | "agents";
 
 export interface WorkFolder {
   id: string;
@@ -323,7 +323,8 @@ export function sanitizePersistedData(value: unknown): WorkModeData {
         )
       : {};
   return {
-    mode: raw.mode === "work" || raw.mode === "office" ? raw.mode : "code",
+    mode:
+      raw.mode === "work" || raw.mode === "office" || raw.mode === "agents" ? raw.mode : "code",
     folders,
     threadFolderByKey,
     collapsedFolderIds: Array.isArray(raw.collapsedFolderIds)
@@ -468,8 +469,9 @@ export function useAppMode(): AppMode {
   return useWorkModeStore((state) => state.mode);
 }
 
+/** Work, Office, and Agents share the Work layout: chats without the coding surfaces. */
 export function useIsWorkMode(): boolean {
-  return useWorkModeStore((state) => state.mode === "work" || state.mode === "office");
+  return useWorkModeStore((state) => state.mode !== "code");
 }
 
 /** Non-reactive read for event handlers that should not re-subscribe on mode changes. */

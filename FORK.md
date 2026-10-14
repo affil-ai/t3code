@@ -120,7 +120,7 @@ right panel, or terminal, and it does not change the route.
 - Clicking into one chat blurs the other chat's composer, which collapses to
   its compact bar.
 
-## Firstmate
+## Firstmate and Agents
 
 Firstmate is one coordinator chat that the user talks to about all of their
 work. It records each request as a task on the server, starts one worker
@@ -128,12 +128,19 @@ thread per task, and is woken when a worker finishes, fails, or needs input.
 It is also woken when a task's wake time passes or a task has no one working
 on it. The task list lives on the server, not in the coordinator's context.
 
-The coordinator chat runs in its own project, `~/firstmate` on the server
-(override with `T3CODE_FIRSTMATE_HOME`). Starting Firstmate seeds it with
-`AGENTS.md` (the standing instructions; `CLAUDE.md` imports it), `notes/` for
-its memory, and `.agents/skills/` (linked from `.claude/skills`), and commits
-them in a Git repository there. Customize Firstmate by editing those files,
-not the server; existing files are never overwritten.
+**Agents mode** runs any number of such agents on the same engine. Each agent
+is a chat with its own task board, worker chats, and wakes; Firstmate is the
+reserved agent `firstmate` and keeps its own place in Work mode. The Agents
+sidebar lists one large row per agent with a colored icon tile, the name, and
+the role or live status; a "+" creates one with a name, role, icon, and color,
+and a right-click edits or archives it.
+
+Every agent's chat runs in its folder of one repository, `~/agents` on the
+server (override with `T3CODE_AGENTS_HOME`): shared `AGENTS.md`, `notes/`,
+and `.agents/skills/` at the root, and `agents/<slug>/` per agent with its own
+`AGENTS.md` (its role at the top), `notes/`, and skills. Seed files are
+committed there and never overwritten. A pre-agents `~/firstmate` is moved
+into `agents/firstmate` once, keeping its history and project.
 
 [`docs/firstmate/DESIGN.md`](docs/firstmate/DESIGN.md) specifies the data,
 tools, wake rules, and UI.
@@ -141,19 +148,22 @@ tools, wake rules, and UI.
 | Piece                                              | Location                                                                      |
 | -------------------------------------------------- | ----------------------------------------------------------------------------- |
 | Contracts                                          | `packages/contracts/src/firstmate.ts`                                         |
-| Server: task store, wake reactor, home project     | `apps/server/src/firstmate/`                                                  |
+| Server: agents, task store, wake reactor, home     | `apps/server/src/firstmate/`                                                  |
 | MCP tools (`firstmate_task_*`)                     | `apps/server/src/mcp/toolkits/firstmate/`                                     |
 | Tasks panel, sidebar link, route                   | `apps/web/src/components/firstmate/`, `apps/web/src/routes/_chat.firstmate.*` |
-| Tables (created at server start, not by migration) | `firstmate_task`, `firstmate_task_event`, `firstmate_config`                  |
+| Agents mode sidebar and dialog                     | `apps/web/src/components/agents/`, `apps/web/src/state/agents.ts`             |
+| Tables (created at server start, not by migration) | `firstmate_agent`, `firstmate_task`, `firstmate_task_event`, `firstmate_config` |
 
 In Work mode, the **Firstmate** link sits below Search in the sidebar, with a
 badge counting the tasks waiting on the user. It opens the coordinator chat
-with a **Tasks** tab in the right panel. The panel's menu renames Firstmate
-and changes its icon for every client, and renames the chat to match.
+with a **Tasks** tab in the right panel. The panel shows whichever agent's
+chat is open, ends with that chat's **Scheduled** tasks, and its menu renames
+the agent and changes its icon for every client.
 
-Firstmate needs this fork's server: build and run the server from this
-repository, not the published `t3` package. The client hides Firstmate on any
-environment whose server does not answer `firstmate.subscribe`.
+Firstmate and Agents need this fork's server: build and run the server from
+this repository, not the published `t3` package. The client hides them on any
+environment whose server does not answer `firstmate.subscribe` or
+`agents.subscribe`.
 
 ## Desktop app
 

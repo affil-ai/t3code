@@ -628,7 +628,8 @@ export const layer = Layer.effect(
       }).pipe(Effect.mapError(dbError("Could not rename the agent's chat.")));
     const applyName = (agent: AgentProfile, name: string) =>
       Effect.gen(function* () {
-        if (agent.coordinatorThreadId !== null) yield* renameCoordinator(agent.coordinatorThreadId, name);
+        if (agent.coordinatorThreadId !== null)
+          yield* renameCoordinator(agent.coordinatorThreadId, name);
         yield* home.rename({ slug: agent.slug, name });
       });
     const setAppearance: FirstmateService["Service"]["setAppearance"] = (agentId, raw) =>
@@ -668,7 +669,10 @@ export const layer = Layer.effect(
           })}
         `;
         yield* notify;
-        const threadId = yield* launchCoordinator(yield* requireAgent(agentId), input.modelSelection);
+        const threadId = yield* launchCoordinator(
+          yield* requireAgent(agentId),
+          input.modelSelection,
+        );
         return { agent: yield* requireAgent(agentId), threadId };
       }).pipe(Effect.mapError(dbError("Could not create the agent.")));
     const updateAgent: FirstmateService["Service"]["updateAgent"] = (raw) =>
@@ -683,9 +687,14 @@ export const layer = Layer.effect(
         `;
         yield* mirrorFirstmateConfig(agent.id);
         yield* notify;
-        if (input.name !== undefined && input.name !== agent.name) yield* applyName(agent, input.name);
+        if (input.name !== undefined && input.name !== agent.name)
+          yield* applyName(agent, input.name);
         if (input.role !== undefined && input.role !== agent.role)
-          yield* home.writeRole({ slug: agent.slug, name: input.name ?? agent.name, role: input.role });
+          yield* home.writeRole({
+            slug: agent.slug,
+            name: input.name ?? agent.name,
+            role: input.role,
+          });
         return yield* requireAgent(agent.id);
       }).pipe(Effect.mapError(dbError("Could not update the agent.")));
     const archiveAgent: FirstmateService["Service"]["archiveAgent"] = (input) =>

@@ -1,10 +1,15 @@
-# Firstmate
+# Firstmate and Agents
 
-Firstmate is a global coordinator chat. The user talks to one thread. It turns
+Firstmate is a coordinator chat. The user talks to one thread. It turns
 requests into tracked tasks, starts one worker thread per task, and is woken
 when a worker needs attention. The server keeps the task list. The
 coordinator does not track tasks in its own context. Behavior lives in the
 coordinator's home folder, not in the server.
+
+**Agents** generalizes this: the same engine runs any number of agents, each
+with its own coordinator chat, task board, worker chats, and wakes. Firstmate
+is the reserved agent `firstmate`, with its own place in Work mode; the rest
+are created by the user in Agents mode. See [Agents](#agents) below.
 
 This is a fork-only feature. Keep it modular so upstream merges stay easy.
 
@@ -33,7 +38,11 @@ This is a fork-only feature. Keep it modular so upstream merges stay easy.
 - Do not add to the shared migration list. Upstream numbers its migrations,
   and a fork migration would collide. Create the Firstmate tables at service
   start with `CREATE TABLE IF NOT EXISTS`. All table names start with
-  `firstmate_`.
+  `firstmate_`, the agent table included (`firstmate_agent`), so an
+  installed database carries over without a rename.
+- Agents mode adds `components/agents/` and `state/agents.ts` on the web, a
+  `"agents"` member of `AppMode` and `APP_MODE_OPTIONS`, and one marked
+  branch in `LegacySidebar.tsx` that renders `<AgentsSidebar />`.
 - Do not change the orchestration thread model. The link from a worker to its
   coordinator is the task row.
 
@@ -145,30 +154,92 @@ Follow the `scheduledTasks.*` pattern in `rpc.ts` and `ws.ts`:
   `ProjectService.update`. `icon` is any short key; clients draw a key they
   do not know as the compass.
 
-## Home project
+## Home repository
 
 The coordinator's steering is files, not a prompt the server holds, so the
 provider harness loads it the way it loads any project's
 (`apps/server/src/firstmate/FirstmateHome.ts`):
 
-- The folder is `~/firstmate` for the server's user, or
-  `T3CODE_FIRSTMATE_HOME` when set.
-- Each start creates any missing seed file (`homeFiles.ts`): `AGENTS.md`
-  with the standing instructions, `CLAUDE.md` importing it (`@AGENTS.md`),
-  `README.md`, `notes/README.md`, and `.agents/skills/README.md`, with
-  `.claude/skills` linked to `../.agents/skills`. A file that exists is never
-  rewritten, so user edits win and deleting a file restores the seed.
-- The folder is a Git repository. A start commits only the seed paths it
-  added, falling back to `Firstmate <firstmate@localhost>` when Git has no
-  identity. A failed commit leaves the files and still starts.
+- One repository holds every agent: `~/agents` for the server's user, or
+  `T3CODE_AGENTS_HOME` when set. Its root has the instructions every agent
+  follows (`AGENTS.md`, with `CLAUDE.md` importing it), shared `notes/` and
+  `.agents/skills/` (linked from `.claude/skills`), and `artifacts/` for kept
+  review images, which Git ignores.
+- Each agent owns `agents/<slug>/`: its own `AGENTS.md` (the role between
+  `<!-- role -->` markers, then its standing instructions), `CLAUDE.md`,
+  `notes/`, and `.agents/skills/` with the same `.claude/skills` link. The
+  agent's chat runs in a T3 project rooted there, so Claude Code walks up to
+  the shared file and Codex layers both.
+- Each start creates any missing seed file (`homeFiles.ts`) at the root and
+  in the agent's folder. A file that exists is never rewritten, so user
+  edits win and deleting a file restores the seed. `writeRole` replaces only
+  the text between the role markers.
+- A start commits only the seed paths it added, falling back to
+  `Firstmate <firstmate@localhost>` when Git has no identity. A failed
+  commit leaves the files and still starts.
 - The project is found by workspace root, or created with
-  `ProjectService.bootstrap` and titled with the configured name.
+  `ProjectService.bootstrap` and titled with the agent's name.
+- **One-time move.** A `~/firstmate` (or `T3CODE_FIRSTMATE_HOME`) from before
+  agents is moved into `agents/firstmate` at the first service start that
+  finds no `~/agents`. Its `.git` moves up to become the repository's, so
+  Firstmate's history is kept and the move is one commit of renames; its
+  kept images move to the root `artifacts/`, their stored paths are
+  rewritten, the shared root files are seeded, and Firstmate's project is
+  repointed with `project.update`. A copy of the old folder stays as
+  `~/firstmate.bak-<time>` until the user deletes it.
 
-The standing instructions cover the task rules: every request is a task
+The shared instructions cover the task rules: every request is a task
 recorded verbatim with a definition of done, one worker per task in a new
 worktree, reconcile from `firstmate_task_list` after every wake, close only
-with evidence, and talk in outcomes. They also have Firstmate read `notes/`
-each session, write lasting learnings there, and write skills on request.
+with evidence, and talk in outcomes. They also have each agent read the
+shared and its own `notes/` each session, write lasting learnings there, and
+write skills on request.
+
+## Agents
+
+- **Data.** `firstmate_agent` holds one row per agent: `agent_id`, `slug`
+  (its folder name), `name`, `icon`, `color`, `role`, `coordinator_thread_id`,
+  `home_project_id`, `model_selection_json`, `created_at`, `archived_at`.
+  `firstmate_task` has `agent_id`, defaulting to `firstmate` so tasks from
+  before agents keep their owner. At startup the `firstmate_config` row is
+  copied once into the agent table as `firstmate`; Firstmate's settings are
+  mirrored back into `firstmate_config` afterwards so an older build can
+  still read them.
+- **Service.** Every task operation takes an `agentId`. Another agent's task
+  is "not found", so no agent reads or changes another's board. Firstmate's
+  RPCs call with `FIRSTMATE_AGENT_ID`. `agentForThread` finds the agent a
+  calling thread acts for: its own coordinator chat, or a worker on one of
+  its tasks.
+- **MCP.** The `firstmate_task_*` tools resolve the agent from the calling
+  thread. A coordinator may read and change its board; a worker may read its
+  agent's board; any other thread is refused.
+- **Reactor.** One sweep groups open tasks by agent and sends each agent's
+  wakes to its own chat, folding into that chat's queued wake as before.
+- **RPCs.** `agents.subscribe` streams the unarchived agents;
+  `agents.tasks.subscribe({ agentId })` streams one agent's board, shaped
+  like Firstmate's snapshot; `agents.create` records the agent, seeds its
+  folder, and starts its chat; `agents.update` changes name, icon, color, or
+  role (rewriting the role in its `AGENTS.md`); `agents.archive` hides the
+  agent (Firstmate cannot be archived); `agents.start` starts a new chat for
+  an agent whose chat is gone.
+- **Agents mode.** A fourth app mode beside Code, Work, and Office. Its
+  sidebar has no search: a header with a "+" and one large row per agent,
+  with a colored icon tile (the project icon palette), the name, and the
+  role on one line, or the chat's live status when it is working, waiting,
+  or failed. A row opens the agent's chat with its Tasks tab; a right-click
+  offers "Edit name, role, and icon…" and "Archive agent". Firstmate is left
+  out of this list. Agent chats and home projects are hidden from the Work
+  and Office lists the way Firstmate's are.
+- **Create dialog.** Name, role, icon (the Firstmate icon grid), and color.
+  Creating uses the model a fresh Scratch chat would open with, then opens
+  the new chat with its Tasks tab.
+- **Tasks panel.** The `firstmate` right-panel surface shows the board of
+  whichever agent's coordinator chat is open, resolved from the agent list;
+  Firstmate's own stream is the fallback. Its menu edits the agent (the
+  Firstmate name-and-icon dialog for Firstmate; the agent dialog otherwise).
+  A **Scheduled** section closes the panel: the scheduled tasks bound to the
+  chat, live from `scheduledTasks.subscribe`, each with its schedule, next
+  run, edit, run-now, and pause; a "+" opens the scheduled-tasks settings.
 
 ## Web
 

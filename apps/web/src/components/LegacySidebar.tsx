@@ -249,10 +249,12 @@ import {
 } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { FirstmateSidebarLink } from "./firstmate/FirstmateSidebarLink"; // fork: firstmate
+import { AgentsSidebar } from "./agents/AgentsSidebar"; // fork: agents
 import { useOfficeThreads } from "../state/office"; // fork: office
 import { officeFolders } from "./work/officeGroups"; // fork: office
 import { useFirstmateCoordinatorThreadKeys } from "./firstmate/useFirstmateCoordinatorThreadKeys"; // fork: firstmate
 import { readFirstmateHomeProjectKeys } from "./firstmate/firstmateChatLists"; // fork: firstmate
+import { readAgentHomeProjectKeys, useAgentCoordinatorThreadKeys } from "./agents/useAgentThreadKeys"; // fork: agents
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -3452,7 +3454,12 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
       ),
     [repositoryProjects],
   );
-  const hiddenThreadKeys = useFirstmateCoordinatorThreadKeys(); // fork: firstmate
+  const firstmateThreadKeys = useFirstmateCoordinatorThreadKeys(); // fork: firstmate
+  const agentThreadKeys = useAgentCoordinatorThreadKeys(); // fork: agents
+  const hiddenThreadKeys = useMemo(
+    () => new Set([...firstmateThreadKeys, ...agentThreadKeys]),
+    [firstmateThreadKeys, agentThreadKeys],
+  ); // fork: agents
   const groups = useMemo(
     () =>
       groupWorkThreads(
@@ -3515,7 +3522,10 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
             scopedProjectKey(
               scopeProjectRef(environmentId as EnvironmentId, projectId as ProjectId),
             ),
-          excludedProjectKeys: readFirstmateHomeProjectKeys(), // fork: firstmate
+          excludedProjectKeys: new Set([
+            ...readFirstmateHomeProjectKeys(),
+            ...readAgentHomeProjectKeys(),
+          ]), // fork: firstmate, agents
         });
         const picked = projectKey === null ? undefined : repositoryProjectByKey.get(projectKey);
         if (!picked) return;
@@ -4016,6 +4026,9 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     },
     [updateSettings],
   );
+
+  // fork: agents — Agents mode is its own sidebar: no search, a row per agent.
+  if (appMode === "agents") return <AgentsSidebar />;
 
   return (
     <SidebarContent

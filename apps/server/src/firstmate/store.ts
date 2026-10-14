@@ -121,7 +121,8 @@ export function publicTask(task: StoredTask): FirstmateTask {
 }
 
 export function agentFromRow(row: AgentRow): AgentProfile {
-  const model = row.model_selection_json === null ? null : decodeModelSelection(row.model_selection_json);
+  const model =
+    row.model_selection_json === null ? null : decodeModelSelection(row.model_selection_json);
   return {
     id: AgentProfileId.make(row.agent_id),
     slug: row.slug,

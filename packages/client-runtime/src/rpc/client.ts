@@ -51,6 +51,8 @@ type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 
 export type EnvironmentSubscriptionRpcTag =
   | typeof FIRSTMATE_WS_METHODS.firstmateSubscribe // fork: firstmate
+  | typeof FIRSTMATE_WS_METHODS.agentsSubscribe // fork: agents
+  | typeof FIRSTMATE_WS_METHODS.agentTasksSubscribe // fork: agents
   | typeof OFFICE_WS_METHODS.subscribe // fork: office
   | typeof WS_METHODS.codexAuthCallbackSubscribe
   | typeof WS_METHODS.providerAuthSubscribe

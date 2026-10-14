@@ -114,11 +114,7 @@ const make = Effect.gen(function* () {
     );
 
   /** Sends one agent's wakes to its coordinator chat, folding into a queued wake. */
-  const deliver = (
-    target: ThreadId,
-    projectId: ProjectId,
-    wakes: ReadonlyArray<FirstmateWake>,
-  ) =>
+  const deliver = (target: ThreadId, projectId: ProjectId, wakes: ReadonlyArray<FirstmateWake>) =>
     Effect.gen(function* () {
       const pending = yield* pendingWake(projectId, target);
       // A restart or stop holds the coordinator's queue until someone resumes it,

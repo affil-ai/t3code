@@ -31,7 +31,7 @@ const coordinator = ThreadId.make("firstmate-coordinator");
 
 const layerDependencies = Layer.mergeAll(
   Layer.mock(FirstmateHome.FirstmateHome)({
-      migrateLegacyHome: () => Effect.succeed(null),
+    migrateLegacyHome: () => Effect.succeed(null),
     rename: () => Effect.void,
     keepImage: ({ taskId, path }) => Effect.succeed(`/kept/${taskId}/${path.split("/").pop()}`),
   }),
@@ -54,10 +54,12 @@ describe("FirstmateService", () => {
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
       expect((yield* snapshot(service)).coordinatorThreadId).toBeNull();
-      expect((yield* service.setCoordinator(FM, { threadId: coordinator })).coordinatorThreadId).toBe(
-        coordinator,
-      );
-      expect((yield* service.setCoordinator(FM, { threadId: null })).coordinatorThreadId).toBeNull();
+      expect(
+        (yield* service.setCoordinator(FM, { threadId: coordinator })).coordinatorThreadId,
+      ).toBe(coordinator);
+      expect(
+        (yield* service.setCoordinator(FM, { threadId: null })).coordinatorThreadId,
+      ).toBeNull();
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
@@ -121,7 +123,11 @@ describe("FirstmateService", () => {
         },
       ]);
       // Untouched by an update that names neither field.
-      const renamed = yield* service.update(FM, { taskId: task.id, summary: "Retitled.", title: "B" });
+      const renamed = yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Retitled.",
+        title: "B",
+      });
       expect(renamed.task.artifacts).toHaveLength(2);
       const replaced = yield* service.update(FM, {
         taskId: task.id,
@@ -280,7 +286,7 @@ describe("FirstmateService", () => {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
-      migrateLegacyHome: () => Effect.succeed(null),
+              migrateLegacyHome: () => Effect.succeed(null),
               ensure: ({ name }) => {
                 ensured.push(name);
                 return Effect.succeed({ projectId });
@@ -334,7 +340,7 @@ describe("FirstmateService", () => {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
-      migrateLegacyHome: () => Effect.succeed(null),
+              migrateLegacyHome: () => Effect.succeed(null),
               ensure: () =>
                 Effect.fail(
                   new FirstmateError({ message: "Could not set up the Firstmate folder." }),
@@ -355,7 +361,9 @@ describe("FirstmateService", () => {
       const context = yield* Layer.build(layer);
       const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
       const failure = yield* service
-        .start(FM, { modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" } })
+        .start(FM, {
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        })
         .pipe(Effect.flip);
       expect(failure.message).toBe("Could not set up the Firstmate folder.");
       expect(launched).toHaveLength(0);
@@ -386,7 +394,7 @@ describe("FirstmateService", () => {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
-      migrateLegacyHome: () => Effect.succeed(null),
+              migrateLegacyHome: () => Effect.succeed(null),
               rename: ({ name }) => Effect.sync(() => void projectRenames.push(name)),
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
@@ -546,7 +554,9 @@ describe("FirstmateService", () => {
       );
       // Boards carry their own name and coordinator.
       yield* service.setCoordinator(growth, { threadId: ThreadId.make("growth-chat") });
-      const board = yield* service.subscribe(growth).pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+      const board = yield* service
+        .subscribe(growth)
+        .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
       expect(board).toMatchObject({
         agentId: growth,
         name: "Growth",
