@@ -62,7 +62,7 @@ const FirstmateTaskGetTool = Tool.make("firstmate_task_get", {
 const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
   ...shared,
   description:
-    "Create a task on your board. Only an agent's coordinator chat may create its tasks.",
+    "Create a task on your board. Only an agent's coordinator chat may create its tasks. Give it a nextStep: a short imperative phrase naming the PR or decision, which the board shows in place of who acts next.",
   parameters: FirstmateTaskCreateInput,
   success: FirstmateTaskMutationResult,
 })
@@ -72,7 +72,7 @@ const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
 const FirstmateTaskUpdateTool = Tool.make("firstmate_task_update", {
   ...shared,
   description:
-    "Partially update a task on your board and append an event. Only an agent's coordinator chat may update its tasks. Closing requires closeEvidence. Set state waiting while a PR waits on reviews or checks, and ready once it is reviewed and green and only the user's merge or deploy remains; put the PR in links or artifacts.",
+    'Partially update a task on your board and append an event. Only an agent\'s coordinator chat may update its tasks. Whenever you change state or nextActor, also set nextStep: a short imperative phrase naming the PR or decision ("Approve merge of #4118", "Waiting on Office review"), not a sentence about who acts. Closing requires closeEvidence. Set state waiting while a PR waits on reviews or checks, and ready once it is reviewed and green and only the user\'s merge or deploy remains; put the PR in links or artifacts.',
   parameters: FirstmateTaskUpdateInput,
   success: FirstmateTaskMutationResult,
 })

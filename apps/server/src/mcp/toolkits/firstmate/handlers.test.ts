@@ -166,6 +166,36 @@ describe("Firstmate toolkit handlers", () => {
     ),
   );
 
+  it.effect("accepts and returns nextStep on the create and update tools", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const created = yield* harness.call(
+          "firstmate_task_create",
+          { ...createParams, nextActor: "user", nextStep: "Approve merge of #4118" },
+          COORDINATOR,
+        );
+        expect(created.isFailure).toBe(false);
+        expect(created.result).toMatchObject({ task: { nextStep: "Approve merge of #4118" } });
+        const [task] = (yield* harness.service.list(FM)).tasks;
+        const updated = yield* harness.call(
+          "firstmate_task_update",
+          {
+            taskId: task!.id,
+            summary: "Reviewing.",
+            state: "waiting",
+            nextStep: "Waiting on Office review",
+          },
+          COORDINATOR,
+        );
+        expect(updated.isFailure).toBe(false);
+        expect(updated.result).toMatchObject({ task: { nextStep: "Waiting on Office review" } });
+        const listed = yield* harness.call("firstmate_task_list", {}, COORDINATOR);
+        expect(listed.result).toMatchObject({ tasks: [{ nextStep: "Waiting on Office review" }] });
+      }),
+    ),
+  );
+
   it.effect("lets a coordinator list agents and read a board, and refuses workers", () =>
     Effect.scoped(
       Effect.gen(function* () {

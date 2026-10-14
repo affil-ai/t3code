@@ -60,9 +60,25 @@ export function relativeAge(value: string): string {
   return formatRelativeTimeLabel(value) || "just now";
 }
 
-/** What the card's meta line says about who has the ball. */
+/** What the card's meta line says about who has the ball, when the task has no next step. */
 export function taskStatusLabel(task: FirstmateTask): string {
   const closed = CLOSED_STATE_LABELS[task.state];
   if (closed) return closed;
   return `Next: ${NEXT_ACTOR_LABELS[task.nextActor]}`;
+}
+
+/** Who acts next, for the small chip beside a task's next step. */
+export function nextActorLabel(task: FirstmateTask): string {
+  return NEXT_ACTOR_LABELS[task.nextActor];
+}
+
+/**
+ * What happens next on an open task, written by its coordinator. Null for a
+ * closed task, or one from before next steps, which falls back to
+ * `taskStatusLabel`.
+ */
+export function taskNextStep(task: FirstmateTask): string | null {
+  if (CLOSED_STATE_LABELS[task.state]) return null;
+  const step = task.nextStep?.trim();
+  return step ? step : null;
 }

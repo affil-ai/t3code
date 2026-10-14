@@ -47,6 +47,7 @@ export interface TaskRow {
   readonly definition_of_done: string;
   readonly state: string;
   readonly next_actor: string;
+  readonly next_step: string | null;
   readonly note: string;
   readonly wake_at: string | null;
   readonly worker_thread_id: string | null;
@@ -101,6 +102,7 @@ export function taskFromRow(row: TaskRow): StoredTask {
     definitionOfDone: row.definition_of_done,
     state: row.state as FirstmateTask["state"],
     nextActor: row.next_actor as FirstmateTask["nextActor"],
+    nextStep: row.next_step,
     note: row.note,
     wakeAt: row.wake_at,
     workerThreadId: row.worker_thread_id === null ? null : ThreadId.make(row.worker_thread_id),
@@ -172,6 +174,9 @@ export const ensureSchema = Effect.gen(function* () {
   `;
   // Columns added after the first release; SQLite has no ADD COLUMN IF NOT EXISTS.
   const taskColumns = yield* columnsOf("firstmate_task");
+  if (!taskColumns.has("next_step")) {
+    yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN next_step TEXT`);
+  }
   if (!taskColumns.has("artifacts_json")) {
     yield* sql.unsafe(
       `ALTER TABLE firstmate_task ADD COLUMN artifacts_json TEXT NOT NULL DEFAULT '[]'`,

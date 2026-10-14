@@ -71,6 +71,17 @@ export const FirstmateTaskArtifact = Schema.Struct({
 });
 export type FirstmateTaskArtifact = typeof FirstmateTaskArtifact.Type;
 
+/**
+ * What happens next on a task, as a short imperative phrase that names the PR
+ * or decision ("Approve merge of #4118"). The board shows it in place of who
+ * acts next.
+ */
+export const FirstmateNextStep = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
+export type FirstmateNextStep = typeof FirstmateNextStep.Type;
+
+const NEXT_STEP_DESCRIPTION =
+  'What happens next, as a short imperative phrase (at most 80 characters) naming the PR or decision, e.g. "Approve merge of #4118" or "Worker fixing Office comment". Not a sentence about who acts.';
+
 /** Public task model; reactor bookkeeping stays on the server. */
 export const FirstmateTask = Schema.Struct({
   id: FirstmateTaskId,
@@ -79,6 +90,8 @@ export const FirstmateTask = Schema.Struct({
   definitionOfDone: TrimmedNonEmptyString,
   state: FirstmateTaskState,
   nextActor: FirstmateNextActor,
+  /** Older servers omit it; read it as none. */
+  nextStep: Schema.optional(Schema.NullOr(Schema.String)),
   note: Schema.String,
   wakeAt: Schema.NullOr(IsoDateTime),
   workerThreadId: Schema.NullOr(ThreadId),
@@ -227,6 +240,7 @@ export const FirstmateTaskCreateInput = Schema.Struct({
   nextActor: Schema.optional(FirstmateNextActor).annotate({
     description: "Who acts next. Omit for coordinator.",
   }),
+  nextStep: Schema.optional(FirstmateNextStep).annotate({ description: NEXT_STEP_DESCRIPTION }),
   note: Schema.optional(Schema.String),
   wakeAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   workerThreadId: Schema.optional(Schema.NullOr(ThreadId)),
@@ -252,6 +266,9 @@ export const FirstmateTaskUpdateInput = Schema.Struct({
   definitionOfDone: Schema.optional(TrimmedNonEmptyString),
   state: Schema.optional(FirstmateTaskState),
   nextActor: Schema.optional(FirstmateNextActor),
+  nextStep: Schema.optional(Schema.NullOr(FirstmateNextStep)).annotate({
+    description: `${NEXT_STEP_DESCRIPTION} Write it whenever state or nextActor changes. Null clears it.`,
+  }),
   note: Schema.optional(Schema.String),
   wakeAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   workerThreadId: Schema.optional(Schema.NullOr(ThreadId)),

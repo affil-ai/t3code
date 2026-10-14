@@ -20,6 +20,7 @@ import {
   CoordinatorThreadContext,
   EVENT_ACTOR_LABELS,
   relativeAge,
+  taskNextStep,
   taskStatusLabel,
 } from "./firstmateTasksShared";
 
@@ -57,6 +58,7 @@ export function TaskDetail({
   // fields come from the snapshot and only the events come from the query.
   const events = detailQuery.data?.events ?? null;
   const column = firstmateColumnForTask(task);
+  const nextStep = taskNextStep(task);
   const hasLinks = task.workerThreadId !== null || task.links.length > 0;
   const coordinatorThreadId = use(CoordinatorThreadContext);
   return (
@@ -74,6 +76,11 @@ export function TaskDetail({
         <DetailSection title="What you asked">
           <DetailText>{task.intent}</DetailText>
         </DetailSection>
+        {nextStep !== null ? (
+          <DetailSection title="Next step">
+            <DetailText>{nextStep}</DetailText>
+          </DetailSection>
+        ) : null}
         <DetailSection title="Done when">
           <DetailText>{task.definitionOfDone}</DetailText>
         </DetailSection>

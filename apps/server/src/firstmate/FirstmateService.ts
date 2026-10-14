@@ -406,6 +406,9 @@ export const layer = Layer.effect(
         Effect.map((rows) => rows.map(eventFor)),
         Effect.mapError(dbError("Could not read the task's events.", taskId)),
       );
+    /** The event that records a change to a task's next step. */
+    const nextStepEvent = (nextStep: string | null) =>
+      nextStep === null ? "Next step cleared." : `Next step: ${nextStep}`;
     const appendEvent = (
       taskId: FirstmateTask["id"],
       summary: string,
@@ -475,6 +478,7 @@ export const layer = Layer.effect(
               definitionOfDone: input.definitionOfDone,
               state: "open",
               nextActor: input.nextActor ?? "coordinator",
+              nextStep: input.nextStep ?? null,
               note: input.note ?? "",
               wakeAt: input.wakeAt ?? null,
               workerThreadId: input.workerThreadId ?? null,
@@ -496,6 +500,7 @@ export const layer = Layer.effect(
             definition_of_done: task.definitionOfDone,
             state: task.state,
             next_actor: task.nextActor,
+            next_step: task.nextStep ?? null,
             note: task.note,
             wake_at: task.wakeAt,
             worker_thread_id: task.workerThreadId,
@@ -510,6 +515,8 @@ export const layer = Layer.effect(
           })}
         `.pipe(Effect.mapError(dbError("Could not create the task.", task.id)));
             yield* appendEvent(task.id, input.summary ?? "Task created.", "coordinator", at);
+            if (task.nextStep)
+              yield* appendEvent(task.id, nextStepEvent(task.nextStep), "coordinator", at);
             return { task: publicTask(task) };
           }),
         )
@@ -540,6 +547,7 @@ export const layer = Layer.effect(
                 : { definitionOfDone: input.definitionOfDone }),
               state: nextState,
               ...(input.nextActor === undefined ? {} : { nextActor: input.nextActor }),
+              ...(input.nextStep === undefined ? {} : { nextStep: input.nextStep }),
               ...(input.note === undefined ? {} : { note: input.note }),
               ...(input.wakeAt === undefined ? {} : { wakeAt: input.wakeAt }),
               ...(input.workerThreadId === undefined
@@ -560,7 +568,7 @@ export const layer = Layer.effect(
             yield* sql`
           UPDATE firstmate_task SET
             title = ${next.title}, intent = ${next.intent}, definition_of_done = ${next.definitionOfDone},
-            state = ${next.state}, next_actor = ${next.nextActor}, note = ${next.note}, wake_at = ${next.wakeAt},
+            state = ${next.state}, next_actor = ${next.nextActor}, next_step = ${next.nextStep ?? null}, note = ${next.note}, wake_at = ${next.wakeAt},
             worker_thread_id = ${next.workerThreadId}, links_json = ${encodeLinks(next.links)},
             artifacts_json = ${encodeArtifacts(next.artifacts ?? [])},
             close_evidence = ${next.closeEvidence}, updated_at = ${next.updatedAt}, closed_at = ${next.closedAt},
@@ -568,6 +576,9 @@ export const layer = Layer.effect(
           WHERE task_id = ${next.id}
         `.pipe(Effect.mapError(dbError("Could not update the task.", next.id)));
             yield* appendEvent(next.id, input.summary, "coordinator", at);
+            const nextStep = next.nextStep ?? null;
+            if (nextStep !== (existing.nextStep ?? null))
+              yield* appendEvent(next.id, nextStepEvent(nextStep), "coordinator", at);
             return { task: publicTask(next) };
           }),
         )

@@ -24,6 +24,7 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { ScrollArea } from "../ui/scroll-area";
 import { Spinner } from "../ui/spinner";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   type FirstmateColumnId,
   firstmateTaskActivityAt,
@@ -37,6 +38,8 @@ import {
   COLUMN_LABELS,
   CoordinatorThreadContext,
   relativeAge,
+  nextActorLabel,
+  taskNextStep,
   taskStatusLabel,
 } from "./firstmateTasksShared";
 
@@ -50,6 +53,7 @@ function TaskCard({
   readonly onOpen: () => void;
 }) {
   const closed = task.state === "done" || task.state === "dropped";
+  const nextStep = taskNextStep(task);
   return (
     <li
       className={cn(
@@ -72,6 +76,22 @@ function TaskCard({
         >
           {task.title}
         </p>
+        {nextStep !== null ? (
+          <Tooltip>
+            {/* Above the card's button so the full text shows; a click still opens the task. */}
+            <TooltipTrigger
+              render={
+                <p
+                  className="pointer-events-auto mt-0.5 cursor-pointer truncate text-xs leading-4 text-foreground/80"
+                  onClick={onOpen}
+                />
+              }
+            >
+              {nextStep}
+            </TooltipTrigger>
+            <TooltipPopup>{nextStep}</TooltipPopup>
+          </Tooltip>
+        ) : null}
         <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground/80">
           {task.workerThreadId !== null ? (
             <>
@@ -83,7 +103,13 @@ function TaskCard({
               <span aria-hidden>·</span>
             </>
           ) : null}
-          <span className="truncate">{taskStatusLabel(task)}</span>
+          {nextStep !== null ? (
+            <span className="shrink-0 rounded-sm bg-muted px-1 leading-4 text-muted-foreground">
+              {nextActorLabel(task)}
+            </span>
+          ) : (
+            <span className="truncate">{taskStatusLabel(task)}</span>
+          )}
           <span aria-hidden>·</span>
           <span className="shrink-0 tabular-nums">
             {relativeAge(firstmateTaskActivityAt(task))}

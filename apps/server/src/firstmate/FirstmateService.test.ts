@@ -201,6 +201,59 @@ describe("FirstmateService", () => {
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
+  it.effect("stores the next step and records each change in the event log", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const { task } = yield* service.create(FM, {
+        title: "Merge #4118",
+        intent: "Merge it.",
+        definitionOfDone: "Merged.",
+        nextActor: "user",
+        nextStep: "Approve merge of #4118",
+      });
+      expect(task.nextStep).toBe("Approve merge of #4118");
+
+      // A task created without one has none.
+      const plain = yield* service.create(FM, {
+        title: "Plain",
+        intent: "Plain.",
+        definitionOfDone: "Done.",
+      });
+      expect(plain.task.nextStep).toBeNull();
+
+      // An update that leaves it alone records no next-step event.
+      yield* service.update(FM, { taskId: task.id, summary: "Noted.", note: "n" });
+      yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Worker is on it.",
+        nextActor: "worker",
+        nextStep: "Worker fixing Office comment",
+      });
+      yield* service.update(FM, { taskId: task.id, summary: "Cleared.", nextStep: null });
+      const detail = yield* service.get(FM, { taskId: task.id });
+      expect(detail.task.nextStep).toBeNull();
+      expect(detail.events.map((event) => event.summary)).toEqual([
+        "Task created.",
+        "Next step: Approve merge of #4118",
+        "Noted.",
+        "Worker is on it.",
+        "Next step: Worker fixing Office comment",
+        "Cleared.",
+        "Next step cleared.",
+      ]);
+
+      // The board carries it.
+      const board = yield* snapshot(service);
+      expect(board.tasks.find((candidate) => candidate.id === task.id)?.nextStep).toBeNull();
+
+      // Longer than 80 characters is refused.
+      const tooLong = yield* service
+        .update(FM, { taskId: task.id, summary: "Long.", nextStep: "x".repeat(81) })
+        .pipe(Effect.flip);
+      expect(tooLong._tag).toBe("FirstmateError");
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
   it.effect("requires close evidence and clears closedAt when reopened", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;

@@ -30,7 +30,7 @@ You coordinate; workers do the project work. Start one worker thread per task wi
 
 ## Wakes
 
-The server wakes you with a digest when a worker finishes, fails, or needs input, when a task's \`wakeAt\` passes, and when a task has nobody working on it. After every wake, reconcile from \`firstmate_task_list\` rather than from memory. Every open task has a \`nextActor\`, plus either a running worker or a \`wakeAt\`.
+The server wakes you with a digest when a worker finishes, fails, or needs input, when a task's \`wakeAt\` passes, and when a task has nobody working on it. After every wake, reconcile from \`firstmate_task_list\` rather than from memory. Every open task has a \`nextActor\`, plus either a running worker or a \`wakeAt\`. Whenever you change a task's state or \`nextActor\`, also set its \`nextStep\`: a short imperative phrase naming the PR or decision, such as "Approve merge of #4118" or "Worker fixing Office comment". The board shows it in place of who acts next.
 
 ## Review artifacts
 
