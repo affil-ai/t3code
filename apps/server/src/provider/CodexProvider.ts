@@ -34,7 +34,11 @@ import {
   formatCodexModelName,
 } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import {
+  codexAppServerArgs,
+  codexLaunchArgsUseCustomModelProvider,
+  resolveCodexLaunchArgs,
+} from "./codexLaunchArgs.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -54,6 +58,10 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import packageJson from "../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
+
+/** Shown in place of windows for an instance whose quota lives with its pool. */
+export const CUSTOM_MODEL_PROVIDER_USAGE_MESSAGE =
+  "This instance routes through a custom model provider; its pool reports the usage.";
 
 type CodexRateLimitsProbe =
   | {
@@ -680,14 +688,19 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     });
   }
 
+  const launchArgs = resolveCodexLaunchArgs(codexSettings.launchArgs, resolvedEnvironment);
+  // Under a custom `model_provider` the requests never reach the ChatGPT
+  // login stored in the Codex home, so its quota is not what this instance
+  // draws on; do not even ask for it.
+  const customModelProvider = codexLaunchArgsUseCustomModelProvider(launchArgs);
   const probeResult = yield* probe({
     binaryPath: codexSettings.binaryPath,
     homePath: codexSettings.homePath,
-    launchArgs: resolveCodexLaunchArgs(codexSettings.launchArgs, resolvedEnvironment),
+    launchArgs,
     cwd: process.cwd(),
     customModels: codexSettings.customModels,
     environment: resolvedEnvironment,
-    ...(managedAuth ? { skipNativeUsage: true } : {}),
+    ...(managedAuth || customModelProvider ? { skipNativeUsage: true } : {}),
   }).pipe(
     Effect.scoped,
     Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),
@@ -739,21 +752,31 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const accountStatus = managedAuth
     ? { status: "ready" as const, auth: managedAuth, message: undefined }
     : accountProbeStatus(snapshot);
+  // `account/read` names no account when the active model provider is not
+  // ChatGPT's (the launch config may set it, or the Codex home may). The
+  // usage read would still answer with the stored login's quota, which this
+  // instance does not spend; the pool it routes through reports the real one.
   const usageLimits =
     snapshot.account.account?.type === "apiKey"
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
-      : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
+      : customModelProvider || (!snapshot.account.account && !snapshot.account.requiresOpenaiAuth)
         ? makeUnavailableUsageLimits({
             checkedAt,
-            reason: "probeFailed",
-            ...(snapshot.rateLimits ? { message: snapshot.rateLimits.failure } : {}),
+            reason: "unsupported",
+            message: CUSTOM_MODEL_PROVIDER_USAGE_MESSAGE,
           })
-        : codexRateLimitsToLimits({
-            snapshot: snapshot.rateLimits.snapshot,
-            rateLimitsByLimitId: snapshot.rateLimits.rateLimitsByLimitId,
-            resetCredits: snapshot.rateLimits.resetCredits,
-            checkedAt,
-          });
+        : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
+          ? makeUnavailableUsageLimits({
+              checkedAt,
+              reason: "probeFailed",
+              ...(snapshot.rateLimits ? { message: snapshot.rateLimits.failure } : {}),
+            })
+          : codexRateLimitsToLimits({
+              snapshot: snapshot.rateLimits.snapshot,
+              rateLimitsByLimitId: snapshot.rateLimits.rateLimitsByLimitId,
+              resetCredits: snapshot.rateLimits.resetCredits,
+              checkedAt,
+            });
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,

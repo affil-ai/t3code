@@ -9,6 +9,46 @@ export const resolveCodexLaunchArgs = (
 
 const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> => tokenizeCliArgs(launchArgs);
 
+/** The provider Codex talks to unless a launch arg overrides it. */
+export const CODEX_DEFAULT_MODEL_PROVIDER = "openai";
+
+/**
+ * The `model_provider` a launch config sets, in any of the forms the CLI
+ * accepts: `-c model_provider=x`, `--config model_provider=x`, `-c=...`, or
+ * `--config=...`. Quotes around the value are stripped by tokenization, and a
+ * later override wins. Undefined when the launch args leave it alone.
+ */
+export const codexLaunchArgsModelProvider = (launchArgs?: string): string | undefined => {
+  const args = codexLaunchArgv(launchArgs);
+  let provider: string | undefined;
+  const consider = (assignment: string | undefined) => {
+    if (assignment === undefined) return;
+    const match = assignment.match(/^\s*model_provider\s*=\s*(.*)$/);
+    if (!match) return;
+    const value = match[1]!.trim().replace(/^(["'])(.*)\1$/, "$2");
+    if (value) provider = value;
+  };
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === undefined) continue;
+    if (arg === "-c" || arg === "--config") {
+      consider(args[index + 1]);
+      index++;
+    } else if (arg.startsWith("-c=")) {
+      consider(arg.slice(3));
+    } else if (arg.startsWith("--config=")) {
+      consider(arg.slice("--config=".length));
+    }
+  }
+  return provider;
+};
+
+/** True when the launch args route Codex through a provider other than ChatGPT's. */
+export const codexLaunchArgsUseCustomModelProvider = (launchArgs?: string): boolean => {
+  const provider = codexLaunchArgsModelProvider(launchArgs);
+  return provider !== undefined && provider !== CODEX_DEFAULT_MODEL_PROVIDER;
+};
+
 export const codexAppServerArgs = (launchArgs?: string) => [
   "app-server",
   ...codexLaunchArgv(launchArgs),

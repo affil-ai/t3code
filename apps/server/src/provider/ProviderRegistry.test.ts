@@ -38,7 +38,11 @@ import { deepMerge } from "@t3tools/shared/Struct";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
-import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
+import {
+  checkCodexProviderStatus,
+  CUSTOM_MODEL_PROVIDER_USAGE_MESSAGE,
+  type CodexAppServerProviderSnapshot,
+} from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
@@ -341,6 +345,17 @@ function makeCodexProbeSnapshot(
   };
 }
 
+const codexProbeRateLimits: NonNullable<CodexAppServerProviderSnapshot["rateLimits"]> = {
+  snapshot: {
+    limitId: "codex",
+    planType: "pro",
+    primary: { usedPercent: 25, windowDurationMins: 300 },
+    secondary: { usedPercent: 60, windowDurationMins: 10080 },
+  },
+  resetCredits: null,
+  accountId: undefined,
+};
+
 function makeMutableServerSettingsService(
   initial: ContractServerSettings = DEFAULT_SERVER_SETTINGS,
 ) {
@@ -484,6 +499,70 @@ it.layer(
 
         assert.strictEqual(status.status, "ready");
         assert.strictEqual(observedLaunchArgs, "--strict-config --enable foo");
+      }),
+    );
+
+    it.effect("reports the login's usage for a ChatGPT-backed instance", () =>
+      Effect.gen(function* () {
+        let observedSkipNativeUsage: boolean | undefined;
+        const status = yield* checkCodexProviderStatus(defaultCodexSettings, (input) => {
+          observedSkipNativeUsage = input.skipNativeUsage;
+          return Effect.succeed(makeCodexProbeSnapshot({ rateLimits: codexProbeRateLimits }));
+        });
+
+        assert.strictEqual(observedSkipNativeUsage, undefined);
+        assert.strictEqual(status.usageLimits?.unavailable, undefined);
+        assert.deepStrictEqual(
+          status.usageLimits?.windows.map((window) => [window.id, window.usedPercent]),
+          [
+            ["primary", 25],
+            ["secondary", 60],
+          ],
+        );
+      }),
+    );
+
+    it.effect("reports no native usage when launch args select a custom model provider", () =>
+      Effect.gen(function* () {
+        let observedSkipNativeUsage: boolean | undefined;
+        const settings = decodeCodexSettings({
+          launchArgs: '-c model_provider="cliproxy8" -c model_catalog_json="/tmp/models.json"',
+        });
+        const status = yield* checkCodexProviderStatus(settings, (input) => {
+          observedSkipNativeUsage = input.skipNativeUsage;
+          return Effect.succeed(
+            makeCodexProbeSnapshot({
+              account: { account: null, requiresOpenaiAuth: false },
+              rateLimits: codexProbeRateLimits,
+            }),
+          );
+        });
+
+        assert.strictEqual(observedSkipNativeUsage, true);
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.auth.email, undefined);
+        assert.deepStrictEqual(status.usageLimits?.windows, []);
+        assert.deepStrictEqual(status.usageLimits?.unavailable, {
+          reason: "unsupported",
+          message: CUSTOM_MODEL_PROVIDER_USAGE_MESSAGE,
+        });
+      }),
+    );
+
+    it.effect("reports no native usage when app-server names no ChatGPT account", () =>
+      Effect.gen(function* () {
+        const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+          Effect.succeed(
+            makeCodexProbeSnapshot({
+              account: { account: null, requiresOpenaiAuth: false },
+              rateLimits: codexProbeRateLimits,
+            }),
+          ),
+        );
+
+        assert.strictEqual(status.status, "ready");
+        assert.deepStrictEqual(status.usageLimits?.windows, []);
+        assert.strictEqual(status.usageLimits?.unavailable?.reason, "unsupported");
       }),
     );
 
