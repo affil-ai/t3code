@@ -38,11 +38,11 @@ import {
   SHARED_HOME_FILES,
 } from "./homeFiles.ts";
 
-export const AGENTS_HOME_ENV = "T3CODE_AGENTS_HOME";
+const AGENTS_HOME_ENV = "T3CODE_AGENTS_HOME";
 /** Where Firstmate lived before the shared repository. Read only to move it. */
-export const FIRSTMATE_HOME_ENV = "T3CODE_FIRSTMATE_HOME";
+const FIRSTMATE_HOME_ENV = "T3CODE_FIRSTMATE_HOME";
 /** Agents' folders live under this, inside the repository. */
-export const AGENTS_FOLDER = "agents";
+const AGENTS_FOLDER = "agents";
 /** Review images live here, outside Git (see the seeded `.gitignore`). */
 export const ARTIFACTS_FOLDER = "artifacts";
 const FALLBACK_AUTHOR = { name: "Firstmate", email: "firstmate@localhost" };
@@ -104,14 +104,14 @@ const configuredPath = (name: string) =>
   });
 
 /** `T3CODE_AGENTS_HOME` with `~` expanded, else `~/agents`. */
-export const resolveRepoRoot = Effect.fn("FirstmateHome.resolveRepoRoot")(function* () {
+const resolveRepoRoot = Effect.fn("FirstmateHome.resolveRepoRoot")(function* () {
   const path = yield* Path.Path;
   const home = yield* HostProcess.HomeDirectory;
   return (yield* configuredPath(AGENTS_HOME_ENV)) ?? path.join(home, "agents");
 });
 
 /** Firstmate's pre-agents folder: `T3CODE_FIRSTMATE_HOME` with `~` expanded, else `~/firstmate`. */
-export const resolveLegacyRoot = Effect.fn("FirstmateHome.resolveLegacyRoot")(function* () {
+const resolveLegacyRoot = Effect.fn("FirstmateHome.resolveLegacyRoot")(function* () {
   const path = yield* Path.Path;
   const home = yield* HostProcess.HomeDirectory;
   return (yield* configuredPath(FIRSTMATE_HOME_ENV)) ?? path.join(home, "firstmate");
