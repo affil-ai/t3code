@@ -265,6 +265,8 @@ function TaskSections({
           />
         ))}
         <DoneSection environmentId={environmentId} tasks={columns.done} onOpen={onOpen} />
+        {/* Scheduled tasks are recurring triggers, not board work: rule them off. */}
+        <div role="separator" className="-mx-2 my-1 border-t border-border" />
         <ScheduledSection environmentId={environmentId} threadId={threadId} />
       </div>
     </ScrollArea>
