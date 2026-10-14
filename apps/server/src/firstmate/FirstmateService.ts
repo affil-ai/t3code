@@ -398,7 +398,7 @@ export const layer = Layer.effect(
       at: string,
     ) =>
       Effect.gen(function* () {
-        const eventId = `firstmate-event:${yield* crypto.randomUUIDv4}`;
+        const eventId = `firstmate-event:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`;
         yield* sql`
           INSERT INTO firstmate_task_event(event_id, task_id, created_at, actor, summary)
           VALUES (${eventId}, ${taskId}, ${at}, ${actor}, ${summary})
@@ -449,7 +449,9 @@ export const layer = Layer.effect(
           Effect.gen(function* () {
             const input = yield* decodeCreateInput(raw);
             const at = yield* now();
-            const taskId = asTaskId(`firstmate-task:${yield* crypto.randomUUIDv4}`);
+            const taskId = asTaskId(
+              `firstmate-task:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+            );
             const task: StoredTask = {
               id: taskId,
               agentId,
@@ -584,7 +586,9 @@ export const layer = Layer.effect(
           WHERE agent_id = ${agent.id}
         `.pipe(Effect.mapError(dbError("Could not record the agent's project.")));
         const launched = yield* launches.launch({
-          commandId: CommandId.make(`firstmate:start:${yield* crypto.randomUUIDv4}`),
+          commandId: CommandId.make(
+            `firstmate:start:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          ),
           projectId,
           title: agent.name,
           modelSelection,
@@ -592,7 +596,9 @@ export const layer = Layer.effect(
           interactionMode: "default",
           workspaceStrategy: { type: "root" },
           initialMessage: {
-            messageId: MessageId.make(`firstmate:prompt:${yield* crypto.randomUUIDv4}`),
+            messageId: MessageId.make(
+              `firstmate:prompt:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+            ),
             text: coordinatorKickoff(agent.name),
             attachments: [],
           },
@@ -621,7 +627,9 @@ export const layer = Layer.effect(
         if (shell === null || shell.deletedAt !== null || shell.title === title) return;
         yield* threads.dispatch({
           type: "thread.metadata.update",
-          commandId: CommandId.make(`firstmate:rename:${yield* crypto.randomUUIDv4}`),
+          commandId: CommandId.make(
+            `firstmate:rename:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          ),
           threadId,
           title,
         });
@@ -651,7 +659,9 @@ export const layer = Layer.effect(
         const base = slugFor(input.name);
         let slug = base;
         for (let n = 2; taken.has(slug); n += 1) slug = `${base}-${n}`;
-        const agentId = AgentProfileId.make(`agent:${yield* crypto.randomUUIDv4}`);
+        const agentId = AgentProfileId.make(
+          `agent:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+        );
         const at = yield* now();
         yield* sql`
           INSERT INTO firstmate_agent ${sql.insert({

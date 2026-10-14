@@ -123,7 +123,7 @@ const make = Effect.gen(function* () {
       // held one. While a turn runs, a new wake would queue behind it and be held
       // too, so the wake keeps folding into the held run until that turn ends.
       if (pending?.held === true && !pending.busy) {
-        const wakeId = yield* crypto.randomUUIDv4;
+        const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
         const merged = mergeWakes(pending.wakes, wakes);
         // With nothing in flight the wake starts a turn; the held queue only blocks
         // queued sends. Sending before cancelling means a failure between the two
@@ -147,7 +147,7 @@ const make = Effect.gen(function* () {
           runId: pending.runId,
         });
       } else if (wakes.length > 0) {
-        const wakeId = yield* crypto.randomUUIDv4;
+        const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
         if (pending !== undefined) {
           // At most one wake waits: fold this pass into the one already queued.
           const merged = mergeWakes(pending.wakes, wakes);

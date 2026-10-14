@@ -98,6 +98,7 @@ import {
   useThreadShells,
   useThreadShellsForProjectRefs,
   waitForThreadShell,
+  waitForProjectRemoval,
 } from "../state/entities";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
@@ -254,7 +255,10 @@ import { useOfficeThreads } from "../state/office"; // fork: office
 import { officeFolders } from "./work/officeGroups"; // fork: office
 import { useFirstmateCoordinatorThreadKeys } from "./firstmate/useFirstmateCoordinatorThreadKeys"; // fork: firstmate
 import { readFirstmateHomeProjectKeys } from "./firstmate/firstmateChatLists"; // fork: firstmate
-import { readAgentHomeProjectKeys, useAgentCoordinatorThreadKeys } from "./agents/useAgentThreadKeys"; // fork: agents
+import {
+  readAgentHomeProjectKeys,
+  useAgentCoordinatorThreadKeys,
+} from "./agents/useAgentThreadKeys"; // fork: agents
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -2352,6 +2356,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       if (result._tag === "Failure") {
         return result;
       }
+      await waitForProjectRemoval(memberProjectRef);
       const draftStore = useComposerDraftStore.getState();
       releaseProjectDraftUploads(
         memberProjectRef,
