@@ -624,3 +624,70 @@ it.effect("keeps delegated child pull-request links independent of the parent", 
     assert.deepEqual(parentAfterChildLink.thread.pullRequests, parent.thread.pullRequests);
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect("keeps provider sessions attached when a worktree change asks to keep them", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:keep-sessions");
+    const now = yield* DateTime.now;
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-keep-sessions"),
+      threadId,
+      projectId: ProjectId.make("project:keep-sessions"),
+      title: "Keep sessions",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "office/keep-sessions",
+      worktreePath: "/pool/office-1",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const sessionId = ProviderSessionId.make("session:keep-sessions");
+    yield* projections.apply({
+      id: EventId.make("attach-keep-sessions"),
+      type: "provider-session.attached",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: sessionId,
+        driver: adapter.driver,
+        providerInstanceId: instanceId,
+        status: "ready",
+        cwd: "/pool/office-1",
+        model: modelSelection.model,
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      },
+    });
+    const sessionIds = () =>
+      projections
+        .getThreadProviderContext(threadId)
+        .pipe(Effect.map((context) => context.providerSessions.map((session) => session.id)));
+
+    // A Treehouse lease restore moves the thread inside its own turn start,
+    // which resumes in the new worktree: detaching would race that start.
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("restore-lease"),
+      threadId,
+      worktreePath: "/pool/office-16",
+      keepProviderSessions: true,
+    });
+    assert.equal((yield* projections.getThread(threadId)).worktreePath, "/pool/office-16");
+    assert.deepEqual(yield* sessionIds(), [sessionId]);
+
+    // Any other worktree change still detaches the live session.
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("move-worktree"),
+      threadId,
+      worktreePath: "/pool/office-17",
+    });
+    assert.deepEqual(yield* sessionIds(), []);
+  }).pipe(Effect.provide(layerTest)),
+);

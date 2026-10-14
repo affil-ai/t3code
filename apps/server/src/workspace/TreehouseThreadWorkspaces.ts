@@ -50,11 +50,15 @@ const make = Effect.gen(function* () {
       });
       if (nextPath !== null && nextPath !== worktreePath) {
         const id = yield* randomUuidV4;
+        // The start this wraps resumes the provider thread in nextPath (cwd is
+        // part of its load key), so live sessions stay attached: detaching
+        // here would unsubscribe the turn that start is about to begin.
         yield* threads.dispatch({
           type: "thread.metadata.update",
           commandId: CommandId.make(id),
           threadId,
           worktreePath: nextPath,
+          keepProviderSessions: true,
         });
       }
       return nextPath ?? worktreePath;

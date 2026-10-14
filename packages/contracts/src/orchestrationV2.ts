@@ -2848,6 +2848,13 @@ export const OrchestrationV2Command = Schema.Union([
     branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+    /**
+     * Keep live provider sessions across a worktree change. For a caller whose
+     * own next turn start resumes the provider thread in the new worktree
+     * (a Treehouse lease restore inside that start), where a detach would race
+     * the start and unsubscribe the turn it just began.
+     */
+    keepProviderSessions: Schema.optional(Schema.Boolean),
     /** Reject unless no message or run has landed on this thread. */
     expectedEmpty: Schema.optional(Schema.Boolean),
     limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecoveryUpdate)),
