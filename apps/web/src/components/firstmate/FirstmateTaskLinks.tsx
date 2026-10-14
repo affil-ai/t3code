@@ -5,11 +5,14 @@
  *
  * @module FirstmateTaskLinks
  */
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, FirstmateTask } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { LinkIcon, MessageSquareTextIcon } from "lucide-react";
+import { type MouseEvent, use } from "react";
 
 import { cn } from "~/lib/utils";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { usePullRequestPreviewTarget } from "~/lib/openPullRequestLink";
 import { linkedPullRequestDetailAtom } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
@@ -17,6 +20,7 @@ import { SlackIcon } from "../Icons";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
 import { isPullRequestUrl, isSlackUrl } from "./firstmateBoard.logic";
+import { CoordinatorThreadContext } from "./firstmateTasksShared";
 
 function stopPropagation(event: { stopPropagation: () => void }) {
   event.stopPropagation();
@@ -31,13 +35,27 @@ export function WorkerThreadLink({
   readonly task: FirstmateTask;
   readonly className?: string;
 }) {
+  const coordinatorThreadId = use(CoordinatorThreadContext);
   if (task.workerThreadId === null) return null;
+  const workerThreadId = task.workerThreadId;
+  // Beside the coordinator's chat, the worker opens as a chat tab in the right
+  // panel so the coordinator stays in place. A modified click still follows the link.
+  const openBeside = (event: MouseEvent) => {
+    event.stopPropagation();
+    if (coordinatorThreadId === null) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0)
+      return;
+    event.preventDefault();
+    useRightPanelStore
+      .getState()
+      .openChat(scopeThreadRef(environmentId, coordinatorThreadId), workerThreadId);
+  };
   return (
     <Link
       className={className}
       to="/$environmentId/$threadId"
-      params={{ environmentId, threadId: task.workerThreadId }}
-      onClick={stopPropagation}
+      params={{ environmentId, threadId: workerThreadId }}
+      onClick={openBeside}
     >
       <MessageSquareTextIcon className="size-3 shrink-0" />
       <span className="truncate">Chat</span>
