@@ -15,6 +15,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { ProjectIconColor } from "./project.ts";
 
 export const FirstmateTaskId = TrimmedNonEmptyString.pipe(Schema.brand("FirstmateTaskId"));
 export type FirstmateTaskId = typeof FirstmateTaskId.Type;
@@ -132,8 +133,56 @@ export const FirstmateConfig = Schema.Struct({
 });
 export type FirstmateConfig = typeof FirstmateConfig.Type;
 
+/**
+ * An agent: one coordinator chat with its own task board, worker chats, and
+ * wake-ups, running in its own folder of the shared `~/agents` repository.
+ * Firstmate is the reserved agent `firstmate`; the others are created by the
+ * user in Agents mode.
+ */
+export const AgentProfileId = TrimmedNonEmptyString.pipe(Schema.brand("AgentProfileId"));
+export type AgentProfileId = typeof AgentProfileId.Type;
+
+export const FIRSTMATE_AGENT_ID = AgentProfileId.make("firstmate");
+
+/** Folder name under `agents/`: lowercase letters, digits, and dashes. */
+export const AgentSlug = Schema.String.check(
+  Schema.makeFilter((value: string) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(value), {
+    expected: "a folder name of lowercase letters, digits, and dashes",
+  }),
+);
+export type AgentSlug = typeof AgentSlug.Type;
+
+/** One or two sentences that become the top of the agent's AGENTS.md. */
+export const AgentRole = TrimmedNonEmptyString.check(Schema.isMaxLength(2000));
+export type AgentRole = typeof AgentRole.Type;
+
+export const AGENT_DEFAULT_COLOR: ProjectIconColor = "sky";
+
+export const AgentProfile = Schema.Struct({
+  id: AgentProfileId,
+  slug: AgentSlug,
+  name: FirstmateName,
+  icon: FirstmateIcon,
+  color: ProjectIconColor,
+  role: Schema.String,
+  coordinatorThreadId: Schema.NullOr(ThreadId),
+  homeProjectId: Schema.NullOr(ProjectId),
+  /** The model the agent's chat was started with, when known. */
+  modelSelection: Schema.NullOr(ModelSelection),
+  createdAt: IsoDateTime,
+  archivedAt: Schema.NullOr(IsoDateTime),
+});
+export type AgentProfile = typeof AgentProfile.Type;
+
+export const AgentsSnapshot = Schema.Struct({
+  agents: ForwardCompatibleArray(AgentProfile),
+});
+export type AgentsSnapshot = typeof AgentsSnapshot.Type;
+
 export const FirstmateSnapshot = Schema.Struct({
   ...FirstmateConfig.fields,
+  /** Whose board this is. Older servers omit it; read it as Firstmate's. */
+  agentId: Schema.optional(AgentProfileId),
   // Like scheduled tasks, a newer task state must not fail the entire board stream.
   tasks: ForwardCompatibleArray(FirstmateTask),
 });
@@ -268,6 +317,59 @@ export const FirstmateStartResult = Schema.Struct({
 });
 export type FirstmateStartResult = typeof FirstmateStartResult.Type;
 
+export const AgentsSubscribeInput = Schema.Struct({});
+export type AgentsSubscribeInput = typeof AgentsSubscribeInput.Type;
+
+/** The agent's board stream, shaped like Firstmate's. */
+export const AgentTasksSubscribeInput = Schema.Struct({
+  agentId: AgentProfileId,
+});
+export type AgentTasksSubscribeInput = typeof AgentTasksSubscribeInput.Type;
+
+/** Creating an agent seeds its folder and starts its chat with `modelSelection`. */
+export const AgentCreateInput = Schema.Struct({
+  name: FirstmateName,
+  role: AgentRole,
+  icon: FirstmateIcon,
+  color: ProjectIconColor,
+  modelSelection: ModelSelection,
+});
+export type AgentCreateInput = typeof AgentCreateInput.Type;
+
+export const AgentCreateResult = Schema.Struct({
+  agent: AgentProfile,
+  threadId: ThreadId,
+});
+export type AgentCreateResult = typeof AgentCreateResult.Type;
+
+/** Omitted fields are unchanged. A new role rewrites the top of the agent's AGENTS.md. */
+export const AgentUpdateInput = Schema.Struct({
+  agentId: AgentProfileId,
+  name: Schema.optional(FirstmateName),
+  icon: Schema.optional(FirstmateIcon),
+  color: Schema.optional(ProjectIconColor),
+  role: Schema.optional(AgentRole),
+});
+export type AgentUpdateInput = typeof AgentUpdateInput.Type;
+
+export const AgentArchiveInput = Schema.Struct({
+  agentId: AgentProfileId,
+});
+export type AgentArchiveInput = typeof AgentArchiveInput.Type;
+
+/** Starts a new chat for an agent whose chat is gone, or that never had one. */
+export const AgentStartInput = Schema.Struct({
+  agentId: AgentProfileId,
+  modelSelection: ModelSelection,
+});
+export type AgentStartInput = typeof AgentStartInput.Type;
+
+export const AgentStartResult = Schema.Struct({
+  agent: AgentProfile,
+  threadId: ThreadId,
+});
+export type AgentStartResult = typeof AgentStartResult.Type;
+
 export class FirstmateError extends Schema.TaggedError<FirstmateError>()("FirstmateError", {
   message: Schema.String,
   taskId: Schema.optional(FirstmateTaskId),
@@ -281,6 +383,12 @@ export const FIRSTMATE_WS_METHODS = {
   firstmateSetCoordinator: "firstmate.setCoordinator",
   firstmateStart: "firstmate.start",
   firstmateSetAppearance: "firstmate.setAppearance",
+  agentsSubscribe: "agents.subscribe",
+  agentTasksSubscribe: "agents.tasks.subscribe",
+  agentCreate: "agents.create",
+  agentUpdate: "agents.update",
+  agentArchive: "agents.archive",
+  agentStart: "agents.start",
 } as const;
 
 /** Spread into the server's authorization table without duplicating feature policy. */
@@ -290,6 +398,12 @@ export const FIRSTMATE_RPC_REQUIRED_SCOPES = {
   [FIRSTMATE_WS_METHODS.firstmateSetCoordinator]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateStart]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateSetAppearance]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.agentsSubscribe]: AuthOrchestrationReadScope,
+  [FIRSTMATE_WS_METHODS.agentTasksSubscribe]: AuthOrchestrationReadScope,
+  [FIRSTMATE_WS_METHODS.agentCreate]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.agentUpdate]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.agentArchive]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.agentStart]: AuthOrchestrationOperateScope,
 } as const;
 
 /** Incremental client guards for mutations; the server authorizes every RPC independently. */
@@ -297,6 +411,10 @@ export const FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES = {
   [FIRSTMATE_WS_METHODS.firstmateSetCoordinator]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateStart]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateSetAppearance]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.agentCreate]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.agentUpdate]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.agentArchive]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.agentStart]: AuthOrchestrationOperateScope,
 } as const;
 
 const FirstmateRpcError = Schema.Union([FirstmateError, EnvironmentAuthorizationError]);
@@ -327,6 +445,38 @@ export const FirstmateRpcs = [
   Rpc.make(FIRSTMATE_WS_METHODS.firstmateSetAppearance, {
     payload: FirstmateSetAppearanceInput,
     success: FirstmateSetAppearanceResult,
+    error: FirstmateRpcError,
+  }),
+  Rpc.make(FIRSTMATE_WS_METHODS.agentsSubscribe, {
+    payload: AgentsSubscribeInput,
+    success: AgentsSnapshot,
+    error: FirstmateRpcError,
+    stream: true,
+  }),
+  Rpc.make(FIRSTMATE_WS_METHODS.agentTasksSubscribe, {
+    payload: AgentTasksSubscribeInput,
+    success: FirstmateSnapshot,
+    error: FirstmateRpcError,
+    stream: true,
+  }),
+  Rpc.make(FIRSTMATE_WS_METHODS.agentCreate, {
+    payload: AgentCreateInput,
+    success: AgentCreateResult,
+    error: FirstmateRpcError,
+  }),
+  Rpc.make(FIRSTMATE_WS_METHODS.agentUpdate, {
+    payload: AgentUpdateInput,
+    success: AgentProfile,
+    error: FirstmateRpcError,
+  }),
+  Rpc.make(FIRSTMATE_WS_METHODS.agentArchive, {
+    payload: AgentArchiveInput,
+    success: AgentProfile,
+    error: FirstmateRpcError,
+  }),
+  Rpc.make(FIRSTMATE_WS_METHODS.agentStart, {
+    payload: AgentStartInput,
+    success: AgentStartResult,
     error: FirstmateRpcError,
   }),
 ] as const;

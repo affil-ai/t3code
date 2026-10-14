@@ -2,6 +2,7 @@ import {
   CommandId,
   FirstmateError,
   MessageId,
+  type OrchestrationV2ThreadShell,
   type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -78,6 +79,9 @@ const make = Effect.gen(function* () {
   const signal = yield* PubSub.sliding<void>(1);
   const seen = yield* Ref.make<ReadonlySet<string>>(new Set());
   const lane = yield* Semaphore.make(1);
+  type Coordinator = FirstmateService.AgentCoordinator & {
+    readonly shell: OrchestrationV2ThreadShell;
+  };
   /** The coordinator's queued Firstmate wake that has not started, if any. */
   const pendingWake = (projectId: ProjectId, threadId: ThreadId) =>
     threads.getProjectThreadRecords({ projectId, threadId }, ["runs", "messages"]).pipe(
@@ -109,22 +113,100 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  /** Sends one agent's wakes to its coordinator chat, folding into a queued wake. */
+  const deliver = (
+    target: ThreadId,
+    projectId: ProjectId,
+    wakes: ReadonlyArray<FirstmateWake>,
+  ) =>
+    Effect.gen(function* () {
+      const pending = yield* pendingWake(projectId, target);
+      // A restart or stop holds the coordinator's queue until someone resumes it,
+      // and a wake folded into a held run never reaches the coordinator. Once no
+      // turn is in flight, send the held digest again as a new wake and drop the
+      // held one. While a turn runs, a new wake would queue behind it and be held
+      // too, so the wake keeps folding into the held run until that turn ends.
+      if (pending?.held === true && !pending.busy) {
+        const wakeId = yield* crypto.randomUUIDv4;
+        const merged = mergeWakes(pending.wakes, wakes);
+        // With nothing in flight the wake starts a turn; the held queue only blocks
+        // queued sends. Sending before cancelling means a failure between the two
+        // repeats the wake rather than losing it.
+        yield* threads.sendToThread({
+          projectId,
+          commandId: CommandId.make(`firstmate:wake:${wakeId}`),
+          threadId: target,
+          messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
+          text: wakeDigest(merged),
+          notification: wakeNotification(merged),
+          attachments: [],
+          mode: "auto",
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        yield* threads.dispatch({
+          type: "queued-run.cancel",
+          commandId: CommandId.make(`firstmate:wake-cancel-held:${wakeId}`),
+          threadId: target,
+          runId: pending.runId,
+        });
+      } else if (wakes.length > 0) {
+        const wakeId = yield* crypto.randomUUIDv4;
+        if (pending !== undefined) {
+          // At most one wake waits: fold this pass into the one already queued.
+          const merged = mergeWakes(pending.wakes, wakes);
+          yield* threads.dispatch({
+            type: "queued-notification.revise",
+            commandId: CommandId.make(`firstmate:wake-revise:${wakeId}`),
+            threadId: target,
+            runId: pending.runId,
+            text: wakeDigest(merged),
+            notification: wakeNotification(merged),
+          });
+        } else {
+          // `auto` steers the wake into the coordinator's active turn when it can,
+          // so a failure is seen mid-conversation instead of behind the user's turns.
+          yield* threads.sendToThread({
+            projectId,
+            commandId: CommandId.make(`firstmate:wake:${wakeId}`),
+            threadId: target,
+            messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
+            text: wakeDigest(wakes),
+            // A notification is an automatic wake: a compact row in the timeline,
+            // hidden from the queue, and it does not keep the thread from settling.
+            notification: wakeNotification(wakes),
+            attachments: [],
+            mode: "auto",
+            createdBy: "agent",
+            creationSource: "server",
+          });
+        }
+      }
+    });
+
   const sweep = () =>
     lane.withPermits(1)(
       Effect.gen(function* () {
-        const target = yield* firstmate.coordinatorThreadId();
-        if (target === null) return;
-        const coordinatorShell = yield* threads.getThreadShell(target);
-        if (coordinatorShell === null) return;
+        // Each agent's open tasks wake that agent's chat; an agent whose chat is
+        // gone, or that has none, is skipped and its tasks wait.
+        const coordinators = yield* firstmate.coordinators();
+        if (coordinators.length === 0) return;
+        const shells = new Map<string, Coordinator>();
+        for (const coordinator of coordinators) {
+          const shell = yield* threads.getThreadShell(coordinator.threadId);
+          if (shell !== null) shells.set(coordinator.agentId, { ...coordinator, shell });
+        }
+        if (shells.size === 0) return;
         const tasks = yield* firstmate.listStored();
         const now = yield* Clock.currentTimeMillis;
         const previouslySeen = yield* Ref.get(seen);
         const activeKeys = new Set<string>();
-        const wakes: FirstmateWake[] = [];
+        const wakesByAgent = new Map<string, FirstmateWake[]>();
         const acknowledgements: Effect.Effect<void, FirstmateError>[] = [];
         for (const task of tasks) {
           // Defensive even when listStored's default query excludes closed tasks.
           if (task.state === "done" || task.state === "dropped") continue;
+          if (!shells.has(task.agentId)) continue;
           const taskReasons: FirstmateWakeReason[] = [];
           const worker =
             task.workerThreadId === null
@@ -178,6 +260,7 @@ const make = Effect.gen(function* () {
           }
           // One line per task, even when more than one condition triggered the pass.
           if (taskReasons.length > 0) {
+            const wakes = wakesByAgent.get(task.agentId) ?? [];
             wakes.push({
               taskId: String(task.id),
               title: task.title,
@@ -185,69 +268,11 @@ const make = Effect.gen(function* () {
               additionalReasons: taskReasons.slice(1),
               ...(worker?.latestRunId == null ? {} : { runId: String(worker.latestRunId) }),
             });
+            wakesByAgent.set(task.agentId, wakes);
           }
         }
-        const pending = yield* pendingWake(coordinatorShell.projectId, target);
-        // A restart or stop holds the coordinator's queue until someone resumes it,
-        // and a wake folded into a held run never reaches the coordinator. Once no
-        // turn is in flight, send the held digest again as a new wake and drop the
-        // held one. While a turn runs, a new wake would queue behind it and be held
-        // too, so the wake keeps folding into the held run until that turn ends.
-        if (pending?.held === true && !pending.busy) {
-          const wakeId = yield* crypto.randomUUIDv4;
-          const merged = mergeWakes(pending.wakes, wakes);
-          // With nothing in flight the wake starts a turn; the held queue only blocks
-          // queued sends. Sending before cancelling means a failure between the two
-          // repeats the wake rather than losing it.
-          yield* threads.sendToThread({
-            projectId: coordinatorShell.projectId,
-            commandId: CommandId.make(`firstmate:wake:${wakeId}`),
-            threadId: target,
-            messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
-            text: wakeDigest(merged),
-            notification: wakeNotification(merged),
-            attachments: [],
-            mode: "auto",
-            createdBy: "agent",
-            creationSource: "server",
-          });
-          yield* threads.dispatch({
-            type: "queued-run.cancel",
-            commandId: CommandId.make(`firstmate:wake-cancel-held:${wakeId}`),
-            threadId: target,
-            runId: pending.runId,
-          });
-        } else if (wakes.length > 0) {
-          const wakeId = yield* crypto.randomUUIDv4;
-          if (pending !== undefined) {
-            // At most one wake waits: fold this pass into the one already queued.
-            const merged = mergeWakes(pending.wakes, wakes);
-            yield* threads.dispatch({
-              type: "queued-notification.revise",
-              commandId: CommandId.make(`firstmate:wake-revise:${wakeId}`),
-              threadId: target,
-              runId: pending.runId,
-              text: wakeDigest(merged),
-              notification: wakeNotification(merged),
-            });
-          } else {
-            // `auto` steers the wake into the coordinator's active turn when it can,
-            // so a failure is seen mid-conversation instead of behind the user's turns.
-            yield* threads.sendToThread({
-              projectId: coordinatorShell.projectId,
-              commandId: CommandId.make(`firstmate:wake:${wakeId}`),
-              threadId: target,
-              messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
-              text: wakeDigest(wakes),
-              // A notification is an automatic wake: a compact row in the timeline,
-              // hidden from the queue, and it does not keep the thread from settling.
-              notification: wakeNotification(wakes),
-              attachments: [],
-              mode: "auto",
-              createdBy: "agent",
-              creationSource: "server",
-            });
-          }
+        for (const { agentId, threadId, shell } of shells.values()) {
+          yield* deliver(threadId, shell.projectId, wakesByAgent.get(agentId) ?? []);
         }
         // Markers are saved only after the enqueue succeeds. A failed send fails
         // this pass before here, so the next pass reports the same wakes again.
@@ -257,7 +282,7 @@ const make = Effect.gen(function* () {
         yield* Effect.all(acknowledgements, { discard: true });
       }).pipe(
         Effect.mapError(
-          (cause) => new FirstmateError({ message: "Could not send the Firstmate wake.", cause }),
+          (cause) => new FirstmateError({ message: "Could not send the agent wake.", cause }),
         ),
       ),
     );

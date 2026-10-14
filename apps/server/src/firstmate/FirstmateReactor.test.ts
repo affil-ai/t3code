@@ -8,6 +8,7 @@ import {
   ThreadId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
+  FIRSTMATE_AGENT_ID,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -15,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -23,8 +25,12 @@ import * as FirstmateHome from "./FirstmateHome.ts";
 import * as FirstmateReactor from "./FirstmateReactor.ts";
 import * as FirstmateService from "./FirstmateService.ts";
 
+const FM = FIRSTMATE_AGENT_ID;
+
 const coordinatorId = ThreadId.make("coordinator");
 const workerId = ThreadId.make("worker");
+const otherCoordinatorId = ThreadId.make("coordinator-growth");
+const otherWorkerId = ThreadId.make("worker-growth");
 const projectId = ProjectId.make("project:firstmate-reactor");
 const epoch = "1970-01-01T00:00:00.000Z";
 
@@ -120,7 +126,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
         Effect.as({ sequence: 1, storedEvents: [] } as never),
       ),
     getThreadShell: (id) =>
-      id === coordinatorId
+      id === coordinatorId || id === otherCoordinatorId
         ? Effect.succeed(shell(id))
         : Ref.get(workers).pipe(Effect.map((map) => map.get(id) ?? null)),
     sendToThread: (input) =>
@@ -134,14 +140,15 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
         ),
       ),
   });
+  const sqlite = yield* Layer.build(NodeSqliteClient.layer({ filename: ":memory:" }));
   const layerFirstmate = FirstmateService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(FirstmateHome.FirstmateHome)({}),
+        Layer.mock(FirstmateHome.FirstmateHome)({ migrateLegacyHome: () => Effect.succeed(null) }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         layerThreads,
         NodeCrypto.layer,
-        NodeSqliteClient.layer({ filename: ":memory:" }),
+        Layer.succeedContext(sqlite),
       ),
     ),
   );
@@ -160,7 +167,29 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const reactor = yield* FirstmateReactor.FirstmateReactor.pipe(Effect.provide(context));
   const setWorker = (value: OrchestrationV2ThreadShell) =>
     Ref.update(workers, (map) => new Map([...map, [value.id, value]]));
-  return { service, reactor, sends, failSends, setWorker, queued, activeStatus, revisions };
+  /** An agent row without starting a chat: the test sets its coordinator itself. */
+  const createAgent = (name: string) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const id = `agent:${name.toLowerCase()}`;
+      yield* sql`
+        INSERT INTO firstmate_agent(agent_id, slug, name, icon, color, role, created_at)
+        VALUES (${id}, ${name.toLowerCase()}, ${name}, 'bot', 'sky', 'Role.', ${epoch})
+      `;
+      const agent = (yield* service.listAgents()).find((candidate) => candidate.id === id)!;
+      return { agent };
+    }).pipe(Effect.provide(sqlite));
+  return {
+    service,
+    reactor,
+    sends,
+    failSends,
+    setWorker,
+    queued,
+    activeStatus,
+    revisions,
+    createAgent,
+  };
 });
 
 const createTask = (
@@ -168,7 +197,7 @@ const createTask = (
   overrides: Partial<FirstmateService.FirstmateTaskCreateInput> = {},
 ) =>
   service
-    .create({
+    .create(FM, {
       title: "Task one",
       intent: "Do the task.",
       definitionOfDone: "It is done.",
@@ -193,7 +222,7 @@ describe("FirstmateReactor", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         const task = yield* createTask(harness.service, {
           nextActor: "worker",
           workerThreadId: workerId,
@@ -214,7 +243,7 @@ describe("FirstmateReactor", () => {
           notification: {
             source: { kind: "monitor" },
             outcome: "completed",
-            summary: "Firstmate: 1 update — Task one (worker finished)",
+            summary: "Tasks: 1 update — Task one (worker finished)",
           },
         });
         expect(sends[0]!.text).toContain(`- ${task.id} Task one: worker-completed`);
@@ -238,7 +267,7 @@ describe("FirstmateReactor", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
         yield* harness.setWorker(
           shell(workerId, { status: "completed", latestRunId: RunId.make("run:done") }),
@@ -265,7 +294,7 @@ describe("FirstmateReactor", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         const task = yield* createTask(harness.service, {
           nextActor: "worker",
           workerThreadId: workerId,
@@ -285,7 +314,7 @@ describe("FirstmateReactor", () => {
         expect(sends[0]!.text).toContain(`- ${task.id} Task one: orphan`);
 
         // An update clears the orphan marker; ten quiet minutes later it wakes again.
-        yield* harness.service.update({ taskId: task.id, summary: "Nudged the worker." });
+        yield* harness.service.update(FM, { taskId: task.id, summary: "Nudged the worker." });
         yield* TestClock.adjust("11 minutes");
         yield* harness.reactor.sweep();
         yield* harness.reactor.sweep();
@@ -298,7 +327,7 @@ describe("FirstmateReactor", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
         yield* harness.setWorker(
           shell(workerId, { status: "running", activeRunId: RunId.make("run:live") }),
@@ -314,7 +343,7 @@ describe("FirstmateReactor", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         yield* createTask(harness.service, {
           nextActor: "worker",
           workerThreadId: workerId,
@@ -343,7 +372,7 @@ describe("FirstmateReactor pending wakes", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         const first = yield* createTask(harness.service, {
           title: "Dashboards",
           nextActor: "worker",
@@ -385,7 +414,7 @@ describe("FirstmateReactor pending wakes", () => {
         expect(revise.text.match(/Dashboards/g)).toHaveLength(1);
         expect(revise.notification.outcome).toBe("failed");
         expect(revise.notification.summary).toBe(
-          "Firstmate: 2 updates — Dashboards (worker finished), PDF review (worker failed)",
+          "Tasks: 2 updates — Dashboards (worker finished), PDF review (worker failed)",
         );
       }),
     ),
@@ -395,7 +424,7 @@ describe("FirstmateReactor pending wakes", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         const task = yield* createTask(harness.service, {
           title: "Dashboards",
           nextActor: "worker",
@@ -431,7 +460,7 @@ describe("FirstmateReactor pending wakes", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        yield* harness.service.setCoordinator({ threadId: coordinatorId });
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         yield* createTask(harness.service, {
           title: "Dashboards",
           nextActor: "worker",
@@ -531,10 +560,10 @@ describe("wakeNotification", () => {
     ]);
     expect(notification.outcome).toBe("updated");
     expect(notification.summary).toBe(
-      "Firstmate: 4 updates — Office dashboards (worker finished), PDF review (worker finished), Archived products (no worker running), and 1 more",
+      "Tasks: 4 updates — Office dashboards (worker finished), PDF review (worker finished), Archived products (no worker running), and 1 more",
     );
     expect(notification.summary).not.toContain("task:");
-    expect(notification.detail).toContain("Firstmate wake-up:");
+    expect(notification.detail).toContain("Wake-up from your task board:");
   });
 
   it("reports a failure over any other outcome and shortens long titles", () => {
@@ -545,4 +574,47 @@ describe("wakeNotification", () => {
     expect(notification.outcome).toBe("failed");
     expect(notification.summary).toContain("A very long task title that goes on wel…");
   });
+});
+
+describe("FirstmateReactor agents", () => {
+  it.effect("wakes each agent's own chat with only its tasks", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        const { agent } = yield* harness.createAgent("Growth");
+        yield* harness.service.setCoordinator(agent.id, { threadId: otherCoordinatorId });
+        const mine = yield* createTask(harness.service, {
+          title: "Firstmate task",
+          nextActor: "worker",
+          workerThreadId: workerId,
+        });
+        const theirs = yield* harness.service.create(agent.id, {
+          title: "Growth task",
+          intent: "Grow.",
+          definitionOfDone: "Grown.",
+          nextActor: "worker",
+          workerThreadId: otherWorkerId,
+        });
+        yield* harness.setWorker(
+          shell(workerId, { status: "completed", latestRunId: RunId.make("run:a") }),
+        );
+        yield* harness.setWorker(
+          shell(otherWorkerId, { status: "failed", latestRunId: RunId.make("run:b") }),
+        );
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends.map((send) => send.threadId).sort()).toEqual(
+          [coordinatorId, otherCoordinatorId].sort(),
+        );
+        const toFirstmate = sends.find((send) => send.threadId === coordinatorId)!;
+        const toGrowth = sends.find((send) => send.threadId === otherCoordinatorId)!;
+        expect(toFirstmate.text).toContain(`- ${mine.id} Firstmate task`);
+        expect(toFirstmate.text).not.toContain("Growth task");
+        expect(toGrowth.text).toContain(`- ${theirs.task.id} Growth task`);
+        expect(toGrowth.text).not.toContain("Firstmate task");
+        expect(toGrowth.notification?.outcome).toBe("failed");
+      }),
+    ),
+  );
 });

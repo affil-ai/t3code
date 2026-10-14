@@ -1,12 +1,14 @@
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
+  AgentProfileId,
   FirstmateError,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  FIRSTMATE_AGENT_ID,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -23,10 +25,13 @@ import { coordinatorKickoff } from "./coordinatorPrompt.ts";
 import * as FirstmateHome from "./FirstmateHome.ts";
 import * as FirstmateService from "./FirstmateService.ts";
 
+const FM = FIRSTMATE_AGENT_ID;
+
 const coordinator = ThreadId.make("firstmate-coordinator");
 
 const layerDependencies = Layer.mergeAll(
   Layer.mock(FirstmateHome.FirstmateHome)({
+      migrateLegacyHome: () => Effect.succeed(null),
     rename: () => Effect.void,
     keepImage: ({ taskId, path }) => Effect.succeed(`/kept/${taskId}/${path.split("/").pop()}`),
   }),
@@ -41,7 +46,7 @@ const layerFirstmate = FirstmateService.layer.pipe(Layer.provide(layerDependenci
 const snapshot = Effect.fn("firstmateSnapshotTestHelper")(function* (
   service: FirstmateService.FirstmateService["Service"],
 ) {
-  return yield* service.subscribe().pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+  return yield* service.subscribe(FM).pipe(Stream.runHead, Effect.map(Option.getOrThrow));
 });
 
 describe("FirstmateService", () => {
@@ -49,10 +54,10 @@ describe("FirstmateService", () => {
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
       expect((yield* snapshot(service)).coordinatorThreadId).toBeNull();
-      expect((yield* service.setCoordinator({ threadId: coordinator })).coordinatorThreadId).toBe(
+      expect((yield* service.setCoordinator(FM, { threadId: coordinator })).coordinatorThreadId).toBe(
         coordinator,
       );
-      expect((yield* service.setCoordinator({ threadId: null })).coordinatorThreadId).toBeNull();
+      expect((yield* service.setCoordinator(FM, { threadId: null })).coordinatorThreadId).toBeNull();
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
@@ -61,11 +66,11 @@ describe("FirstmateService", () => {
       const service = yield* FirstmateService.FirstmateService;
       expect(
         yield* service
-          .create({ title: " ", intent: "Request", definitionOfDone: "Delivered" })
+          .create(FM, { title: " ", intent: "Request", definitionOfDone: "Delivered" })
           .pipe(Effect.flip),
       ).toMatchObject({ _tag: "FirstmateError" });
-      expect((yield* service.list()).tasks).toHaveLength(0);
-      const { task } = yield* service.create({
+      expect((yield* service.list(FM)).tasks).toHaveLength(0);
+      const { task } = yield* service.create(FM, {
         title: "Valid",
         intent: "  Keep my words.  ",
         definitionOfDone: "Delivered",
@@ -73,10 +78,10 @@ describe("FirstmateService", () => {
       expect(task.intent).toBe("  Keep my words.  ");
       expect(
         yield* service
-          .update({ taskId: task.id, summary: " ", title: "Changed" })
+          .update(FM, { taskId: task.id, summary: " ", title: "Changed" })
           .pipe(Effect.flip),
       ).toMatchObject({ _tag: "FirstmateError" });
-      const detail = yield* service.get({ taskId: task.id });
+      const detail = yield* service.get(FM, { taskId: task.id });
       expect(detail.task.title).toBe("Valid");
       expect(detail.events).toHaveLength(1);
     }).pipe(Effect.provide(layerFirstmate)),
@@ -85,7 +90,7 @@ describe("FirstmateService", () => {
   it.effect("keeps review artifacts, copying images, and appends or replaces them", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
-      const { task } = yield* service.create({
+      const { task } = yield* service.create(FM, {
         title: "Dashboards",
         intent: "Build them",
         definitionOfDone: "Merged",
@@ -94,7 +99,7 @@ describe("FirstmateService", () => {
       expect(task.artifacts).toEqual([
         { kind: "link", label: "PR #1", url: "https://example.com/pull/1" },
       ]);
-      const added = yield* service.update({
+      const added = yield* service.update(FM, {
         taskId: task.id,
         summary: "Added a screenshot.",
         addArtifacts: [
@@ -116,53 +121,53 @@ describe("FirstmateService", () => {
         },
       ]);
       // Untouched by an update that names neither field.
-      const renamed = yield* service.update({ taskId: task.id, summary: "Retitled.", title: "B" });
+      const renamed = yield* service.update(FM, { taskId: task.id, summary: "Retitled.", title: "B" });
       expect(renamed.task.artifacts).toHaveLength(2);
-      const replaced = yield* service.update({
+      const replaced = yield* service.update(FM, {
         taskId: task.id,
         summary: "New round.",
         artifacts: [{ kind: "link", label: "Preview", url: "https://example.com/preview" }],
       });
       expect(replaced.task.artifacts?.map((artifact) => artifact.label)).toEqual(["Preview"]);
-      expect((yield* service.get({ taskId: task.id })).task.artifacts).toHaveLength(1);
+      expect((yield* service.get(FM, { taskId: task.id })).task.artifacts).toHaveLength(1);
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
   it.effect("retains open-only list defaults and logs worker replacement", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
-      const { task } = yield* service.create({
+      const { task } = yield* service.create(FM, {
         title: "Task",
         intent: "Request",
         definitionOfDone: "Delivered",
         workerThreadId: ThreadId.make("worker-1"),
       });
-      yield* service.update({
+      yield* service.update(FM, {
         taskId: task.id,
         workerThreadId: ThreadId.make("worker-2"),
         summary: "Replaced the worker.",
       });
-      const detail = yield* service.get({ taskId: task.id });
+      const detail = yield* service.get(FM, { taskId: task.id });
       expect(detail.task.workerThreadId).toBe("worker-2");
       expect(detail.events.map((event) => event.summary)).toEqual([
         "Task created.",
         "Replaced the worker.",
       ]);
-      yield* service.update({
+      yield* service.update(FM, {
         taskId: task.id,
         state: "dropped",
         closeEvidence: "User asked to stop.",
         summary: "Dropped with approval.",
       });
-      expect((yield* service.list()).tasks).toHaveLength(0);
-      expect((yield* service.list({ state: "dropped" })).tasks).toHaveLength(1);
+      expect((yield* service.list(FM)).tasks).toHaveLength(0);
+      expect((yield* service.list(FM, { state: "dropped" })).tasks).toHaveLength(1);
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
   it.effect("creates tasks and appends a typed event", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
-      const result = yield* service.create({
+      const result = yield* service.create(FM, {
         title: "Ship the board",
         intent: "Build the Firstmate board exactly as requested.",
         definitionOfDone: "The board is available in the web app.",
@@ -171,7 +176,7 @@ describe("FirstmateService", () => {
         workerThreadId: ThreadId.make("worker-1"),
         summary: "Recorded the board task.",
       });
-      const detail = yield* service.get({ taskId: result.task.id });
+      const detail = yield* service.get(FM, { taskId: result.task.id });
       expect(detail.task).toMatchObject({
         id: result.task.id,
         title: "Ship the board",
@@ -191,13 +196,13 @@ describe("FirstmateService", () => {
   it.effect("requires close evidence and clears closedAt when reopened", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
-      const created = yield* service.create({
+      const created = yield* service.create(FM, {
         title: "Close me",
         intent: "Demonstrate close validation.",
         definitionOfDone: "The close path is tested.",
       });
       const invalid = yield* service
-        .update({
+        .update(FM, {
           taskId: created.task.id,
           state: "done",
           summary: "Attempted to close without evidence.",
@@ -205,7 +210,7 @@ describe("FirstmateService", () => {
         .pipe(Effect.flip);
       expect(invalid).toMatchObject({ _tag: "FirstmateError" });
 
-      const closed = yield* service.update({
+      const closed = yield* service.update(FM, {
         taskId: created.task.id,
         state: "done",
         closeEvidence: "The user accepted the delivered result.",
@@ -215,7 +220,7 @@ describe("FirstmateService", () => {
       expect(closed.task.closedAt).not.toBeNull();
       expect(closed.task.closeEvidence).toBe("The user accepted the delivered result.");
 
-      const reopened = yield* service.update({
+      const reopened = yield* service.update(FM, {
         taskId: created.task.id,
         state: "open",
         summary: "Reopened for follow-up.",
@@ -229,19 +234,19 @@ describe("FirstmateService", () => {
   it.effect("streams every open task and only the newest 20 closed tasks", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
-      const open = yield* service.create({
+      const open = yield* service.create(FM, {
         title: "Still open",
         intent: "Remain visible on the board.",
         definitionOfDone: "It is not closed.",
       });
       const closed: FirstmateService.FirstmateTask[] = [];
       for (let index = 0; index < 22; index += 1) {
-        const created = yield* service.create({
+        const created = yield* service.create(FM, {
           title: `Closed ${index}`,
           intent: `Closed task ${index}.`,
           definitionOfDone: "The task is closed.",
         });
-        const result = yield* service.update({
+        const result = yield* service.update(FM, {
           taskId: created.task.id,
           state: "done",
           closeEvidence: `Evidence ${index}`,
@@ -275,6 +280,7 @@ describe("FirstmateService", () => {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
+      migrateLegacyHome: () => Effect.succeed(null),
               ensure: ({ name }) => {
                 ensured.push(name);
                 return Effect.succeed({ projectId });
@@ -300,8 +306,8 @@ describe("FirstmateService", () => {
       );
       const context = yield* Layer.build(layer);
       const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
-      yield* service.setAppearance({ name: "Jarvis", icon: "bot" });
-      const result = yield* service.start({ modelSelection });
+      yield* service.setAppearance(FM, { name: "Jarvis", icon: "bot" });
+      const result = yield* service.start(FM, { modelSelection });
       expect(result.threadId).toBe("launched-coordinator");
       expect(result.snapshot.coordinatorThreadId).toBe("launched-coordinator");
       // The home project is titled, and the kickoff written, with the custom name.
@@ -328,6 +334,7 @@ describe("FirstmateService", () => {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
+      migrateLegacyHome: () => Effect.succeed(null),
               ensure: () =>
                 Effect.fail(
                   new FirstmateError({ message: "Could not set up the Firstmate folder." }),
@@ -348,7 +355,7 @@ describe("FirstmateService", () => {
       const context = yield* Layer.build(layer);
       const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
       const failure = yield* service
-        .start({ modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" } })
+        .start(FM, { modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" } })
         .pipe(Effect.flip);
       expect(failure.message).toBe("Could not set up the Firstmate folder.");
       expect(launched).toHaveLength(0);
@@ -360,11 +367,11 @@ describe("FirstmateService", () => {
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
       expect(yield* snapshot(service)).toMatchObject({ name: "Firstmate", icon: "compass" });
-      const saved = yield* service.setAppearance({ name: "  Jarvis ", icon: "rocket" });
+      const saved = yield* service.setAppearance(FM, { name: "  Jarvis ", icon: "rocket" });
       expect(saved).toMatchObject({ name: "Jarvis", icon: "rocket" });
       expect(yield* snapshot(service)).toMatchObject({ name: "Jarvis", icon: "rocket" });
       expect(
-        yield* service.setAppearance({ name: " ", icon: "rocket" }).pipe(Effect.flip),
+        yield* service.setAppearance(FM, { name: " ", icon: "rocket" }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "FirstmateError" });
       expect(yield* snapshot(service)).toMatchObject({ name: "Jarvis" });
     }).pipe(Effect.provide(layerFirstmate)),
@@ -379,7 +386,8 @@ describe("FirstmateService", () => {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(FirstmateHome.FirstmateHome)({
-              rename: (name) => Effect.sync(() => void projectRenames.push(name)),
+      migrateLegacyHome: () => Effect.succeed(null),
+              rename: ({ name }) => Effect.sync(() => void projectRenames.push(name)),
             }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -406,10 +414,10 @@ describe("FirstmateService", () => {
       const context = yield* Layer.build(layer);
       const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
       // No coordinator yet: only the setting changes.
-      yield* service.setAppearance({ name: "Jarvis", icon: "bot" });
+      yield* service.setAppearance(FM, { name: "Jarvis", icon: "bot" });
       expect(dispatched).toHaveLength(0);
-      yield* service.setCoordinator({ threadId: coordinator });
-      yield* service.setAppearance({ name: "Jarvis", icon: "bot" });
+      yield* service.setCoordinator(FM, { threadId: coordinator });
+      yield* service.setAppearance(FM, { name: "Jarvis", icon: "bot" });
       expect(dispatched).toEqual([
         expect.objectContaining({
           type: "thread.metadata.update",
@@ -419,9 +427,9 @@ describe("FirstmateService", () => {
       ]);
       // An unchanged title or a missing chat sends nothing.
       titles.set(coordinator, "Jarvis");
-      yield* service.setAppearance({ name: "Jarvis", icon: "star" });
-      yield* service.setCoordinator({ threadId: ThreadId.make("gone") });
-      yield* service.setAppearance({ name: "Mate", icon: "star" });
+      yield* service.setAppearance(FM, { name: "Jarvis", icon: "star" });
+      yield* service.setCoordinator(FM, { threadId: ThreadId.make("gone") });
+      yield* service.setAppearance(FM, { name: "Mate", icon: "star" });
       expect(dispatched).toHaveLength(1);
       // The home project follows every save; it skips an unchanged title itself.
       expect(projectRenames).toEqual(["Jarvis", "Jarvis", "Jarvis", "Mate"]);
@@ -440,11 +448,28 @@ describe("FirstmateService", () => {
           )
         `;
         yield* sql`INSERT INTO firstmate_config(config_id, coordinator_thread_id) VALUES (1, ${coordinator})`;
+        // A task table from before agents: no agent_id, no artifacts.
+        yield* sql`
+          CREATE TABLE firstmate_task (
+            task_id TEXT PRIMARY KEY, title TEXT NOT NULL, intent TEXT NOT NULL,
+            definition_of_done TEXT NOT NULL, state TEXT NOT NULL, next_actor TEXT NOT NULL,
+            note TEXT NOT NULL, wake_at TEXT, worker_thread_id TEXT, links_json TEXT NOT NULL,
+            close_evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
+            last_reported_run_id TEXT, orphan_notified_at TEXT
+          )
+        `;
+        yield* sql`
+          INSERT INTO firstmate_task(task_id, title, intent, definition_of_done, state, next_actor, note, links_json, created_at, updated_at)
+          VALUES ('firstmate-task:old', 'Old task', 'Do it', 'Done', 'open', 'coordinator', '', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        `;
       }).pipe(Effect.provide(sqlite));
       const layer = FirstmateService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.mock(FirstmateHome.FirstmateHome)({ rename: () => Effect.void }),
+            Layer.mock(FirstmateHome.FirstmateHome)({
+              rename: () => Effect.void,
+              migrateLegacyHome: () => Effect.succeed(null),
+            }),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({
               getThreadShell: () => Effect.succeed(null),
@@ -458,16 +483,165 @@ describe("FirstmateService", () => {
         Effect.provide(yield* Layer.build(layer)),
       );
       expect(yield* snapshot(service)).toMatchObject({
+        agentId: "firstmate",
         coordinatorThreadId: coordinator,
         name: "Firstmate",
         icon: "compass",
+        tasks: [{ id: "firstmate-task:old", title: "Old task" }],
       });
+      // Firstmate is the first agent, carrying the old settings over.
+      expect(yield* service.listAgents()).toMatchObject([
+        { id: "firstmate", slug: "firstmate", coordinatorThreadId: coordinator },
+      ]);
       // A second start leaves the columns, and the saved values, alone.
-      yield* service.setAppearance({ name: "Jarvis", icon: "anchor" });
+      yield* service.setAppearance(FM, { name: "Jarvis", icon: "anchor" });
       const again = yield* FirstmateService.FirstmateService.pipe(
         Effect.provide(yield* Layer.build(layer)),
       );
       expect(yield* snapshot(again)).toMatchObject({ name: "Jarvis", icon: "anchor" });
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps each agent's tasks and settings apart", () =>
+    Effect.gen(function* () {
+      const sqlite = yield* Layer.build(NodeSqliteClient.layer({ filename: ":memory:" }));
+      const service = yield* FirstmateService.FirstmateService.pipe(
+        Effect.provide(
+          yield* Layer.build(
+            FirstmateService.layer.pipe(
+              Layer.provide(Layer.mergeAll(layerDependencies, Layer.succeedContext(sqlite))),
+            ),
+          ),
+        ),
+      );
+      const sql = yield* SqlClient.SqlClient.pipe(Effect.provide(sqlite));
+      yield* sql`
+        INSERT INTO firstmate_agent(agent_id, slug, name, icon, color, role, created_at)
+        VALUES ('agent:growth', 'growth', 'Growth', 'rocket', 'rose', 'Grow things.', '2026-01-01T00:00:00.000Z')
+      `;
+      const growth = AgentProfileId.make("agent:growth");
+      const mine = yield* service.create(FM, {
+        title: "Firstmate task",
+        intent: "Mine",
+        definitionOfDone: "Done",
+      });
+      const theirs = yield* service.create(growth, {
+        title: "Growth task",
+        intent: "Theirs",
+        definitionOfDone: "Done",
+      });
+      expect((yield* service.list(FM)).tasks.map((task) => task.id)).toEqual([mine.task.id]);
+      expect((yield* service.list(growth)).tasks.map((task) => task.id)).toEqual([theirs.task.id]);
+      // Another agent's task is not found, so it cannot be read or changed.
+      expect(yield* service.get(FM, { taskId: theirs.task.id }).pipe(Effect.flip)).toMatchObject({
+        _tag: "FirstmateError",
+      });
+      expect(
+        yield* service
+          .update(FM, { taskId: theirs.task.id, summary: "Steal", title: "Mine now" })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "FirstmateError" });
+      expect((yield* service.get(growth, { taskId: theirs.task.id })).task.title).toBe(
+        "Growth task",
+      );
+      // Boards carry their own name and coordinator.
+      yield* service.setCoordinator(growth, { threadId: ThreadId.make("growth-chat") });
+      const board = yield* service.subscribe(growth).pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+      expect(board).toMatchObject({
+        agentId: growth,
+        name: "Growth",
+        icon: "rocket",
+        coordinatorThreadId: "growth-chat",
+        tasks: [{ id: theirs.task.id }],
+      });
+      expect((yield* snapshot(service)).coordinatorThreadId).toBeNull();
+      expect(yield* service.agentForThread(ThreadId.make("growth-chat"))).toMatchObject({
+        id: growth,
+      });
+      expect(yield* service.agentForThread(ThreadId.make("nobody"))).toBeNull();
+      // Firstmate cannot be archived; other agents can, and leave the list.
+      expect(yield* service.archiveAgent({ agentId: FM }).pipe(Effect.flip)).toMatchObject({
+        _tag: "FirstmateError",
+      });
+      yield* service.archiveAgent({ agentId: growth });
+      expect((yield* service.listAgents()).map((agent) => agent.id)).toEqual(["firstmate"]);
+      expect(yield* service.coordinators()).toEqual([]);
+    }),
+  );
+
+  it.effect("creates an agent with a unique folder name and starts its chat in its folder", () =>
+    Effect.gen(function* () {
+      const ensured: Array<{ slug: string; name: string; role: string }> = [];
+      const launched: ThreadLaunchService.ThreadLaunchInput[] = [];
+      const layer = FirstmateService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(FirstmateHome.FirstmateHome)({
+              ensure: (input) => {
+                ensured.push(input);
+                return Effect.succeed({ projectId: ProjectId.make(`project:${input.slug}`) });
+              },
+              rename: () => Effect.void,
+              writeRole: () => Effect.void,
+              migrateLegacyHome: () => Effect.succeed(null),
+            }),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+              launch: (input) => {
+                launched.push(input);
+                return Effect.succeed({
+                  threadId: ThreadId.make(`chat:${launched.length}`),
+                } as ThreadLaunchService.ThreadLaunchResult);
+              },
+            }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: () => Effect.succeed(null),
+            }),
+            NodeCrypto.layer,
+            NodeSqliteClient.layer({ filename: ":memory:" }),
+          ),
+        ),
+      );
+      const service = yield* FirstmateService.FirstmateService.pipe(
+        Effect.provide(yield* Layer.build(layer)),
+      );
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+      const first = yield* service.createAgent({
+        name: "Growth Lead!",
+        role: "You grow the business.",
+        icon: "rocket",
+        color: "rose",
+        modelSelection,
+      });
+      expect(first.agent).toMatchObject({
+        slug: "growth-lead",
+        name: "Growth Lead!",
+        coordinatorThreadId: "chat:1",
+        homeProjectId: "project:growth-lead",
+        modelSelection,
+      });
+      expect(ensured).toEqual([
+        { slug: "growth-lead", name: "Growth Lead!", role: "You grow the business." },
+      ]);
+      expect(launched[0]).toMatchObject({
+        projectId: "project:growth-lead",
+        title: "Growth Lead!",
+        workspaceStrategy: { type: "root" },
+      });
+      // The same name again gets its own folder.
+      const second = yield* service.createAgent({
+        name: "Growth Lead",
+        role: "Another.",
+        icon: "bot",
+        color: "sky",
+        modelSelection,
+      });
+      expect(second.agent.slug).toBe("growth-lead-2");
+      expect((yield* service.listAgents()).map((agent) => agent.slug)).toEqual([
+        "firstmate",
+        "growth-lead",
+        "growth-lead-2",
+      ]);
+      expect(FirstmateService.slugFor("  Émile & Co  ")).toBe("emile-co");
+    }),
   );
 });

@@ -1,27 +1,30 @@
 /**
- * The files `firstmate.start` seeds into Firstmate's home folder. Each is
- * written only when missing, so the user's edits always win. Paths use `/`.
+ * The files seeded into the agents repository: shared ones at its root, and
+ * each agent's own in `agents/<slug>/`. Each is written only when missing, so
+ * the user's edits always win. Paths use `/`.
  */
 
-const AGENTS_MD = `# Firstmate
+const SHARED_AGENTS_MD = `# Agents
 
-You are Firstmate, the user's single point of contact for all of their work. The user may have renamed you; the first message of each chat gives your current name.
+This repository is home to the user's agents. Each agent is one coordinator chat with its own task board; it turns the user's requests into tracked tasks and runs worker chats for them. You are one of them: your folder under \`agents/\` names you and holds your role.
 
-This folder is your home. The user steers you by editing it:
+The user steers you by editing this repository:
 
-- \`AGENTS.md\` (this file): your standing instructions.
-- \`notes/\`: your memory across sessions.
-- \`.agents/skills/\`: your reusable procedures. \`.claude/skills\` is the same folder.
+- \`AGENTS.md\` (this file): instructions every agent follows.
+- \`agents/<you>/AGENTS.md\`: your role and your own standing instructions.
+- \`agents/<you>/notes/\`: your memory across sessions.
+- \`agents/<you>/.agents/skills/\`: your reusable procedures. \`.claude/skills\` is the same folder.
+- \`notes/\` and \`.agents/skills/\` at the root: memory and procedures shared by every agent. Read them too.
 
 ## Every session
 
-1. Read every file in \`notes/\`.
+1. Read every file in \`notes/\` at the root and in your own folder.
 2. Reconcile the open work with \`firstmate_task_list\`.
 3. Greet the user briefly.
 
 ## Tasks
 
-Every request becomes a Firstmate task. Record the user's intent verbatim and a definition of done with \`firstmate_task_create\`.
+Every request becomes a task on your board. Record the user's intent verbatim and a definition of done with \`firstmate_task_create\`. The board is yours alone: the task tools act on it when you call them.
 
 You coordinate; workers do the project work. Start one worker thread per task with \`t3_thread_launch\` in a new worktree of the right project, and record its thread id with \`firstmate_task_update\`. Steer a worker or send it a follow-up with \`t3_thread_send\`.
 
@@ -35,7 +38,7 @@ When work is ready for the user to look at, attach what they should review to th
 
 ## Closing tasks
 
-Close a task only with evidence: a merged PR, a delivered report, or the user's acceptance. Merging a PR or discarding work waits for the user's explicit word. A decision for the user is a task whose \`nextActor\` is \`user\`.
+Close a task only with evidence: a merged PR, a delivered report, or the user's acceptance. Merging a PR or discarding work waits for the user's explicit word. A decision for the user is a task whose \`nextActor\` is \`user\`. Set \`state: "waiting"\` while a PR waits on reviews or checks, and \`state: "ready"\` once it is reviewed and green and only the user's merge or deploy remains.
 
 ## Talking to the user
 
@@ -43,29 +46,29 @@ Talk in outcomes and decisions, and include PR URLs. Keep the task machinery out
 
 ## Notes
 
-Your context ends with the session; \`notes/\` carries what lasts. When you learn something durable, such as a user preference, a fact about a project or person, or a lesson from a mistake, write it to \`notes/\` right away. Keep one topic per file, update a note in place, and delete notes that go stale.
+Your context ends with the session; \`notes/\` carries what lasts. When you learn something durable, such as a user preference, a fact about a project or person, or a lesson from a mistake, write it to your \`notes/\` right away; write it to the root \`notes/\` when every agent should know it. Keep one topic per file, update a note in place, and delete notes that go stale.
 
 ## Skills
 
-When the user asks you to remember how to do something, write it as a skill under \`.agents/skills/\`, as \`.agents/skills/README.md\` describes.
+When the user asks you to remember how to do something, write it as a skill under your \`.agents/skills/\`, as its \`README.md\` describes. Put a skill at the root when every agent should have it.
 
 ## Your edits
 
-This folder is a Git repository. Commit each change you make here with a short message, so the user can review and undo it.
+This repository is under Git. Commit each change you make here with a short message, so the user can review and undo it.
 `;
 
 const CLAUDE_MD = "@AGENTS.md\n";
 
-const NOTES_README = `# Notes
+const SHARED_NOTES_README = `# Shared notes
 
-Firstmate's memory across sessions. It reads every file here at the start of each session and updates them when it learns something lasting: your preferences, facts about your projects and people, and lessons from past work.
+Memory every agent reads at the start of each session: your preferences, facts about your projects and people, and lessons that apply to all of them. Each agent keeps its own notes in \`agents/<name>/notes/\`.
 
-Keep one topic per file, in plain Markdown, such as \`preferences.md\` or \`projects.md\`. You can edit or delete these files yourself; Firstmate picks up the change in its next session.
+Keep one topic per file, in plain Markdown. You can edit or delete these files yourself; the agents pick up the change in their next session.
 `;
 
-const SKILLS_README = `# Skills
+const SHARED_SKILLS_README = `# Shared skills
 
-Reusable procedures for Firstmate. Codex loads skills from this folder, and Claude Code loads them through \`.claude/skills\`, which points here.
+Reusable procedures every agent can use. Codex loads skills from this folder, and Claude Code loads them through \`.claude/skills\`, which points here. Each agent also has its own skills in \`agents/<name>/.agents/skills/\`.
 
 To add a skill, create \`<name>/SKILL.md\`:
 
@@ -79,28 +82,76 @@ description: Compiles the weekly status report. Use when the user asks for the w
 2. ...
 \`\`\`
 
-The description decides when the skill is used, so name the situations that call for it. Write skills yourself, or ask Firstmate to write one.
+The description decides when the skill is used, so name the situations that call for it.
 `;
 
-const README = `# Firstmate
+const SHARED_README = `# Agents
 
-This folder is Firstmate's home. T3 Code runs the Firstmate chat here, so the agent follows \`AGENTS.md\` (\`CLAUDE.md\` points Claude Code at the same file), keeps its memory in \`notes/\`, and loads reusable procedures from \`.agents/skills/\`. Edit any of these to change how Firstmate works; its next session picks up the change. The folder is a Git repository, so \`git log\` shows what Firstmate changed and \`git revert\` undoes it. T3 Code recreates a missing file here but never overwrites one.
+This repository is home to your T3 Code agents. Each agent is a chat with its own task board; it follows \`AGENTS.md\` here and its own \`agents/<name>/AGENTS.md\` (\`CLAUDE.md\` points Claude Code at the same files), keeps its memory in \`notes/\`, and loads reusable procedures from \`.agents/skills/\`. Edit any of these to change how an agent works; its next session picks up the change. The repository is under Git, so \`git log\` shows what the agents changed and \`git revert\` undoes it. T3 Code recreates a missing file here but never overwrites one.
 `;
 
-export const FIRSTMATE_HOME_FILES: ReadonlyArray<{
+export const SHARED_HOME_FILES: ReadonlyArray<{
   readonly path: string;
   readonly content: string;
 }> = [
-  { path: "AGENTS.md", content: AGENTS_MD },
+  { path: "AGENTS.md", content: SHARED_AGENTS_MD },
   { path: "CLAUDE.md", content: CLAUDE_MD },
-  { path: "README.md", content: README },
-  { path: "notes/README.md", content: NOTES_README },
-  { path: ".agents/skills/README.md", content: SKILLS_README },
+  { path: "README.md", content: SHARED_README },
+  { path: "notes/README.md", content: SHARED_NOTES_README },
+  { path: ".agents/skills/README.md", content: SHARED_SKILLS_README },
   // Review images are copies kept for the Tasks panel, not history.
   { path: ".gitignore", content: "/artifacts/\n" },
 ];
 
-/** Claude Code's skills folder, a link to the shared one. */
+/** The role sits between these markers so `writeRole` can replace it without touching the rest. */
+export const ROLE_START = "<!-- role -->";
+export const ROLE_END = "<!-- /role -->";
+
+export function roleBlock(role: string): string {
+  return `${ROLE_START}\n${role.trim()}\n${ROLE_END}`;
+}
+
+const agentAgentsMd = (name: string, role: string) => `# ${name}
+
+${roleBlock(role)}
+
+You are ${name}. The user may have renamed you; the first message of each chat gives your current name. The shared instructions in the repository's root \`AGENTS.md\` apply to you; this file adds your role and anything that is yours alone.
+
+This folder is your home:
+
+- \`AGENTS.md\` (this file): your role and standing instructions.
+- \`notes/\`: your memory across sessions.
+- \`.agents/skills/\`: your reusable procedures. \`.claude/skills\` is the same folder.
+`;
+
+const agentNotesReadme = (name: string) => `# Notes
+
+${name}'s memory across sessions. It reads every file here at the start of each session and updates them when it learns something lasting about its own work. Notes every agent should share belong in the repository's root \`notes/\`.
+
+Keep one topic per file, in plain Markdown. You can edit or delete these files yourself; ${name} picks up the change in its next session.
+`;
+
+const agentSkillsReadme = (name: string) => `# Skills
+
+Reusable procedures for ${name}. Codex loads skills from this folder, and Claude Code loads them through \`.claude/skills\`, which points here. Skills every agent should have belong in the repository's root \`.agents/skills/\`.
+
+To add a skill, create \`<name>/SKILL.md\` with a \`name\` and a \`description\` in its front matter, followed by the steps. The description decides when the skill is used, so name the situations that call for it.
+`;
+
+/** An agent's own seed files, relative to `agents/<slug>/`. */
+export function agentHomeFiles(
+  name: string,
+  role: string,
+): ReadonlyArray<{ readonly path: string; readonly content: string }> {
+  return [
+    { path: "AGENTS.md", content: agentAgentsMd(name, role) },
+    { path: "CLAUDE.md", content: CLAUDE_MD },
+    { path: "notes/README.md", content: agentNotesReadme(name) },
+    { path: ".agents/skills/README.md", content: agentSkillsReadme(name) },
+  ];
+}
+
+/** Claude Code's skills folder, a link to the shared one, in any folder with skills. */
 export const CLAUDE_SKILLS_PATH = ".claude/skills";
 export const CLAUDE_SKILLS_TARGET = "../.agents/skills";
 

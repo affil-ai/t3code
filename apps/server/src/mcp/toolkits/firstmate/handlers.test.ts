@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, FIRSTMATE_AGENT_ID, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -15,6 +15,8 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
 import * as FirstmateHandlers from "./handlers.ts";
 import { FirstmateToolkit } from "./tools.ts";
+
+const FM = FIRSTMATE_AGENT_ID;
 
 const COORDINATOR = ThreadId.make("coordinator");
 const WORKER = ThreadId.make("worker");
@@ -36,7 +38,7 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
   const layerFirstmate = FirstmateService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(FirstmateHome.FirstmateHome)({}),
+        Layer.mock(FirstmateHome.FirstmateHome)({ migrateLegacyHome: () => Effect.succeed(null) }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
         NodeCrypto.layer,
@@ -49,7 +51,7 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
     McpToolAccessTestkit.liveThreadsLayer,
   );
   const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(layerDependencies));
-  yield* service.setCoordinator({ threadId: COORDINATOR });
+  yield* service.setCoordinator(FM, { threadId: COORDINATOR });
   const toolkit = yield* FirstmateToolkit.pipe(
     Effect.provide(
       McpToolAccess.HandlersLayer.layer(FirstmateHandlers.layer).pipe(
@@ -90,7 +92,7 @@ describe("Firstmate toolkit handlers", () => {
           _tag: "OrchestratorMcpFailure",
           code: "capability_denied",
         });
-        expect((yield* harness.service.list()).tasks).toHaveLength(0);
+        expect((yield* harness.service.list(FM)).tasks).toHaveLength(0);
       }),
     ),
   );
@@ -99,7 +101,7 @@ describe("Firstmate toolkit handlers", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        const { task } = yield* harness.service.create(createParams);
+        const { task } = yield* harness.service.create(FM, createParams);
         const result = yield* harness.call(
           "firstmate_task_update",
           { taskId: task.id, summary: "Renamed.", title: "Hijacked" },
@@ -107,7 +109,7 @@ describe("Firstmate toolkit handlers", () => {
         );
         expect(result.isFailure).toBe(true);
         expect(result.result).toMatchObject({ code: "capability_denied" });
-        expect((yield* harness.service.get({ taskId: task.id })).task.title).toBe("Ship the board");
+        expect((yield* harness.service.get(FM, { taskId: task.id })).task.title).toBe("Ship the board");
       }),
     ),
   );
@@ -118,23 +120,28 @@ describe("Firstmate toolkit handlers", () => {
         const harness = yield* makeHarness();
         const created = yield* harness.call("firstmate_task_create", createParams, COORDINATOR);
         expect(created.isFailure).toBe(false);
-        const [task] = (yield* harness.service.list()).tasks;
+        const [task] = (yield* harness.service.list(FM)).tasks;
         const updated = yield* harness.call(
           "firstmate_task_update",
           { taskId: task!.id, summary: "Waiting on review.", state: "waiting" },
           COORDINATOR,
         );
         expect(updated.isFailure).toBe(false);
-        expect((yield* harness.service.get({ taskId: task!.id })).task.state).toBe("waiting");
+        expect((yield* harness.service.get(FM, { taskId: task!.id })).task.state).toBe("waiting");
       }),
     ),
   );
 
-  it.effect("lists and gets tasks from any thread", () =>
+  it.effect("lets a worker on one of the agent's tasks read the board, and refuses strangers", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        const { task } = yield* harness.service.create(createParams);
+        const stranger = yield* harness.call("firstmate_task_list", {}, WORKER);
+        expect(stranger.isFailure).toBe(true);
+        const { task } = yield* harness.service.create(FM, {
+          ...createParams,
+          workerThreadId: WORKER,
+        });
         const listed = yield* harness.call("firstmate_task_list", {}, WORKER);
         expect(listed.isFailure).toBe(false);
         expect(listed.result).toMatchObject({ tasks: [{ id: task.id }] });

@@ -34,42 +34,43 @@ const shared = {
 
 const FirstmateTaskListTool = Tool.make("firstmate_task_list", {
   ...shared,
-  description: "List Firstmate tasks. Omit state to list every task that is not done or dropped.",
+  description:
+    "List the tasks on your board. Omit state to list every task that is not done or dropped.",
   parameters: FirstmateTaskListInput,
   success: FirstmateTaskListResult,
 })
-  .annotate(Tool.Title, "List Firstmate tasks")
+  .annotate(Tool.Title, "List tasks")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 
 const FirstmateTaskGetTool = Tool.make("firstmate_task_get", {
   ...shared,
-  description: "Read one Firstmate task and its append-only event log.",
+  description: "Read one task on your board and its append-only event log.",
   parameters: FirstmateTaskGetInput,
   success: FirstmateTaskGetResult,
 })
-  .annotate(Tool.Title, "Get Firstmate task")
+  .annotate(Tool.Title, "Get task")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 
 const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
   ...shared,
   description:
-    "Create a Firstmate task. Only the configured Firstmate coordinator may create tasks.",
+    "Create a task on your board. Only an agent's coordinator chat may create its tasks.",
   parameters: FirstmateTaskCreateInput,
   success: FirstmateTaskMutationResult,
 })
-  .annotate(Tool.Title, "Create Firstmate task")
+  .annotate(Tool.Title, "Create task")
   .annotate(Tool.Destructive, true);
 
 const FirstmateTaskUpdateTool = Tool.make("firstmate_task_update", {
   ...shared,
   description:
-    "Partially update a Firstmate task and append an event. Only the configured Firstmate coordinator may update tasks. Closing requires closeEvidence. Set state waiting while a PR waits on reviews or checks, and ready once it is reviewed and green and only the user's merge or deploy remains; put the PR in links or artifacts.",
+    "Partially update a task on your board and append an event. Only an agent's coordinator chat may update its tasks. Closing requires closeEvidence. Set state waiting while a PR waits on reviews or checks, and ready once it is reviewed and green and only the user's merge or deploy remains; put the PR in links or artifacts.",
   parameters: FirstmateTaskUpdateInput,
   success: FirstmateTaskMutationResult,
 })
-  .annotate(Tool.Title, "Update Firstmate task")
+  .annotate(Tool.Title, "Update task")
   .annotate(Tool.Destructive, true);
 
 export const FirstmateToolkit = Toolkit.make(

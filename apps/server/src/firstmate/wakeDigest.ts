@@ -24,7 +24,7 @@ export interface FirstmateWake {
 
 export function wakeDigest(wakes: ReadonlyArray<FirstmateWake>): string {
   return [
-    "Firstmate wake-up:",
+    "Wake-up from your task board:",
     ...wakes.map(
       (wake) =>
         `- ${wake.taskId} ${wake.title}: ${[wake.reason, ...(wake.additionalReasons ?? [])].join(", ")}`,
@@ -74,13 +74,16 @@ export function wakeNotification(wakes: ReadonlyArray<FirstmateWake>): Orchestra
   return {
     source: { kind: "monitor" },
     outcome,
-    summary: `Firstmate: ${count} — ${items.join(", ")}${more > 0 ? `, and ${more} more` : ""}`,
+    summary: `Tasks: ${count} — ${items.join(", ")}${more > 0 ? `, and ${more} more` : ""}`,
     // Expanding the row shows the same digest the coordinator received.
     detail: wakeDigest(wakes),
   };
 }
 
-/** Every wake message id starts with this, so a queued wake can be found. */
+/**
+ * Every wake message id starts with this, so a queued wake can be found. Each
+ * agent's chat only ever holds its own wakes, so the prefix needs no agent.
+ */
 export const WAKE_MESSAGE_PREFIX = "firstmate:wake-message:";
 const WAKE_REASONS: ReadonlySet<string> = new Set<FirstmateWakeReason>([
   "worker-completed",
