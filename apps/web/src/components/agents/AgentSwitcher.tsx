@@ -1,5 +1,5 @@
 /**
- * The Work sidebar's agent row, under Search: the selected agent drawn as a
+ * The Work sidebar's agent row, below the titlebar: the selected agent drawn as a
  * large row (icon tile, name, status, a badge counting tasks waiting on the
  * user), with a switcher that lists every agent and creates, edits, or
  * archives one. Firstmate is the default and keeps the Work chat lists under
@@ -232,7 +232,7 @@ export function AgentSwitcher() {
   };
 
   return (
-    // A second menu under Search: mt-1 matches the gap between rows in one menu.
+    // Keep a small gap between the titlebar and the agent row.
     <SidebarMenu className="relative mt-1" data-testid="agent-switcher">
       <AgentSidebarRow
         className="mb-0"

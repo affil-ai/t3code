@@ -131,7 +131,7 @@ on it. The task list lives on the server, not in the coordinator's context.
 **Agents** run any number of such coordinators on the same engine. Each agent
 is a chat with its own task board, worker chats, and wakes; Firstmate is the
 reserved agent `firstmate`. There is no separate Agents mode: the Work sidebar
-shows one agent at a time. Its row under Search (icon tile, name, role or live
+shows one agent at a time. Its row below the titlebar (icon tile, name, role or live
 status, a badge counting tasks waiting on the user) has a switcher listing
 every agent, plus "New agent", edit, and archive. Firstmate's sidebar continues
 with its tasks, its automations, and the usual Pinned, Projects, and Chats; a
@@ -160,7 +160,7 @@ tools, wake rules, and UI.
 | Agent switcher, sidebar sections, dialog           | `apps/web/src/components/agents/`, `apps/web/src/state/agents.ts`, `apps/web/src/selectedAgentStore.ts` |
 | Tables (created at server start, not by migration) | `firstmate_agent`, `firstmate_task`, `firstmate_task_event`, `firstmate_config`                         |
 
-In Work mode, the selected agent's row sits below Search in the sidebar. It
+In Work mode, the selected agent's row sits below the titlebar in the sidebar. It
 opens the coordinator chat with the right panel closed. Open **Tasks** when
 you need the board. On mobile, choosing an agent or chat closes the sidebar.
 The panel shows whichever agent's

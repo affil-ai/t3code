@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
-import { HistoryNavButtons } from "../HistoryNavButtons";
+import { SidebarHeaderActions } from "../work/SidebarHeaderActions"; // fork: compact search
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
@@ -88,7 +88,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
           </div>
         ) : null}
       </div>
-      <HistoryNavButtons className="relative z-10 ml-auto hidden pr-2 md:flex" />
+      <SidebarHeaderActions /> {/* fork: compact search */}
     </div>
   );
 });
