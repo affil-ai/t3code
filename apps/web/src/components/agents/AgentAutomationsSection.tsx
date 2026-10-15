@@ -2,9 +2,8 @@
  * The sidebar's Automations section: the scheduled tasks bound to the
  * selected agent's chat, live from the server's scheduled-task subscription.
  * Each row shows the schedule and next run and opens the editor dialog, the
- * same one the Tasks panel's Scheduled section uses. Firstmate hides the
- * section while it has nothing scheduled; a custom agent always shows it,
- * since it is part of that agent's fixed layout.
+ * same one the Tasks panel's Automations section uses. Every agent shows the
+ * section, Firstmate included, so the sidebar reads the same for each.
  */
 import { type EnvironmentId, type ScheduledTask, type ThreadId } from "@t3tools/contracts";
 import { PlusIcon } from "lucide-react";
@@ -34,11 +33,9 @@ const STATUS_DOT_CLASS: Record<ScheduledTask["lastRunStatus"], string> = {
 export function AgentAutomationsSection({
   environmentId,
   threadId,
-  alwaysShow,
 }: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-  readonly alwaysShow: boolean;
 }) {
   const coordinator = useThreadShell({ environmentId, threadId });
   const tasksQuery = useEnvironmentQuery(
@@ -46,7 +43,6 @@ export function AgentAutomationsSection({
   );
   const tasks = (tasksQuery.data?.tasks ?? []).filter((task) => task.threadId === threadId);
   const [editing, setEditing] = useState<{ readonly task: ScheduledTask | null } | null>(null);
-  if (!alwaysShow && tasks.length === 0 && editing === null) return null;
   return (
     <SidebarGroup aria-label="Automations" data-testid="agent-automations-section" className="mb-3">
       <div className="group/section-header mb-1 flex h-6 items-center justify-between pl-2 pr-1.5">

@@ -258,7 +258,7 @@ function TaskSections({
   onOpen,
 }: {
   readonly environmentId: EnvironmentId;
-  /** The coordinator chat, whose scheduled tasks the last section lists. */
+  /** The coordinator chat, whose automations the last section lists. */
   readonly threadId: ThreadId;
   readonly tasks: readonly FirstmateTask[];
   readonly onOpen: (task: FirstmateTask) => void;
@@ -277,7 +277,7 @@ function TaskSections({
           />
         ))}
         <DoneSection environmentId={environmentId} tasks={columns.done} onOpen={onOpen} />
-        {/* Scheduled tasks are recurring triggers, not board work: rule them off. */}
+        {/* Automations are triggers, not board work: rule them off. */}
         <div role="separator" className="-mx-2 my-1 border-t border-border" />
         <ScheduledSection environmentId={environmentId} threadId={threadId} />
       </div>

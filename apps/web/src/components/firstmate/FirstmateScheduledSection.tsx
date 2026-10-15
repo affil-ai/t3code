@@ -1,5 +1,5 @@
 /**
- * The Tasks panel's last section: the scheduled tasks bound to the agent's
+ * The Tasks panel's last section, Automations: the scheduled tasks bound to the agent's
  * coordinator chat, live from the server's scheduled-task subscription. Each
  * row shows the schedule and next run; editing, run-now, and pause live in the
  * edit dialog, which opens over the panel. The section lists only this chat's tasks; the settings page has
@@ -46,10 +46,10 @@ export function ScheduledSection({
   const [editing, setEditing] = useState<{ readonly task: ScheduledTask | null } | null>(null);
 
   return (
-    <section aria-label="Scheduled" className="flex min-w-0 flex-col">
+    <section aria-label="Automations" className="flex min-w-0 flex-col">
       <header className="flex h-7 shrink-0 items-center gap-1.5 px-1.5">
         <CalendarClockIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-        <h2 className="truncate text-xs font-medium text-foreground">Scheduled</h2>
+        <h2 className="truncate text-xs font-medium text-foreground">Automations</h2>
         <span className="text-xs tabular-nums text-muted-foreground">{tasks.length}</span>
         <Tooltip>
           <TooltipTrigger
@@ -58,23 +58,21 @@ export function ScheduledSection({
                 size="icon-xs"
                 variant="ghost-muted"
                 className="ml-auto"
-                aria-label="New scheduled task"
+                aria-label="New automation"
                 onClick={() => setEditing({ task: null })}
               />
             }
           >
             <PlusIcon className="size-3.5" />
           </TooltipTrigger>
-          <TooltipPopup>New scheduled task</TooltipPopup>
+          <TooltipPopup>New automation</TooltipPopup>
         </Tooltip>
       </header>
       {tasksQuery.error !== null ? (
-        <p className="px-1.5 pt-0.5 pb-1 text-xs text-destructive">
-          Could not load scheduled tasks.
-        </p>
+        <p className="px-1.5 pt-0.5 pb-1 text-xs text-destructive">Could not load automations.</p>
       ) : tasks.length === 0 ? (
         <p className="px-1.5 pt-0.5 pb-1 text-xs text-muted-foreground/70">
-          Nothing scheduled for this chat
+          No automations for this chat
         </p>
       ) : (
         <ul className="flex flex-col gap-1.5">

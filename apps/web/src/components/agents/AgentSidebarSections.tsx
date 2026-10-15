@@ -49,11 +49,7 @@ export function AgentSidebarSections({ agent }: { readonly agent: AgentProfile }
           />
         )}
       </SidebarGroup>
-      <AgentAutomationsSection
-        environmentId={environmentId}
-        threadId={coordinatorThreadId}
-        alwaysShow={!firstmate}
-      />
+      <AgentAutomationsSection environmentId={environmentId} threadId={coordinatorThreadId} />
     </>
   );
 }

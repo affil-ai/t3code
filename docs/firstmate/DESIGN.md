@@ -250,7 +250,8 @@ write skills on request.
   task with a worker opens the worker's chat) and an **Automations** section
   listing the scheduled tasks bound to its chat, each opening the editor.
   Firstmate's sidebar continues with a divider and the Pinned, Projects,
-  and Chats lists, and its Automations section hides while empty. A custom
+  and Chats lists. Automations is the one name for scheduled and webhook
+  tasks in the fork's UI; the server keeps its `scheduledTasks` names. A custom
   agent's sidebar ends there, so its worker chats are reached from its
   tasks; those chats, every coordinator chat, and agent home projects stay
   out of the Work and Office lists. The selected agent is kept per client
@@ -264,7 +265,7 @@ write skills on request.
   whichever agent's coordinator chat is open, resolved from the agent list;
   Firstmate's own stream is the fallback. Its menu edits the agent (the
   Firstmate name-and-icon dialog for Firstmate; the agent dialog otherwise).
-  A **Scheduled** section closes the panel: the scheduled tasks bound to the
+  An **Automations** section closes the panel: the scheduled tasks bound to the
   chat, live from `scheduledTasks.subscribe`, each with its schedule, next
   run, edit, run-now, and pause; a "+" opens the scheduled-tasks settings.
 

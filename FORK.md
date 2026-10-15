@@ -135,7 +135,7 @@ shows one agent at a time. Its row under Search (icon tile, name, role or live
 status, a badge counting tasks waiting on the user) has a switcher listing
 every agent, plus "New agent", edit, and archive. Firstmate's sidebar continues
 with its tasks, its automations, and the usual Pinned, Projects, and Chats; a
-custom agent's sidebar holds only its tasks and automations, and its worker
+custom agent's sidebar holds only its tasks and automations (the same two sections Firstmate starts with), and its worker
 chats are reached from the tasks. The choice is kept per client. On
 `t3.olumbe.com`, a sign-in other than Vivek's opens on the first custom agent.
 
@@ -162,7 +162,7 @@ tools, wake rules, and UI.
 
 In Work mode, the selected agent's row sits below Search in the sidebar. It
 opens the coordinator chat with a **Tasks** tab in the right panel. The panel shows whichever agent's
-chat is open, ends with that chat's **Scheduled** tasks, and its menu renames
+chat is open, ends with that chat's **Automations**, and its menu renames
 the agent and changes its icon for every client.
 
 Firstmate and Agents need this fork's server: build and run the server from
