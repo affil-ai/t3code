@@ -128,12 +128,16 @@ thread per task, and is woken when a worker finishes, fails, or needs input.
 It is also woken when a task's wake time passes or a task has no one working
 on it. The task list lives on the server, not in the coordinator's context.
 
-**Agents mode** runs any number of such agents on the same engine. Each agent
+**Agents** run any number of such coordinators on the same engine. Each agent
 is a chat with its own task board, worker chats, and wakes; Firstmate is the
-reserved agent `firstmate` and keeps its own place in Work mode. The Agents
-sidebar lists one large row per agent with a colored icon tile, the name, and
-the role or live status; a "+" creates one with a name, role, icon, and color,
-and a right-click edits or archives it.
+reserved agent `firstmate`. There is no separate Agents mode: the Work sidebar
+shows one agent at a time. Its row under Search (icon tile, name, role or live
+status, a badge counting tasks waiting on the user) has a switcher listing
+every agent, plus "New agent", edit, and archive. Firstmate's sidebar continues
+with its tasks, its automations, and the usual Pinned, Projects, and Chats; a
+custom agent's sidebar holds only its tasks and automations, and its worker
+chats are reached from the tasks. The choice is kept per client. On
+`t3.olumbe.com`, a sign-in other than Vivek's opens on the first custom agent.
 
 Every agent's chat runs in its folder of one repository, `~/agents` on the
 server (override with `T3CODE_AGENTS_HOME`): shared `AGENTS.md`, `notes/`,
@@ -147,18 +151,17 @@ to `crew/` once, in one commit of renames, with their projects repointed.
 [`docs/firstmate/DESIGN.md`](docs/firstmate/DESIGN.md) specifies the data,
 tools, wake rules, and UI.
 
-| Piece                                              | Location                                                                        |
-| -------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Contracts                                          | `packages/contracts/src/firstmate.ts`                                           |
-| Server: agents, task store, wake reactor, home     | `apps/server/src/firstmate/`                                                    |
-| MCP tools (`firstmate_task_*`)                     | `apps/server/src/mcp/toolkits/firstmate/`                                       |
-| Tasks panel, sidebar link, route                   | `apps/web/src/components/firstmate/`, `apps/web/src/routes/_chat.firstmate.*`   |
-| Agents mode sidebar and dialog                     | `apps/web/src/components/agents/`, `apps/web/src/state/agents.ts`               |
-| Tables (created at server start, not by migration) | `firstmate_agent`, `firstmate_task`, `firstmate_task_event`, `firstmate_config` |
+| Piece                                              | Location                                                                                                |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Contracts                                          | `packages/contracts/src/firstmate.ts`                                                                   |
+| Server: agents, task store, wake reactor, home     | `apps/server/src/firstmate/`                                                                            |
+| MCP tools (`firstmate_task_*`)                     | `apps/server/src/mcp/toolkits/firstmate/`                                                               |
+| Tasks panel, sidebar link, route                   | `apps/web/src/components/firstmate/`, `apps/web/src/routes/_chat.firstmate.*`                           |
+| Agent switcher, sidebar sections, dialog           | `apps/web/src/components/agents/`, `apps/web/src/state/agents.ts`, `apps/web/src/selectedAgentStore.ts` |
+| Tables (created at server start, not by migration) | `firstmate_agent`, `firstmate_task`, `firstmate_task_event`, `firstmate_config`                         |
 
-In Work mode, the **Firstmate** link sits below Search in the sidebar, with a
-badge counting the tasks waiting on the user. It opens the coordinator chat
-with a **Tasks** tab in the right panel. The panel shows whichever agent's
+In Work mode, the selected agent's row sits below Search in the sidebar. It
+opens the coordinator chat with a **Tasks** tab in the right panel. The panel shows whichever agent's
 chat is open, ends with that chat's **Scheduled** tasks, and its menu renames
 the agent and changes its icon for every client.
 

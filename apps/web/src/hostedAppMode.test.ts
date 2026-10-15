@@ -26,14 +26,15 @@ async function loadAppMode() {
 
 describe("hosted identity default", () => {
   it.each([
-    ["vivek@affil.ai", "work"],
-    ["VIVEK@AFFIL.AI", "work"],
-    ["another@affil.ai", "agents"],
-    ["vivek@example.com", "agents"],
-  ])("maps %s to %s", async (email, expectedMode) => {
-    const { getIdentityDefaultAppMode } = await loadAppMode();
+    ["vivek@affil.ai", false],
+    ["VIVEK@AFFIL.AI", false],
+    ["another@affil.ai", true],
+    ["vivek@example.com", true],
+  ])("maps %s to Work, preferring a custom agent: %s", async (email, preferCustomAgent) => {
+    const { getIdentityDefault, getIdentityDefaultAppMode } = await loadAppMode();
 
-    expect(getIdentityDefaultAppMode({ email })).toBe(expectedMode);
+    expect(getIdentityDefault({ email })).toEqual({ mode: "work", preferCustomAgent });
+    expect(getIdentityDefaultAppMode({ email })).toBe("work");
   });
 
   it.each([null, {}, { email: "" }, { email: " " }, { email: 42 }])(
@@ -71,10 +72,25 @@ describe("hosted identity default", () => {
 
     vi.mocked(fetch).mockResolvedValue(Response.json({ email: "another@affil.ai" }));
     await reloaded.initializeHostedAppMode();
-    expect(reloaded.useWorkModeStore.getState().mode).toBe("agents");
+    expect(reloaded.useWorkModeStore.getState().mode).toBe("work");
+    const { useSelectedAgentStore } = await import("./selectedAgentStore");
+    expect(useSelectedAgentStore.getState().preferCustomAgent).toBe(true);
   });
 
-  it.each(["code", "work", "office", "agents"] as const)(
+  it("reads a saved Agents mode as Work", async () => {
+    const { WORK_MODE_STORAGE_KEY } = await loadAppMode();
+    window.localStorage.setItem(
+      WORK_MODE_STORAGE_KEY,
+      JSON.stringify({ state: { mode: "agents" }, version: 1 }),
+    );
+    vi.resetModules();
+    const { useWorkModeStore } = await loadAppMode();
+
+    expect(useWorkModeStore.getState().mode).toBe("work");
+    expect(useWorkModeStore.getState().hasExplicitMode).toBe(true);
+  });
+
+  it.each(["code", "work", "office"] as const)(
     "preserves a legacy saved %s mode as an explicit choice",
     async (mode) => {
       const { WORK_MODE_STORAGE_KEY } = await loadAppMode();
@@ -103,7 +119,7 @@ describe("hosted identity default", () => {
     vi.mocked(fetch).mockResolvedValue(Response.json({ email: "another@affil.ai" }));
     const reloaded = await loadAppMode();
     await reloaded.initializeHostedAppMode();
-    reloaded.useWorkModeStore.getState().applyIdentityDefault("agents");
+    reloaded.useWorkModeStore.getState().applyIdentityDefault("office");
 
     expect(reloaded.useWorkModeStore.getState().mode).toBe("work");
     expect(reloaded.useWorkModeStore.getState().hasExplicitMode).toBe(true);

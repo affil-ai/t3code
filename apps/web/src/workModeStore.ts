@@ -17,7 +17,14 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { resolveStorage } from "./lib/storage";
 import { randomUUID } from "./lib/utils";
 
-export type AppMode = "code" | "work" | "office" | "agents";
+export type AppMode = "code" | "work" | "office";
+
+/** A saved mode. The former Agents mode folded into Work, so it reads as Work. */
+function readSavedMode(raw: unknown): AppMode {
+  if (raw === "work" || raw === "office" || raw === "agents")
+    return raw === "agents" ? "work" : raw;
+  return "code";
+}
 
 export interface WorkFolder {
   id: string;
@@ -323,7 +330,7 @@ export function sanitizePersistedData(value: unknown): WorkModeData {
         )
       : {};
   return {
-    mode: raw.mode === "work" || raw.mode === "office" || raw.mode === "agents" ? raw.mode : "code",
+    mode: readSavedMode(raw.mode),
     folders,
     threadFolderByKey,
     collapsedFolderIds: Array.isArray(raw.collapsedFolderIds)
@@ -490,7 +497,7 @@ export function useAppMode(): AppMode {
   return useWorkModeStore((state) => state.mode);
 }
 
-/** Work, Office, and Agents share the Work layout: chats without the coding surfaces. */
+/** Work and Office share the Work layout: chats without the coding surfaces. */
 export function useIsWorkMode(): boolean {
   return useWorkModeStore((state) => state.mode !== "code");
 }

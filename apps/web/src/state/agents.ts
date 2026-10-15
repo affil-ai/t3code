@@ -9,7 +9,9 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "@t3tools/client-runtime/state/runtime";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  FIRSTMATE_AGENT_ID,
   FIRSTMATE_WS_METHODS,
   type AgentProfile,
   type AgentProfileId,
@@ -106,4 +108,34 @@ export function useAgentTasks(environmentId: EnvironmentId | null, agentId: Agen
       ? null
       : agentsEnvironment.tasks({ environmentId, input: { agentId } }),
   );
+}
+
+const NO_WORKER_THREAD_KEYS: ReadonlySet<string> = new Set();
+
+/**
+ * The worker chats of every custom agent's tasks, as scoped keys. Those chats
+ * are reached from the agent's task list in the sidebar, so Firstmate's
+ * Pinned, Projects, and Chats leave them out. Boards still loading add
+ * nothing yet.
+ */
+const customAgentWorkerThreadKeysAtom = Atom.make((get): ReadonlySet<string> => {
+  const home = get(agentsHomeAtom);
+  if (home === null) return NO_WORKER_THREAD_KEYS;
+  const keys = new Set<string>();
+  for (const agent of home.agents) {
+    if (agent.id === FIRSTMATE_AGENT_ID) continue;
+    const result = get(
+      agentsEnvironment.tasks({ environmentId: home.environmentId, input: { agentId: agent.id } }),
+    );
+    if (!AsyncResult.isSuccess(result)) continue;
+    for (const task of result.value.tasks) {
+      if (task.workerThreadId === null) continue;
+      keys.add(scopedThreadKey(scopeThreadRef(home.environmentId, task.workerThreadId)));
+    }
+  }
+  return keys.size === 0 ? NO_WORKER_THREAD_KEYS : keys;
+}).pipe(Atom.withLabel("agents:custom-worker-thread-keys"));
+
+export function useCustomAgentWorkerThreadKeys(): ReadonlySet<string> {
+  return useAtomValue(customAgentWorkerThreadKeysAtom);
 }

@@ -249,8 +249,11 @@ import {
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
-import { FirstmateSidebarLink, FirstmateSidebarTasks } from "./firstmate/FirstmateSidebarLink"; // fork: firstmate
-import { AgentsSidebar } from "./agents/AgentsSidebar"; // fork: agents
+import { AgentSwitcher, useSelectedAgent } from "./agents/AgentSwitcher"; // fork: agents
+import { AgentSidebarSections } from "./agents/AgentSidebarSections"; // fork: agents
+import { isFirstmateAgent } from "./agents/selectedAgent.logic"; // fork: agents
+import { useCustomAgentWorkerThreadKeys } from "~/state/agents"; // fork: agents
+import { Separator } from "./ui/separator"; // fork: agents
 import { useOfficeThreads } from "../state/office"; // fork: office
 import { officeFolders } from "./work/officeGroups"; // fork: office
 import { useFirstmateCoordinatorThreadKeys } from "./firstmate/useFirstmateCoordinatorThreadKeys"; // fork: firstmate
@@ -3461,9 +3464,11 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
   );
   const firstmateThreadKeys = useFirstmateCoordinatorThreadKeys(); // fork: firstmate
   const agentThreadKeys = useAgentCoordinatorThreadKeys(); // fork: agents
+  // Custom agents' worker chats are reached from their task lists, not Chats.
+  const agentWorkerThreadKeys = useCustomAgentWorkerThreadKeys(); // fork: agents
   const hiddenThreadKeys = useMemo(
-    () => new Set([...firstmateThreadKeys, ...agentThreadKeys]),
-    [firstmateThreadKeys, agentThreadKeys],
+    () => new Set([...firstmateThreadKeys, ...agentThreadKeys, ...agentWorkerThreadKeys]),
+    [firstmateThreadKeys, agentThreadKeys, agentWorkerThreadKeys],
   ); // fork: agents
   const groups = useMemo(
     () =>
@@ -4032,8 +4037,13 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     [updateSettings],
   );
 
-  // fork: agents — Agents mode is its own sidebar: no search, a row per agent.
-  if (appMode === "agents") return <AgentsSidebar />;
+  // fork: agents — the Work sidebar follows the selected agent: Firstmate keeps
+  // the Pinned, Projects, and Chats lists; any other agent shows only its tasks
+  // and automations.
+  const selectedAgent = useSelectedAgent();
+  const showAgentSections = appMode === "work" && selectedAgent !== null;
+  const showWorkLists =
+    appMode !== "work" || selectedAgent === null || isFirstmateAgent(selectedAgent);
 
   return (
     <SidebarContent
@@ -4052,11 +4062,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               </CommandDialogTrigger>
             </SidebarMenuItem>
           </SidebarMenu>
-          {
-            useWorkModeStore.getState().mode === "work" ? (
-              <FirstmateSidebarLink />
-            ) : null /* fork: firstmate */
-          }
+          {appMode === "work" ? <AgentSwitcher /> : null /* fork: agents */}
         </SidebarGroup>
       }
     >
@@ -4084,12 +4090,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         </SidebarGroup>
       ) : null}
       <LocalSecondaryStatus />
-      {
-        useWorkModeStore.getState().mode === "work" ? (
-          <FirstmateSidebarTasks />
-        ) : null /* fork: firstmate */
-      }
-      {isWorkMode ? (
+      {showAgentSections ? <AgentSidebarSections agent={selectedAgent} /> : null /* fork: agents */}
+      {showAgentSections && showWorkLists ? (
+        <Separator className="mx-2 mb-3 w-auto" /> /* fork: agents */
+      ) : null}
+      {!showWorkLists ? null : isWorkMode ? (
         <SidebarWorkSections
           routeThreadKey={routeThreadKey}
           openPullRequestsInRightPanel={openPullRequestsInRightPanel}

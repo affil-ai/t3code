@@ -33,6 +33,7 @@ import { Spinner } from "../ui/spinner";
 import { Textarea } from "../ui/textarea";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { AgentAvatar } from "./AgentAvatar";
+import { useSelectedAgentStore } from "~/selectedAgentStore";
 import { useAgentCommands } from "./agentCommands";
 
 const NAME_MAX_LENGTH = 60;
@@ -101,6 +102,8 @@ function AgentForm({
         "Could not create the agent",
       ).then((created) => {
         if (created === null) return;
+        // The sidebar follows the agent that was just made.
+        useSelectedAgentStore.getState().selectAgent(created.agent.id);
         onDone();
         void navigate({
           to: "/$environmentId/$threadId",

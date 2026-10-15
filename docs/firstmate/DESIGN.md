@@ -238,14 +238,25 @@ write skills on request.
   role (rewriting the role in its `AGENTS.md`); `agents.archive` hides the
   agent (Firstmate cannot be archived); `agents.start` starts a new chat for
   an agent whose chat is gone.
-- **Agents mode.** A fourth app mode beside Code, Work, and Office. Its
-  sidebar has no search: a header with a "+" and one large row per agent,
-  with a colored icon tile (the project icon palette), the name, and the
-  role on one line, or the chat's live status when it is working, waiting,
-  or failed. A row opens the agent's chat with its Tasks tab; a right-click
-  offers "Edit name, role, and icon…" and "Archive agent". Firstmate is left
-  out of this list. Agent chats and home projects are hidden from the Work
-  and Office lists the way Firstmate's are.
+- **Sidebar.** Agents live in the Work sidebar; there is no Agents mode (a
+  saved one reads as Work). `AgentSwitcher` draws the selected agent as one
+  large row under Search, with a colored icon tile (the project icon
+  palette), the name, and the role on one line, or the chat's live status
+  when it is working, waiting, or failed, and a badge counting tasks that
+  need the user. Its chevron opens a menu listing every agent, "New agent…",
+  "Edit name, role, and icon…" (Firstmate: "Name and icon…"), and "Archive
+  agent" (not for Firstmate); a right-click offers edit and archive too.
+  Under the row, `AgentSidebarSections` shows the agent's open tasks (a
+  task with a worker opens the worker's chat) and an **Automations** section
+  listing the scheduled tasks bound to its chat, each opening the editor.
+  Firstmate's sidebar continues with a divider and the Pinned, Projects,
+  and Chats lists, and its Automations section hides while empty. A custom
+  agent's sidebar ends there, so its worker chats are reached from its
+  tasks; those chats, every coordinator chat, and agent home projects stay
+  out of the Work and Office lists. The selected agent is kept per client
+  in `selectedAgentStore.ts`; an archived or missing choice falls back to
+  Firstmate. A hosted sign-in other than Vivek's prefers the first custom
+  agent until the user picks one.
 - **Create dialog.** Name, role, icon (the Firstmate icon grid), and color.
   Creating uses the model a fresh Scratch chat would open with, then opens
   the new chat with its Tasks tab.
@@ -290,7 +301,7 @@ write skills on request.
   A new Work chat skips the home project when it picks a repository to run
   in. Code mode lists the home project like any other.
 - Sidebar: in Work mode, directly below Search in `LegacySidebar.tsx`, render
-  `<FirstmateSidebarLink />` from `components/firstmate/`. It shows the
-  chosen name and icon with a badge counting Needs-you tasks. It targets the
-  first connected environment whose server answers `firstmate.subscribe`,
-  and it is hidden when none does, as with a stock server.
+  `<AgentSwitcher />` from `components/agents/` (see Agents). With Firstmate
+  selected it shows the chosen name and icon with a badge counting Needs-you
+  tasks. It targets the first connected environment whose server answers
+  `agents.subscribe`, and it is hidden when none does, as with a stock server.
