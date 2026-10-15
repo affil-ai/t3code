@@ -3,6 +3,7 @@ import type { FirstmateTask } from "@t3tools/contracts";
 export const FIRSTMATE_COLUMN_IDS = [
   "needs-you",
   "ready",
+  "planning",
   "in-progress",
   "in-review",
   "done",
@@ -22,15 +23,18 @@ export const FIRSTMATE_DONE_LIMIT = 20;
  * 2. Ready for deployment: reviewed and green (state `ready`). Only the user's
  *    merge or deploy remains, so it stays out of Needs you, which is for
  *    decisions.
- * 3. Needs you: the user acts next, even on a waiting task, so the board
+ * 3. Planning: an open or waiting task that has no worker yet. It leaves the
+ *    column the moment a worker chat is recorded, whoever acts next.
+ * 4. Needs you: the user acts next, even on a waiting task, so the board
  *    never hides a decision behind a waiting state.
- * 4. In review: the task is waiting on reviews or checks (state `waiting`), or
+ * 5. In review: the task is waiting on reviews or checks (state `waiting`), or
  *    someone outside acts next.
- * 5. In progress: the worker or the coordinator acts next.
+ * 6. In progress: the worker or the coordinator acts next.
  */
 export function firstmateColumnForTask(task: FirstmateTask): FirstmateColumnId {
   if (task.state === "done" || task.state === "dropped") return "done";
   if (task.state === "ready") return "ready";
+  if (task.workerThreadId === null) return "planning";
   if (task.nextActor === "user") return "needs-you";
   if (task.state === "waiting" || task.nextActor === "external") return "in-review";
   return "in-progress";
@@ -59,6 +63,7 @@ export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoa
   const columns: Record<FirstmateColumnId, FirstmateTask[]> = {
     "needs-you": [],
     ready: [],
+    planning: [],
     "in-progress": [],
     "in-review": [],
     done: [],
@@ -73,10 +78,16 @@ export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoa
   return columns;
 }
 
+/**
+ * Tasks waiting on a decision from the user: the Needs you column, plus a
+ * task still being planned whose next actor is the user, so the badge does
+ * not drop a decision because no worker has started.
+ */
 export function countFirstmateNeedsYou(tasks: readonly FirstmateTask[]): number {
   let count = 0;
   for (const task of tasks) {
-    if (firstmateColumnForTask(task) === "needs-you") count += 1;
+    const column = firstmateColumnForTask(task);
+    if (column === "needs-you" || (column === "planning" && task.nextActor === "user")) count += 1;
   }
   return count;
 }

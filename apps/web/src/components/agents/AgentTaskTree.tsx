@@ -1,14 +1,17 @@
 /**
  * An agent's open tasks in the sidebar, in the Tasks panel's sections
- * (Needs you, Ready for deployment, In progress, In review). A task with a
- * worker opens the worker's chat, with a dot for what the worker is doing; a
- * task without one opens the agent's own chat. Closed tasks stay in the panel.
+ * (Needs you, Ready for deployment, Planning, In progress, In review). A task
+ * with a worker opens the worker's chat, with a dot for what the worker is
+ * doing. A Planning task has no worker yet, so it is a card (title, intent,
+ * next step, who acts) that opens the task's detail in the Tasks panel beside
+ * the agent's chat. Closed tasks stay in the panel.
  */
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, FirstmateTask, ThreadId } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 
 import { cn } from "~/lib/utils";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import {
@@ -16,8 +19,69 @@ import {
   type FirstmateColumnId,
   mapFirstmateBoard,
 } from "../firstmate/firstmateBoard.logic";
-import { COLUMN_DOT, COLUMN_LABELS, taskNextStep } from "../firstmate/firstmateTasksShared";
+import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
+import {
+  COLUMN_DOT,
+  COLUMN_LABELS,
+  nextActorLabel,
+  taskNextStep,
+} from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+
+/** The intent's first line, short enough for a sidebar card. */
+function intentExcerpt(intent: string, limit = 90): string {
+  const line = intent.trim().split("\n")[0] ?? "";
+  return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line;
+}
+
+function PlanningCard({
+  environmentId,
+  coordinatorThreadId,
+  task,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly coordinatorThreadId: ThreadId;
+  readonly task: FirstmateTask;
+}) {
+  const navigate = useNavigate();
+  const nextStep = taskNextStep(task);
+  const excerpt = intentExcerpt(task.intent);
+  const open = () => {
+    const threadRef = scopeThreadRef(environmentId, coordinatorThreadId);
+    useFirstmateTaskFocusStore
+      .getState()
+      .requestTask({ threadKey: scopedThreadKey(threadRef), taskId: task.id });
+    useRightPanelStore.getState().open(threadRef, "firstmate");
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId, threadId: coordinatorThreadId },
+    });
+  };
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={open}
+        aria-label={`Open ${task.title}`}
+        data-testid="planning-task-card"
+        className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-1.5 text-left outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset"
+      >
+        <span className="truncate text-sm text-sidebar-foreground/90">{task.title}</span>
+        {excerpt ? (
+          <span className="line-clamp-2 text-xs leading-4 text-sidebar-muted-foreground/80">
+            {excerpt}
+          </span>
+        ) : null}
+        <span className="flex min-w-0 items-center gap-1.5 text-2xs text-sidebar-muted-foreground/80">
+          <span className="shrink-0 rounded-sm bg-sidebar-row-hover px-1 leading-4">
+            {nextActorLabel(task)}
+          </span>
+          {nextStep !== null ? <span className="truncate">{nextStep}</span> : null}
+        </span>
+      </button>
+    </li>
+  );
+}
 
 const OPEN_COLUMNS = FIRSTMATE_COLUMN_IDS.filter(
   (column): column is Exclude<FirstmateColumnId, "done"> => column !== "done",
@@ -121,15 +185,24 @@ export function AgentTaskTree({
             <span className="tabular-nums">{columns[column].length}</span>
           </h3>
           <ul className="flex flex-col">
-            {columns[column].map((task) => (
-              <TaskRow
-                key={task.id}
-                environmentId={environmentId}
-                coordinatorThreadId={coordinatorThreadId}
-                task={task}
-                activeRouteKey={activeRouteKey}
-              />
-            ))}
+            {columns[column].map((task) =>
+              column === "planning" ? (
+                <PlanningCard
+                  key={task.id}
+                  environmentId={environmentId}
+                  coordinatorThreadId={coordinatorThreadId}
+                  task={task}
+                />
+              ) : (
+                <TaskRow
+                  key={task.id}
+                  environmentId={environmentId}
+                  coordinatorThreadId={coordinatorThreadId}
+                  task={task}
+                  activeRouteKey={activeRouteKey}
+                />
+              ),
+            )}
           </ul>
         </section>
       ))}

@@ -21,6 +21,7 @@ function task(
   nextActor: FirstmateTask["nextActor"],
   updatedAt = "2026-10-12T10:00:00.000Z",
   closedAt: string | null = null,
+  workerThreadId: string | null = "worker-thread",
 ): FirstmateTask {
   return {
     id,
@@ -31,7 +32,7 @@ function task(
     nextActor,
     note: "",
     wakeAt: null,
-    workerThreadId: null,
+    workerThreadId,
     links: [],
     closeEvidence: null,
     createdAt: updatedAt,
@@ -85,6 +86,25 @@ describe("firstmateColumnForTask", () => {
 
   it("moves a blocked worker out of In progress", () => {
     expect(firstmateColumnForTask(task("t", "waiting", "worker"))).toBe("in-review");
+  });
+
+  const unstarted = (state: FirstmateTask["state"], actor: FirstmateTask["nextActor"]) =>
+    task("t", state, actor, undefined, null, null);
+
+  it.each(ACTORS)("keeps an open task without a worker in Planning for %s", (actor) => {
+    expect(firstmateColumnForTask(unstarted("open", actor))).toBe("planning");
+    expect(firstmateColumnForTask(unstarted("waiting", actor))).toBe("planning");
+  });
+
+  it("leaves Planning once a worker is recorded", () => {
+    expect(firstmateColumnForTask(task("t", "open", "worker"))).toBe("in-progress");
+    expect(firstmateColumnForTask(task("t", "waiting", "external"))).toBe("in-review");
+  });
+
+  it("does not plan a ready or closed task", () => {
+    expect(firstmateColumnForTask(unstarted("ready", "user"))).toBe("ready");
+    expect(firstmateColumnForTask(unstarted("done", "user"))).toBe("done");
+    expect(firstmateColumnForTask(unstarted("dropped", "user"))).toBe("done");
   });
 });
 
@@ -145,6 +165,15 @@ describe("counts", () => {
 
   it("counts what needs the user, leaving out ready tasks", () => {
     expect(countFirstmateNeedsYou(tasks)).toBe(2);
+  });
+
+  it("still counts a decision on a task that has no worker yet", () => {
+    expect(
+      countFirstmateNeedsYou([
+        task("p", "open", "user", undefined, null, null),
+        task("q", "open", "coordinator", undefined, null, null),
+      ]),
+    ).toBe(1);
   });
 
   it("counts tasks that are not closed", () => {

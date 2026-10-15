@@ -12,10 +12,12 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { useAgentsHome, useAgentTasks } from "~/state/agents";
+import { useFirstmateTaskFocusStore } from "./firstmateTaskFocusStore";
 import { useFirstmateSnapshot } from "~/state/firstmate";
 import { ScheduledSection } from "./FirstmateScheduledSection";
 import { useRelativeTimeTick } from "../settings/settingsLayout";
@@ -265,7 +267,7 @@ function TaskSections({
   return (
     <ScrollArea className="min-h-0 flex-1" scrollFade>
       <div className="flex flex-col gap-3 px-2 pt-1 pb-4">
-        {(["needs-you", "ready", "in-progress", "in-review"] as const).map((column) => (
+        {(["needs-you", "ready", "planning", "in-progress", "in-review"] as const).map((column) => (
           <ActiveSection
             key={column}
             column={column}
@@ -332,6 +334,14 @@ export function FirstmateTasksPanel({
     agent !== null && agent.id !== FIRSTMATE_AGENT_ID ? agentQuery : firstmateQuery;
   const snapshot = snapshotQuery.data;
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  // A sidebar card can ask for one task's detail as it opens this panel.
+  const threadKey = scopedThreadKey(scopeThreadRef(environmentId, threadId));
+  const focusRequest = useFirstmateTaskFocusStore((state) => state.request);
+  useEffect(() => {
+    if (focusRequest === null || focusRequest.threadKey !== threadKey) return;
+    const taskId = useFirstmateTaskFocusStore.getState().take(threadKey);
+    if (taskId !== null) setSelectedTaskId(taskId);
+  }, [focusRequest, threadKey]);
   if (snapshot === null) {
     return snapshotQuery.error ? (
       <PanelMessage title="Tasks aren't available">

@@ -16,6 +16,7 @@ export const CoordinatorThreadContext = createContext<ThreadId | null>(null);
 export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
   "needs-you": "Needs you",
   ready: "Ready for deployment",
+  planning: "Planning",
   "in-progress": "In progress",
   "in-review": "In review",
   done: "Done",
@@ -24,6 +25,7 @@ export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
 export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = {
   "needs-you": "Nothing needs you",
   ready: "Nothing ready to deploy",
+  planning: "Nothing being planned",
   "in-progress": "Nothing in progress",
   "in-review": "Nothing in review",
 };
@@ -32,6 +34,7 @@ export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = 
 export const COLUMN_DOT: Record<FirstmateColumnId, string> = {
   "needs-you": "bg-warning",
   ready: "bg-success",
+  planning: "bg-primary/60",
   "in-progress": "bg-info",
   "in-review": "bg-muted-foreground/60",
   done: "bg-muted-foreground/30",
