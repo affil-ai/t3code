@@ -10,6 +10,7 @@ import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchRea
 import * as Firstmate from "./firstmate/index.ts"; // fork: firstmate
 import * as Office from "./office/index.ts"; // fork: office
 import * as OfficeGitPolicy from "./office/OfficeGitPolicy.ts";
+import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -584,6 +585,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ),
   Firstmate.runtimeLayer, // fork: firstmate
   Office.runtimeLayer, // fork: office
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const service = yield* DelegatedTaskQuestionReactor.DelegatedTaskQuestionReactor;
+      yield* service.start();
+    }),
+  ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   // Subscribes to `account.rate-limits.updated` so usage bars track live
   // telemetry instead of waiting for the next status probe.
   ProviderUsageLimitsIngestion.layer,
