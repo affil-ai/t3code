@@ -4092,7 +4092,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
       <LocalSecondaryStatus />
       {showAgentSections ? <AgentSidebarSections agent={selectedAgent} /> : null /* fork: agents */}
       {showAgentSections && showWorkLists ? (
-        <Separator className="mx-2 mb-3 w-auto" /> /* fork: agents */
+        // The group's own padding insets the line; a margin on the line itself
+        // would add to its full width and make the sidebar scroll sideways.
+        <SidebarGroup className="mb-3">
+          <Separator />
+        </SidebarGroup> /* fork: agents */
       ) : null}
       {!showWorkLists ? null : isWorkMode ? (
         <SidebarWorkSections
