@@ -37,7 +37,15 @@ import {
 } from "../ui/alert-dialog";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Menu, MenuGroupLabel, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { SidebarMenu } from "../ui/sidebar";
 import { Spinner } from "../ui/spinner";
 import { AgentAvatar } from "./AgentAvatar";
@@ -251,33 +259,36 @@ export function AgentSwitcher() {
           <ChevronsUpDownIcon className="size-3.5" />
         </MenuTrigger>
         <MenuPopup align="start" className="w-64">
-          <MenuGroupLabel>Agents</MenuGroupLabel>
-          {agentsHome.agents.map((candidate) => {
-            const current = candidate.id === agent.id;
-            const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
-            return (
-              <MenuItem key={candidate.id} onClick={() => switchTo(candidate)}>
-                <AgentAvatar
-                  icon={candidateFirstmate ? icon : candidate.icon}
-                  color={candidate.color ?? AGENT_DEFAULT_COLOR}
-                  className="size-7 rounded-lg"
-                  iconClassName="size-4"
-                />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className={cn("truncate font-medium", !current && "font-normal")}>
-                    {candidateFirstmate ? name : candidate.name}
+          {/* A group label needs its group; Base UI throws otherwise. */}
+          <MenuGroup>
+            <MenuGroupLabel>Agents</MenuGroupLabel>
+            {agentsHome.agents.map((candidate) => {
+              const current = candidate.id === agent.id;
+              const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
+              return (
+                <MenuItem key={candidate.id} onClick={() => switchTo(candidate)}>
+                  <AgentAvatar
+                    icon={candidateFirstmate ? icon : candidate.icon}
+                    color={candidate.color ?? AGENT_DEFAULT_COLOR}
+                    className="size-7 rounded-lg"
+                    iconClassName="size-4"
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className={cn("truncate font-medium", !current && "font-normal")}>
+                      {candidateFirstmate ? name : candidate.name}
+                    </span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {candidate.coordinatorThreadId === null
+                        ? "Not started"
+                        : candidate.role.split("\n")[0] ||
+                          (candidateFirstmate ? "Your coordinator" : "Agent")}
+                    </span>
                   </span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {candidate.coordinatorThreadId === null
-                      ? "Not started"
-                      : candidate.role.split("\n")[0] ||
-                        (candidateFirstmate ? "Your coordinator" : "Agent")}
-                  </span>
-                </span>
-                {current ? <CheckIcon className="size-4 shrink-0" /> : null}
-              </MenuItem>
-            );
-          })}
+                  {current ? <CheckIcon className="size-4 shrink-0" /> : null}
+                </MenuItem>
+              );
+            })}
+          </MenuGroup>
           <MenuSeparator />
           <MenuItem onClick={() => setDialog({ agent: null })}>
             <PlusIcon className="size-4" />
