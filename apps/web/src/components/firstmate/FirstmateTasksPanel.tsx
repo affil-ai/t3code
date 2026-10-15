@@ -267,7 +267,7 @@ function TaskSections({
   return (
     <ScrollArea className="min-h-0 flex-1" scrollFade>
       <div className="flex flex-col gap-3 px-2 pt-1 pb-4">
-        {(["needs-you", "ready", "planning", "in-progress", "in-review"] as const).map((column) => (
+        {(["planning", "needs-you", "ready", "in-progress", "in-review"] as const).map((column) => (
           <ActiveSection
             key={column}
             column={column}

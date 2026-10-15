@@ -1,9 +1,9 @@
 import type { FirstmateTask } from "@t3tools/contracts";
 
 export const FIRSTMATE_COLUMN_IDS = [
+  "planning",
   "needs-you",
   "ready",
-  "planning",
   "in-progress",
   "in-review",
   "done",
@@ -61,9 +61,9 @@ function newestFirst(left: FirstmateTask, right: FirstmateTask): number {
 /** Groups tasks into columns, newest activity first, keeping the latest closed tasks. */
 export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoardColumns {
   const columns: Record<FirstmateColumnId, FirstmateTask[]> = {
+    planning: [],
     "needs-you": [],
     ready: [],
-    planning: [],
     "in-progress": [],
     "in-review": [],
     done: [],

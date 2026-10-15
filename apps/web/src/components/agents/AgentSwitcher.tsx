@@ -7,6 +7,7 @@
  * the agent's chat, or starts one for an agent whose chat is gone. It is
  * absent when no connected server runs agents.
  */
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   AGENT_DEFAULT_COLOR,
   type AgentProfile,
@@ -15,12 +16,12 @@ import {
 } from "@t3tools/contracts";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ArchiveIcon, CheckIcon, ChevronsUpDownIcon, PencilIcon, PlusIcon } from "lucide-react";
-import { type MouseEvent, type ReactNode, useState } from "react";
+import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { useSelectedAgentStore } from "~/selectedAgentStore";
-import { useAgentsHome, useAgentTasks } from "~/state/agents";
+import { useAgentByThreadKey, useAgentsHome, useAgentTasks } from "~/state/agents";
 import { useFirstmateHome } from "~/state/firstmate";
 import { resolveThreadRouteRef } from "~/threadRoutes";
 import { countFirstmateNeedsYou } from "../firstmate/firstmateBoard.logic";
@@ -144,7 +145,37 @@ export function AgentSwitcher() {
   const routeKey = routeThreadRef
     ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}`
     : null;
+  // The sidebar follows the open chat's agent, so back and forward (or a
+  // link) between agents' chats switch the sidebar too.
+  const agentByThreadKey = useAgentByThreadKey();
+  const routeAgentId =
+    routeThreadRef === null
+      ? null
+      : (agentByThreadKey.get(
+          scopedThreadKey(scopeThreadRef(routeThreadRef.environmentId, routeThreadRef.threadId)),
+        ) ?? null);
+  useEffect(() => {
+    if (routeAgentId === null || agent === null || routeAgentId === agent.id) return;
+    selectAgent(routeAgentId === FIRSTMATE_AGENT_ID ? null : routeAgentId);
+  }, [routeAgentId, agent, selectAgent]);
   const [dialog, setDialog] = useState<{ agent: AgentProfile | null } | null>(null);
+  // The switcher opens on hover as well as click, so changing agents is one
+  // motion. Leaving the trigger or the popup closes it after a short grace.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelHoverTimer = () => {
+    if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+  };
+  const openOnHover = () => {
+    cancelHoverTimer();
+    hoverTimer.current = setTimeout(() => setMenuOpen(true), 120);
+  };
+  const closeAfterLeave = () => {
+    cancelHoverTimer();
+    hoverTimer.current = setTimeout(() => setMenuOpen(false), 220);
+  };
+  useEffect(() => cancelHoverTimer, []);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [archiving, setArchiving] = useState<AgentProfile | null>(null);
   const { pending, archive, run } = useAgentCommands();
@@ -243,8 +274,10 @@ export function AgentSwitcher() {
           )
         }
       />
-      <Menu>
+      <Menu open={menuOpen} onOpenChange={setMenuOpen}>
         <MenuTrigger
+          onPointerEnter={openOnHover}
+          onPointerLeave={closeAfterLeave}
           render={
             <Button
               size="icon-xs"
@@ -258,7 +291,12 @@ export function AgentSwitcher() {
         >
           <ChevronsUpDownIcon className="size-3.5" />
         </MenuTrigger>
-        <MenuPopup align="start" className="w-64">
+        <MenuPopup
+          align="start"
+          className="w-64"
+          onPointerEnter={cancelHoverTimer}
+          onPointerLeave={closeAfterLeave}
+        >
           {/* A group label needs its group; Base UI throws otherwise. */}
           <MenuGroup>
             <MenuGroupLabel>Agents</MenuGroupLabel>

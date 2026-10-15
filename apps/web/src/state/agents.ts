@@ -139,3 +139,38 @@ const customAgentWorkerThreadKeysAtom = Atom.make((get): ReadonlySet<string> => 
 export function useCustomAgentWorkerThreadKeys(): ReadonlySet<string> {
   return useAtomValue(customAgentWorkerThreadKeysAtom);
 }
+
+const NO_THREAD_AGENTS: ReadonlyMap<string, AgentProfileId> = new Map();
+
+/**
+ * Which agent a thread belongs to, by scoped thread key: every agent's
+ * coordinator chat, and the worker chats on each agent's board. The sidebar
+ * follows this when the route changes, so back and forward land on the
+ * agent whose chat is open.
+ */
+const agentByThreadKeyAtom = Atom.make((get): ReadonlyMap<string, AgentProfileId> => {
+  const home = get(agentsHomeAtom);
+  if (home === null) return NO_THREAD_AGENTS;
+  const byKey = new Map<string, AgentProfileId>();
+  for (const agent of home.agents) {
+    if (agent.coordinatorThreadId !== null) {
+      byKey.set(
+        scopedThreadKey(scopeThreadRef(home.environmentId, agent.coordinatorThreadId)),
+        agent.id,
+      );
+    }
+    const result = get(
+      agentsEnvironment.tasks({ environmentId: home.environmentId, input: { agentId: agent.id } }),
+    );
+    if (!AsyncResult.isSuccess(result)) continue;
+    for (const task of result.value.tasks) {
+      if (task.workerThreadId === null) continue;
+      byKey.set(scopedThreadKey(scopeThreadRef(home.environmentId, task.workerThreadId)), agent.id);
+    }
+  }
+  return byKey.size === 0 ? NO_THREAD_AGENTS : byKey;
+}).pipe(Atom.withLabel("agents:by-thread-key"));
+
+export function useAgentByThreadKey(): ReadonlyMap<string, AgentProfileId> {
+  return useAtomValue(agentByThreadKeyAtom);
+}

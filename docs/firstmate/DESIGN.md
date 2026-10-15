@@ -284,8 +284,9 @@ write skills on request.
   using this chat" button instead.
 - The panel is narrow: sections stack vertically, mapped in a pure, tested
   logic file. Rules apply in this order:
-  - Done: `done` or `dropped`. Show the latest 20, collapsed by default.
-  - Planning: `nextActor` is `coordinator` on an open, waiting, or ready
+  - Done: `done` or `dropped`. Show the latest 20, collapsed by default
+    (listed last).
+  - Planning (listed first): `nextActor` is `coordinator` on an open, waiting, or ready
     task. The sidebar shows these as cards (title, intent excerpt, next
     step); a card with a `workerThreadId` opens that chat, otherwise the
     task's detail in the panel.
