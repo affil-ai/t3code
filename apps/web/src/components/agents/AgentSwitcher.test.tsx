@@ -12,7 +12,14 @@ import { SidebarProvider, useSidebar } from "../ui/sidebar";
 import { AgentSwitcher } from "./AgentSwitcher";
 import { AgentTaskTree } from "./AgentTaskTree";
 
-const mocks = vi.hoisted(() => ({ mobile: true, navigate: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  mobile: true,
+  navigate: vi.fn(),
+  firstmateAppearance: { name: "Firstmate", icon: "compass" } as {
+    name: string;
+    icon: string;
+  } | null,
+}));
 const environmentId = EnvironmentId.make("test");
 const agents = [
   { id: "firstmate", name: "Firstmate", coordinatorThreadId: "firstmate-chat" },
@@ -21,7 +28,7 @@ const agents = [
   ...agent,
   coordinatorThreadId: ThreadId.make(agent.coordinatorThreadId),
   role: "Your coordinator",
-  icon: "bot",
+  icon: agent.id === "firstmate" ? "compass" : "bot",
   color: "blue",
 })) as AgentProfile[];
 const firstmate = agents[0]!;
@@ -56,7 +63,13 @@ vi.mock("~/state/agents", () => ({
   useAgentTasks: () => ({ data: { tasks: [] } }),
 }));
 vi.mock("~/state/firstmate", () => ({
-  useFirstmateHome: () => ({ environmentId, snapshot: { ...firstmate, tasks: [] } }),
+  useFirstmateHome: () =>
+    mocks.firstmateAppearance === null
+      ? null
+      : {
+          environmentId,
+          snapshot: { ...firstmate, ...mocks.firstmateAppearance, tasks: [] },
+        },
 }));
 vi.mock("~/state/entities", () => ({ useThreadShell: () => null }));
 vi.mock("../firstmate/firstmateModel", () => ({ useFirstmateModelSelection: () => null }));
@@ -97,6 +110,7 @@ beforeEach(() => {
   });
   mocks.mobile = true;
   mocks.navigate.mockReset();
+  mocks.firstmateAppearance = { name: "Firstmate", icon: "compass" };
   useSelectedAgentStore.setState({ selectedAgentId: null, preferCustomAgent: false });
   useRightPanelStore.setState({ byThreadKey: {} });
   container = document.createElement("div");
@@ -142,6 +156,34 @@ async function pointer(element: Element, type: string, pointerType: string) {
 }
 
 describe("agent switcher navigation", () => {
+  it.each([
+    { appearance: { name: "Captain", icon: "crown" }, name: "Captain", icon: "crown" },
+    { appearance: null, name: "Firstmate", icon: "compass" },
+  ])(
+    "keeps Firstmate's own name and icon when another agent is selected ($name)",
+    async ({ appearance, name, icon }) => {
+      mocks.firstmateAppearance = appearance;
+      useSelectedAgentStore.setState({ selectedAgentId: research.id });
+      await renderSwitcher();
+      await click(container.querySelector('[aria-label="Switch agent"]')!);
+      const items = [...document.querySelectorAll('[role="menuitem"]')];
+      const firstmateItem = items[0]!;
+      const researchItem = items[1]!;
+      expect(firstmateItem.textContent).toBe(`${name}Your coordinator`);
+      expect(firstmateItem.querySelector(`svg.lucide-${icon}`)).not.toBeNull();
+      expect(firstmateItem.querySelector("svg.lucide-bot")).toBeNull();
+      expect(researchItem.textContent).toBe("ResearchYour coordinator");
+      expect(researchItem.querySelector("svg.lucide-bot")).not.toBeNull();
+      await click(firstmateItem);
+      expect(useSelectedAgentStore.getState().selectedAgentId).toBeNull();
+      expect(mocks.navigate).toHaveBeenLastCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId: firstmate.coordinatorThreadId },
+      });
+      expect(container.querySelector("output")?.textContent).toBe("false");
+    },
+  );
+
   it("still opens on mouse hover on desktop", async () => {
     mocks.mobile = false;
     await renderSwitcher();

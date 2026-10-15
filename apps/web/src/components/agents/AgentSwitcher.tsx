@@ -302,17 +302,23 @@ export function AgentSwitcher() {
             {agentsHome.agents.map((candidate) => {
               const current = candidate.id === agent.id;
               const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
+              const candidateName = candidateFirstmate
+                ? (firstmateHome?.snapshot.name ?? candidate.name)
+                : candidate.name;
+              const candidateIcon = candidateFirstmate
+                ? (firstmateHome?.snapshot.icon ?? candidate.icon)
+                : candidate.icon;
               return (
                 <MenuItem key={candidate.id} onClick={() => switchTo(candidate)}>
                   <AgentAvatar
-                    icon={candidateFirstmate ? icon : candidate.icon}
+                    icon={candidateIcon}
                     color={candidate.color ?? AGENT_DEFAULT_COLOR}
                     className="size-7 rounded-lg"
                     iconClassName="size-4"
                   />
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span className={cn("truncate font-medium", !current && "font-normal")}>
-                      {candidateFirstmate ? name : candidate.name}
+                      {candidateName}
                     </span>
                     <span className="truncate text-xs text-muted-foreground">
                       {candidate.coordinatorThreadId === null
