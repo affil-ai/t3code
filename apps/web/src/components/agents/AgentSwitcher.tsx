@@ -40,7 +40,6 @@ import { Button } from "../ui/button";
 import { Menu, MenuGroupLabel, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { SidebarMenu } from "../ui/sidebar";
 import { Spinner } from "../ui/spinner";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AgentAvatar } from "./AgentAvatar";
 import { useAgentCommands } from "./agentCommands";
 import { AgentDialog } from "./AgentDialog";
@@ -237,26 +236,20 @@ export function AgentSwitcher() {
         }
       />
       <Menu>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <MenuTrigger
-                render={
-                  <Button
-                    size="icon-xs"
-                    variant="ghost-muted"
-                    aria-label="Switch agent"
-                    data-testid="agent-switcher-trigger"
-                    className="absolute top-1/2 right-2 -translate-y-1/2"
-                  />
-                }
-              />
-            }
-          >
-            <ChevronsUpDownIcon className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipPopup side="right">Switch agent</TooltipPopup>
-        </Tooltip>
+        <MenuTrigger
+          render={
+            <Button
+              size="icon-xs"
+              variant="ghost-muted"
+              aria-label="Switch agent"
+              title="Switch agent"
+              data-testid="agent-switcher-trigger"
+              className="absolute top-1/2 right-2 -translate-y-1/2"
+            />
+          }
+        >
+          <ChevronsUpDownIcon className="size-3.5" />
+        </MenuTrigger>
         <MenuPopup align="start" className="w-64">
           <MenuGroupLabel>Agents</MenuGroupLabel>
           {agentsHome.agents.map((candidate) => {
