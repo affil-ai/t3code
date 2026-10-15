@@ -16,7 +16,7 @@ import {
 } from "@t3tools/contracts";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ArchiveIcon, CheckIcon, ChevronsUpDownIcon, PencilIcon, PlusIcon } from "lucide-react";
-import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type MouseEvent, type ReactNode, useEffect, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
@@ -47,7 +47,8 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
-import { SidebarMenu } from "../ui/sidebar";
+import { SidebarMenu, useSidebar } from "../ui/sidebar";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { Spinner } from "../ui/spinner";
 import { AgentAvatar } from "./AgentAvatar";
 import { useAgentCommands } from "./agentCommands";
@@ -104,6 +105,7 @@ function StartAgentButton({
   readonly children?: ReactNode;
 }) {
   const navigate = useNavigate();
+  const { isMobile, setOpenMobile } = useSidebar();
   const modelSelection = useFirstmateModelSelection(environmentId);
   const { pending, start, run } = useAgentCommands();
   return (
@@ -119,6 +121,8 @@ function StartAgentButton({
           `Could not start ${name}`,
         ).then((started) => {
           if (started === null) return;
+          useRightPanelStore.getState().close(scopeThreadRef(environmentId, started.threadId));
+          if (isMobile) setOpenMobile(false);
           void navigate({
             to: "/$environmentId/$threadId",
             params: { environmentId, threadId: started.threadId },
@@ -133,6 +137,7 @@ function StartAgentButton({
 }
 
 export function AgentSwitcher() {
+  const { isMobile, setOpenMobile } = useSidebar();
   const agentsHome = useAgentsHome();
   const firstmateHome = useFirstmateHome();
   const agent = useSelectedAgent();
@@ -159,23 +164,6 @@ export function AgentSwitcher() {
     selectAgent(routeAgentId === FIRSTMATE_AGENT_ID ? null : routeAgentId);
   }, [routeAgentId, agent, selectAgent]);
   const [dialog, setDialog] = useState<{ agent: AgentProfile | null } | null>(null);
-  // The switcher opens on hover as well as click, so changing agents is one
-  // motion. Leaving the trigger or the popup closes it after a short grace.
-  const [menuOpen, setMenuOpen] = useState(false);
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cancelHoverTimer = () => {
-    if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
-    hoverTimer.current = null;
-  };
-  const openOnHover = () => {
-    cancelHoverTimer();
-    hoverTimer.current = setTimeout(() => setMenuOpen(true), 120);
-  };
-  const closeAfterLeave = () => {
-    cancelHoverTimer();
-    hoverTimer.current = setTimeout(() => setMenuOpen(false), 220);
-  };
-  useEffect(() => cancelHoverTimer, []);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [archiving, setArchiving] = useState<AgentProfile | null>(null);
   const { pending, archive, run } = useAgentCommands();
@@ -191,6 +179,17 @@ export function AgentSwitcher() {
   const onCoordinator =
     coordinatorThreadId !== null && routeKey === `${environmentId}:${coordinatorThreadId}`;
 
+  const openChat = (threadId: typeof coordinatorThreadId) => {
+    if (threadId !== null) {
+      useRightPanelStore.getState().close(scopeThreadRef(environmentId, threadId));
+    }
+    if (isMobile) setOpenMobile(false);
+  };
+  const onRowClick = (event: MouseEvent) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+      return;
+    openChat(coordinatorThreadId);
+  };
   const openEditor = (target: AgentProfile) => {
     if (target.id === FIRSTMATE_AGENT_ID) setAppearanceOpen(true);
     else setDialog({ agent: target });
@@ -223,10 +222,12 @@ export function AgentSwitcher() {
         : target.coordinatorThreadId;
     if (threadId === null) {
       if (target.id === FIRSTMATE_AGENT_ID) {
+        openChat(null);
         void navigate({ to: "/firstmate/$environmentId", params: { environmentId } });
       }
       return;
     }
+    openChat(threadId);
     void navigate({ to: "/$environmentId/$threadId", params: { environmentId, threadId } });
   };
 
@@ -260,6 +261,7 @@ export function AgentSwitcher() {
                 to="/firstmate/$environmentId"
                 params={{ environmentId }}
                 activeProps={{ "data-active": true }}
+                onClick={onRowClick}
               />
             ) : (
               // An agent whose chat is gone, or that never started: a click starts one.
@@ -269,15 +271,17 @@ export function AgentSwitcher() {
             <Link
               to="/$environmentId/$threadId"
               params={{ environmentId, threadId: coordinatorThreadId }}
+              onClick={onRowClick}
               {...(onCoordinator ? { "data-active": true } : {})}
             />
           )
         }
       />
-      <Menu open={menuOpen} onOpenChange={setMenuOpen}>
+      <Menu>
         <MenuTrigger
-          onPointerEnter={openOnHover}
-          onPointerLeave={closeAfterLeave}
+          openOnHover={!isMobile}
+          delay={120}
+          closeDelay={220}
           render={
             <Button
               size="icon-xs"
@@ -291,12 +295,7 @@ export function AgentSwitcher() {
         >
           <ChevronsUpDownIcon className="size-3.5" />
         </MenuTrigger>
-        <MenuPopup
-          align="start"
-          className="w-64"
-          onPointerEnter={cancelHoverTimer}
-          onPointerLeave={closeAfterLeave}
-        >
+        <MenuPopup align="start" className="w-64">
           {/* A group label needs its group; Base UI throws otherwise. */}
           <MenuGroup>
             <MenuGroupLabel>Agents</MenuGroupLabel>

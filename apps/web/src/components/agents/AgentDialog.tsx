@@ -35,6 +35,7 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { AgentAvatar } from "./AgentAvatar";
 import { useSelectedAgentStore } from "~/selectedAgentStore";
 import { useAgentCommands } from "./agentCommands";
+import { useSidebar } from "../ui/sidebar";
 
 const NAME_MAX_LENGTH = 60;
 const ROLE_MAX_LENGTH = 2000;
@@ -71,6 +72,7 @@ function AgentForm({
 }) {
   const id = useId();
   const navigate = useNavigate();
+  const { isMobile, setOpenMobile } = useSidebar();
   const [name, setName] = useState(agent?.name ?? "");
   const [role, setRole] = useState(agent?.role ?? "");
   const [icon, setIcon] = useState<FirstmateIconKey>(resolveFirstmateIconKey(agent?.icon ?? "bot"));
@@ -105,6 +107,7 @@ function AgentForm({
         // The sidebar follows the agent that was just made.
         useSelectedAgentStore.getState().selectAgent(created.agent.id);
         onDone();
+        if (isMobile) setOpenMobile(false);
         void navigate({
           to: "/$environmentId/$threadId",
           params: { environmentId, threadId: created.threadId },

@@ -23,6 +23,7 @@ import {
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { COLUMN_DOT, COLUMN_LABELS, taskNextStep } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { useSidebar } from "../ui/sidebar";
 
 /** The intent's first line, short enough for a sidebar card. */
 function intentExcerpt(intent: string, limit = 90): string {
@@ -42,11 +43,13 @@ function PlanningCard({
   readonly activeRouteKey: string | null;
 }) {
   const navigate = useNavigate();
+  const { isMobile, setOpenMobile } = useSidebar();
   const nextStep = taskNextStep(task);
   const excerpt = intentExcerpt(task.intent);
   const active =
     task.workerThreadId !== null && activeRouteKey === `${environmentId}:${task.workerThreadId}`;
   const open = () => {
+    if (isMobile) setOpenMobile(false);
     if (task.workerThreadId !== null) {
       void navigate({
         to: "/$environmentId/$threadId",
@@ -135,6 +138,7 @@ function TaskRow({
   readonly task: FirstmateTask;
   readonly activeRouteKey: string | null;
 }) {
+  const { isMobile, setOpenMobile } = useSidebar();
   const threadId = task.workerThreadId ?? coordinatorThreadId;
   const active = task.workerThreadId !== null && activeRouteKey === `${environmentId}:${threadId}`;
   const nextStep = taskNextStep(task);
@@ -146,6 +150,17 @@ function TaskRow({
             <Link
               to="/$environmentId/$threadId"
               params={{ environmentId, threadId }}
+              onClick={(event) => {
+                if (
+                  isMobile &&
+                  event.button === 0 &&
+                  !event.metaKey &&
+                  !event.ctrlKey &&
+                  !event.shiftKey &&
+                  !event.altKey
+                )
+                  setOpenMobile(false);
+              }}
               className={cn(
                 "flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-sm text-sidebar-foreground/80 outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset",
                 active && "bg-sidebar-row-selected text-sidebar-foreground",

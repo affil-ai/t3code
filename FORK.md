@@ -161,7 +161,9 @@ tools, wake rules, and UI.
 | Tables (created at server start, not by migration) | `firstmate_agent`, `firstmate_task`, `firstmate_task_event`, `firstmate_config`                         |
 
 In Work mode, the selected agent's row sits below Search in the sidebar. It
-opens the coordinator chat with a **Tasks** tab in the right panel. The panel shows whichever agent's
+opens the coordinator chat with the right panel closed. Open **Tasks** when
+you need the board. On mobile, choosing an agent or chat closes the sidebar.
+The panel shows whichever agent's
 chat is open, ends with that chat's **Automations**, and its menu renames
 the agent and changes its icon for every client.
 
