@@ -20,21 +20,21 @@ export const FIRSTMATE_DONE_LIMIT = 20;
  * apply in this order:
  *
  * 1. Done: the task is done or dropped, whoever was last named to act.
- * 2. Ready for deployment: reviewed and green (state `ready`). Only the user's
+ * 2. Planning: the coordinator acts next on an open, waiting, or ready task.
+ *    It is thinking, briefing, or deciding, with or without a worker chat.
+ * 3. Ready for deployment: reviewed and green (state `ready`). Only the user's
  *    merge or deploy remains, so it stays out of Needs you, which is for
  *    decisions.
- * 3. Planning: an open or waiting task that has no worker yet. It leaves the
- *    column the moment a worker chat is recorded, whoever acts next.
  * 4. Needs you: the user acts next, even on a waiting task, so the board
  *    never hides a decision behind a waiting state.
  * 5. In review: the task is waiting on reviews or checks (state `waiting`), or
  *    someone outside acts next.
- * 6. In progress: the worker or the coordinator acts next.
+ * 6. In progress: the worker acts next.
  */
 export function firstmateColumnForTask(task: FirstmateTask): FirstmateColumnId {
   if (task.state === "done" || task.state === "dropped") return "done";
+  if (task.nextActor === "coordinator") return "planning";
   if (task.state === "ready") return "ready";
-  if (task.workerThreadId === null) return "planning";
   if (task.nextActor === "user") return "needs-you";
   if (task.state === "waiting" || task.nextActor === "external") return "in-review";
   return "in-progress";
@@ -78,16 +78,10 @@ export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoa
   return columns;
 }
 
-/**
- * Tasks waiting on a decision from the user: the Needs you column, plus a
- * task still being planned whose next actor is the user, so the badge does
- * not drop a decision because no worker has started.
- */
 export function countFirstmateNeedsYou(tasks: readonly FirstmateTask[]): number {
   let count = 0;
   for (const task of tasks) {
-    const column = firstmateColumnForTask(task);
-    if (column === "needs-you" || (column === "planning" && task.nextActor === "user")) count += 1;
+    if (firstmateColumnForTask(task) === "needs-you") count += 1;
   }
   return count;
 }

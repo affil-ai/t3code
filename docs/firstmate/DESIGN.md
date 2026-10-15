@@ -284,12 +284,11 @@ write skills on request.
 - The panel is narrow: sections stack vertically, mapped in a pure, tested
   logic file. Rules apply in this order:
   - Done: `done` or `dropped`. Show the latest 20, collapsed by default.
-  - Ready for deployment: `state` is `ready`, whoever acts next.
-  - Planning: no `workerThreadId` yet (state `open` or `waiting`). The
-    sidebar shows these as cards (title, intent excerpt, next step, who
-    acts) that open the task's detail in the panel rather than a chat; a
-    task leaves Planning as soon as a worker is recorded. The Needs-you
-    badge still counts a Planning task whose next actor is the user.
+  - Planning: `nextActor` is `coordinator` on an open, waiting, or ready
+    task. The sidebar shows these as cards (title, intent excerpt, next
+    step); a card with a `workerThreadId` opens that chat, otherwise the
+    task's detail in the panel.
+  - Ready for deployment: `state` is `ready`, whoever else acts next.
   - Needs you: `nextActor` is `user`.
   - In review: `state` is `waiting`, or `nextActor` is `external`.
   - In progress: `nextActor` is `worker` or `coordinator`.

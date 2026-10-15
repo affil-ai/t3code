@@ -2,9 +2,10 @@
  * An agent's open tasks in the sidebar, in the Tasks panel's sections
  * (Needs you, Ready for deployment, Planning, In progress, In review). A task
  * with a worker opens the worker's chat, with a dot for what the worker is
- * doing. A Planning task has no worker yet, so it is a card (title, intent,
- * next step, who acts) that opens the task's detail in the Tasks panel beside
- * the agent's chat. Closed tasks stay in the panel.
+ * doing. A Planning task (the coordinator acts next) is a card with its title,
+ * intent, and next step; with a worker it opens that chat, otherwise the
+ * task's detail in the Tasks panel beside the agent's chat. Closed tasks stay
+ * in the panel.
  */
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, FirstmateTask, ThreadId } from "@t3tools/contracts";
@@ -20,12 +21,7 @@ import {
   mapFirstmateBoard,
 } from "../firstmate/firstmateBoard.logic";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
-import {
-  COLUMN_DOT,
-  COLUMN_LABELS,
-  nextActorLabel,
-  taskNextStep,
-} from "../firstmate/firstmateTasksShared";
+import { COLUMN_DOT, COLUMN_LABELS, taskNextStep } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 /** The intent's first line, short enough for a sidebar card. */
@@ -38,15 +34,26 @@ function PlanningCard({
   environmentId,
   coordinatorThreadId,
   task,
+  activeRouteKey,
 }: {
   readonly environmentId: EnvironmentId;
   readonly coordinatorThreadId: ThreadId;
   readonly task: FirstmateTask;
+  readonly activeRouteKey: string | null;
 }) {
   const navigate = useNavigate();
   const nextStep = taskNextStep(task);
   const excerpt = intentExcerpt(task.intent);
+  const active =
+    task.workerThreadId !== null && activeRouteKey === `${environmentId}:${task.workerThreadId}`;
   const open = () => {
+    if (task.workerThreadId !== null) {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId: task.workerThreadId },
+      });
+      return;
+    }
     const threadRef = scopeThreadRef(environmentId, coordinatorThreadId);
     useFirstmateTaskFocusStore
       .getState()
@@ -64,20 +71,28 @@ function PlanningCard({
         onClick={open}
         aria-label={`Open ${task.title}`}
         data-testid="planning-task-card"
-        className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-1.5 text-left outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset"
+        className={cn(
+          "flex w-full min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-1.5 text-left outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset",
+          active && "bg-sidebar-row-selected",
+        )}
+        {...(active ? { "data-active": true } : {})}
       >
-        <span className="truncate text-sm text-sidebar-foreground/90">{task.title}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-sm text-sidebar-foreground/90">
+            {task.title}
+          </span>
+          {task.workerThreadId !== null ? (
+            <WorkerStatusDot environmentId={environmentId} workerThreadId={task.workerThreadId} />
+          ) : null}
+        </span>
         {excerpt ? (
           <span className="line-clamp-2 text-xs leading-4 text-sidebar-muted-foreground/80">
             {excerpt}
           </span>
         ) : null}
-        <span className="flex min-w-0 items-center gap-1.5 text-2xs text-sidebar-muted-foreground/80">
-          <span className="shrink-0 rounded-sm bg-sidebar-row-hover px-1 leading-4">
-            {nextActorLabel(task)}
-          </span>
-          {nextStep !== null ? <span className="truncate">{nextStep}</span> : null}
-        </span>
+        {nextStep !== null ? (
+          <span className="truncate text-2xs text-sidebar-muted-foreground/80">{nextStep}</span>
+        ) : null}
       </button>
     </li>
   );
@@ -192,6 +207,7 @@ export function AgentTaskTree({
                   environmentId={environmentId}
                   coordinatorThreadId={coordinatorThreadId}
                   task={task}
+                  activeRouteKey={activeRouteKey}
                 />
               ) : (
                 <TaskRow
