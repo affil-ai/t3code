@@ -191,8 +191,7 @@ function AgentTab({
       data-dragging={isDragging || undefined}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
-        "relative flex min-w-0 shrink-0 cursor-pointer touch-pan-x items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
-        current && "bg-sidebar-row-selected",
+        "group/agent-tab relative flex min-w-0 shrink-0 cursor-pointer touch-pan-x items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
         isDragging && "relative z-10 cursor-grabbing bg-sidebar-row-hover shadow-sm",
       )}
       onClick={() => {
@@ -206,7 +205,17 @@ function AgentTab({
         className="size-6 rounded-md"
         iconClassName="size-3.5"
       />
-      <span className="min-w-0 max-w-28 truncate">{name}</span>
+      {/* The current agent reads at full strength; the others are muted, with no background. */}
+      <span
+        className={cn(
+          "min-w-0 max-w-28 truncate transition-colors",
+          current
+            ? "text-sidebar-foreground"
+            : "text-sidebar-muted-foreground group-hover/agent-tab:text-sidebar-foreground",
+        )}
+      >
+        {name}
+      </span>
       {needsYou > 0 ? (
         // Corner count of tasks waiting on the user, like an app icon badge.
         <span

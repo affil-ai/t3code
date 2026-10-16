@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/web",
-  "version": "0.1.0-stable.fork.54",
+  "version": "0.1.0-stable.fork.55",
   "private": true,
   "type": "module",
   "scripts": {
