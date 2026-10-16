@@ -6,6 +6,8 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  OrchestrationV2PendingBackgroundTask,
+  type OrchestrationV2Notification,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   FIRSTMATE_AGENT_ID,
@@ -15,6 +17,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -26,6 +29,8 @@ import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
 } from "../orchestration-v2/ProjectionStore.ts";
+import { pullRequestWatchMessage } from "../orchestration-v2/pullRequestWatch.ts";
+import type { PullRequestWatchChange } from "../orchestration-v2/pullRequestWatch.ts";
 import * as FirstmateHome from "./FirstmateHome.ts";
 import * as FirstmateReactor from "./FirstmateReactor.ts";
 import * as FirstmateService from "./FirstmateService.ts";
@@ -39,6 +44,9 @@ const otherWorkerId = ThreadId.make("worker-growth");
 const projectId = ProjectId.make("project:firstmate-reactor");
 const epoch = "1970-01-01T00:00:00.000Z";
 let shellAuthoredMessageSequence = 0;
+const decodePendingBackgroundTask = Schema.decodeUnknownEffect(
+  OrchestrationV2PendingBackgroundTask,
+);
 
 const shell = (
   id: ThreadId,
@@ -101,6 +109,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
     readonly started?: boolean;
     readonly createdBy: "user" | "agent";
     readonly creationSource: "web" | "mcp" | "server";
+    readonly notification?: OrchestrationV2Notification;
   };
   const workerInputs = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<WorkerInput>>>(new Map());
   type RecordRead = {
@@ -148,11 +157,12 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
               ...(requestedFields.includes("messages")
                 ? {
                     messages: workerInput
-                      .map(({ messageId, createdBy, creationSource, runId }) => ({
+                      .map(({ messageId, createdBy, creationSource, runId, notification }) => ({
                         id: MessageId.make(messageId),
                         runId: RunId.make(runId),
                         createdBy,
                         creationSource,
+                        ...(notification === undefined ? {} : { notification }),
                       }))
                       .filter(
                         (message) =>
@@ -238,6 +248,23 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const context = yield* Layer.build(layer);
   const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
   const reactor = yield* FirstmateReactor.FirstmateReactor.pipe(Effect.provide(context));
+  // Rebuild only the reactor: its Ref state is fresh, but SQLite and thread records survive.
+  const rebuildReactor = () =>
+    Effect.gen(function* () {
+      const rebuilt = yield* Layer.build(
+        FirstmateReactor.reactorLayer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(FirstmateService.FirstmateService, service),
+              NodeCrypto.layer,
+              layerThreads,
+              Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.empty }),
+            ),
+          ),
+        ),
+      );
+      return yield* FirstmateReactor.FirstmateReactor.pipe(Effect.provide(rebuilt));
+    });
   const setWorkerInput = (workerThreadId: ThreadId, input: WorkerInput) =>
     Ref.update(workerInputs, (values) => {
       const previous = values.get(String(workerThreadId)) ?? [];
@@ -289,6 +316,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   return {
     service,
     reactor,
+    rebuildReactor,
     sends,
     failSends,
     setWorker,
@@ -455,34 +483,185 @@ describe("FirstmateReactor", () => {
     ),
   );
 
-  it.effect("defers completion while background tasks remain", () =>
+  it.effect.each(["subagent", "monitor", "background_task", "future_kind"])(
+    "defers completion while %s work remains",
+    (kind) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness();
+          yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+          yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+          const authoredAt = "1970-01-01T00:00:01.000Z" as never;
+          yield* harness.setWorker(
+            shell(workerId, {
+              status: "completed",
+              latestRunId: RunId.make("run:done"),
+              latestUserAuthoredMessageAt: authoredAt,
+              pendingBackgroundTasks: [
+                yield* decodePendingBackgroundTask({
+                  kind,
+                  taskId: "pending:one",
+                }),
+              ],
+            }),
+          );
+          yield* harness.reactor.sweep();
+          expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+
+          yield* harness.setWorker(
+            shell(workerId, {
+              status: "completed",
+              latestRunId: RunId.make("run:done"),
+              latestUserAuthoredMessageAt: authoredAt,
+              pendingBackgroundTasks: [],
+            }),
+          );
+          yield* harness.reactor.sweep();
+          expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+        }),
+      ),
+  );
+
+  it.effect("does not hold completion for a long-lived background command", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
-        const authoredAt = "1970-01-01T00:00:01.000Z" as never;
         yield* harness.setWorker(
           shell(workerId, {
             status: "completed",
             latestRunId: RunId.make("run:done"),
-            latestUserAuthoredMessageAt: authoredAt,
-            pendingBackgroundTasks: [{ kind: "subagent", taskId: "subagent:one" }],
-          }),
-        );
-        yield* harness.reactor.sweep();
-        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
-
-        yield* harness.setWorker(
-          shell(workerId, {
-            status: "completed",
-            latestRunId: RunId.make("run:done"),
-            latestUserAuthoredMessageAt: authoredAt,
-            pendingBackgroundTasks: [],
+            pendingBackgroundTasks: [{ kind: "command", taskId: "dev-server" }],
           }),
         );
         yield* harness.reactor.sweep();
         expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+        const rebuilt = yield* harness.rebuildReactor();
+        yield* rebuilt.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect.each(["routine checks", "new review comment", "new conflict", "failed check"])(
+    "PR-watch completion contract: %s",
+    (change) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness();
+          yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+          yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+          const changes: ReadonlyArray<PullRequestWatchChange> =
+            change === "routine checks"
+              ? [{ kind: "checks-passed", count: 2, required: true }]
+              : change === "new conflict"
+                ? [{ kind: "conflicting" }]
+                : change === "failed check"
+                  ? [
+                      {
+                        kind: "checks-failed",
+                        failed: [{ name: "test", status: "failure", description: null, url: null }],
+                      },
+                    ]
+                  : [
+                      {
+                        kind: "remarks",
+                        remarks: [
+                          {
+                            id: "review:one",
+                            kind: "review-comment",
+                            author: { login: "reviewer", name: null, avatarUrl: null },
+                            body: "Please add a regression test.",
+                            createdAt: epoch,
+                            url: null,
+                            path: "src/index.ts",
+                            reviewState: null,
+                          },
+                        ],
+                      },
+                    ];
+          // Use the production producer, including its structured notification.
+          const message = pullRequestWatchMessage({
+            number: 12,
+            url: "https://github.com/example/repo/pull/12",
+            baseBranch: "main",
+            headSha: "aaaaaaaaaa",
+            report: {
+              changes,
+              exhausted: false,
+              next: {
+                startedAt: epoch,
+                headSha: "aaaaaaaaaa",
+                failedChecks: [],
+                passed: false,
+                passedChecks: [],
+                remarksThrough: epoch,
+                remarkIds: [],
+                conflicting: false,
+                wakes: 0,
+              },
+            },
+          });
+          yield* harness.setWorker(
+            shell(workerId, {
+              status: "completed",
+              latestRunId: RunId.make("run:pr-watch"),
+              pendingBackgroundTasks: [{ kind: "monitor", taskId: "pull-request-watch:12" }],
+            }),
+          );
+          yield* harness.setWorkerInput(workerId, {
+            runId: "run:pr-watch",
+            messageId: "message:pr-watch:one",
+            status: "completed",
+            createdBy: "agent",
+            creationSource: "server",
+            notification: message.notification,
+          });
+          yield* harness.reactor.sweep();
+          const rebuilt = yield* harness.rebuildReactor();
+          yield* rebuilt.sweep();
+          const sends = yield* Ref.get(harness.sends);
+          expect(sends).toHaveLength(change === "routine checks" ? 0 : 1);
+          if (change !== "routine checks") expect(sends[0]!.text).toContain("worker-completed");
+        }),
+      ),
+  );
+
+  it.effect("keeps a delegated child result quiet while the parent is waiting_for_children", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:child-result"),
+            pendingBackgroundTasks: [
+              {
+                kind: "subagent",
+                taskId: "delegated:parent",
+                childThreadId: ThreadId.make("parent-waiting-for-children"),
+              },
+            ],
+          }),
+        );
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:child-result",
+          messageId: "message:delegated-result",
+          status: "completed",
+          createdBy: "agent",
+          creationSource: "server",
+          notification: {
+            source: { kind: "delegated_task", taskIds: [] },
+            outcome: "completed",
+            summary: "Child result available; parent is waiting_for_children.",
+          },
+        });
+        yield* TestClock.adjust("11 minutes");
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
       }),
     ),
   );
@@ -690,17 +869,23 @@ describe("FirstmateReactor", () => {
         expect(firstSends[0]!.text).not.toContain("worker-completed");
         const [held] = yield* harness.service.listStored();
         expect(held!.lastReportedRunId).toBe("run:before");
+        expect(held!.lastTerminalNoticeRunId).toBe("run:failed");
+
+        // A restart loses in-memory dedupe, but not the terminal-notice acknowledgement.
+        const rebuilt = yield* harness.rebuildReactor();
+        yield* rebuilt.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
 
         // A running delivery between sweeps must not forget the failure dedupe.
         yield* harness.setWorker({ ...notice, activeRunId: RunId.make("run:active") });
-        yield* harness.reactor.sweep();
+        yield* rebuilt.sweep();
         yield* harness.setWorker(notice);
-        yield* harness.reactor.sweep();
+        yield* rebuilt.sweep();
         expect(yield* Ref.get(harness.sends)).toHaveLength(1);
 
         yield* harness.setWorker({ ...notice, pendingBackgroundTasks: [] });
-        yield* harness.reactor.sweep();
-        yield* harness.reactor.sweep();
+        yield* rebuilt.sweep();
+        yield* rebuilt.sweep();
         const sends = yield* Ref.get(harness.sends);
         expect(sends).toHaveLength(2);
         expect(sends[1]!.text).toContain(`- ${task.id} Task one: worker-completed`);
@@ -742,6 +927,36 @@ describe("FirstmateReactor", () => {
         expect(sends[0]!.text).toContain("worker-completed");
         const [acknowledged] = yield* harness.service.listStored();
         expect(acknowledged!.lastReportedRunId).toBe("run:done");
+      }),
+    ),
+  );
+
+  it.effect("does not acknowledge a terminal notice when its send fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "failed",
+            latestRunId: RunId.make("run:failed"),
+            pendingBackgroundTasks: [{ kind: "subagent", taskId: "pending:one" }],
+          }),
+        );
+        yield* Ref.set(harness.failSends, true);
+        yield* harness.reactor.sweep().pipe(Effect.flip);
+        const [unreported] = yield* harness.service.listStored();
+        expect(unreported!.lastTerminalNoticeRunId).toBeNull();
+        expect(unreported!.lastReportedRunId).toBeNull();
+
+        yield* Ref.set(harness.failSends, false);
+        const rebuilt = yield* harness.rebuildReactor();
+        yield* rebuilt.sweep();
+        const [reported] = yield* harness.service.listStored();
+        expect(reported!.lastTerminalNoticeRunId).toBe("run:failed");
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+        expect((yield* Ref.get(harness.sends))[0]!.text).toContain("worker-failed");
       }),
     ),
   );
@@ -830,6 +1045,30 @@ describe("FirstmateReactor", () => {
         expect(yield* Ref.get(harness.sends)).toHaveLength(0);
       }),
     ),
+  );
+
+  it.effect.each(["subagent", "monitor"] as const)(
+    "does not orphan a completed root run with pending %s work",
+    (kind) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness();
+          yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+          yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+          yield* harness.setWorker(
+            shell(workerId, {
+              status: "completed",
+              latestRunId: RunId.make("run:done"),
+              pendingBackgroundTasks: [{ kind, taskId: "pending:one" }],
+            }),
+          );
+          yield* TestClock.adjust("11 minutes");
+          yield* harness.reactor.sweep();
+          expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+          const [stored] = yield* harness.service.listStored();
+          expect(stored!.orphanNotifiedAt).toBeNull();
+        }),
+      ),
   );
 
   it.effect("sends one digest line per task when several reasons fire in one pass", () =>

@@ -84,6 +84,8 @@ function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind
     case "monitor":
     case "background_task":
       return true;
+    default:
+      return true;
   }
 }
 

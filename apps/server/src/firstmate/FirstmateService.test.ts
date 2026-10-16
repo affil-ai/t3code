@@ -564,12 +564,21 @@ describe("FirstmateService", () => {
       expect(yield* service.listAgents()).toMatchObject([
         { id: "firstmate", slug: "firstmate", coordinatorThreadId: coordinator },
       ]);
+      const [legacy] = yield* service.listStored();
+      expect(legacy!.lastTerminalNoticeRunId).toBeNull();
+      yield* service.markTerminalNoticeRun(legacy!.id, "run:failed");
       // A second start leaves the columns, and the saved values, alone.
       yield* service.setAppearance(FM, { name: "Jarvis", icon: "anchor" });
       const again = yield* FirstmateService.FirstmateService.pipe(
         Effect.provide(yield* Layer.build(layer)),
       );
       expect(yield* snapshot(again)).toMatchObject({ name: "Jarvis", icon: "anchor" });
+      const [restored] = yield* again.listStored();
+      expect(restored!.lastTerminalNoticeRunId).toBe("run:failed");
+      expect(restored!.lastReportedRunId).toBeNull();
+      const { task: visible } = yield* again.get(FM, { taskId: legacy!.id });
+      expect(visible).not.toHaveProperty("lastTerminalNoticeRunId");
+      expect(restored!.updatedAt).toBe(legacy!.updatedAt);
     }).pipe(Effect.scoped),
   );
 

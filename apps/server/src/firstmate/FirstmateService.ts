@@ -185,6 +185,10 @@ export class FirstmateService extends Context.Service<
       taskId: FirstmateTask["id"],
       runId: string,
     ) => Effect.Effect<void, ContractFirstmateError>;
+    readonly markTerminalNoticeRun: (
+      taskId: FirstmateTask["id"],
+      runId: string,
+    ) => Effect.Effect<void, ContractFirstmateError>;
     readonly markOrphanNotified: (
       taskId: FirstmateTask["id"],
       at: string,
@@ -489,6 +493,7 @@ export const layer = Layer.effect(
               updatedAt: at,
               closedAt: null,
               lastReportedRunId: null,
+              lastTerminalNoticeRunId: null,
               orphanNotifiedAt: null,
             };
             yield* sql`
@@ -511,6 +516,7 @@ export const layer = Layer.effect(
             updated_at: task.updatedAt,
             closed_at: task.closedAt,
             last_reported_run_id: task.lastReportedRunId,
+            last_terminal_notice_run_id: task.lastTerminalNoticeRunId,
             orphan_notified_at: task.orphanNotifiedAt,
           })}
         `.pipe(Effect.mapError(dbError("Could not create the task.", task.id)));
@@ -754,6 +760,14 @@ export const layer = Layer.effect(
         Effect.mapError(dbError("Could not record the orphan wake.", taskId)),
         Effect.asVoid,
       );
+    const markTerminalNoticeRun: FirstmateService["Service"]["markTerminalNoticeRun"] = (
+      taskId,
+      runId,
+    ) =>
+      sql`UPDATE firstmate_task SET last_terminal_notice_run_id = ${runId} WHERE task_id = ${taskId}`.pipe(
+        Effect.mapError(dbError("Could not record the terminal notice wake.", taskId)),
+        Effect.asVoid,
+      );
 
     return {
       list,
@@ -765,6 +779,7 @@ export const layer = Layer.effect(
       start,
       setAppearance,
       markReportedRun,
+      markTerminalNoticeRun,
       markOrphanNotified,
       listStored,
       coordinatorThreadId,

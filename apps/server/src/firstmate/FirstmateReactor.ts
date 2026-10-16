@@ -2,11 +2,13 @@ import {
   CommandId,
   FirstmateError,
   MessageId,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
   type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -55,19 +57,19 @@ const terminalReason = (status: OrchestrationV2Run["status"]): FirstmateWakeReas
   }
 };
 
-const hasPendingBackgroundTasks = (
-  pending: OrchestrationV2ThreadShell["pendingBackgroundTasks"],
-): boolean => {
-  const value: unknown = pending;
-  return (Array.isArray(value) && value.length > 0) || (typeof value === "number" && value > 0);
-};
-
 const isCoordinatorInput = (message: {
   readonly createdBy: string;
   readonly creationSource: string;
 }): boolean =>
   message.creationSource === "web" ||
   (message.createdBy === "agent" && message.creationSource === "mcp");
+
+/** Monitor news needs attention even while the worker keeps watching. Passed checks do not. */
+const isActionableMonitorNotice = (message: OrchestrationV2ConversationMessage | null): boolean =>
+  message?.createdBy === "agent" &&
+  message.creationSource === "server" &&
+  message.notification?.source.kind === "monitor" &&
+  (message.notification.outcome === "updated" || message.notification.outcome === "failed");
 
 export {
   mergeWakes,
@@ -128,13 +130,18 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const terminalRunsAfter = (worker: OrchestrationV2ThreadShell, markerId: string | null) =>
+  const terminalRunsAfter = (
+    worker: OrchestrationV2ThreadShell,
+    markerId: string | null,
+    terminalNoticeMarkerId: string | null,
+  ) =>
     Effect.gen(function* () {
       // Held completions keep the marker behind them, so equality means nothing is pending.
       if (worker.latestRunId === markerId) return [];
       const target = { projectId: worker.projectId, threadId: worker.id };
       const { runs } = yield* threads.getProjectThreadRecords(target, ["runs"]);
       const marker = markerId === null ? undefined : runs.find((run) => run.id === markerId);
+      const terminalNoticeMarker = runs.find((run) => run.id === terminalNoticeMarkerId);
       const terminalRuns = runs
         .filter(
           (run) =>
@@ -151,6 +158,8 @@ const make = Effect.gen(function* () {
       return terminalRuns.map((run) => ({
         run,
         inputMessage: messagesById.get(run.userMessageId) ?? null,
+        noticeAcknowledged:
+          terminalNoticeMarker !== undefined && run.ordinal <= terminalNoticeMarker.ordinal,
       }));
     });
 
@@ -250,13 +259,6 @@ const make = Effect.gen(function* () {
               ? null
               : yield* threads.getThreadShell(task.workerThreadId);
           let wakeRunId: OrchestrationV2Run["id"] | undefined;
-          if (worker?.activeRunId != null) {
-            for (const key of previouslySeen) {
-              if (key.startsWith(`${task.id}:terminal:`) || key.startsWith(`${task.id}:done:`)) {
-                activeKeys.add(key);
-              }
-            }
-          }
           if (task.wakeAt !== null && Date.parse(task.wakeAt) <= now) {
             const key = `${task.id}:wake:${task.wakeAt}`;
             activeKeys.add(key);
@@ -265,45 +267,53 @@ const make = Effect.gen(function* () {
           if (worker !== null) {
             const terminalRuns =
               worker.activeRunId === null
-                ? yield* terminalRunsAfter(worker, task.lastReportedRunId)
+                ? yield* terminalRunsAfter(
+                    worker,
+                    task.lastReportedRunId,
+                    task.lastTerminalNoticeRunId,
+                  )
                 : [];
             const actionableCompletions = terminalRuns.flatMap(({ run, inputMessage }) =>
               run.status === "completed" &&
               run.startedAt !== null &&
               inputMessage !== null &&
               isCoordinatorInput(inputMessage)
-                ? [{ run, key: `${task.id}:done:${inputMessage.id}` }]
+                ? [run]
                 : [],
             );
-            const unreportedCompletions = actionableCompletions.filter(
-              ({ key }) => !previouslySeen.has(key),
+            const hasPendingBackground = backgroundWorkHoldsCompletion(
+              worker.pendingBackgroundTasks ?? [],
             );
-            const hasPendingBackground = hasPendingBackgroundTasks(worker.pendingBackgroundTasks);
             if (!hasPendingBackground) {
-              const completion = unreportedCompletions.at(-1);
+              const completion = actionableCompletions.at(-1);
               if (completion !== undefined) {
                 taskReasons.push("worker-completed");
-                wakeRunId = completion.run.id;
+                wakeRunId = completion.id;
               }
-              for (const { key } of actionableCompletions) activeKeys.add(key);
             }
-            // A held completion keeps the durable marker behind it. Remember
-            // failures beyond that boundary so they still wake, but only once.
-            // Dedupe is in-memory: a restart while held may repeat a failure wake rather than risk losing it.
-            for (const { run } of terminalRuns) {
+            // A completion can stay held behind background work while a later
+            // failure or monitor update wakes. Its separate durable watermark
+            // acknowledges those notices without consuming the held completion.
+            let terminalNoticeRunId: string | undefined;
+            for (const { run, inputMessage, noticeAcknowledged } of terminalRuns) {
               const reason = terminalReason(run.status);
-              if (run.startedAt === null || reason === "worker-completed" || reason === undefined)
+              if (
+                run.startedAt === null ||
+                noticeAcknowledged ||
+                reason === undefined ||
+                (reason === "worker-completed" && !isActionableMonitorNotice(inputMessage))
+              )
                 continue;
-              const key = `${task.id}:terminal:${run.id}`;
-              activeKeys.add(key);
-              if (!previouslySeen.has(key)) {
-                if (!taskReasons.includes(reason)) taskReasons.push(reason);
-                wakeRunId ??= run.id;
-              }
+              if (!taskReasons.includes(reason)) taskReasons.push(reason);
+              wakeRunId ??= run.id;
+              terminalNoticeRunId = String(run.id);
             }
-            const heldCompletion = hasPendingBackground ? unreportedCompletions[0] : undefined;
+            if (terminalNoticeRunId !== undefined) {
+              acknowledgements.push(firstmate.markTerminalNoticeRun(task.id, terminalNoticeRunId));
+            }
+            const heldCompletion = hasPendingBackground ? actionableCompletions[0] : undefined;
             const consumedRun = terminalRuns.findLast(
-              ({ run }) => heldCompletion === undefined || run.ordinal < heldCompletion.run.ordinal,
+              ({ run }) => heldCompletion === undefined || run.ordinal < heldCompletion.ordinal,
             )?.run;
             if (consumedRun !== undefined) {
               acknowledgements.push(firstmate.markReportedRun(task.id, String(consumedRun.id)));
@@ -315,11 +325,11 @@ const make = Effect.gen(function* () {
               if (!previouslySeen.has(key)) taskReasons.push("worker-waiting");
             }
           }
-          // A detached task, a missing worker thread, and a worker whose latest
-          // run has ended all count as having no running worker.
+          // Pending subagents and monitors keep the worker alive after its root run ends.
           const hasRunningWorker =
             worker !== null &&
             (worker.activeRunId !== null ||
+              backgroundWorkHoldsCompletion(worker.pendingBackgroundTasks ?? []) ||
               worker.status === "preparing" ||
               worker.status === "queued" ||
               worker.status === "starting" ||

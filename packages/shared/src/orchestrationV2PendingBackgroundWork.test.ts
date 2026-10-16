@@ -38,6 +38,14 @@ describe("backgroundWorkHoldsCompletion", () => {
   ] as const)("with %s pending, holds completion: %s", (_case, holds, tasks) => {
     expect(backgroundWorkHoldsCompletion(tasks)).toBe(holds);
   });
+
+  it("holds completion for a kind from a newer provider", () => {
+    expect(
+      backgroundWorkHoldsCompletion([
+        { kind: "future_kind" } as unknown as OrchestrationV2PendingBackgroundTask,
+      ]),
+    ).toBe(true);
+  });
 });
 
 describe("derivePendingBackgroundWork", () => {

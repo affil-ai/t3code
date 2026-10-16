@@ -36,6 +36,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 export interface StoredTask extends FirstmateTask {
   readonly agentId: AgentProfileId;
   readonly lastReportedRunId: string | null;
+  readonly lastTerminalNoticeRunId: string | null;
   readonly orphanNotifiedAt: string | null;
 }
 
@@ -58,6 +59,7 @@ export interface TaskRow {
   readonly updated_at: string;
   readonly closed_at: string | null;
   readonly last_reported_run_id: string | null;
+  readonly last_terminal_notice_run_id: string | null;
   readonly orphan_notified_at: string | null;
 }
 
@@ -113,12 +115,19 @@ export function taskFromRow(row: TaskRow): StoredTask {
     updatedAt: row.updated_at,
     closedAt: row.closed_at,
     lastReportedRunId: row.last_reported_run_id,
+    lastTerminalNoticeRunId: row.last_terminal_notice_run_id,
     orphanNotifiedAt: row.orphan_notified_at,
   };
 }
 
 export function publicTask(task: StoredTask): FirstmateTask {
-  const { agentId: _agent, lastReportedRunId: _last, orphanNotifiedAt: _orphan, ...visible } = task;
+  const {
+    agentId: _agent,
+    lastReportedRunId: _last,
+    lastTerminalNoticeRunId: _notice,
+    orphanNotifiedAt: _orphan,
+    ...visible
+  } = task;
   return visible;
 }
 
@@ -174,6 +183,9 @@ export const ensureSchema = Effect.gen(function* () {
   `;
   // Columns added after the first release; SQLite has no ADD COLUMN IF NOT EXISTS.
   const taskColumns = yield* columnsOf("firstmate_task");
+  if (!taskColumns.has("last_terminal_notice_run_id")) {
+    yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN last_terminal_notice_run_id TEXT`);
+  }
   if (!taskColumns.has("next_step")) {
     yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN next_step TEXT`);
   }
