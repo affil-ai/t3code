@@ -11,6 +11,7 @@ import {
   FIRSTMATE_AGENT_ID,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -33,6 +34,7 @@ const otherCoordinatorId = ThreadId.make("coordinator-growth");
 const otherWorkerId = ThreadId.make("worker-growth");
 const projectId = ProjectId.make("project:firstmate-reactor");
 const epoch = "1970-01-01T00:00:00.000Z";
+let shellAuthoredMessageSequence = 0;
 
 const shell = (
   id: ThreadId,
@@ -60,6 +62,7 @@ const shell = (
     pendingRuntimeRequest: null,
     latestVisibleMessage: null,
     latestUserMessageAt: null,
+    latestUserAuthoredMessageAt: DateTime.makeUnsafe(shellAuthoredMessageSequence++),
     hasActionableProposedPlan: false,
     itemCount: 0,
     visibleItemCount: 0,
@@ -87,6 +90,17 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const workers = yield* Ref.make<ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>>(new Map());
   const sends = yield* Ref.make<ReadonlyArray<ThreadManagement.ThreadManagementSendInput>>([]);
   const failSends = yield* Ref.make(false);
+  const workerInputs = yield* Ref.make<
+    ReadonlyMap<
+      string,
+      {
+        readonly runId: string;
+        readonly messageId: string;
+        readonly createdBy: "user" | "agent";
+        readonly creationSource: "web" | "mcp" | "server";
+      }
+    >
+  >(new Map());
   // A wake still waiting in the coordinator's queue, as the projection would show it.
   const queued = yield* Ref.make<{
     readonly runId: string;
@@ -97,28 +111,50 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const activeStatus = yield* Ref.make<string | null>(null);
   const revisions = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
   const layerThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
-    getProjectThreadRecords: () =>
-      Effect.all([Ref.get(queued), Ref.get(activeStatus)]).pipe(
-        Effect.map(([wake, active]) => {
-          const messageId = MessageId.make("firstmate:wake-message:queued");
-          return {
-            runs: [
-              ...(active === null
-                ? []
-                : [{ id: RunId.make("run:active"), status: active, userMessageId: "user" }]),
-              ...(wake === null
-                ? []
-                : [
-                    {
-                      id: RunId.make(wake.runId),
-                      status: "queued",
-                      userMessageId: messageId,
-                      ...(wake.held === true ? { queueHeld: true } : {}),
-                    },
-                  ]),
-            ],
-            messages: wake === null ? [] : [{ id: messageId, text: wake.text }],
-          } as never;
+    getProjectThreadRecords: (input) =>
+      Ref.get(workerInputs).pipe(
+        Effect.flatMap((inputs) => {
+          const workerInput = inputs.get(String(input.threadId));
+          if (workerInput !== undefined) {
+            return Effect.succeed({
+              runs: [
+                {
+                  id: RunId.make(workerInput.runId),
+                  userMessageId: MessageId.make(workerInput.messageId),
+                },
+              ],
+              messages: [
+                {
+                  id: MessageId.make(workerInput.messageId),
+                  createdBy: workerInput.createdBy,
+                  creationSource: workerInput.creationSource,
+                },
+              ],
+            } as never);
+          }
+          return Effect.all([Ref.get(queued), Ref.get(activeStatus)]).pipe(
+            Effect.map(([wake, active]) => {
+              const messageId = MessageId.make("firstmate:wake-message:queued");
+              return {
+                runs: [
+                  ...(active === null
+                    ? []
+                    : [{ id: RunId.make("run:active"), status: active, userMessageId: "user" }]),
+                  ...(wake === null
+                    ? []
+                    : [
+                        {
+                          id: RunId.make(wake.runId),
+                          status: "queued",
+                          userMessageId: messageId,
+                          ...(wake.held === true ? { queueHeld: true } : {}),
+                        },
+                      ]),
+                ],
+                messages: wake === null ? [] : [{ id: messageId, text: wake.text }],
+              } as never;
+            }),
+          );
         }),
       ),
     dispatch: (command) =>
@@ -169,8 +205,29 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const context = yield* Layer.build(layer);
   const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
   const reactor = yield* FirstmateReactor.FirstmateReactor.pipe(Effect.provide(context));
+  const setWorkerInput = (
+    workerThreadId: ThreadId,
+    input: {
+      readonly runId: string;
+      readonly messageId: string;
+      readonly createdBy: "user" | "agent";
+      readonly creationSource: "web" | "mcp" | "server";
+    },
+  ) => Ref.update(workerInputs, (values) => new Map([...values, [String(workerThreadId), input]]));
   const setWorker = (value: OrchestrationV2ThreadShell) =>
-    Ref.update(workers, (map) => new Map([...map, [value.id, value]]));
+    Effect.all([
+      Ref.update(workers, (map) => new Map([...map, [value.id, value]])),
+      ...(value.latestRunId === null
+        ? []
+        : [
+            setWorkerInput(value.id, {
+              runId: String(value.latestRunId),
+              messageId: `message:${value.latestRunId}`,
+              createdBy: "user",
+              creationSource: "web",
+            }),
+          ]),
+    ]).pipe(Effect.asVoid);
   /** An agent row without starting a chat: the test sets its coordinator itself. */
   const createAgent = (name: string) =>
     Effect.gen(function* () {
@@ -189,6 +246,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
     sends,
     failSends,
     setWorker,
+    setWorkerInput,
     queued,
     activeStatus,
     revisions,
@@ -267,6 +325,129 @@ describe("FirstmateReactor", () => {
     ),
   );
 
+  it.effect("suppresses a terminal wake while the worker has an active run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:done"),
+            activeRunId: RunId.make("run:active"),
+          }),
+        );
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("ignores a cancelled run that never started", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "cancelled",
+            latestRunId: RunId.make("run:cancelled"),
+            latestRunStartedAt: null,
+          }),
+        );
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("defers completion while background tasks remain", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+        const authoredAt = "1970-01-01T00:00:01.000Z" as never;
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:done"),
+            latestUserAuthoredMessageAt: authoredAt,
+            pendingBackgroundTasks: [{ kind: "subagent", taskId: "subagent:one" }],
+          }),
+        );
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:done"),
+            latestUserAuthoredMessageAt: authoredAt,
+            pendingBackgroundTasks: [],
+          }),
+        );
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("ignores server notices, but wakes for an MCP-briefed worker completion", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+        const authoredAt = "1970-01-01T00:00:02.000Z" as never;
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:done"),
+            latestUserAuthoredMessageAt: authoredAt,
+          }),
+        );
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+
+        // PR-watch or delegated-completion notices are server-created messages.
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:notice"),
+            latestUserAuthoredMessageAt: authoredAt,
+          }),
+        );
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:notice",
+          messageId: "message:notice",
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:authored"),
+            latestUserAuthoredMessageAt: "1970-01-01T00:00:03.000Z" as never,
+          }),
+        );
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:authored",
+          messageId: "message:authored",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(2);
+      }),
+    ),
+  );
+
   it.effect("keeps the wake for the next pass when the send fails", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -321,6 +502,43 @@ describe("FirstmateReactor", () => {
         yield* harness.service.update(FM, { taskId: task.id, summary: "Nudged the worker." });
         yield* TestClock.adjust("11 minutes");
         yield* harness.reactor.sweep();
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("still wakes for a waiting worker or a pending runtime request", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "waiting",
+            latestRunId: RunId.make("run:waiting"),
+            activeRunId: RunId.make("run:waiting"),
+          }),
+        );
+        yield* harness.reactor.sweep();
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends).toHaveLength(1);
+        expect(sends[0]!.text).toContain("worker-waiting");
+
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "running",
+            latestRunId: RunId.make("run:waiting"),
+            activeRunId: RunId.make("run:waiting"),
+            pendingRuntimeRequest: {
+              id: "request:one" as never,
+              kind: "user_input",
+              createdAt: epoch as never,
+            },
+          }),
+        );
         yield* harness.reactor.sweep();
         expect(yield* Ref.get(harness.sends)).toHaveLength(2);
       }),

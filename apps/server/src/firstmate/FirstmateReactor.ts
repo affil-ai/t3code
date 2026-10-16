@@ -39,8 +39,19 @@ const SWEEP_INTERVAL = "30 seconds";
 const EVENT_DEBOUNCE = "1 second";
 const ORPHAN_AFTER_MS = 10 * 60_000;
 
-const terminalReason = (status: string): FirstmateWakeReason | undefined => {
-  switch (status) {
+const terminalReason = (
+  worker: Pick<OrchestrationV2ThreadShell, "status" | "activeRunId" | "latestRunStartedAt">,
+): FirstmateWakeReason | undefined => {
+  // A terminal-looking latest run can be stale while another run is active,
+  // or can be a queued delivery that was cancelled before it started.
+  if (
+    worker.activeRunId !== null ||
+    ((worker.status === "cancelled" || worker.status === "rolled_back") &&
+      (worker.latestRunStartedAt === null || worker.latestRunStartedAt === undefined))
+  ) {
+    return undefined;
+  }
+  switch (worker.status) {
     case "completed":
       return "worker-completed";
     case "failed":
@@ -53,6 +64,20 @@ const terminalReason = (status: string): FirstmateWakeReason | undefined => {
       return undefined;
   }
 };
+
+const hasPendingBackgroundTasks = (
+  pending: OrchestrationV2ThreadShell["pendingBackgroundTasks"],
+): boolean => {
+  const value: unknown = pending;
+  return (Array.isArray(value) && value.length > 0) || (typeof value === "number" && value > 0);
+};
+
+const isCoordinatorInput = (message: {
+  readonly createdBy: string;
+  readonly creationSource: string;
+}): boolean =>
+  message.creationSource === "web" ||
+  (message.createdBy === "agent" && message.creationSource === "mcp");
 
 export {
   mergeWakes,
@@ -112,6 +137,24 @@ const make = Effect.gen(function* () {
             };
       }),
     );
+
+  const latestRunInput = (worker: OrchestrationV2ThreadShell) =>
+    worker.latestRunId === null
+      ? Effect.succeed(null)
+      : threads
+          .getProjectThreadRecords(
+            { projectId: worker.projectId, threadId: worker.id },
+            ["runs", "messages"],
+            { runIds: [worker.latestRunId] },
+          )
+          .pipe(
+            Effect.map(({ runs, messages }) => {
+              const run = runs.find((candidate) => candidate.id === worker.latestRunId);
+              return run === undefined
+                ? null
+                : (messages.find((message) => message.id === run.userMessageId) ?? null);
+            }),
+          );
 
   /** Sends one agent's wakes to its coordinator chat, folding into a queued wake. */
   const deliver = (target: ThreadId, projectId: ProjectId, wakes: ReadonlyArray<FirstmateWake>) =>
@@ -214,12 +257,26 @@ const make = Effect.gen(function* () {
             if (!previouslySeen.has(key)) taskReasons.push("wake-time");
           }
           if (worker !== null) {
-            const reason = terminalReason(worker.status);
-            if (
+            const reason = terminalReason(worker);
+            const inputMessage =
+              reason === "worker-completed" ? yield* latestRunInput(worker) : null;
+            const completedKey =
+              inputMessage !== null && isCoordinatorInput(inputMessage)
+                ? `${task.id}:done:${inputMessage.id}`
+                : null;
+            const hasPendingBackground = hasPendingBackgroundTasks(worker.pendingBackgroundTasks);
+            const completedWake =
+              reason === "worker-completed" &&
+              completedKey !== null &&
+              !hasPendingBackground &&
+              !previouslySeen.has(completedKey);
+            if (completedKey !== null && !hasPendingBackground) activeKeys.add(completedKey);
+            const shouldWake =
               reason !== undefined &&
               worker.latestRunId !== null &&
-              worker.latestRunId !== task.lastReportedRunId
-            ) {
+              worker.latestRunId !== task.lastReportedRunId &&
+              (reason !== "worker-completed" || completedWake);
+            if (shouldWake) {
               taskReasons.push(reason);
               acknowledgements.push(firstmate.markReportedRun(task.id, String(worker.latestRunId)));
             }
