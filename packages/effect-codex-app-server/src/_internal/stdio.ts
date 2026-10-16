@@ -44,17 +44,54 @@ const stderrSecret = (value: string, start: number, valueStart: number) => {
 };
 
 function* stderrSecrets(value: string) {
-  const assignments = /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[\w.-]+)\s*[:=]\s*/g;
-  for (let match; (match = assignments.exec(value)) !== null;) {
-    const key = match[1]!
+  const bareKey = /[\w.-]+/y;
+  const separator = /\s*[:=]\s*/y;
+  const quotedKeys = new Map<string, { end: number; valueStart: number }>();
+  for (let start = 0; start < value.length;) {
+    const quote = value[start] === '"' || value[start] === "'" ? value[start] : "";
+    let end: number;
+    let valueStart: number;
+    if (quote) {
+      // Failed quoted keys can contain other assignments. Search inside them,
+      // but reuse their closing quote and separator instead of rescanning suffixes.
+      let cached = quotedKeys.get(quote);
+      if (!cached || start >= cached.end - 1) {
+        const token = stderrSecret(value, start, start);
+        separator.lastIndex = token.end;
+        cached = {
+          end: token.end,
+          valueStart: !token.open && separator.exec(value) ? separator.lastIndex : -1,
+        };
+        quotedKeys.set(quote, cached);
+      }
+      ({ end, valueStart } = cached);
+    } else {
+      bareKey.lastIndex = start;
+      if (!bareKey.exec(value)) {
+        start++;
+        continue;
+      }
+      end = bareKey.lastIndex;
+      separator.lastIndex = end;
+      valueStart = separator.exec(value) ? separator.lastIndex : -1;
+    }
+    if (valueStart === -1) {
+      start = quote ? start + 1 : end;
+      continue;
+    }
+    const key = value
+      .slice(start, end)
       .replace(/\\u([\da-f]{4})|\\([\s\S])/gi, (_, hex: string | undefined, char: string) =>
         hex === undefined ? char : String.fromCharCode(Number.parseInt(hex, 16)),
       )
       .replace(/[^a-z\d]/gi, "");
-    if (!/(?:authorization|password|secret|credential|token|key)$/i.test(key)) continue;
+    if (!/(?:authorization|password|secret|credential|token|key)$/i.test(key)) {
+      start = valueStart;
+      continue;
+    }
 
-    const secret = stderrSecret(value, match.index, assignments.lastIndex);
-    assignments.lastIndex = Math.max(secret.end, assignments.lastIndex + 1);
+    const secret = stderrSecret(value, start, valueStart);
+    start = Math.max(secret.end, valueStart + 1);
     yield secret;
   }
   for (const match of value.matchAll(/\b(?:Bearer|Basic)\s+/gi)) {
@@ -76,10 +113,7 @@ const redactStderr = (value: string): string => {
   parts.push(value.slice(cursor));
   let redacted = parts.join("");
   // URL credentials and query values are never useful in a termination tail.
-  redacted = redacted.replace(
-    /([a-z][a-z\d+.-]*:\/\/)(?:[^\s/@]+(?::[^\s/@]*)?@)/gi,
-    "$1[REDACTED]@",
-  );
+  redacted = redacted.replace(/(?<![a-z\d+.-])([a-z\d+.-]+:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
   redacted = redacted.replace(/([?&][a-z\d_.~-]+)=([^&#\s]+)/gi, "$1=[REDACTED]");
   // JWTs and recognizable provider credentials without a key or header.
   redacted = redacted.replace(

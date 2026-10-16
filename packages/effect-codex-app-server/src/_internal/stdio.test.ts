@@ -67,6 +67,15 @@ describe("Codex App Server child process termination", () => {
     }
   });
 
+  it("preserves long non-secret tokens and URLs without exposing URL credentials", () => {
+    const diagnostic = makeStderrDiagnostic();
+    const noise = "x".repeat(30_000);
+    const url = "https://" + "part:".repeat(4_000);
+    diagnostic.append(`${noise}\n${url}\n1https://user:password@example.test/path\n`);
+
+    assert.equal(diagnostic.read(), `${noise}\n${url}\n1https://[REDACTED]@example.test/path\n`);
+  });
+
   it("keeps redaction context across chunks and non-destructive reads", () => {
     const diagnostic = makeStderrDiagnostic();
     assert.isUndefined(diagnostic.read());
@@ -109,6 +118,22 @@ describe("Codex App Server child process termination", () => {
     );
     assert.include(closed.read()!, "'reason':'retry exhausted'");
     assert.notInclude(closed.read()!, "secret words");
+  });
+
+  it("finds embedded assignments in large closed and unfinished quoted non-keys", () => {
+    for (const closingQuote of ['"', ""]) {
+      const diagnostic = makeStderrDiagnostic();
+      diagnostic.append(
+        '"' +
+          String.raw`noise \"`.repeat(20_000) +
+          ` password=embedded-secret${closingQuote}\nreason: pipe closed\n`,
+      );
+
+      const value = diagnostic.read()!;
+      assert.include(value, "[stderr tail truncated]\n");
+      assert.isTrue(value.endsWith(`password=[REDACTED]${closingQuote}\nreason: pipe closed\n`));
+      assert.notInclude(value, "embedded-secret");
+    }
   });
 
   it("retains a useful UTF-8 tail within the byte cap for large and split chunks", () => {
