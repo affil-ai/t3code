@@ -372,6 +372,30 @@ describe("FirstmateReactor", () => {
     ),
   );
 
+  it.effect("does not read worker runs again when the latest run is already reported", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
+        yield* harness.setWorker(
+          shell(workerId, { status: "completed", latestRunId: RunId.make("run:done") }),
+        );
+        yield* harness.reactor.sweep();
+        const [reported] = yield* harness.service.listStored();
+        expect(reported!.lastReportedRunId).toBe("run:done");
+
+        yield* Ref.set(harness.recordReads, []);
+        yield* harness.reactor.sweep();
+        const workerReads = (yield* Ref.get(harness.recordReads)).filter(
+          ({ input }) => input.threadId === workerId,
+        );
+        expect(workerReads).toHaveLength(0);
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+      }),
+    ),
+  );
+
   it.effect("suppresses a terminal wake while the worker has an active run", () =>
     Effect.scoped(
       Effect.gen(function* () {

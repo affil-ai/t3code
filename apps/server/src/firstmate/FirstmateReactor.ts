@@ -130,6 +130,8 @@ const make = Effect.gen(function* () {
 
   const terminalRunsAfter = (worker: OrchestrationV2ThreadShell, markerId: string | null) =>
     Effect.gen(function* () {
+      // Held completions keep the marker behind them, so equality means nothing is pending.
+      if (worker.latestRunId === markerId) return [];
       const target = { projectId: worker.projectId, threadId: worker.id };
       const { runs } = yield* threads.getProjectThreadRecords(target, ["runs"]);
       const marker = markerId === null ? undefined : runs.find((run) => run.id === markerId);
@@ -287,6 +289,7 @@ const make = Effect.gen(function* () {
             }
             // A held completion keeps the durable marker behind it. Remember
             // failures beyond that boundary so they still wake, but only once.
+            // Dedupe is in-memory: a restart while held may repeat a failure wake rather than risk losing it.
             for (const { run } of terminalRuns) {
               const reason = terminalReason(run.status);
               if (run.startedAt === null || reason === "worker-completed" || reason === undefined)
