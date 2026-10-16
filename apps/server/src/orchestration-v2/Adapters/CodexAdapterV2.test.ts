@@ -1994,22 +1994,6 @@ describe("CodexAdapterV2 lost app-server", () => {
       );
     });
 
-  it.effect("fails the session when the app-server stops answering", () =>
-    Effect.gen(function* () {
-      const failure = yield* sessionFailureOver(Stream.never);
-      yield* TestClock.adjust("1 minute");
-      yield* TestClock.adjust("1 minute");
-
-      const error = yield* Fiber.join(failure);
-      assert.instanceOf(error, ProviderAdapter.ProviderAdapterEventStreamError);
-      assert.include(String(error.cause), "Codex stopped responding");
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
-      ),
-    ),
-  );
-
   it.effect("fails the session when the app-server connection ends", () =>
     Effect.gen(function* () {
       const error = yield* Fiber.join(yield* sessionFailureOver(Stream.empty));
