@@ -12,18 +12,30 @@ export function officeFolders(metadata: readonly ScopedOfficeThread[]) {
       entry.workspaceId,
       entry.conversationId ?? "other",
     ]);
-    folders.set(id, {
-      id,
-      name: entry.label,
-      parentId: null,
-      createdAt: "1970-01-01T00:00:00.000Z",
-    });
+    const current = folders.get(id);
+    if (
+      current === undefined ||
+      (isUnresolvedChannelLabel(current.name, entry.conversationId) &&
+        !isUnresolvedChannelLabel(entry.label, entry.conversationId))
+    ) {
+      folders.set(id, {
+        id,
+        name: entry.label,
+        parentId: null,
+        createdAt: "1970-01-01T00:00:00.000Z",
+      });
+    }
     threadFolderByKey[scopedThreadKey(scopeThreadRef(entry.environmentId, entry.threadId))] = id;
   }
   return {
     folders: [...folders.values()].sort((a, b) => a.name.localeCompare(b.name)),
     threadFolderByKey,
   };
+}
+
+/** A failed Slack name lookup is represented by the channel id as its label. */
+function isUnresolvedChannelLabel(label: string, conversationId: string | null): boolean {
+  return conversationId !== null && label.trim().replace(/^#/, "") === conversationId;
 }
 
 /** A desktop-created chat belongs to Work. Office chats enter through Office. */

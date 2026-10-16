@@ -28,6 +28,14 @@ describe("Office folders", () => {
       officeFolders([{ ...entry, label: "#renamed" }]).folders[0]?.id,
     );
   });
+  it("keeps a resolved channel name when another thread has an unresolved label", () => {
+    const result = officeFolders([
+      { ...entry, threadId: ThreadId.make("resolved"), label: "#engineering" },
+      { ...entry, threadId: ThreadId.make("unresolved"), label: "#C123" },
+    ]);
+    expect(result.folders).toHaveLength(1);
+    expect(result.folders[0]?.name).toBe("#engineering");
+  });
   it("groups non-Slack chats separately and never seeds groups", () => {
     expect(officeFolders([])).toEqual({ folders: [], threadFolderByKey: {} });
     expect(
