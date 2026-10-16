@@ -4,9 +4,26 @@ import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as CodexError from "../errors.ts";
-import { makeTerminationError } from "./stdio.ts";
+import { makeStderrDiagnostic, makeTerminationError } from "./stdio.ts";
 
 describe("Codex App Server child process termination", () => {
+  it("keeps a bounded redacted stderr tail across chunks", () => {
+    const diagnostic = makeStderrDiagnostic();
+    diagnostic.append("authorization: Bearer secret-token\n");
+    diagnostic.append("https://user:password@example.test/path?token=secret\n");
+    diagnostic.append("eyJheader.payload.signature\n");
+    diagnostic.append("x".repeat(70_000));
+
+    const value = diagnostic.read();
+    assert.isDefined(value);
+    assert.isAtMost(new TextEncoder().encode(value!).length, 64 * 1024);
+    assert.notInclude(value!, "secret-token");
+    assert.notInclude(value!, "password@example");
+    assert.notInclude(value!, "token=secret");
+    assert.notInclude(value!, "eyJheader");
+    assert.include(value!, "[stderr tail truncated]");
+  });
+
   it.effect("retains the process identifier with the exit code", () =>
     Effect.gen(function* () {
       const error = yield* makeTerminationError({

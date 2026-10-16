@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -17,7 +18,7 @@ import {
   encodeOptionalPayload,
   runHandler,
 } from "./_internal/shared.ts";
-import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
+import { makeChildStdio, makeStderrDiagnostic, makeTerminationError } from "./_internal/stdio.ts";
 
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
@@ -75,6 +76,8 @@ export class CodexAppServerClient extends Context.Service<
         params: unknown,
       ) => Effect.Effect<void, CodexError.CodexAppServerError>,
     ) => Effect.Effect<void>;
+    /** Resolves with the reason once the app-server connection ends, such as the process exiting. */
+    readonly terminated: Effect.Effect<CodexError.CodexAppServerError>;
   }
 >()("effect-codex-app-server/client/CodexAppServerClient") {}
 
@@ -98,6 +101,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
   stdio: Stdio.Stdio,
   options: CodexAppServerClientOptions = {},
   terminationError?: Effect.Effect<CodexError.CodexAppServerError>,
+  exited?: Effect.Effect<CodexError.CodexAppServerError>,
 ): Effect.fn.Return<CodexAppServerClient["Service"], never, Scope.Scope> {
   const requestHandlers = new Map<string, ServerRequestHandler>();
   const notificationHandlers = new Map<string, Array<ServerNotificationHandler>>();
@@ -195,9 +199,12 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       : Effect.fail(CodexError.CodexAppServerRequestError.methodNotFound(request.method));
   };
 
+  const termination = yield* Deferred.make<CodexError.CodexAppServerError>();
   const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
     stdio,
+    onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
     ...(terminationError ? { terminationError } : {}),
+    ...(exited ? { exited } : {}),
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
@@ -258,6 +265,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       Effect.sync(() => {
         unknownNotificationHandler = handler;
       }),
+    terminated: Deferred.await(termination),
   });
 });
 
@@ -270,6 +278,28 @@ export const layerChildProcess = (
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",
 )(function* (handle: ChildProcessSpawner.ChildProcessHandle, options: CodexAppServerClientOptions) {
-  yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
-  return yield* make(makeChildStdio(handle), options, makeTerminationError(handle));
+  const stderr = makeStderrDiagnostic();
+  const stderrDone = yield* Deferred.make<void>();
+  yield* Stream.runForEach(handle.stderr, (chunk) => Effect.sync(() => stderr.append(chunk))).pipe(
+    Effect.ensuring(Deferred.succeed(stderrDone, undefined)),
+    Effect.ignore,
+    Effect.forkScoped,
+  );
+  const terminationError = yield* Effect.cached(
+    makeTerminationError(handle).pipe(
+      // Wait briefly for the final stderr chunk without allowing diagnostics to
+      // wedge process termination when a descendant keeps the pipe open.
+      Effect.tap(() =>
+        Deferred.await(stderrDone).pipe(Effect.timeoutOption("100 millis"), Effect.asVoid),
+      ),
+      Effect.tap((error) => {
+        const diagnostic = stderr.read();
+        return Effect.logWarning("Codex app-server terminated", {
+          error: error.message,
+          ...(diagnostic === undefined ? {} : { stderr: diagnostic }),
+        });
+      }),
+    ),
+  );
+  return yield* make(makeChildStdio(handle), options, terminationError, terminationError);
 });

@@ -336,7 +336,8 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     /** False models a runtime whose background tasks can outlive its process. */
     readonly backgroundTasksEndWithProcess?: boolean;
-    readonly hangSessionScopeClose?: boolean;
+    /** "first" wedges only the first session opened. */
+    readonly hangSessionScopeClose?: boolean | "first";
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
     /** Registers the process's closeCount finalizer before `beforeOpen` runs. */
@@ -401,7 +402,11 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
         });
         if (options.spawnBeforeOpen !== true) {
           yield* countClose;
-          if (options.hangSessionScopeClose === true) yield* hangClose;
+          if (
+            options.hangSessionScopeClose === true ||
+            (options.hangSessionScopeClose === "first" && (yield* Ref.get(state)).openCount === 1)
+          )
+            yield* hangClose;
         }
 
         return {
@@ -3889,6 +3894,134 @@ it.effect("ProviderSessionManagerV2 release retries leave a replacement session 
 
     yield* effect.pipe(
       Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, flakyReleaseWrites: flaky })),
+    );
+  }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 leaves a replacement's status to it when a failed release ends",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const scopeCloseReached = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const threadId = ThreadId.make("thread-provider-session-manager-failed-replacement");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const now = yield* DateTime.now;
+        const request = yield* makePendingRuntimeRequestEvents({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+          now,
+        });
+        yield* eventSink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+            ...request.events,
+          ],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+
+        const events = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+        assert.isDefined(events);
+        yield* Queue.end(events!);
+        yield* Deferred.await(scopeCloseReached);
+
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const settled = yield* eventSink
+          .stream({
+            threadId,
+            afterSequence: yield* eventSink.latestSequence({ threadId }),
+            eventType: "runtime-request.updated",
+          })
+          .pipe(Stream.runHead, Effect.forkScoped);
+        yield* TestClock.adjust("30 seconds");
+        yield* Fiber.join(settled);
+        const status = (yield* projectionStore.getThreadProjection(threadId)).providerSessions.at(
+          -1,
+        )?.status;
+
+        const stopping = yield* manager.shutdown.pipe(Effect.forkChild);
+        yield* TestClock.adjust("30 seconds");
+        yield* Fiber.join(stopping);
+
+        assert.isDefined(status);
+        assert.notEqual(status, "error");
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            hangSessionScopeClose: true,
+            scopeCloseReached,
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("ProviderSessionManagerV2 leaves a closed replacement's status to it", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const scopeCloseReached = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("thread-provider-session-manager-closed-replacement");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator, threadId, now: yield* DateTime.now }),
+        ],
+      });
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+
+      const events = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+      assert.isDefined(events);
+      yield* Queue.end(events!);
+      yield* Deferred.await(scopeCloseReached);
+
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      yield* manager.close(providerSessionId);
+      const statuses = yield* eventSink
+        .stream({ threadId, afterSequence: yield* eventSink.latestSequence({ threadId }) })
+        .pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "provider-session.updated" ||
+              event.type === "provider-session.attached",
+          ),
+          Stream.takeUntil(({ event }) => event.type === "provider-session.attached"),
+          Stream.map(({ event }) => event.type),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+
+      yield* TestClock.adjust("30 seconds");
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+
+      assert.deepEqual(Array.from(yield* Fiber.join(statuses)), ["provider-session.attached"]);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          hangSessionScopeClose: "first",
+          scopeCloseReached,
+        }),
+      ),
     );
   }),
 );

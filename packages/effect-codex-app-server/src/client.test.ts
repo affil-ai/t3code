@@ -124,7 +124,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       ]);
     }),
   );
-  it.effect("drains child stderr so large diagnostics cannot block protocol responses", () =>
+  it.effect("captures child stderr without blocking protocol responses", () =>
     Effect.gen(function* () {
       const handle = yield* makeHandle({
         CODEX_APP_SERVER_TEST_STDERR_BYTES: String(512 * 1024),
