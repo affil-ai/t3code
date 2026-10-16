@@ -22,6 +22,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import type {
+  ProjectionRecordField,
+  ProjectionRecordFilter,
+} from "../orchestration-v2/ProjectionStore.ts";
 import * as FirstmateHome from "./FirstmateHome.ts";
 import * as FirstmateReactor from "./FirstmateReactor.ts";
 import * as FirstmateService from "./FirstmateService.ts";
@@ -90,17 +94,21 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const workers = yield* Ref.make<ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>>(new Map());
   const sends = yield* Ref.make<ReadonlyArray<ThreadManagement.ThreadManagementSendInput>>([]);
   const failSends = yield* Ref.make(false);
-  const workerInputs = yield* Ref.make<
-    ReadonlyMap<
-      string,
-      {
-        readonly runId: string;
-        readonly messageId: string;
-        readonly createdBy: "user" | "agent";
-        readonly creationSource: "web" | "mcp" | "server";
-      }
-    >
-  >(new Map());
+  type WorkerInput = {
+    readonly runId: string;
+    readonly messageId: string;
+    readonly status: OrchestrationV2ThreadShell["status"];
+    readonly started?: boolean;
+    readonly createdBy: "user" | "agent";
+    readonly creationSource: "web" | "mcp" | "server";
+  };
+  const workerInputs = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<WorkerInput>>>(new Map());
+  type RecordRead = {
+    readonly input: { readonly projectId: ProjectId; readonly threadId: ThreadId };
+    readonly fields: ReadonlyArray<ProjectionRecordField>;
+    readonly filter: ProjectionRecordFilter | undefined;
+  };
+  const recordReads = yield* Ref.make<ReadonlyArray<RecordRead>>([]);
   // A wake still waiting in the coordinator's queue, as the projection would show it.
   const queued = yield* Ref.make<{
     readonly runId: string;
@@ -111,25 +119,50 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const activeStatus = yield* Ref.make<string | null>(null);
   const revisions = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
   const layerThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
-    getProjectThreadRecords: (input) =>
-      Ref.get(workerInputs).pipe(
+    getProjectThreadRecords: (input, fields, filter) =>
+      Ref.update(recordReads, (reads) => [...reads, { input, fields, filter }]).pipe(
+        Effect.andThen(Ref.get(workerInputs)),
         Effect.flatMap((inputs) => {
           const workerInput = inputs.get(String(input.threadId));
+          const requestedFields = fields as ReadonlyArray<string>;
           if (workerInput !== undefined) {
             return Effect.succeed({
-              runs: [
-                {
-                  id: RunId.make(workerInput.runId),
-                  userMessageId: MessageId.make(workerInput.messageId),
-                },
-              ],
-              messages: [
-                {
-                  id: MessageId.make(workerInput.messageId),
-                  createdBy: workerInput.createdBy,
-                  creationSource: workerInput.creationSource,
-                },
-              ],
+              ...(requestedFields.includes("runs")
+                ? {
+                    runs: workerInput
+                      .map(({ runId, messageId, status, started }, index) => ({
+                        id: RunId.make(runId),
+                        ordinal: index + 1,
+                        status,
+                        startedAt:
+                          (started ?? (status !== "cancelled" && status !== "rolled_back"))
+                            ? (epoch as never)
+                            : null,
+                        userMessageId: MessageId.make(messageId),
+                      }))
+                      .filter(
+                        (run) => filter?.runIds === undefined || filter.runIds.includes(run.id),
+                      ),
+                  }
+                : {}),
+              ...(requestedFields.includes("messages")
+                ? {
+                    messages: workerInput
+                      .map(({ messageId, createdBy, creationSource, runId }) => ({
+                        id: MessageId.make(messageId),
+                        runId: RunId.make(runId),
+                        createdBy,
+                        creationSource,
+                      }))
+                      .filter(
+                        (message) =>
+                          (filter?.messageIds === undefined ||
+                            filter.messageIds.includes(message.id)) &&
+                          (filter?.messageRunIds === undefined ||
+                            filter.messageRunIds.includes(message.runId)),
+                      ),
+                  }
+                : {}),
             } as never);
           }
           return Effect.all([Ref.get(queued), Ref.get(activeStatus)]).pipe(
@@ -205,27 +238,40 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
   const context = yield* Layer.build(layer);
   const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(context));
   const reactor = yield* FirstmateReactor.FirstmateReactor.pipe(Effect.provide(context));
-  const setWorkerInput = (
-    workerThreadId: ThreadId,
-    input: {
-      readonly runId: string;
-      readonly messageId: string;
-      readonly createdBy: "user" | "agent";
-      readonly creationSource: "web" | "mcp" | "server";
-    },
-  ) => Ref.update(workerInputs, (values) => new Map([...values, [String(workerThreadId), input]]));
+  const setWorkerInput = (workerThreadId: ThreadId, input: WorkerInput) =>
+    Ref.update(workerInputs, (values) => {
+      const previous = values.get(String(workerThreadId)) ?? [];
+      return new Map([
+        ...values,
+        [
+          String(workerThreadId),
+          previous.some(({ runId }) => runId === input.runId)
+            ? previous.map((entry) => (entry.runId === input.runId ? input : entry))
+            : [...previous, input],
+        ],
+      ]);
+    });
   const setWorker = (value: OrchestrationV2ThreadShell) =>
     Effect.all([
       Ref.update(workers, (map) => new Map([...map, [value.id, value]])),
       ...(value.latestRunId === null
         ? []
         : [
-            setWorkerInput(value.id, {
-              runId: String(value.latestRunId),
-              messageId: `message:${value.latestRunId}`,
-              createdBy: "user",
-              creationSource: "web",
-            }),
+            Ref.get(workerInputs).pipe(
+              Effect.flatMap((inputs) =>
+                setWorkerInput(value.id, {
+                  runId: String(value.latestRunId),
+                  messageId: `message:${value.latestRunId}`,
+                  createdBy: "user",
+                  creationSource: "web",
+                  ...inputs.get(String(value.id))?.find(({ runId }) => runId === value.latestRunId),
+                  status: value.status,
+                  ...(value.latestRunStartedAt === undefined
+                    ? {}
+                    : { started: value.latestRunStartedAt !== null }),
+                }),
+              ),
+            ),
           ]),
     ]).pipe(Effect.asVoid);
   /** An agent row without starting a chat: the test sets its coordinator itself. */
@@ -247,6 +293,7 @@ const makeHarness = Effect.fn("firstmateReactorTestHarness")(function* () {
     failSends,
     setWorker,
     setWorkerInput,
+    recordReads,
     queued,
     activeStatus,
     revisions,
@@ -331,34 +378,55 @@ describe("FirstmateReactor", () => {
         const harness = yield* makeHarness();
         yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
-        yield* harness.setWorker(
-          shell(workerId, {
-            status: "completed",
-            latestRunId: RunId.make("run:done"),
-            activeRunId: RunId.make("run:active"),
-          }),
-        );
-        yield* harness.reactor.sweep();
-        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+        for (const status of [
+          "completed",
+          "failed",
+          "interrupted",
+          "cancelled",
+          "rolled_back",
+        ] as const) {
+          yield* harness.setWorker(
+            shell(workerId, {
+              status,
+              latestRunId: RunId.make(`run:${status}`),
+              latestRunStartedAt: DateTime.makeUnsafe(0),
+              activeRunId: RunId.make("run:active"),
+            }),
+          );
+          yield* harness.reactor.sweep();
+          expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+        }
+        const [stored] = yield* harness.service.listStored();
+        expect(stored!.lastReportedRunId).toBeNull();
       }),
     ),
   );
 
-  it.effect("ignores a cancelled run that never started", () =>
+  it.effect("consumes terminal runs that never started without waking", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
         yield* createTask(harness.service, { nextActor: "worker", workerThreadId: workerId });
-        yield* harness.setWorker(
-          shell(workerId, {
-            status: "cancelled",
-            latestRunId: RunId.make("run:cancelled"),
-            latestRunStartedAt: null,
-          }),
-        );
-        yield* harness.reactor.sweep();
-        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+        for (const status of [
+          "completed",
+          "failed",
+          "interrupted",
+          "cancelled",
+          "rolled_back",
+        ] as const) {
+          yield* harness.setWorker(
+            shell(workerId, {
+              status,
+              latestRunId: RunId.make(`run:${status}`),
+              latestRunStartedAt: null,
+            }),
+          );
+          yield* harness.reactor.sweep();
+          expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+          const [stored] = yield* harness.service.listStored();
+          expect(stored!.lastReportedRunId).toBe(`run:${status}`);
+        }
       }),
     ),
   );
@@ -423,6 +491,7 @@ describe("FirstmateReactor", () => {
         yield* harness.setWorkerInput(workerId, {
           runId: "run:notice",
           messageId: "message:notice",
+          status: "completed",
           createdBy: "agent",
           creationSource: "server",
         });
@@ -439,11 +508,189 @@ describe("FirstmateReactor", () => {
         yield* harness.setWorkerInput(workerId, {
           runId: "run:authored",
           messageId: "message:authored",
+          status: "completed",
           createdBy: "agent",
           creationSource: "mcp",
         });
         yield* harness.reactor.sweep();
         expect(yield* Ref.get(harness.sends)).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("reports an actionable completion hidden behind a newer server notice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        const task = yield* createTask(harness.service, {
+          nextActor: "worker",
+          workerThreadId: workerId,
+        });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:mcp"),
+          }),
+        );
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:mcp",
+          messageId: "message:mcp",
+          status: "completed",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:notice"),
+          }),
+        );
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:notice",
+          messageId: "message:notice",
+          status: "completed",
+          createdBy: "agent",
+          creationSource: "server",
+        });
+
+        yield* harness.reactor.sweep();
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends).toHaveLength(1);
+        expect(sends[0]!.text).toContain(`- ${task.id} Task one: worker-completed`);
+        const messageRead = (yield* Ref.get(harness.recordReads)).find(
+          ({ input, fields }) =>
+            input.threadId === workerId && fields.length === 1 && fields[0] === "messages",
+        );
+        expect(messageRead?.filter?.messageRunIds?.map(String)).toEqual(["run:mcp", "run:notice"]);
+        expect(messageRead?.filter?.messageIds?.map(String)).toEqual([
+          "message:mcp",
+          "message:notice",
+        ]);
+        const [stored] = yield* harness.service.listStored();
+        expect(stored!.lastReportedRunId).toBe("run:notice");
+      }),
+    ),
+  );
+
+  it.effect("reports a failure hidden behind a newer server notice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        const task = yield* createTask(harness.service, {
+          nextActor: "worker",
+          workerThreadId: workerId,
+        });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "failed",
+            latestRunId: RunId.make("run:failed"),
+          }),
+        );
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "completed",
+            latestRunId: RunId.make("run:notice"),
+          }),
+        );
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:notice",
+          messageId: "message:notice",
+          status: "completed",
+          createdBy: "agent",
+          creationSource: "server",
+        });
+
+        yield* harness.reactor.sweep();
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends).toHaveLength(1);
+        expect(sends[0]!.text).toContain(`- ${task.id} Task one: worker-failed`);
+        const [stored] = yield* harness.service.listStored();
+        expect(stored!.lastReportedRunId).toBe("run:notice");
+      }),
+    ),
+  );
+
+  it.effect("holds a completion marker for background work without repeating later failures", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        const task = yield* createTask(harness.service, {
+          nextActor: "worker",
+          workerThreadId: workerId,
+        });
+        // A notice before the completion can be consumed, but later runs cannot.
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:before",
+          messageId: "message:before",
+          status: "completed",
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:mcp",
+          messageId: "message:mcp",
+          status: "completed",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:failed",
+          messageId: "message:failed",
+          status: "failed",
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        const notice = shell(workerId, {
+          status: "completed",
+          latestRunId: RunId.make("run:notice"),
+          pendingBackgroundTasks: [{ kind: "subagent", taskId: "subagent:one" }],
+        });
+        yield* harness.setWorker(notice);
+        yield* harness.setWorkerInput(workerId, {
+          runId: "run:notice",
+          messageId: "message:notice",
+          status: "completed",
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        yield* harness.reactor.sweep();
+        yield* harness.reactor.sweep();
+        const firstSends = yield* Ref.get(harness.sends);
+        expect(firstSends).toHaveLength(1);
+        expect(firstSends[0]!.text).toContain("worker-failed");
+        expect(firstSends[0]!.text).not.toContain("worker-completed");
+        const [held] = yield* harness.service.listStored();
+        expect(held!.lastReportedRunId).toBe("run:before");
+
+        // A running delivery between sweeps must not forget the failure dedupe.
+        yield* harness.setWorker({ ...notice, activeRunId: RunId.make("run:active") });
+        yield* harness.reactor.sweep();
+        yield* harness.setWorker(notice);
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+
+        yield* harness.setWorker({ ...notice, pendingBackgroundTasks: [] });
+        yield* harness.reactor.sweep();
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends).toHaveLength(2);
+        expect(sends[1]!.text).toContain(`- ${task.id} Task one: worker-completed`);
+        expect(sends[1]!.text).not.toContain("worker-failed");
+        const [consumed] = yield* harness.service.listStored();
+        expect(consumed!.lastReportedRunId).toBe("run:notice");
+        const messageReads = (yield* Ref.get(harness.recordReads)).filter(
+          ({ input, fields }) => input.threadId === workerId && fields.includes("messages"),
+        );
+        expect(messageReads[1]!.filter?.messageRunIds?.map(String)).toEqual([
+          "run:mcp",
+          "run:failed",
+          "run:notice",
+        ]);
       }),
     ),
   );

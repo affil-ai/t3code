@@ -2,6 +2,7 @@ import {
   CommandId,
   FirstmateError,
   MessageId,
+  type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
   type ProjectId,
   type ThreadId,
@@ -39,19 +40,8 @@ const SWEEP_INTERVAL = "30 seconds";
 const EVENT_DEBOUNCE = "1 second";
 const ORPHAN_AFTER_MS = 10 * 60_000;
 
-const terminalReason = (
-  worker: Pick<OrchestrationV2ThreadShell, "status" | "activeRunId" | "latestRunStartedAt">,
-): FirstmateWakeReason | undefined => {
-  // A terminal-looking latest run can be stale while another run is active,
-  // or can be a queued delivery that was cancelled before it started.
-  if (
-    worker.activeRunId !== null ||
-    ((worker.status === "cancelled" || worker.status === "rolled_back") &&
-      (worker.latestRunStartedAt === null || worker.latestRunStartedAt === undefined))
-  ) {
-    return undefined;
-  }
-  switch (worker.status) {
+const terminalReason = (status: OrchestrationV2Run["status"]): FirstmateWakeReason | undefined => {
+  switch (status) {
     case "completed":
       return "worker-completed";
     case "failed":
@@ -138,23 +128,29 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const latestRunInput = (worker: OrchestrationV2ThreadShell) =>
-    worker.latestRunId === null
-      ? Effect.succeed(null)
-      : threads
-          .getProjectThreadRecords(
-            { projectId: worker.projectId, threadId: worker.id },
-            ["runs", "messages"],
-            { runIds: [worker.latestRunId] },
-          )
-          .pipe(
-            Effect.map(({ runs, messages }) => {
-              const run = runs.find((candidate) => candidate.id === worker.latestRunId);
-              return run === undefined
-                ? null
-                : (messages.find((message) => message.id === run.userMessageId) ?? null);
-            }),
-          );
+  const terminalRunsAfter = (worker: OrchestrationV2ThreadShell, markerId: string | null) =>
+    Effect.gen(function* () {
+      const target = { projectId: worker.projectId, threadId: worker.id };
+      const { runs } = yield* threads.getProjectThreadRecords(target, ["runs"]);
+      const marker = markerId === null ? undefined : runs.find((run) => run.id === markerId);
+      const terminalRuns = runs
+        .filter(
+          (run) =>
+            (marker === undefined || run.ordinal > marker.ordinal) &&
+            terminalReason(run.status) !== undefined,
+        )
+        .toSorted((left, right) => left.ordinal - right.ordinal);
+      if (terminalRuns.length === 0) return [];
+      const { messages } = yield* threads.getProjectThreadRecords(target, ["messages"], {
+        messageRunIds: terminalRuns.map((run) => run.id),
+        messageIds: terminalRuns.map((run) => run.userMessageId),
+      });
+      const messagesById = new Map(messages.map((message) => [message.id, message]));
+      return terminalRuns.map((run) => ({
+        run,
+        inputMessage: messagesById.get(run.userMessageId) ?? null,
+      }));
+    });
 
   /** Sends one agent's wakes to its coordinator chat, folding into a queued wake. */
   const deliver = (target: ThreadId, projectId: ProjectId, wakes: ReadonlyArray<FirstmateWake>) =>
@@ -251,34 +247,63 @@ const make = Effect.gen(function* () {
             task.workerThreadId === null
               ? null
               : yield* threads.getThreadShell(task.workerThreadId);
+          let wakeRunId: OrchestrationV2Run["id"] | undefined;
+          if (worker?.activeRunId != null) {
+            for (const key of previouslySeen) {
+              if (key.startsWith(`${task.id}:terminal:`) || key.startsWith(`${task.id}:done:`)) {
+                activeKeys.add(key);
+              }
+            }
+          }
           if (task.wakeAt !== null && Date.parse(task.wakeAt) <= now) {
             const key = `${task.id}:wake:${task.wakeAt}`;
             activeKeys.add(key);
             if (!previouslySeen.has(key)) taskReasons.push("wake-time");
           }
           if (worker !== null) {
-            const reason = terminalReason(worker);
-            const inputMessage =
-              reason === "worker-completed" ? yield* latestRunInput(worker) : null;
-            const completedKey =
-              inputMessage !== null && isCoordinatorInput(inputMessage)
-                ? `${task.id}:done:${inputMessage.id}`
-                : null;
+            const terminalRuns =
+              worker.activeRunId === null
+                ? yield* terminalRunsAfter(worker, task.lastReportedRunId)
+                : [];
+            const actionableCompletions = terminalRuns.flatMap(({ run, inputMessage }) =>
+              run.status === "completed" &&
+              run.startedAt !== null &&
+              inputMessage !== null &&
+              isCoordinatorInput(inputMessage)
+                ? [{ run, key: `${task.id}:done:${inputMessage.id}` }]
+                : [],
+            );
+            const unreportedCompletions = actionableCompletions.filter(
+              ({ key }) => !previouslySeen.has(key),
+            );
             const hasPendingBackground = hasPendingBackgroundTasks(worker.pendingBackgroundTasks);
-            const completedWake =
-              reason === "worker-completed" &&
-              completedKey !== null &&
-              !hasPendingBackground &&
-              !previouslySeen.has(completedKey);
-            if (completedKey !== null && !hasPendingBackground) activeKeys.add(completedKey);
-            const shouldWake =
-              reason !== undefined &&
-              worker.latestRunId !== null &&
-              worker.latestRunId !== task.lastReportedRunId &&
-              (reason !== "worker-completed" || completedWake);
-            if (shouldWake) {
-              taskReasons.push(reason);
-              acknowledgements.push(firstmate.markReportedRun(task.id, String(worker.latestRunId)));
+            if (!hasPendingBackground) {
+              const completion = unreportedCompletions.at(-1);
+              if (completion !== undefined) {
+                taskReasons.push("worker-completed");
+                wakeRunId = completion.run.id;
+              }
+              for (const { key } of actionableCompletions) activeKeys.add(key);
+            }
+            // A held completion keeps the durable marker behind it. Remember
+            // failures beyond that boundary so they still wake, but only once.
+            for (const { run } of terminalRuns) {
+              const reason = terminalReason(run.status);
+              if (run.startedAt === null || reason === "worker-completed" || reason === undefined)
+                continue;
+              const key = `${task.id}:terminal:${run.id}`;
+              activeKeys.add(key);
+              if (!previouslySeen.has(key)) {
+                if (!taskReasons.includes(reason)) taskReasons.push(reason);
+                wakeRunId ??= run.id;
+              }
+            }
+            const heldCompletion = hasPendingBackground ? unreportedCompletions[0] : undefined;
+            const consumedRun = terminalRuns.findLast(
+              ({ run }) => heldCompletion === undefined || run.ordinal < heldCompletion.run.ordinal,
+            )?.run;
+            if (consumedRun !== undefined) {
+              acknowledgements.push(firstmate.markReportedRun(task.id, String(consumedRun.id)));
             }
             if (worker.status === "waiting" || worker.pendingRuntimeRequest !== null) {
               // A second request in the same run deserves a fresh notification.
@@ -314,12 +339,13 @@ const make = Effect.gen(function* () {
           // One line per task, even when more than one condition triggered the pass.
           if (taskReasons.length > 0) {
             const wakes = wakesByAgent.get(task.agentId) ?? [];
+            const runId = wakeRunId ?? worker?.latestRunId;
             wakes.push({
               taskId: String(task.id),
               title: task.title,
               reason: taskReasons[0]!,
               additionalReasons: taskReasons.slice(1),
-              ...(worker?.latestRunId == null ? {} : { runId: String(worker.latestRunId) }),
+              ...(runId == null ? {} : { runId: String(runId) }),
             });
             wakesByAgent.set(task.agentId, wakes);
           }
