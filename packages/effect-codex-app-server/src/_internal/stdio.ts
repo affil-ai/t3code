@@ -9,181 +9,32 @@ import { ChildProcessSpawner } from "effect/process";
 import * as CodexError from "../errors.ts";
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const MAX_STDERR_DIAGNOSTIC_BYTES = 64 * 1024;
-const STDERR_TRUNCATION_MARKER = "[stderr tail truncated]\n";
 
-/** Keeps a bounded stderr tail, redacting credentials across chunk and tail boundaries. */
-export interface StderrDiagnostic {
-  readonly append: (chunk: string | Uint8Array) => void;
-  readonly read: () => string | undefined;
-}
-
-const stderrSecret = (value: string, start: number, valueStart: number) => {
-  const scheme = /^(?:bearer|basic)\s+/i.exec(value.slice(valueStart));
-  const contentStart = valueStart + (scheme?.[0].length ?? 0);
-  const quote =
-    value[contentStart] === '"' || value[contentStart] === "'" ? value[contentStart] : "";
-  let end = contentStart;
-  let closed = false;
-  let escaped = false;
-  if (quote) {
-    for (end = contentStart + 1; end < value.length; end++) {
-      if (escaped) escaped = false;
-      else if (value[end] === "\\") escaped = true;
-      else if (value[end] === quote) {
-        end++;
-        closed = true;
-        break;
-      }
-    }
-  } else {
-    end += /^[^\s,;}&"']*/.exec(value.slice(contentStart))![0].length;
-  }
-  return { start, valueStart, end, quote, open: !closed && end === value.length, escaped };
-};
-
-function* stderrSecrets(value: string) {
-  const bareKey = /[\w.-]+/y;
-  const separator = /\s*[:=]\s*/y;
-  const quotedKeys = new Map<string, { end: number; valueStart: number }>();
-  for (let start = 0; start < value.length;) {
-    const quote = value[start] === '"' || value[start] === "'" ? value[start] : "";
-    let end: number;
-    let valueStart: number;
-    if (quote) {
-      // Failed quoted keys can contain other assignments. Search inside them,
-      // but reuse their closing quote and separator instead of rescanning suffixes.
-      let cached = quotedKeys.get(quote);
-      if (!cached || start >= cached.end - 1) {
-        const token = stderrSecret(value, start, start);
-        separator.lastIndex = token.end;
-        cached = {
-          end: token.end,
-          valueStart: !token.open && separator.exec(value) ? separator.lastIndex : -1,
-        };
-        quotedKeys.set(quote, cached);
-      }
-      ({ end, valueStart } = cached);
-    } else {
-      bareKey.lastIndex = start;
-      if (!bareKey.exec(value)) {
-        start++;
-        continue;
-      }
-      end = bareKey.lastIndex;
-      separator.lastIndex = end;
-      valueStart = separator.exec(value) ? separator.lastIndex : -1;
-    }
-    if (valueStart === -1) {
-      start = quote ? start + 1 : end;
-      continue;
-    }
-    const key = value
-      .slice(start, end)
-      .replace(/\\u([\da-f]{4})|\\([\s\S])/gi, (_, hex: string | undefined, char: string) =>
-        hex === undefined ? char : String.fromCharCode(Number.parseInt(hex, 16)),
-      )
-      .replace(/[^a-z\d]/gi, "");
-    if (!/(?:authorization|password|secret|credential|token|key)$/i.test(key)) {
-      start = valueStart;
-      continue;
-    }
-
-    const secret = stderrSecret(value, start, valueStart);
-    start = Math.max(secret.end, valueStart + 1);
-    yield secret;
-  }
-  for (const match of value.matchAll(/\b(?:Bearer|Basic)\s+/gi)) {
-    yield stderrSecret(value, match.index, match.index + match[0].length);
-  }
-}
-
-const redactStderr = (value: string): string => {
-  // Outer quoted values cover credential-looking text inside them, including
-  // incomplete values at EOF. Always slice the original text, not replacements.
-  const secrets = [...stderrSecrets(value)].sort((a, b) => a.start - b.start);
-  const parts: string[] = [];
-  let cursor = 0;
-  for (const secret of secrets) {
-    if (secret.start < cursor) continue;
-    parts.push(value.slice(cursor, secret.valueStart), `${secret.quote}[REDACTED]${secret.quote}`);
-    cursor = secret.end;
-  }
-  parts.push(value.slice(cursor));
-  let redacted = parts.join("");
-  // URL credentials and query values are never useful in a termination tail.
-  redacted = redacted.replace(/(?<![a-z\d+.-])([a-z\d+.-]+:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
-  redacted = redacted.replace(/([?&][a-z\d_.~-]+)=([^&#\s]+)/gi, "$1=[REDACTED]");
-  // JWTs and recognizable provider credentials without a key or header.
-  redacted = redacted.replace(
-    /\b(?:eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/g,
-    "[REDACTED]",
-  );
-  redacted = redacted.replace(
-    /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{12,})\b/g,
-    "[REDACTED]",
-  );
-  return redacted;
-};
-
-const utf8Tail = (value: string, limit: number): string => {
-  const bytes = encoder.encode(value);
-  if (bytes.length <= limit) return value;
-  let start = bytes.length - limit;
-  // Decoding a sliced code point would insert U+FFFD and can exceed the byte cap.
-  while ((bytes[start]! & 0xc0) === 0x80) start++;
-  return decoder.decode(bytes.subarray(start));
-};
-
-const trimStderr = (value: string) => {
-  const tail = utf8Tail(value, MAX_STDERR_DIAGNOSTIC_BYTES);
-  if (tail.length === value.length) return { tail, truncated: false, leadingFragment: false };
-  const cutoff = value.length - tail.length;
-  for (const secret of stderrSecrets(value)) {
-    if (secret.start > cutoff || secret.end <= cutoff) continue;
-    // Preserve only the parsing context when an open secret spans the cutoff.
-    // Its continuation (including whitespace or escaped quotes) must stay secret
-    // on later appends, even after the original key has fallen out of the tail.
-    const retained = secret.open
-      ? `secret=${secret.quote}${secret.escaped ? "\\" : ""}`
-      : value.slice(secret.end);
-    return { tail: retained, truncated: true, leadingFragment: false };
-  }
-  return { tail, truncated: true, leadingFragment: true };
-};
-
-export const makeStderrDiagnostic = (): StderrDiagnostic => {
-  const inputDecoder = new TextDecoder();
-  let tail = "";
-  let truncated = false;
-  let leadingFragment = false;
+/** Raw bytes for a private diagnostic file only, never a shared log stream. */
+export const makeStderrDiagnostic = () => {
+  const buffer = new Uint8Array(MAX_STDERR_DIAGNOSTIC_BYTES);
+  let offset = 0;
+  let size = 0;
 
   return {
-    append: (chunk) => {
-      const bytes = typeof chunk === "string" ? encoder.encode(chunk) : chunk;
-      const trimmed = trimStderr(tail + inputDecoder.decode(bytes, { stream: true }));
-      tail = trimmed.tail;
-      if (trimmed.truncated) {
-        truncated = true;
-        leadingFragment = trimmed.leadingFragment;
-      }
+    append: (chunk: string | Uint8Array) => {
+      const bytes = (typeof chunk === "string" ? encoder.encode(chunk) : chunk).subarray(
+        -MAX_STDERR_DIAGNOSTIC_BYTES,
+      );
+      const first = Math.min(bytes.length, buffer.length - offset);
+      buffer.set(bytes.subarray(0, first), offset);
+      buffer.set(bytes.subarray(first), 0);
+      offset = (offset + bytes.length) % buffer.length;
+      size = Math.min(size + bytes.length, buffer.length);
     },
     read: () => {
-      if (tail.length === 0 && !truncated) return undefined;
-      let body = redactStderr(tail);
-      // Standalone tokens/URLs may have lost their recognizable prefix.
-      if (leadingFragment && body.length > 0 && !/^\s/.test(body)) {
-        const end = body.search(/\s/);
-        body = `[REDACTED]${end === -1 ? "" : body.slice(end)}`;
-      }
-      const marker =
-        truncated || encoder.encode(body).length > MAX_STDERR_DIAGNOSTIC_BYTES
-          ? STDERR_TRUNCATION_MARKER
-          : "";
-      const available = MAX_STDERR_DIAGNOSTIC_BYTES - encoder.encode(marker).length;
-      const bounded = utf8Tail(body, available);
-      return `${marker}${bounded}`;
+      const tail = new Uint8Array(size);
+      const start = (offset - size + buffer.length) % buffer.length;
+      const first = Math.min(size, buffer.length - start);
+      tail.set(buffer.subarray(start, start + first));
+      tail.set(buffer.subarray(0, size - first), first);
+      return tail;
     },
   };
 };

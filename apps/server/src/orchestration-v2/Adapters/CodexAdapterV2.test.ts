@@ -788,7 +788,11 @@ describe("CodexAdapterV2 process spawning", () => {
         ["app-server", "--strict-config", "-c", "model_reasoning_summary=detailed"],
         ["app-server", "--enable", "env-feature"],
       ]);
-    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-launch-args-" })),
+      Effect.provide(NodeServices.layer),
+    ),
   );
 
   it.effect("expands ~ in the configured binary path before spawning", () =>
@@ -809,9 +813,10 @@ describe("CodexAdapterV2 process spawning", () => {
         config: { ...DEFAULT_CODEX_SETTINGS, binaryPath: "~/bin/codex" },
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(
-            CodexAdapterV2.layerAppServerClientFactory,
-            ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-binary-home-" }),
+          CodexAdapterV2.layerAppServerClientFactory.pipe(
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-binary-home-" }),
+            ),
           ),
         ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -2116,8 +2121,12 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
         return child!.handle;
       }),
     );
+    const serverConfig = yield* makeReplayServerConfig("codex-app-server-recovery").pipe(
+      Effect.orDie,
+    );
     const clientFactory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
       Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+      Effect.provideService(ServerConfig.ServerConfig, serverConfig),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(
         ProviderEventLoggers.ProviderEventLoggers,
@@ -2132,7 +2141,7 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
       crypto: yield* Crypto.Crypto,
       fileSystem: yield* FileSystem.FileSystem,
       idAllocator: yield* IdAllocator.IdAllocatorV2,
-      serverConfig: yield* makeReplayServerConfig("codex-app-server-recovery").pipe(Effect.orDie),
+      serverConfig,
     };
     const registry = Layer.unwrap(
       CodexAdapterV2.makeCodexAdapterV2(options).pipe(

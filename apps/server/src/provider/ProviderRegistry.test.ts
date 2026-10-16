@@ -428,7 +428,14 @@ const layerTestNodeServices = Layer.mergeAll(
 );
 
 it.layer(
-  Layer.mergeAll(layerTestNodeServices, ServerSettingsModule.layerTest(), layerTestHttpClient),
+  Layer.mergeAll(
+    layerTestNodeServices,
+    ServerSettingsModule.layerTest(),
+    layerTestHttpClient,
+    ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-registry-" }).pipe(
+      Layer.provide(NodeServices.layer),
+    ),
+  ),
 )("ProviderRegistry", (it) => {
   describe("checkCodexProviderStatus", () => {
     it.effect("uses the app-server account and model list for provider status", () =>

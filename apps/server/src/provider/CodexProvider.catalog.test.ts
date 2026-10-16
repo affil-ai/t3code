@@ -8,6 +8,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { checkCodexProviderStatus } from "./CodexProvider.ts";
+import * as ServerConfig from "../config.ts";
 
 /**
  * Stand-in for Codex 0.162's app-server catalog behavior:
@@ -89,7 +90,7 @@ const solServiceTiers = Effect.fn("solServiceTiers")(function* (ultrafastEntitle
     decodeCodexSettings({ binaryPath, homePath: dir }),
     undefined,
     { ...environment, FAKE_ULTRAFAST_ENTITLED: ultrafastEntitled ? "1" : "0" },
-  );
+  ).pipe(Effect.provide(ServerConfig.layerTest(process.cwd(), dir)));
   const serviceTier = provider.models
     .find((model) => model.slug === "gpt-6.1-sol")
     ?.capabilities?.optionDescriptors?.find((descriptor) => descriptor.id === "serviceTier");

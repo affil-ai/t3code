@@ -25,6 +25,7 @@ import {
 import { codexContinuationIdentity } from "./CodexHomeLayout.ts";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { HttpClient } from "effect/http";
+import { ServerConfig } from "../../config.ts";
 const DRIVER = ProviderDriverKind.make("codex");
 
 export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(function* (
@@ -34,6 +35,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const http = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
+  const serverConfig = yield* ServerConfig;
   const path = yield* Path.Path;
   const host = yield* ProviderHost.ProviderHost;
   const runtime = yield* makeCodexManagedRuntime({
@@ -198,6 +200,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     Effect.provideService(FileSystem.FileSystem, fileSystem),
     Effect.provideService(Path.Path, path),
+    Effect.provideService(ServerConfig, serverConfig),
   );
   const snapshot = yield* makeManagedServerProvider({
     resolveMaintenance: () => Effect.succeed({ provider: DRIVER, packageName: null, update: null }),
@@ -299,6 +302,9 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
             ),
             Effect.scoped,
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(ServerConfig, serverConfig),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
             Effect.catch(() => snapshot.getSnapshot),
           )
         : snapshot.getSnapshot,

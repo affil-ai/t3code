@@ -1,7 +1,10 @@
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stdio from "effect/Stdio";
@@ -21,6 +24,11 @@ import {
 import { makeChildStdio, makeStderrDiagnostic, makeTerminationError } from "./_internal/stdio.ts";
 
 export interface CodexAppServerClientOptions {
+  /** Writes raw stderr to a private file; its contents must never enter a shared log. */
+  readonly writeStderrDiagnostic?: (
+    pid: number,
+    tail: Uint8Array,
+  ) => Effect.Effect<string | undefined>;
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (
@@ -278,6 +286,7 @@ export const layerChildProcess = (
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",
 )(function* (handle: ChildProcessSpawner.ChildProcessHandle, options: CodexAppServerClientOptions) {
+  const scope = yield* Scope.Scope;
   const stderr = makeStderrDiagnostic();
   const stderrDone = yield* Deferred.make<void>();
   yield* Stream.runForEach(handle.stderr, (chunk) => Effect.sync(() => stderr.append(chunk))).pipe(
@@ -292,13 +301,45 @@ const makeChildProcessClient = Effect.fn(
       Effect.tap(() =>
         Deferred.await(stderrDone).pipe(Effect.timeoutOption("100 millis"), Effect.asVoid),
       ),
-      Effect.tap((error) => {
-        const diagnostic = stderr.read();
-        return Effect.logWarning("Codex app-server terminated", {
-          error: error.message,
-          ...(diagnostic === undefined ? {} : { stderr: diagnostic }),
-        });
-      }),
+      Effect.tap((error) =>
+        Effect.gen(function* () {
+          const tail = stderr.read();
+          // Disk failures (including defects) and stalled writes must not hold
+          // pending RPCs or process recovery, nor log a cause containing stderr.
+          const diagnosticPath = options.writeStderrDiagnostic
+            ? yield* Effect.suspend(() => options.writeStderrDiagnostic!(handle.pid, tail)).pipe(
+                Effect.timeoutOption("1 second"),
+                Effect.map(Option.getOrUndefined),
+                Effect.catchCause(() => Effect.void),
+              )
+            : undefined;
+          const exitCause =
+            error._tag === "CodexAppServerTransportError" &&
+            PlatformError.isPlatformError(error.cause)
+              ? error.cause.reason.cause
+              : undefined;
+          // The platform exposes signal exits only through this fixed error.
+          // Extract the signal, never forward the error text or command details.
+          const signal =
+            exitCause instanceof Error
+              ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
+                  exitCause.message,
+                )?.[1]
+              : undefined;
+          yield* Effect.logWarning("Codex app-server terminated", {
+            code: error._tag === "CodexAppServerProcessExitedError" ? error.code : undefined,
+            ...(signal === undefined ? {} : { signal }),
+            stderrBytes: tail.byteLength,
+            diagnosticPath,
+          });
+        }).pipe(
+          // Start the existing process-exit grace immediately; disk I/O is not
+          // part of termination classification. Finish the bounded report on close.
+          Effect.forkIn(scope),
+          Effect.tap((fiber) => Scope.addFinalizer(scope, Fiber.join(fiber))),
+          Effect.asVoid,
+        ),
+      ),
     ),
   );
   return yield* make(makeChildStdio(handle), options, terminationError, terminationError);
