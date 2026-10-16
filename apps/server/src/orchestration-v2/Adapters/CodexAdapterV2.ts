@@ -1576,6 +1576,7 @@ export const layerAppServerClientFactory: Layer.Layer<
             env: environment,
             threadId: input.threadId,
           }).pipe(Effect.provideService(AgentScope, agentScope));
+          const diagnosticsScope = yield* Scope.fork(scope);
           const handle = yield* spawner.spawn(command).pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.mapError(
@@ -1593,6 +1594,7 @@ export const layerAppServerClientFactory: Layer.Layer<
             providerSessionId: input.providerSessionId,
           });
           const clientOptions: CodexClient.CodexAppServerClientOptions = {
+            diagnosticsScope,
             writeStderrDiagnostic,
             ...(protocolLogger === undefined
               ? {}

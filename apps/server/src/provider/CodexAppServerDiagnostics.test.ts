@@ -2,6 +2,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -27,6 +29,7 @@ const terminate = (
   writeStderrDiagnostic: DiagnosticWriter,
   exitStatusError?: PlatformError.PlatformError,
   onRecovered: Effect.Effect<void> = Effect.void,
+  closeOwningScope = false,
 ) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(1700000000000);
@@ -42,7 +45,7 @@ const terminate = (
         ),
       ),
       isRunning: Deferred.isDone(exited).pipe(Effect.map((done) => !done)),
-      kill: () => Effect.void,
+      kill: () => Deferred.succeed(exited, ChildProcessSpawner.ExitCode(9)).pipe(Effect.asVoid),
       unref: Effect.succeed(Effect.void),
       stdin: Sink.forEach((_chunk: Uint8Array) => Deferred.succeed(requestSent, undefined)),
       stdout: Stream.fromEffect(Deferred.await(exited)).pipe(Stream.drain),
@@ -54,25 +57,49 @@ const terminate = (
       getOutputFd: () => Stream.empty,
     });
     return yield* Effect.gen(function* () {
+      const owner = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(owner, Exit.void));
+      const diagnosticsScope = closeOwningScope ? yield* Scope.fork(owner) : undefined;
+      if (closeOwningScope) {
+        // Match production: process acquisition precedes the client layer.
+        yield* Effect.acquireRelease(Effect.succeed(handle), (child) =>
+          child.kill().pipe(Effect.ignore),
+        ).pipe(Scope.provide(owner));
+      }
       const context = yield* Layer.build(
-        CodexClient.layerChildProcess(handle, { writeStderrDiagnostic }),
-      );
+        CodexClient.layerChildProcess(handle, {
+          writeStderrDiagnostic,
+          ...(diagnosticsScope === undefined ? {} : { diagnosticsScope }),
+        }),
+      ).pipe(Scope.provide(owner));
       const client = yield* CodexClient.CodexAppServerClient.pipe(Effect.provide(context));
       const pending = yield* client.raw
         .request("test/pending", {})
         .pipe(Effect.result, Effect.forkScoped);
       yield* Deferred.await(stderrRead);
       yield* Deferred.await(requestSent);
-      yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(9));
-      const error = yield* client.terminated;
-      const result = yield* Fiber.join(pending);
-      assert.isTrue(Result.isFailure(result));
-      if (Result.isFailure(result)) assert.strictEqual(result.failure, error);
-      assert.equal(
-        error._tag,
-        exitStatusError ? "CodexAppServerTransportError" : "CodexAppServerProcessExitedError",
-      );
+      const closing = closeOwningScope
+        ? yield* Scope.close(owner, Exit.void).pipe(Effect.forkScoped)
+        : undefined;
+      if (!closeOwningScope) {
+        yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(9));
+        const error = yield* client.terminated;
+        const result = yield* Fiber.join(pending);
+        assert.isTrue(Result.isFailure(result));
+        if (Result.isFailure(result)) assert.strictEqual(result.failure, error);
+        assert.equal(
+          error._tag,
+          exitStatusError ? "CodexAppServerTransportError" : "CodexAppServerProcessExitedError",
+        );
+      } else {
+        const result = yield* Fiber.join(pending);
+        assert.isTrue(Result.isFailure(result));
+        if (Result.isFailure(result)) {
+          assert.equal(result.failure._tag, "CodexAppServerInputStreamEndedError");
+        }
+      }
       yield* onRecovered;
+      if (closing) yield* Fiber.join(closing);
       return messages;
     }).pipe(
       Effect.scoped,
@@ -161,27 +188,30 @@ it.layer(NodeServices.layer)("Codex app-server private diagnostics", (it) => {
 });
 
 describe("Codex app-server diagnostic writer failures", () => {
-  it.effect("bounds a stalled diagnostic write without blocking pending RPC closure", () =>
-    Effect.gen(function* () {
-      const started = yield* Deferred.make<void>();
-      const recovered = yield* Deferred.make<void>();
-      const pending = yield* terminate(
-        () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
-        undefined,
-        Deferred.succeed(recovered, undefined).pipe(Effect.asVoid),
-      ).pipe(Effect.forkScoped);
-      yield* Deferred.await(started);
-      // Pending RPCs close before the diagnostic timeout, not after it.
-      yield* Deferred.await(recovered);
-      yield* TestClock.adjust("1 second");
-      const messages = yield* Fiber.join(pending);
-      assert.deepEqual(messages, [
-        [
-          "Codex app-server terminated",
-          { code: 9, stderrBytes: rawStderr.byteLength, diagnosticPath: undefined },
-        ],
-      ]);
-    }),
+  it.effect.each([false, true])(
+    "bounds a stalled diagnostic write without blocking pending RPC closure (scope close: %s)",
+    (closeOwningScope) =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const recovered = yield* Deferred.make<void>();
+        const pending = yield* terminate(
+          () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          undefined,
+          Deferred.succeed(recovered, undefined).pipe(Effect.asVoid),
+          closeOwningScope,
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        // Pending RPCs close before the diagnostic timeout, not after it.
+        yield* Deferred.await(recovered);
+        yield* TestClock.adjust("1 second");
+        const messages = yield* Fiber.join(pending);
+        assert.deepEqual(messages, [
+          [
+            "Codex app-server terminated",
+            { code: 9, stderrBytes: rawStderr.byteLength, diagnosticPath: undefined },
+          ],
+        ]);
+      }),
   );
 
   it.effect("logs only the signal for a platform signal exit, not its error or stderr", () =>
@@ -212,17 +242,25 @@ describe("Codex app-server diagnostic writer failures", () => {
 
   it.effect.each([
     { name: "defect", writer: () => Effect.die(rawStderr) },
+    { name: "scope-close defect", writer: () => Effect.die(rawStderr), closeOwningScope: true },
+    {
+      name: "scope-close synchronous throw",
+      writer: () => {
+        throw rawStderr;
+      },
+      closeOwningScope: true,
+    },
     {
       name: "synchronous throw",
       writer: () => {
         throw rawStderr;
       },
     },
-  ] satisfies Array<{ name: string; writer: DiagnosticWriter }>)(
+  ] satisfies Array<{ name: string; writer: DiagnosticWriter; closeOwningScope?: boolean }>)(
     "does not leak stderr or block recovery on $name",
-    ({ writer }) =>
+    ({ writer, closeOwningScope }) =>
       Effect.gen(function* () {
-        const messages = yield* terminate(writer);
+        const messages = yield* terminate(writer, undefined, Effect.void, closeOwningScope);
         assert.deepEqual(messages, [
           [
             "Codex app-server terminated",

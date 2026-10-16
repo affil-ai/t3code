@@ -42,6 +42,7 @@ import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
 import { MCP_APP_OUTPUT_KEY, readMcpAppReference } from "@t3tools/shared/mcpApp";
@@ -2013,6 +2014,9 @@ describe("CodexAdapterV2 lost app-server", () => {
 });
 
 describe("CodexAdapterV2 app-server recovery through orchestration", () => {
+  const recoveryStderr = new TextEncoder().encode(
+    "x".repeat(96 * 1024) + 'password="raw hung-process diagnostic"\n',
+  );
   const decodeRequest = Schema.decodeUnknownSync(
     Schema.fromJsonString(
       Schema.Struct({
@@ -2027,6 +2031,7 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
     Effect.gen(function* () {
       const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
       const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      const stderrRead = yield* Deferred.make<void>();
       const responsive = yield* Ref.make(true);
       const probes = yield* Queue.unbounded<number>();
       const nativeThreadId = "recovery-native-thread";
@@ -2062,13 +2067,20 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
           : undefined;
       };
       let probeCount = 0;
+      let killCount = 0;
       let remainder = "";
       const decoder = new TextDecoder();
       const handle = ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(500 + ordinal),
         exitCode: Deferred.await(exited),
         isRunning: Deferred.isDone(exited).pipe(Effect.map((done) => !done)),
-        kill: () => Effect.void,
+        kill: () =>
+          Effect.gen(function* () {
+            if (!(yield* Deferred.isDone(exited))) {
+              killCount++;
+              yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(143));
+            }
+          }),
         unref: Effect.succeed(Effect.void),
         stdin: Sink.forEach((chunk: Uint8Array) =>
           Effect.gen(function* () {
@@ -2101,12 +2113,29 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
         // Deliberately leave stdout open even after exit, as a descendant holding
         // the pipe can do. Recovery must observe the process, not just EOF.
         stdout: Stream.fromQueue(output),
-        stderr: Stream.empty,
+        stderr: Stream.concat(
+          Stream.succeed(recoveryStderr).pipe(
+            Stream.tap(() => Deferred.succeed(stderrRead, undefined)),
+          ),
+          Stream.fromEffect(Deferred.await(exited)).pipe(Stream.drain),
+        ),
         all: Stream.empty,
         getInputFd: () => Sink.drain,
         getOutputFd: () => Stream.empty,
       });
-      return { handle, output, exited, responsive, probes, requests, emit, message, complete };
+      return {
+        handle,
+        output,
+        exited,
+        stderrRead,
+        responsive,
+        probes,
+        requests,
+        emit,
+        message,
+        complete,
+        killCount: () => killCount,
+      };
     });
 
   const makeRecoveryHarness = Effect.gen(function* () {
@@ -2115,11 +2144,16 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
     const children = [first, second];
     let spawnCount = 0;
     const spawner = ChildProcessSpawner.make(() =>
-      Effect.sync(() => {
-        const child = children[spawnCount++];
-        assert.isDefined(child, "no extra provider launches expected");
-        return child!.handle;
-      }),
+      // Like the real spawner, acquire the process before the client layer and
+      // terminate it only when its owning scope releases that acquisition.
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const child = children[spawnCount++];
+          assert.isDefined(child, "no extra provider launches expected");
+          return child!.handle;
+        }),
+        (handle) => handle.kill().pipe(Effect.ignore),
+      ),
     );
     const serverConfig = yield* makeReplayServerConfig("codex-app-server-recovery").pipe(
       Effect.orDie,
@@ -2133,11 +2167,26 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
         ProviderEventLoggers.NoOpProviderEventLoggers,
       ),
     );
+    const diagnosticReported = yield* Deferred.make<void>();
+    const diagnosticMessages: unknown[] = [];
+    const diagnosticLogger = Logger.layer(
+      [
+        Logger.make(({ message }) => {
+          if (Array.isArray(message) && message[0] === "Codex app-server terminated") {
+            diagnosticMessages.push(message);
+            Deferred.doneUnsafe(diagnosticReported, Effect.void);
+          }
+        }),
+      ],
+      { mergeWithExisting: false },
+    );
     const options = {
       instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
       settings: DEFAULT_CODEX_SETTINGS,
       environment: {},
-      clientFactory,
+      clientFactory: CodexAdapterV2.CodexAppServerClientFactory.of({
+        open: (input) => clientFactory.open(input).pipe(Effect.provide(diagnosticLogger)),
+      }),
       crypto: yield* Crypto.Crypto,
       fileSystem: yield* FileSystem.FileSystem,
       idAllocator: yield* IdAllocator.IdAllocatorV2,
@@ -2148,7 +2197,15 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
         Effect.map(ProviderAdapterRegistry.layerSingle),
       ),
     );
-    return { first, second, options, registry, spawnCount: () => spawnCount };
+    return {
+      first,
+      second,
+      options,
+      registry,
+      diagnosticReported,
+      diagnosticMessages,
+      spawnCount: () => spawnCount,
+    };
   });
 
   const startRun = (threadId: ThreadId, ordinal: number) =>
@@ -2188,6 +2245,7 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-recovery-workspace-" });
         yield* Effect.gen(function* () {
+          yield* TestClock.setTime(1700000000000);
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -2224,8 +2282,12 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
             Stream.runHead,
             Effect.forkChild({ startImmediately: true }),
           );
+          yield* Deferred.await(harness.first.stderrRead);
           if (failure === "clean exit") {
             yield* Deferred.succeed(harness.first.exited, ChildProcessSpawner.ExitCode(0));
+            // The independent report starts at process exit; let its bounded
+            // filesystem write finish before advancing the protocol grace clock.
+            yield* Deferred.await(harness.diagnosticReported);
             yield* TestClock.adjust("2 seconds");
           } else {
             yield* Ref.set(harness.first.responsive, false);
@@ -2253,6 +2315,24 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
             failed.providerSessions.find((session) => session.id === sessionId)?.lastError ?? "",
             failure === "clean exit" ? "exited with code 0" : "Codex stopped responding",
           );
+          // Session eviction precedes asynchronous disk I/O. Wait for the report,
+          // not a sleep or an assumption that eviction means cleanup has finished.
+          yield* Deferred.await(harness.diagnosticReported);
+          assert.equal(harness.diagnosticMessages.length, 1);
+          const diagnosticDirectory = `${harness.options.serverConfig.logsDir}/codex-app-server`;
+          const diagnostics = yield* fs.readDirectory(diagnosticDirectory);
+          assert.equal(diagnostics.length, 1, "report the released process exactly once");
+          const diagnosticPath = `${diagnosticDirectory}/${diagnostics[0]}`;
+          assert.deepEqual(yield* fs.readFile(diagnosticPath), recoveryStderr.slice(-64 * 1024));
+          assert.equal((yield* fs.stat(diagnosticPath)).mode & 0o777, 0o600);
+          assert.equal((yield* fs.stat(diagnosticDirectory)).mode & 0o777, 0o700);
+          assert.equal(harness.first.killCount(), failure === "hung server" ? 1 : 0);
+          assert.deepEqual(harness.diagnosticMessages, [
+            [
+              "Codex app-server terminated",
+              { code: failure === "hung server" ? 143 : 0, stderrBytes: 64 * 1024, diagnosticPath },
+            ],
+          ]);
 
           const replacement = yield* startRun(threadId, 2);
           assert.equal(harness.spawnCount(), 2);

@@ -458,6 +458,8 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
     codexAppServerArgs(input.launchArgs),
     { env: environment, extendEnv: true },
   );
+  const scope = yield* Scope.Scope;
+  const diagnosticsScope = yield* Scope.fork(scope);
   const child = yield* spawner
     .spawn(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
@@ -479,7 +481,7 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
     );
   const writeStderrDiagnostic = yield* makeCodexAppServerDiagnosticWriter;
   const clientContext = yield* Layer.build(
-    CodexClient.layerChildProcess(child, { writeStderrDiagnostic }),
+    CodexClient.layerChildProcess(child, { diagnosticsScope, writeStderrDiagnostic }),
   );
   const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
     Effect.provide(clientContext),
