@@ -13,34 +13,75 @@ const decoder = new TextDecoder();
 const MAX_STDERR_DIAGNOSTIC_BYTES = 64 * 1024;
 const STDERR_TRUNCATION_MARKER = "[stderr tail truncated]\n";
 
-/**
- * Keeps only the bounded tail of child stderr. The complete retained byte tail
- * is redacted at read time, so credentials split across chunks are handled as
- * one value rather than as independent fragments.
- */
+/** Keeps a bounded stderr tail, redacting credentials across chunk and tail boundaries. */
 export interface StderrDiagnostic {
   readonly append: (chunk: string | Uint8Array) => void;
   readonly read: () => string | undefined;
 }
 
+const stderrSecret = (value: string, start: number, valueStart: number) => {
+  const scheme = /^(?:bearer|basic)\s+/i.exec(value.slice(valueStart));
+  const contentStart = valueStart + (scheme?.[0].length ?? 0);
+  const quote =
+    value[contentStart] === '"' || value[contentStart] === "'" ? value[contentStart] : "";
+  let end = contentStart;
+  let closed = false;
+  let escaped = false;
+  if (quote) {
+    for (end = contentStart + 1; end < value.length; end++) {
+      if (escaped) escaped = false;
+      else if (value[end] === "\\") escaped = true;
+      else if (value[end] === quote) {
+        end++;
+        closed = true;
+        break;
+      }
+    }
+  } else {
+    end += /^[^\s,;}&"']*/.exec(value.slice(contentStart))![0].length;
+  }
+  return { start, valueStart, end, quote, open: !closed && end === value.length, escaped };
+};
+
+function* stderrSecrets(value: string) {
+  const assignments = /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[\w.-]+)\s*[:=]\s*/g;
+  for (let match; (match = assignments.exec(value)) !== null;) {
+    const key = match[1]!
+      .replace(/\\u([\da-f]{4})|\\([\s\S])/gi, (_, hex: string | undefined, char: string) =>
+        hex === undefined ? char : String.fromCharCode(Number.parseInt(hex, 16)),
+      )
+      .replace(/[^a-z\d]/gi, "");
+    if (!/(?:authorization|password|secret|credential|token|key)$/i.test(key)) continue;
+
+    const secret = stderrSecret(value, match.index, assignments.lastIndex);
+    assignments.lastIndex = Math.max(secret.end, assignments.lastIndex + 1);
+    yield secret;
+  }
+  for (const match of value.matchAll(/\b(?:Bearer|Basic)\s+/gi)) {
+    yield stderrSecret(value, match.index, match.index + match[0].length);
+  }
+}
+
 const redactStderr = (value: string): string => {
-  let redacted = value;
-  // Header and key/value forms are handled before standalone token patterns.
-  redacted = redacted.replace(
-    /((?:authorization|proxy-authorization|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|id[-_ ]?token|password|secret|credential)\s*[:=]\s*)(?:(?:bearer|basic)\s+)?[^\s,;}"]+/gi,
-    "$1[REDACTED]",
-  );
+  // Outer quoted values cover credential-looking text inside them, including
+  // incomplete values at EOF. Always slice the original text, not replacements.
+  const secrets = [...stderrSecrets(value)].sort((a, b) => a.start - b.start);
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const secret of secrets) {
+    if (secret.start < cursor) continue;
+    parts.push(value.slice(cursor, secret.valueStart), `${secret.quote}[REDACTED]${secret.quote}`);
+    cursor = secret.end;
+  }
+  parts.push(value.slice(cursor));
+  let redacted = parts.join("");
   // URL credentials and query values are never useful in a termination tail.
   redacted = redacted.replace(
     /([a-z][a-z\d+.-]*:\/\/)(?:[^\s/@]+(?::[^\s/@]*)?@)/gi,
     "$1[REDACTED]@",
   );
-  redacted = redacted.replace(/([?&][a-z\d_.~-]+)=([^&#\s]+)/gi, "$1[REDACTED]");
-  // Common bearer/basic formats, JWTs, and recognizable provider credentials.
-  redacted = redacted.replace(
-    /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g,
-    (match) => `${match.slice(0, match.indexOf(" ") + 1)}[REDACTED]`,
-  );
+  redacted = redacted.replace(/([?&][a-z\d_.~-]+)=([^&#\s]+)/gi, "$1=[REDACTED]");
+  // JWTs and recognizable provider credentials without a key or header.
   redacted = redacted.replace(
     /\b(?:eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/g,
     "[REDACTED]",
@@ -52,48 +93,63 @@ const redactStderr = (value: string): string => {
   return redacted;
 };
 
-const boundedUtf8 = (value: string, truncated: boolean): string => {
-  let body = redactStderr(value);
-  // A retained tail can begin in the middle of a token whose first bytes were
-  // discarded. Mask that leading fragment rather than trusting a partial match.
-  if (truncated && body.length > 0 && !/^\s/.test(body)) {
-    const end = body.search(/\s/);
-    body = `[REDACTED]${end === -1 ? "" : body.slice(end)}`;
+const utf8Tail = (value: string, limit: number): string => {
+  const bytes = encoder.encode(value);
+  if (bytes.length <= limit) return value;
+  let start = bytes.length - limit;
+  // Decoding a sliced code point would insert U+FFFD and can exceed the byte cap.
+  while ((bytes[start]! & 0xc0) === 0x80) start++;
+  return decoder.decode(bytes.subarray(start));
+};
+
+const trimStderr = (value: string) => {
+  const tail = utf8Tail(value, MAX_STDERR_DIAGNOSTIC_BYTES);
+  if (tail.length === value.length) return { tail, truncated: false, leadingFragment: false };
+  const cutoff = value.length - tail.length;
+  for (const secret of stderrSecrets(value)) {
+    if (secret.start > cutoff || secret.end <= cutoff) continue;
+    // Preserve only the parsing context when an open secret spans the cutoff.
+    // Its continuation (including whitespace or escaped quotes) must stay secret
+    // on later appends, even after the original key has fallen out of the tail.
+    const retained = secret.open
+      ? `secret=${secret.quote}${secret.escaped ? "\\" : ""}`
+      : value.slice(secret.end);
+    return { tail: retained, truncated: true, leadingFragment: false };
   }
-  const marker = truncated ? STDERR_TRUNCATION_MARKER : "";
-  const markerBytes = encoder.encode(marker);
-  const bodyBytes = encoder.encode(body);
-  if (markerBytes.length + bodyBytes.length <= MAX_STDERR_DIAGNOSTIC_BYTES) {
-    return `${marker}${body}`;
-  }
-  const available = Math.max(0, MAX_STDERR_DIAGNOSTIC_BYTES - markerBytes.length);
-  return `${marker}${decoder.decode(bodyBytes.slice(-available))}`;
+  return { tail, truncated: true, leadingFragment: true };
 };
 
 export const makeStderrDiagnostic = (): StderrDiagnostic => {
-  let tail = new Uint8Array(0);
+  const inputDecoder = new TextDecoder();
+  let tail = "";
   let truncated = false;
+  let leadingFragment = false;
 
   return {
     append: (chunk) => {
       const bytes = typeof chunk === "string" ? encoder.encode(chunk) : chunk;
-      if (bytes.length === 0) return;
-      if (bytes.length >= MAX_STDERR_DIAGNOSTIC_BYTES) {
-        tail = bytes.slice(-MAX_STDERR_DIAGNOSTIC_BYTES);
+      const trimmed = trimStderr(tail + inputDecoder.decode(bytes, { stream: true }));
+      tail = trimmed.tail;
+      if (trimmed.truncated) {
         truncated = true;
-        return;
+        leadingFragment = trimmed.leadingFragment;
       }
-      const retained = Math.min(MAX_STDERR_DIAGNOSTIC_BYTES, tail.length + bytes.length);
-      const next = new Uint8Array(retained);
-      const tailStart = Math.max(0, tail.length - (retained - bytes.length));
-      next.set(tail.slice(tailStart), 0);
-      next.set(bytes, retained - bytes.length);
-      truncated = truncated || tailStart > 0;
-      tail = next;
     },
     read: () => {
-      if (tail.length === 0) return undefined;
-      return boundedUtf8(decoder.decode(tail), truncated);
+      if (tail.length === 0 && !truncated) return undefined;
+      let body = redactStderr(tail);
+      // Standalone tokens/URLs may have lost their recognizable prefix.
+      if (leadingFragment && body.length > 0 && !/^\s/.test(body)) {
+        const end = body.search(/\s/);
+        body = `[REDACTED]${end === -1 ? "" : body.slice(end)}`;
+      }
+      const marker =
+        truncated || encoder.encode(body).length > MAX_STDERR_DIAGNOSTIC_BYTES
+          ? STDERR_TRUNCATION_MARKER
+          : "";
+      const available = MAX_STDERR_DIAGNOSTIC_BYTES - encoder.encode(marker).length;
+      const bounded = utf8Tail(body, available);
+      return `${marker}${bounded}`;
     },
   };
 };
