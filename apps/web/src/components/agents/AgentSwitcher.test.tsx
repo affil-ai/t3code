@@ -156,6 +156,29 @@ async function pointer(element: Element, type: string, pointerType: string) {
 }
 
 describe("agent switcher navigation", () => {
+  it("renders scrollable agent tabs above the existing selector and switches immediately", async () => {
+    await renderSwitcher();
+
+    const tabs = [...container.querySelectorAll<HTMLElement>('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Firstmate", "Research"]);
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(tabs[1]?.getAttribute("aria-selected")).toBe("false");
+    expect(
+      container.querySelector('[data-testid="agent-tabs"]')?.parentElement?.nextElementSibling,
+    ).not.toBeNull();
+
+    await click(tabs[1]!);
+
+    expect(useSelectedAgentStore.getState().selectedAgentId).toBe(research.id);
+    expect(mocks.navigate).toHaveBeenLastCalledWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId, threadId: research.coordinatorThreadId },
+    });
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(
+      "Research",
+    );
+  });
+
   it.each([
     { appearance: { name: "Captain", icon: "crown" }, name: "Captain", icon: "crown" },
     { appearance: null, name: "Firstmate", icon: "compass" },

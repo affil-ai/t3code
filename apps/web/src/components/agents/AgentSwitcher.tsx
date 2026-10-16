@@ -47,7 +47,7 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
-import { SidebarMenu, useSidebar } from "../ui/sidebar";
+import { SidebarMenu, SidebarMenuItem, useSidebar } from "../ui/sidebar";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { Spinner } from "../ui/spinner";
 import { AgentAvatar } from "./AgentAvatar";
@@ -234,6 +234,49 @@ export function AgentSwitcher() {
   return (
     // Keep a small gap between the titlebar and the agent row.
     <SidebarMenu className="relative mt-1" data-testid="agent-switcher">
+      <SidebarMenuItem className="mb-0">
+        <div
+          className="flex min-w-0 gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          role="tablist"
+          aria-label="Agents"
+          data-testid="agent-tabs"
+        >
+          {agentsHome.agents.map((candidate) => {
+            const current = candidate.id === agent.id;
+            const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
+            const candidateName = candidateFirstmate
+              ? (firstmateHome?.snapshot.name ?? candidate.name)
+              : candidate.name;
+            const candidateIcon = candidateFirstmate
+              ? (firstmateHome?.snapshot.icon ?? candidate.icon)
+              : candidate.icon;
+            return (
+              <button
+                key={candidate.id}
+                type="button"
+                role="tab"
+                aria-selected={current}
+                aria-label={`Switch to ${candidateName}`}
+                data-testid="agent-tab"
+                data-selected={current}
+                className={cn(
+                  "flex min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
+                  current && "bg-sidebar-row-selected",
+                )}
+                onClick={() => switchTo(candidate)}
+              >
+                <AgentAvatar
+                  icon={candidateIcon}
+                  color={candidate.color ?? AGENT_DEFAULT_COLOR}
+                  className="size-6 rounded-md"
+                  iconClassName="size-3.5"
+                />
+                <span className="min-w-0 max-w-28 truncate">{candidateName}</span>
+              </button>
+            );
+          })}
+        </div>
+      </SidebarMenuItem>
       <AgentSidebarRow
         className="mb-0"
         icon={icon}
