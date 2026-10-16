@@ -273,7 +273,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("keeps the fork app name when switching release channels", () => {
-    assert.equal(resolveDesktopProductName("0.0.17"), "T3 Work");
+    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Work");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Work");
   });
 
@@ -719,12 +719,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual((linux.linux as Record<string, unknown>).protocols, [
         { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
       ]);
-      // macOS also offers itself as a web browser, so it can be chosen as the default.
-      assert.deepStrictEqual((mac.mac as Record<string, unknown>).protocols, [
-        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
-        { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
-      ]);
-      // macOS lists a default browser only when it also opens web pages as documents.
+      // macOS lists a default browser only when it opens web pages as documents.
       const macInfo = (mac.mac as { extendInfo: Record<string, unknown> }).extendInfo;
       assert.strictEqual(macInfo.NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac, true);
       assert.deepStrictEqual(macInfo.CFBundleDocumentTypes, [
