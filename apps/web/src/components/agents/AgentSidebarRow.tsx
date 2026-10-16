@@ -71,6 +71,7 @@ export function AgentSidebarRow({
   name,
   subtitle,
   trailing,
+  overlay,
   active,
   link,
   onContextMenu,
@@ -81,6 +82,11 @@ export function AgentSidebarRow({
   readonly name: string;
   readonly subtitle: ReactNode;
   readonly trailing?: ReactNode;
+  /**
+   * Controls laid over the row, outside its link or button, such as the agent
+   * switcher. They position against the row, so they stay centred on it.
+   */
+  readonly overlay?: ReactNode;
   readonly active: boolean;
   /** The row's own element, a link or a button; the row's content goes inside it. */
   readonly link: ReactElement<{ className?: string; children?: ReactNode }>;
@@ -109,6 +115,7 @@ export function AgentSidebarRow({
           </>
         ),
       })}
+      {overlay}
     </SidebarMenuItem>
   );
 }

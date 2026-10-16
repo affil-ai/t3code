@@ -15,6 +15,7 @@ import { AgentTaskTree } from "./AgentTaskTree";
 const mocks = vi.hoisted(() => ({
   mobile: true,
   navigate: vi.fn(),
+  researchTasks: [] as Array<{ state: string; nextActor: string; workerThreadId: string | null }>,
   firstmateAppearance: { name: "Firstmate", icon: "compass" } as {
     name: string;
     icon: string;
@@ -60,7 +61,7 @@ vi.mock("~/hooks/useMediaQuery", () => ({ useIsMobile: () => mocks.mobile }));
 vi.mock("~/state/agents", () => ({
   useAgentsHome: () => ({ environmentId, agents }),
   useAgentByThreadKey: () => new Map(),
-  useAgentTasks: () => ({ data: { tasks: [] } }),
+  useAgentTasks: () => ({ data: { tasks: mocks.researchTasks } }),
 }));
 vi.mock("~/state/firstmate", () => ({
   useFirstmateHome: () =>
@@ -181,6 +182,24 @@ describe("agent switcher navigation", () => {
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(
       "Research",
     );
+  });
+
+  it("badges a tab with the agent's tasks that need the user", async () => {
+    mocks.researchTasks = [
+      { state: "open", nextActor: "user", workerThreadId: "w1" },
+      { state: "waiting", nextActor: "user", workerThreadId: "w2" },
+      { state: "open", nextActor: "worker", workerThreadId: "w3" },
+    ];
+    try {
+      await renderSwitcher();
+      const tabs = [...container.querySelectorAll<HTMLElement>('[role="tab"]')];
+      expect(tabs[1]?.getAttribute("aria-label")).toBe("Switch to Research, 2 need you");
+      expect(tabs[1]?.querySelector('[data-testid="agent-tab-needs-you"]')?.textContent).toBe("2");
+      expect(tabs[0]?.getAttribute("aria-label")).toBe("Switch to Firstmate");
+      expect(tabs[0]?.querySelector('[data-testid="agent-tab-needs-you"]')).toBeNull();
+    } finally {
+      mocks.researchTasks = [];
+    }
   });
 
   it("shows the tabs in the saved order and keeps a click switching agents", async () => {

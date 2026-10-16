@@ -80,7 +80,7 @@ export function useSelectedAgent(): AgentProfile | null {
 }
 
 /** Tasks waiting on the user, from whichever stream holds the agent's board. */
-function NeedsYouBadge({ agent }: { readonly agent: AgentProfile }) {
+function useNeedsYouCount(agent: AgentProfile): number {
   const firstmate = agent.id === FIRSTMATE_AGENT_ID;
   const home = useFirstmateHome();
   const query = useAgentTasks(
@@ -88,7 +88,11 @@ function NeedsYouBadge({ agent }: { readonly agent: AgentProfile }) {
     firstmate ? null : agent.id,
   );
   const tasks = firstmate ? (home?.snapshot.tasks ?? []) : (query.data?.tasks ?? []);
-  const needsYou = countFirstmateNeedsYou(tasks);
+  return countFirstmateNeedsYou(tasks);
+}
+
+function NeedsYouBadge({ agent }: { readonly agent: AgentProfile }) {
+  const needsYou = useNeedsYouCount(agent);
   if (needsYou === 0) return null;
   return (
     <Badge variant="warning" size="sm" aria-label={`${needsYou} need you`}>
@@ -170,6 +174,7 @@ function AgentTab({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: agent.id,
   });
+  const needsYou = useNeedsYouCount(agent);
   return (
     <button
       ref={setNodeRef}
@@ -179,14 +184,14 @@ function AgentTab({
       // useSortable labels the element a sortable button; it is still a tab.
       role="tab"
       aria-selected={current}
-      aria-label={`Switch to ${name}`}
+      aria-label={needsYou > 0 ? `Switch to ${name}, ${needsYou} need you` : `Switch to ${name}`}
       aria-roledescription="draggable tab"
       data-testid="agent-tab"
       data-selected={current}
       data-dragging={isDragging || undefined}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
-        "flex min-w-0 shrink-0 cursor-pointer touch-pan-x items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
+        "relative flex min-w-0 shrink-0 cursor-pointer touch-pan-x items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
         current && "bg-sidebar-row-selected",
         isDragging && "relative z-10 cursor-grabbing bg-sidebar-row-hover shadow-sm",
       )}
@@ -202,6 +207,18 @@ function AgentTab({
         iconClassName="size-3.5"
       />
       <span className="min-w-0 max-w-28 truncate">{name}</span>
+      {needsYou > 0 ? (
+        // Corner count of tasks waiting on the user, like an app icon badge.
+        <span
+          aria-hidden
+          data-testid="agent-tab-needs-you"
+          className="pointer-events-none absolute -top-1 -right-1"
+        >
+          <Badge variant="warning" size="sm">
+            {needsYou}
+          </Badge>
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -346,7 +363,8 @@ export function AgentSwitcher() {
             strategy={horizontalListSortingStrategy}
           >
             <div
-              className="flex min-w-0 gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              // Top and right padding keep the corner badges inside the scroller, which clips.
+              className="flex min-w-0 gap-1.5 overflow-x-auto overscroll-x-contain pt-1.5 pr-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               role="tablist"
               aria-label="Agents"
               data-testid="agent-tabs"
@@ -419,79 +437,81 @@ export function AgentSwitcher() {
             />
           )
         }
-      />
-      <Menu>
-        <MenuTrigger
-          openOnHover={!isMobile}
-          delay={120}
-          closeDelay={220}
-          render={
-            <Button
-              size="icon-xs"
-              variant="ghost-muted"
-              aria-label="Switch agent"
-              title="Switch agent"
-              data-testid="agent-switcher-trigger"
-              className="absolute top-1/2 right-2 -translate-y-1/2"
-            />
-          }
-        >
-          <ChevronsUpDownIcon className="size-3.5" />
-        </MenuTrigger>
-        <MenuPopup align="start" className="w-64">
-          {/* A group label needs its group; Base UI throws otherwise. */}
-          <MenuGroup>
-            <MenuGroupLabel>Agents</MenuGroupLabel>
-            {orderedAgents.map((candidate) => {
-              const current = candidate.id === agent.id;
-              const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
-              const candidateName = candidateFirstmate
-                ? (firstmateHome?.snapshot.name ?? candidate.name)
-                : candidate.name;
-              const candidateIcon = candidateFirstmate
-                ? (firstmateHome?.snapshot.icon ?? candidate.icon)
-                : candidate.icon;
-              return (
-                <MenuItem key={candidate.id} onClick={() => switchTo(candidate)}>
-                  <AgentAvatar
-                    icon={candidateIcon}
-                    color={candidate.color ?? AGENT_DEFAULT_COLOR}
-                    className="size-7 rounded-lg"
-                    iconClassName="size-4"
-                  />
-                  <span className="flex min-w-0 flex-1 flex-col">
-                    <span className={cn("truncate font-medium", !current && "font-normal")}>
-                      {candidateName}
-                    </span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      {candidate.coordinatorThreadId === null
-                        ? "Not started"
-                        : candidate.role.split("\n")[0] ||
-                          (candidateFirstmate ? "Your coordinator" : "Agent")}
-                    </span>
-                  </span>
-                  {current ? <CheckIcon className="size-4 shrink-0" /> : null}
+        overlay={
+          <Menu>
+            <MenuTrigger
+              openOnHover={!isMobile}
+              delay={120}
+              closeDelay={220}
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost-muted"
+                  aria-label="Switch agent"
+                  title="Switch agent"
+                  data-testid="agent-switcher-trigger"
+                  className="absolute top-1/2 right-2 -translate-y-1/2"
+                />
+              }
+            >
+              <ChevronsUpDownIcon className="size-3.5" />
+            </MenuTrigger>
+            <MenuPopup align="start" className="w-64">
+              {/* A group label needs its group; Base UI throws otherwise. */}
+              <MenuGroup>
+                <MenuGroupLabel>Agents</MenuGroupLabel>
+                {orderedAgents.map((candidate) => {
+                  const current = candidate.id === agent.id;
+                  const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
+                  const candidateName = candidateFirstmate
+                    ? (firstmateHome?.snapshot.name ?? candidate.name)
+                    : candidate.name;
+                  const candidateIcon = candidateFirstmate
+                    ? (firstmateHome?.snapshot.icon ?? candidate.icon)
+                    : candidate.icon;
+                  return (
+                    <MenuItem key={candidate.id} onClick={() => switchTo(candidate)}>
+                      <AgentAvatar
+                        icon={candidateIcon}
+                        color={candidate.color ?? AGENT_DEFAULT_COLOR}
+                        className="size-7 rounded-lg"
+                        iconClassName="size-4"
+                      />
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className={cn("truncate font-medium", !current && "font-normal")}>
+                          {candidateName}
+                        </span>
+                        <span className="truncate text-xs text-muted-foreground">
+                          {candidate.coordinatorThreadId === null
+                            ? "Not started"
+                            : candidate.role.split("\n")[0] ||
+                              (candidateFirstmate ? "Your coordinator" : "Agent")}
+                        </span>
+                      </span>
+                      {current ? <CheckIcon className="size-4 shrink-0" /> : null}
+                    </MenuItem>
+                  );
+                })}
+              </MenuGroup>
+              <MenuSeparator />
+              <MenuItem onClick={() => setDialog({ agent: null })}>
+                <PlusIcon className="size-4" />
+                New agent…
+              </MenuItem>
+              <MenuItem onClick={() => openEditor(agent)}>
+                <PencilIcon className="size-4" />
+                {firstmate ? "Name and icon…" : "Edit name, role, and icon…"}
+              </MenuItem>
+              {firstmate ? null : (
+                <MenuItem onClick={() => setArchiving(agent)}>
+                  <ArchiveIcon className="size-4" />
+                  Archive agent
                 </MenuItem>
-              );
-            })}
-          </MenuGroup>
-          <MenuSeparator />
-          <MenuItem onClick={() => setDialog({ agent: null })}>
-            <PlusIcon className="size-4" />
-            New agent…
-          </MenuItem>
-          <MenuItem onClick={() => openEditor(agent)}>
-            <PencilIcon className="size-4" />
-            {firstmate ? "Name and icon…" : "Edit name, role, and icon…"}
-          </MenuItem>
-          {firstmate ? null : (
-            <MenuItem onClick={() => setArchiving(agent)}>
-              <ArchiveIcon className="size-4" />
-              Archive agent
-            </MenuItem>
-          )}
-        </MenuPopup>
-      </Menu>
+              )}
+            </MenuPopup>
+          </Menu>
+        }
+      />
       {firstmateHome !== null ? (
         <FirstmateAppearanceDialog
           environmentId={firstmateHome.environmentId}
