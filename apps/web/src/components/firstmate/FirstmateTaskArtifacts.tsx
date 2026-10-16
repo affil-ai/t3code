@@ -14,6 +14,7 @@ import { cn } from "~/lib/utils";
 import { ExpandedImageDialog } from "../chat/ExpandedImageDialog";
 import type { ExpandedImagePreview } from "../chat/ExpandedImagePreview";
 import { Skeleton } from "../ui/skeleton";
+import { useTaskLinkHandlers } from "./FirstmateTaskLinks";
 
 interface ArtifactsProps {
   readonly environmentId: EnvironmentId;
@@ -81,6 +82,49 @@ function ArtifactImage({
   );
 }
 
+/**
+ * A link artifact. It opens like a link in chat: a click follows the "Open links
+ * in" setting, and a right-click offers the integrated browser, the system
+ * browser, or copying the link.
+ */
+function ArtifactLink({
+  environmentId,
+  artifact,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly artifact: FirstmateTaskArtifact;
+}) {
+  const handlers = useTaskLinkHandlers(environmentId, artifact.url);
+  const content = (
+    <>
+      <ExternalLinkIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{artifact.label}</span>
+    </>
+  );
+  const className =
+    "flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground hover:underline";
+  if (handlers === null) {
+    // Not a web link the panel can route (for example a custom scheme): leave it to the shell.
+    return (
+      <a className={className} href={artifact.url} target="_blank" rel="noreferrer">
+        {content}
+      </a>
+    );
+  }
+  return (
+    <a
+      className={className}
+      href={handlers.href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={handlers.onClick}
+      onContextMenu={handlers.onContextMenu}
+    >
+      {content}
+    </a>
+  );
+}
+
 function useImageViewer() {
   const [preview, setPreview] = useState<ExpandedImagePreview | null>(null);
   const dialog = preview ? (
@@ -110,15 +154,7 @@ export function FirstmateArtifactList({ environmentId, threadId, artifacts }: Ar
               />
             </>
           ) : (
-            <a
-              className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground hover:underline"
-              href={artifact.url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <ExternalLinkIcon className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate">{artifact.label}</span>
-            </a>
+            <ArtifactLink environmentId={environmentId} artifact={artifact} />
           )}
           {artifact.caption?.trim() ? (
             <p className="text-xs text-muted-foreground">{artifact.caption}</p>

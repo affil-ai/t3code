@@ -100,24 +100,23 @@ function PullRequestLinkIcon({
   );
 }
 
-export function ExternalTaskLink({
-  environmentId,
-  link,
-  className,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly link: FirstmateTask["links"][number];
-  readonly className?: string;
-}) {
+/**
+ * Click and right-click behavior for a link in the Tasks panel, the same as a
+ * link in chat: a click follows the "Open links in" setting (a modified click
+ * goes to the system browser), and the context menu offers the integrated
+ * browser, the system browser, and copying the link. Null when the URL is not
+ * a web link the panel can open.
+ */
+export function useTaskLinkHandlers(environmentId: EnvironmentId, url: string) {
   const coordinatorThreadId = use(CoordinatorThreadContext);
   const threadRef =
     coordinatorThreadId === null ? undefined : scopeThreadRef(environmentId, coordinatorThreadId);
   const openLink = useOpenLink(threadRef);
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
-  const href = resolveExternalWebLinkHref(link.url);
+  const href = resolveExternalWebLinkHref(url);
   if (href === null) return null;
 
-  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+  const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
     event.stopPropagation();
     if (
       event.defaultPrevented ||
@@ -142,7 +141,7 @@ export function ExternalTaskLink({
     });
   };
 
-  const handleContextMenu = (event: MouseEvent<HTMLAnchorElement>) => {
+  const onContextMenu = (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
     event.stopPropagation();
     const api = readLocalApi();
@@ -164,6 +163,22 @@ export function ExternalTaskLink({
       },
     });
   };
+
+  return { href, onClick, onContextMenu };
+}
+
+export function ExternalTaskLink({
+  environmentId,
+  link,
+  className,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly link: FirstmateTask["links"][number];
+  readonly className?: string;
+}) {
+  const handlers = useTaskLinkHandlers(environmentId, link.url);
+  if (handlers === null) return null;
+  const { href, onClick: handleClick, onContextMenu: handleContextMenu } = handlers;
 
   return (
     <a
