@@ -11,6 +11,17 @@ import { Link } from "@tanstack/react-router";
 import { LinkIcon, MessageSquareTextIcon } from "lucide-react";
 import { type MouseEvent, use } from "react";
 
+import { canOpenLinksInApp } from "~/browser/browserLinkTarget";
+import { openUrlInPreview } from "~/browser/openFileInPreview";
+import { useOpenLink } from "~/browser/useOpenLink";
+import {
+  resolveExternalWebLinkHref,
+  showExternalLinkContextMenu,
+} from "~/components/chat/externalLinkContextMenu";
+import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { readLocalApi } from "~/localApi";
+import { previewEnvironment } from "~/state/preview";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { usePullRequestPreviewTarget } from "~/lib/openPullRequestLink";
@@ -21,10 +32,6 @@ import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
 import { isPullRequestUrl, isSlackUrl } from "./firstmateBoard.logic";
 import { CoordinatorThreadContext } from "./firstmateTasksShared";
-
-function stopPropagation(event: { stopPropagation: () => void }) {
-  event.stopPropagation();
-}
 
 export function WorkerThreadLink({
   environmentId,
@@ -102,13 +109,70 @@ export function ExternalTaskLink({
   readonly link: FirstmateTask["links"][number];
   readonly className?: string;
 }) {
+  const coordinatorThreadId = use(CoordinatorThreadContext);
+  const threadRef =
+    coordinatorThreadId === null ? undefined : scopeThreadRef(environmentId, coordinatorThreadId);
+  const openLink = useOpenLink(threadRef);
+  const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
+  const href = resolveExternalWebLinkHref(link.url);
+  if (href === null) return null;
+
+  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    event.stopPropagation();
+    if (
+      event.defaultPrevented ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey ||
+      event.button !== 0
+    ) {
+      return;
+    }
+    event.preventDefault();
+    void openLink(href, {
+      event: {
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        button: event.button,
+      },
+      threadRef,
+    }).catch((cause: unknown) => {
+      console.error("Unable to open task link", cause);
+    });
+  };
+
+  const handleContextMenu = (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const api = readLocalApi();
+    if (!api) return;
+    void showExternalLinkContextMenu({
+      href,
+      canOpenInPreview: canOpenLinksInApp(threadRef),
+      position: { x: event.clientX, y: event.clientY },
+      showContextMenu: (items, position) => api.contextMenu.show(items, position),
+      openInPreview: async (target) => {
+        if (!threadRef) throw new Error("Integrated browser is unavailable.");
+        const result = await openUrlInPreview({ threadRef, url: target, openPreview });
+        if (result._tag === "Failure") throw result.cause;
+      },
+      openExternal: (target) => api.shell.openExternal(target),
+      copyLink: (target) => writeTextToClipboard(target, "link"),
+      reportFailure: (operation, cause) => {
+        console.error(`Unable to ${operation} for task link`, cause);
+      },
+    });
+  };
+
   return (
     <a
       className={className}
-      href={link.url}
+      href={href}
       target="_blank"
       rel="noreferrer"
-      onClick={stopPropagation}
+      onClick={handleClick}
+      onContextMenu={handleContextMenu}
     >
       {isPullRequestUrl(link.url) ? (
         <PullRequestLinkIcon environmentId={environmentId} url={link.url} />
