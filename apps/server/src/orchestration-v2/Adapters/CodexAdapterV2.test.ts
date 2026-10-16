@@ -38,6 +38,9 @@ import * as CodexReplay from "effect-codex-app-server/replay";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Crypto from "effect/Crypto";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
@@ -63,6 +66,8 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as Orchestrator from "../Orchestrator.ts";
 import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
+import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
+import * as ProviderSessionManager from "../ProviderSessionManager.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
@@ -1670,6 +1675,7 @@ function codexReplayPreamble(input: {
             preview: "",
             ephemeral: false,
             modelProvider: "openai",
+            projectId: null,
             createdAt: 1782622440,
             updatedAt: 1782622440,
             status: { type: "idle" },
@@ -2010,6 +2016,398 @@ describe("CodexAdapterV2 lost app-server", () => {
       assert.instanceOf(error, ProviderAdapter.ProviderAdapterEventStreamError);
       assert.include(String(error.cause), "Codex app-server connection ended");
     }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+});
+
+describe("CodexAdapterV2 app-server recovery through orchestration", () => {
+  const decodeRequest = Schema.decodeUnknownSync(
+    Schema.fromJsonString(
+      Schema.Struct({
+        id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Number])),
+        method: Schema.String,
+        params: Schema.optionalKey(Schema.Unknown),
+      }),
+    ),
+  );
+
+  const makeAppServer = (ordinal: number) =>
+    Effect.gen(function* () {
+      const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
+      const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      const responsive = yield* Ref.make(true);
+      const probes = yield* Queue.unbounded<number>();
+      const nativeThreadId = "recovery-native-thread";
+      const nativeTurnId = `recovery-native-turn-${ordinal}`;
+      const requests: Array<string> = [];
+      const emit = (frame: unknown) =>
+        Queue.offer(output, new TextEncoder().encode(`${encodeUnknownJson(frame)}\n`));
+      const message = (text: string, id: string) => ({
+        method: "item/completed",
+        params: {
+          threadId: nativeThreadId,
+          turnId: nativeTurnId,
+          completedAtMs: 1782622440000,
+          item: { type: "agentMessage", id, text, phase: "final_answer" },
+        },
+      });
+      const complete = emit({
+        method: "turn/completed",
+        params: {
+          threadId: nativeThreadId,
+          turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+        },
+      });
+      const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "recovery" });
+      const reply = (method: string) => {
+        const response = preamble.find(
+          (entry) => entry.type === "emit_inbound" && entry.label === method,
+        );
+        assert.isDefined(response);
+        assert.isTrue(response?.type === "emit_inbound" && Predicate.isObject(response.frame));
+        return response?.type === "emit_inbound" && Predicate.isObject(response.frame)
+          ? response.frame.result
+          : undefined;
+      };
+      let probeCount = 0;
+      let remainder = "";
+      const decoder = new TextDecoder();
+      const handle = ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(500 + ordinal),
+        exitCode: Deferred.await(exited),
+        isRunning: Deferred.isDone(exited).pipe(Effect.map((done) => !done)),
+        kill: () => Effect.void,
+        unref: Effect.succeed(Effect.void),
+        stdin: Sink.forEach((chunk: Uint8Array) =>
+          Effect.gen(function* () {
+            remainder += decoder.decode(chunk, { stream: true });
+            const lines = remainder.split("\n");
+            remainder = lines.pop()!;
+            for (const line of lines) {
+              const request = decodeRequest(line);
+              requests.push(request.method);
+              if (request.id === undefined) continue;
+              if (request.method === "thread/loaded/list") {
+                probeCount++;
+                if (yield* Ref.get(responsive)) {
+                  // Both a successful reply and an RPC error prove responsiveness.
+                  yield* emit(
+                    probeCount % 2 === 0
+                      ? { id: request.id, error: { code: -32601, message: "Unsupported probe" } }
+                      : { id: request.id, result: { data: [nativeThreadId], nextCursor: null } },
+                  );
+                }
+                yield* Queue.offer(probes, probeCount);
+                continue;
+              }
+              const method = request.method === "thread/resume" ? "thread/start" : request.method;
+              assert.include(["initialize", "thread/start", "turn/start"], method);
+              yield* emit({ id: request.id, result: reply(method) });
+            }
+          }),
+        ),
+        // Deliberately leave stdout open even after exit, as a descendant holding
+        // the pipe can do. Recovery must observe the process, not just EOF.
+        stdout: Stream.fromQueue(output),
+        stderr: Stream.empty,
+        all: Stream.empty,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+      });
+      return { handle, output, exited, responsive, probes, requests, emit, message, complete };
+    });
+
+  const makeRecoveryHarness = Effect.gen(function* () {
+    const first = yield* makeAppServer(1);
+    const second = yield* makeAppServer(2);
+    const children = [first, second];
+    let spawnCount = 0;
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.sync(() => {
+        const child = children[spawnCount++];
+        assert.isDefined(child, "no extra provider launches expected");
+        return child!.handle;
+      }),
+    );
+    const clientFactory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+      Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(
+        ProviderEventLoggers.ProviderEventLoggers,
+        ProviderEventLoggers.NoOpProviderEventLoggers,
+      ),
+    );
+    const options = {
+      instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+      settings: DEFAULT_CODEX_SETTINGS,
+      environment: {},
+      clientFactory,
+      crypto: yield* Crypto.Crypto,
+      fileSystem: yield* FileSystem.FileSystem,
+      idAllocator: yield* IdAllocator.IdAllocatorV2,
+      serverConfig: yield* makeReplayServerConfig("codex-app-server-recovery").pipe(Effect.orDie),
+    };
+    const registry = Layer.unwrap(
+      CodexAdapterV2.makeCodexAdapterV2(options).pipe(
+        Effect.map(ProviderAdapterRegistry.layerSingle),
+      ),
+    );
+    return { first, second, options, registry, spawnCount: () => spawnCount };
+  });
+
+  const startRun = (threadId: ThreadId, ordinal: number) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const started = yield* orchestrator.streamDomainEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+        ),
+        Stream.runHead,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`recovery-start-${ordinal}`),
+        threadId,
+        messageId: MessageId.make(`recovery-message-${ordinal}`),
+        text: "recovery",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "start_immediately" },
+      });
+      yield* worker.drain();
+      yield* Fiber.join(started);
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(projection.runs.at(-1)?.status, "running");
+      return projection;
+    });
+
+  it.effect.each(["clean exit", "hung server"] as const)(
+    "%s fails the active run and session; the next run on the same provider succeeds",
+    (failure) =>
+      Effect.gen(function* () {
+        const harness = yield* makeRecoveryHarness;
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-recovery-workspace-" });
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+          const threadId = ThreadId.make("thread:codex-app-server-recovery");
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("recovery-create"),
+            threadId,
+            projectId: ProjectId.make("project:codex-app-server-recovery"),
+            title: "Codex recovery",
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const running = yield* startRun(threadId, 1);
+          const sessionId = running.providerSessions.at(-1)!.id;
+          assert.equal(harness.spawnCount(), 1);
+          const failureObserved = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) => event.type === "run.updated" && event.payload.status === "failed",
+            ),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          const sessionFailed = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "provider-session.updated" && event.payload.status === "error",
+            ),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          if (failure === "clean exit") {
+            yield* Deferred.succeed(harness.first.exited, ChildProcessSpawner.ExitCode(0));
+            yield* TestClock.adjust("2 seconds");
+          } else {
+            yield* Ref.set(harness.first.responsive, false);
+            yield* TestClock.adjust("1 minute");
+            assert.equal(yield* Queue.take(harness.first.probes), 1);
+            yield* TestClock.adjust("59999 millis");
+            assert.equal(
+              (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status,
+              "running",
+            );
+            yield* TestClock.adjust("1 millis");
+          }
+          // At the bound, require persisted failure, not merely a failed adapter stream.
+          yield* Fiber.join(failureObserved);
+          yield* Fiber.join(sessionFailed);
+          yield* worker.drain();
+          const failed = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(failed.runs[0]?.status, "failed");
+          assert.equal(
+            failed.providerSessions.find((session) => session.id === sessionId)?.status,
+            "error",
+          );
+          assert.isTrue(Option.isNone(yield* manager.get(sessionId)));
+          assert.include(
+            failed.providerSessions.find((session) => session.id === sessionId)?.lastError ?? "",
+            failure === "clean exit" ? "exited with code 0" : "Codex stopped responding",
+          );
+
+          const replacement = yield* startRun(threadId, 2);
+          assert.equal(harness.spawnCount(), 2);
+          assert.equal(
+            replacement.thread.providerInstanceId,
+            CODEX_TEST_MODEL_SELECTION.instanceId,
+          );
+          const readyToFinalize = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) => event.type === "run.updated" && event.payload.status === "waiting",
+            ),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* harness.second.emit(
+            harness.second.message("replacement succeeded", "replacement-answer"),
+          );
+          yield* harness.second.complete;
+          yield* Fiber.join(readyToFinalize);
+          yield* worker.drain();
+          const recovered = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(
+            recovered.runs.map((run) => run.status),
+            ["failed", "completed"],
+          );
+          assert.equal(
+            harness.second.requests.filter((method) => method === "initialize").length,
+            1,
+          );
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              { name: "codex-app-server-recovery", runtimePolicyOverride: { cwd } },
+              harness.registry,
+              { runEffectWorker: false },
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect(
+    "keeps a responsive long-running turn healthy across successful and error probe replies",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeRecoveryHarness;
+        const adapter = yield* CodexAdapterV2.makeCodexAdapterV2(harness.options);
+        const threadId = ThreadId.make("thread:codex-healthy-probes");
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("session:codex-healthy-probes"),
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+        const terminal = yield* Deferred.make<void>();
+        const streamEnded = yield* Deferred.make<void>();
+        const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => events.push(event)).pipe(
+              Effect.andThen(
+                event.type === "turn.terminal"
+                  ? Deferred.succeed(terminal, undefined)
+                  : Effect.void,
+              ),
+            ),
+          ),
+          Effect.ensuring(Deferred.succeed(streamEnded, undefined)),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId,
+            providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("healthy-probes"),
+            text: "recovery",
+          }),
+        );
+        for (let cycle = 1; cycle <= 4; cycle++) {
+          yield* TestClock.adjust("1 minute");
+          assert.equal(yield* Queue.take(harness.first.probes), cycle);
+          assert.isFalse(yield* Deferred.isDone(streamEnded));
+          assert.isFalse(yield* Deferred.isDone(terminal));
+        }
+        yield* harness.first.complete;
+        yield* Deferred.await(terminal);
+        assert.deepEqual(
+          events.filter((event) => event.type === "turn.terminal").map((event) => event.status),
+          ["completed"],
+        );
+        assert.equal(harness.spawnCount(), 1);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect("delivers buffered native messages before the clean-exit stream failure", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeRecoveryHarness;
+      const adapter = yield* CodexAdapterV2.makeCodexAdapterV2(harness.options);
+      const threadId = ThreadId.make("thread:codex-buffered-exit");
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session:codex-buffered-exit"),
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+      });
+      yield* runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId,
+          providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("buffered-exit"),
+          text: "recovery",
+        }),
+      );
+      yield* harness.first.emit(harness.first.message("first buffered answer", "buffered-first"));
+      yield* harness.first.emit(harness.first.message("second buffered answer", "buffered-second"));
+      yield* Deferred.succeed(harness.first.exited, ChildProcessSpawner.ExitCode(0));
+      yield* TestClock.adjust("2 seconds");
+      // No consumer has read runtime.events yet: drain only after its queue fails.
+      const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
+      const error = yield* runtime.events.pipe(
+        Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+        Effect.flip,
+      );
+      assert.instanceOf(error, ProviderAdapter.ProviderAdapterEventStreamError);
+      assert.include(String(error.cause), "exited with code 0");
+      assert.deepEqual(
+        events.flatMap((event) => (event.type === "message.updated" ? [event.message.text] : [])),
+        ["first buffered answer", "second buffered answer"],
+      );
+    }).pipe(
+      Effect.scoped,
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
       ),
