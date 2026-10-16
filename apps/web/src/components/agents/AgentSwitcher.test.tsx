@@ -111,7 +111,11 @@ beforeEach(() => {
   mocks.mobile = true;
   mocks.navigate.mockReset();
   mocks.firstmateAppearance = { name: "Firstmate", icon: "compass" };
-  useSelectedAgentStore.setState({ selectedAgentId: null, preferCustomAgent: false });
+  useSelectedAgentStore.setState({
+    selectedAgentId: null,
+    preferCustomAgent: false,
+    agentOrder: [],
+  });
   useRightPanelStore.setState({ byThreadKey: {} });
   container = document.createElement("div");
   document.body.append(container);
@@ -177,6 +181,19 @@ describe("agent switcher navigation", () => {
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(
       "Research",
     );
+  });
+
+  it("shows the tabs in the saved order and keeps a click switching agents", async () => {
+    useSelectedAgentStore.setState({ agentOrder: [research.id] });
+    await renderSwitcher();
+
+    const tabs = [...container.querySelectorAll<HTMLElement>('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Research", "Firstmate"]);
+    expect(tabs[0]?.getAttribute("aria-roledescription")).toBe("draggable tab");
+
+    await click(tabs[0]!);
+
+    expect(useSelectedAgentStore.getState().selectedAgentId).toBe(research.id);
   });
 
   it.each([

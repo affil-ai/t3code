@@ -16,7 +16,18 @@ import {
 } from "@t3tools/contracts";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ArchiveIcon, CheckIcon, ChevronsUpDownIcon, PencilIcon, PlusIcon } from "lucide-react";
-import { type MouseEvent, type ReactNode, useEffect, useState } from "react";
+import {
+  DndContext,
+  type DragEndEvent,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { restrictToFirstScrollableAncestor, restrictToHorizontalAxis } from "@dnd-kit/modifiers";
+import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
@@ -54,7 +65,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { useAgentCommands } from "./agentCommands";
 import { AgentDialog } from "./AgentDialog";
 import { AgentRowSubtitle, AgentSidebarRow } from "./AgentSidebarRow";
-import { resolveSelectedAgent } from "./selectedAgent.logic";
+import { orderAgents, reorderAgentIds, resolveSelectedAgent } from "./selectedAgent.logic";
 
 type RowMenuAction = "edit" | "archive";
 
@@ -136,6 +147,65 @@ function StartAgentButton({
   );
 }
 
+/**
+ * One agent in the tab row above the agent row. A click switches to the agent;
+ * dragging it sideways moves it in the row. The pointer has to travel a few
+ * pixels before a drag starts, so a plain click never reorders.
+ */
+function AgentTab({
+  agent,
+  name,
+  icon,
+  current,
+  suppressClickRef,
+  onSelect,
+}: {
+  readonly agent: AgentProfile;
+  readonly name: string;
+  readonly icon: string;
+  readonly current: boolean;
+  readonly suppressClickRef: { current: boolean };
+  readonly onSelect: (agent: AgentProfile) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: agent.id,
+  });
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      {...attributes}
+      {...listeners}
+      // useSortable labels the element a sortable button; it is still a tab.
+      role="tab"
+      aria-selected={current}
+      aria-label={`Switch to ${name}`}
+      aria-roledescription="draggable tab"
+      data-testid="agent-tab"
+      data-selected={current}
+      data-dragging={isDragging || undefined}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={cn(
+        "flex min-w-0 shrink-0 cursor-pointer touch-pan-x items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
+        current && "bg-sidebar-row-selected",
+        isDragging && "relative z-10 cursor-grabbing bg-sidebar-row-hover shadow-sm",
+      )}
+      onClick={() => {
+        if (suppressClickRef.current) return;
+        onSelect(agent);
+      }}
+    >
+      <AgentAvatar
+        icon={icon}
+        color={agent.color ?? AGENT_DEFAULT_COLOR}
+        className="size-6 rounded-md"
+        iconClassName="size-3.5"
+      />
+      <span className="min-w-0 max-w-28 truncate">{name}</span>
+    </button>
+  );
+}
+
 export function AgentSwitcher() {
   const { isMobile, setOpenMobile } = useSidebar();
   const agentsHome = useAgentsHome();
@@ -167,6 +237,30 @@ export function AgentSwitcher() {
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [archiving, setArchiving] = useState<AgentProfile | null>(null);
   const { pending, archive, run } = useAgentCommands();
+  // Tabs and the switcher menu share the user's saved order.
+  const agentOrder = useSelectedAgentStore((state) => state.agentOrder);
+  const setAgentOrder = useSelectedAgentStore((state) => state.setAgentOrder);
+  const orderedAgents = useMemo(
+    () => orderAgents(agentsHome?.agents ?? [], agentOrder),
+    [agentsHome, agentOrder],
+  );
+  const tabSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+  // The click that ends a drag must not also switch agents.
+  const suppressTabClickRef = useRef(false);
+  const onTabDragEnd = (event: DragEndEvent) => {
+    const ids = orderedAgents.map((candidate) => candidate.id);
+    const next = reorderAgentIds(
+      ids,
+      String(event.active.id),
+      event.over ? String(event.over.id) : null,
+    );
+    if (next !== ids) setAgentOrder(next);
+    window.setTimeout(() => {
+      suppressTabClickRef.current = false;
+    }, 0);
+  };
   if (agentsHome === null || agent === null) return null;
   const { environmentId } = agentsHome;
   const firstmate = agent.id === FIRSTMATE_AGENT_ID;
@@ -235,47 +329,53 @@ export function AgentSwitcher() {
     // Keep a small gap between the titlebar and the agent row.
     <SidebarMenu className="relative mt-1" data-testid="agent-switcher">
       <SidebarMenuItem className="mb-0">
-        <div
-          className="flex min-w-0 gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          role="tablist"
-          aria-label="Agents"
-          data-testid="agent-tabs"
+        <DndContext
+          sensors={tabSensors}
+          collisionDetection={closestCenter}
+          modifiers={[restrictToHorizontalAxis, restrictToFirstScrollableAncestor]}
+          onDragStart={() => {
+            suppressTabClickRef.current = true;
+          }}
+          onDragEnd={onTabDragEnd}
+          onDragCancel={() => {
+            suppressTabClickRef.current = false;
+          }}
         >
-          {agentsHome.agents.map((candidate) => {
-            const current = candidate.id === agent.id;
-            const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
-            const candidateName = candidateFirstmate
-              ? (firstmateHome?.snapshot.name ?? candidate.name)
-              : candidate.name;
-            const candidateIcon = candidateFirstmate
-              ? (firstmateHome?.snapshot.icon ?? candidate.icon)
-              : candidate.icon;
-            return (
-              <button
-                key={candidate.id}
-                type="button"
-                role="tab"
-                aria-selected={current}
-                aria-label={`Switch to ${candidateName}`}
-                data-testid="agent-tab"
-                data-selected={current}
-                className={cn(
-                  "flex min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
-                  current && "bg-sidebar-row-selected",
-                )}
-                onClick={() => switchTo(candidate)}
-              >
-                <AgentAvatar
-                  icon={candidateIcon}
-                  color={candidate.color ?? AGENT_DEFAULT_COLOR}
-                  className="size-6 rounded-md"
-                  iconClassName="size-3.5"
-                />
-                <span className="min-w-0 max-w-28 truncate">{candidateName}</span>
-              </button>
-            );
-          })}
-        </div>
+          <SortableContext
+            items={orderedAgents.map((candidate) => candidate.id)}
+            strategy={horizontalListSortingStrategy}
+          >
+            <div
+              className="flex min-w-0 gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              role="tablist"
+              aria-label="Agents"
+              data-testid="agent-tabs"
+            >
+              {orderedAgents.map((candidate) => {
+                const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
+                return (
+                  <AgentTab
+                    key={candidate.id}
+                    agent={candidate}
+                    name={
+                      candidateFirstmate
+                        ? (firstmateHome?.snapshot.name ?? candidate.name)
+                        : candidate.name
+                    }
+                    icon={
+                      candidateFirstmate
+                        ? (firstmateHome?.snapshot.icon ?? candidate.icon)
+                        : candidate.icon
+                    }
+                    current={candidate.id === agent.id}
+                    suppressClickRef={suppressTabClickRef}
+                    onSelect={switchTo}
+                  />
+                );
+              })}
+            </div>
+          </SortableContext>
+        </DndContext>
       </SidebarMenuItem>
       <AgentSidebarRow
         className="mb-0"
@@ -342,7 +442,7 @@ export function AgentSwitcher() {
           {/* A group label needs its group; Base UI throws otherwise. */}
           <MenuGroup>
             <MenuGroupLabel>Agents</MenuGroupLabel>
-            {agentsHome.agents.map((candidate) => {
+            {orderedAgents.map((candidate) => {
               const current = candidate.id === agent.id;
               const candidateFirstmate = candidate.id === FIRSTMATE_AGENT_ID;
               const candidateName = candidateFirstmate
