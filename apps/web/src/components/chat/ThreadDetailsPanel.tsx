@@ -188,7 +188,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             />
           ) : null}
 
-          {density === "full" && !props.draftId && props.task ? (
+          {density !== "essential" && !props.draftId && props.task ? (
             <FirstmateTaskSummary
               environmentId={props.environmentId}
               task={props.task}

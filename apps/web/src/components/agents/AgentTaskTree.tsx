@@ -69,7 +69,7 @@ function PlanningCard({
     });
   };
   return (
-    <li>
+    <li className="overflow-hidden rounded-md bg-sidebar-row-hover/40">
       <button
         type="button"
         onClick={open}
@@ -102,7 +102,7 @@ function PlanningCard({
         environmentId={environmentId}
         task={task}
         threadId={coordinatorThreadId}
-        className="mt-0.5 pl-2"
+        className="px-2 pb-1.5"
       />
     </li>
   );
@@ -149,7 +149,7 @@ function TaskRow({
   const threadId = task.workerThreadId ?? coordinatorThreadId;
   const active = task.workerThreadId !== null && activeRouteKey === `${environmentId}:${threadId}`;
   return (
-    <li>
+    <li className="overflow-hidden rounded-md bg-sidebar-row-hover/40">
       <Tooltip>
         <TooltipTrigger
           render={
@@ -190,7 +190,7 @@ function TaskRow({
         environmentId={environmentId}
         task={task}
         threadId={coordinatorThreadId}
-        className="mt-0.5 pl-2"
+        className="px-2 pb-1.5"
       />
     </li>
   );
