@@ -7,7 +7,7 @@ import type { EnvironmentId, FirstmateTask, ThreadId } from "@t3tools/contracts"
 import { ImageIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
-import { ExternalTaskLink } from "./FirstmateTaskLinks";
+import { ExternalTaskLink, WorkerThreadLink } from "./FirstmateTaskLinks";
 import {
   CoordinatorThreadContext,
   relativeAge,
@@ -46,10 +46,17 @@ export function FirstmateTaskLinkList({
   readonly className?: string;
 }) {
   const links = task.links ?? [];
-  if (links.length === 0) return null;
+  if (task.workerThreadId === null && links.length === 0) return null;
   return (
     <CoordinatorThreadContext value={threadId}>
       <div className={cn("flex min-w-0 flex-wrap gap-x-0.5", className)}>
+        {task.workerThreadId !== null ? (
+          <WorkerThreadLink
+            environmentId={environmentId}
+            task={task}
+            className="inline-flex h-5 min-w-0 max-w-full items-center gap-1 rounded-sm px-1 text-2xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          />
+        ) : null}
         {links.map((link) => (
           <ExternalTaskLink
             key={`${link.label}:${link.url}`}
@@ -77,6 +84,7 @@ export function FirstmateTaskSummary({
   const nextStep = taskNextStep(task);
   const artifacts = task.artifacts ?? [];
   const evidenceTitle = task.state === "dropped" ? "Why it was dropped" : "Evidence";
+  const hasLinks = task.workerThreadId !== null || (task.links ?? []).length > 0;
 
   return (
     <CoordinatorThreadContext value={threadId}>
@@ -138,7 +146,7 @@ export function FirstmateTaskSummary({
             </div>
           </SummarySection>
         ) : null}
-        {(task.links ?? []).length > 0 ? (
+        {hasLinks ? (
           <SummarySection title="Links">
             <FirstmateTaskLinkList environmentId={environmentId} task={task} threadId={threadId} />
           </SummarySection>
