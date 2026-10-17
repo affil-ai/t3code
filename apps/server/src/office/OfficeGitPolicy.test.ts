@@ -186,7 +186,7 @@ describe("Office Git identity", () => {
         }),
       ),
   );
-  it.effect("recovers an unregistered server message when the requester is unambiguous", () =>
+  it.effect("resolves an unregistered server message from the latest requester", () =>
     withRepository(({ cwd }) =>
       Effect.gen(function* () {
         const office = yield* OfficeService.OfficeService;
@@ -209,10 +209,34 @@ describe("Office Git identity", () => {
             requester: { name: "Lilly", email: "lilly@example.test" },
           },
         });
-        const failure = yield* policy
-          .environmentForMessage({ threadId, messageId: generated, cwd })
-          .pipe(Effect.flip);
-        expect(failure.message).toBe("Office request identity is unavailable.");
+        const latestEnvironment = yield* policy.environmentForMessage({
+          threadId,
+          messageId: generated,
+          cwd,
+        });
+        expect(latestEnvironment?.OFFICE_GIT_COAUTHOR).toBe("Lilly <lilly@example.test>");
+      }),
+    ),
+  );
+  it.effect("resolves a T3-originated turn from the Office thread requester", () =>
+    withRepository(({ cwd }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const office = yield* OfficeService.OfficeService;
+        const policy = yield* OfficeGitPolicy.OfficeGitPolicy;
+        const generatedMessage = MessageId.make("message:mcp:t3-thread-send");
+        yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, payload_json TEXT, deleted_at TEXT)`;
+        yield* sql`CREATE TABLE orchestration_v2_projection_runs (run_id TEXT, thread_id TEXT, ordinal INTEGER, status TEXT, payload_json TEXT)`;
+        yield* office.upsertThread({
+          ...entry,
+          request: { messageId, requester: { name: "Vivek", email: "vivek@example.test" } },
+        });
+        yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${threadId}, ${JSON.stringify({ lineage: { rootThreadId: threadId }, activeRunId: "t3-send-run" })}, NULL)`;
+        yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES ('t3-send-run', ${threadId}, 1, 'starting', ${JSON.stringify({ userMessageId: generatedMessage })})`;
+
+        const environment = yield* policy.environmentForThread({ threadId, cwd });
+
+        expect(environment?.OFFICE_GIT_COAUTHOR).toBe("Vivek <vivek@example.test>");
       }),
     ),
   );

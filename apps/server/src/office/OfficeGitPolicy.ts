@@ -247,13 +247,10 @@ const make = Effect.gen(function* () {
         // Setup can run before a native run exists. Registration precedes launch.
         const receipts = threads[0]?.message_id
           ? []
-          : yield* sql<{ message_id: string; requester_json: string }>`
-        SELECT message_id, requester_json FROM office_git_request WHERE thread_id = ${rootThreadId}`;
-        if (
-          receipts.length > 0 &&
-          new Set(receipts.map((receipt) => receipt.requester_json)).size !== 1
-        )
-          return yield* new OfficeError({ message: "Office request identity is unavailable." });
+          : yield* sql<{ message_id: string }>`
+        SELECT message_id FROM office_git_request
+        WHERE thread_id = ${rootThreadId}
+        ORDER BY rowid DESC LIMIT 1`;
         const messageId = threads[0]?.message_id ?? receipts[0]?.message_id;
         if (messageId === undefined)
           return yield* new OfficeError({ message: "Office request identity is unavailable." });

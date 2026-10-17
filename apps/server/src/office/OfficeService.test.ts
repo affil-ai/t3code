@@ -106,7 +106,7 @@ describe("OfficeService", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("falls back only when an Office thread has one requester", () =>
+  it.effect("falls back to the latest requester for an unregistered message", () =>
     Effect.gen(function* () {
       const service = yield* OfficeService;
       yield* service.upsertThread(registration);
@@ -124,10 +124,12 @@ describe("OfficeService", () => {
           requester: { name: "Lilly", email: "lilly@example.test" },
         },
       });
-      const ambiguous = yield* service
-        .requesterForMessageWithFallback({ threadId: entry.threadId, messageId: generated })
-        .pipe(Effect.flip);
-      expect(ambiguous.message).toBe("Office request identity is unavailable.");
+      expect(
+        yield* service.requesterForMessageWithFallback({
+          threadId: entry.threadId,
+          messageId: generated,
+        }),
+      ).toEqual({ name: "Lilly", email: "lilly@example.test" });
     }).pipe(Effect.provide(testLayer)),
   );
 

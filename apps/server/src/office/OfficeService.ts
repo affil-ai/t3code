@@ -25,7 +25,7 @@ export class OfficeService extends Context.Service<
       readonly threadId: ThreadId;
       readonly messageId: MessageId;
     }) => Effect.Effect<OfficeRequester | null, OfficeError>;
-    /** Resolve an unregistered message only when the Office thread has one requester identity. */
+    /** Resolve an unregistered message using the Office thread's latest requester identity. */
     readonly requesterForMessageWithFallback: (input: {
       readonly threadId: ThreadId;
       readonly messageId: MessageId;
@@ -155,8 +155,10 @@ export const layer = Layer.effect(
           if (exact[0]) return yield* decodeRequester(exact[0].requester_json);
           const requesters = yield* sql<{
             requester_json: string;
-          }>`SELECT DISTINCT requester_json FROM office_git_request WHERE thread_id = ${threadId}`;
-          if (requesters.length !== 1)
+          }>`SELECT requester_json FROM office_git_request
+            WHERE thread_id = ${threadId}
+            ORDER BY rowid DESC LIMIT 1`;
+          if (requesters.length === 0)
             return yield* new OfficeError({ message: "Office request identity is unavailable." });
           return yield* decodeRequester(requesters[0]!.requester_json);
         }).pipe(
