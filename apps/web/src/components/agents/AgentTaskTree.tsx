@@ -69,19 +69,15 @@ function PlanningCard({
     });
   };
   return (
-    <li
-      className={cn(
-        "group/card relative overflow-hidden rounded-lg border border-sidebar-border/70 bg-sidebar-row-hover/40 shadow-xs/5 transition-colors hover:border-sidebar-border",
-        active && "bg-sidebar-row-selected",
-      )}
-    >
+    <li className="overflow-hidden rounded-md bg-sidebar-row-hover/40">
       <button
         type="button"
         onClick={open}
         aria-label={`Open ${task.title}`}
         data-testid="planning-task-card"
         className={cn(
-          "flex w-full min-w-0 cursor-pointer flex-col gap-0.5 px-2.5 pt-2 pb-1.5 text-left outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset",
+          "flex w-full min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-1.5 text-left outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset",
+          active && "bg-sidebar-row-selected",
         )}
         {...(active ? { "data-active": true } : {})}
       >
@@ -106,7 +102,7 @@ function PlanningCard({
         environmentId={environmentId}
         task={task}
         threadId={coordinatorThreadId}
-        className="-mx-1 px-2 pb-2"
+        className="px-2 pb-1.5"
       />
     </li>
   );
@@ -153,12 +149,7 @@ function TaskRow({
   const threadId = task.workerThreadId ?? coordinatorThreadId;
   const active = task.workerThreadId !== null && activeRouteKey === `${environmentId}:${threadId}`;
   return (
-    <li
-      className={cn(
-        "group/card relative overflow-hidden rounded-lg border border-sidebar-border/70 bg-sidebar-row-hover/40 shadow-xs/5 transition-colors hover:border-sidebar-border",
-        active && "bg-sidebar-row-selected",
-      )}
-    >
+    <li className="overflow-hidden rounded-md bg-sidebar-row-hover/40">
       <Tooltip>
         <TooltipTrigger
           render={
@@ -177,7 +168,8 @@ function TaskRow({
                   setOpenMobile(false);
               }}
               className={cn(
-                "flex h-auto w-full min-w-0 items-center gap-2 px-2.5 pt-2 pb-1.5 text-left text-sm text-sidebar-foreground/80 outline-hidden ring-ring hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset",
+                "flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-sm text-sidebar-foreground/80 outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset",
+                active && "bg-sidebar-row-selected text-sidebar-foreground",
               )}
               {...(active ? { "data-active": true } : {})}
             />
@@ -198,7 +190,7 @@ function TaskRow({
         environmentId={environmentId}
         task={task}
         threadId={coordinatorThreadId}
-        className="-mx-1 px-2 pb-2"
+        className="px-2 pb-1.5"
       />
     </li>
   );
@@ -232,7 +224,7 @@ export function AgentTaskTree({
             <span className="truncate">{COLUMN_LABELS[column]}</span>
             <span className="tabular-nums">{columns[column].length}</span>
           </h3>
-          <ul className="flex flex-col gap-1.5" role="list">
+          <ul className="flex flex-col gap-1.5">
             {columns[column].map((task) =>
               column === "planning" ? (
                 <PlanningCard
