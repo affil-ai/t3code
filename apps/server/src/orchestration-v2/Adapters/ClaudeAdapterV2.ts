@@ -1990,7 +1990,6 @@ export function claudeEffectiveQueryPolicyKey(
     readonly allowedTools?: ReadonlyArray<string>;
     readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   },
-  executionEnvironment?: ProviderAdapter.ProviderAdapterV2RuntimePolicy["executionEnvironment"],
 ): string {
   return JSON.stringify({
     runtimePolicy: claudeRuntimeQueryPolicyKey({
@@ -2000,7 +1999,6 @@ export function claudeEffectiveQueryPolicyKey(
         : { allowedTools: mcpOverrides.allowedTools }),
     }),
     mcpServers: mcpOverrides.mcpServers,
-    executionEnvironment,
   });
 }
 
@@ -6649,7 +6647,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           yield* continuationRequests.offer({
             threadId: route.threadId,
-            originMessageId: route.messageId,
             providerThreadId: route.providerThreadId,
             driver: CLAUDE_PROVIDER,
             detail,
@@ -8552,11 +8549,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(
-            queryPolicy,
-            mcpOverrides,
-            turnInput.runtimePolicy.executionEnvironment,
-          );
+          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
@@ -8658,10 +8651,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
             settings: adapterOptions.settings,
-            environment: {
-              ...adapterOptions.environment,
-              ...turnInput.runtimePolicy.executionEnvironment,
-            },
+            environment: adapterOptions.environment,
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...(mcpOverrides.allowedTools === undefined
               ? {}
@@ -9660,10 +9650,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 options: forkOptions,
                 threadId: forkInput.targetThreadId,
                 providerSessionId: input.providerSessionId,
-                environment: {
-                  ...adapterOptions.environment,
-                  ...forkInput.runtimePolicy?.executionEnvironment,
-                },
+                environment: adapterOptions.environment,
               });
               yield* Ref.update(openedNativeThreads, (current) => {
                 const updated = new Set(current);

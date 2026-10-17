@@ -11,7 +11,6 @@ import {
   ProviderInstanceId,
   ServerSettingsError,
   TerminalProviderInstanceNotFoundError,
-  OfficeError,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Data from "effect/Data";
@@ -43,7 +42,6 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "./Manager.ts";
-import * as OfficeGitPolicy from "../office/OfficeGitPolicy.ts";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -423,68 +421,6 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
-  it.effect(
-    "applies Office identity after provider overrides and keeps personal terminals unchanged",
-    () =>
-      Effect.gen(function* () {
-        const { manager, ptyAdapter } = yield* createManager(5, {
-          env: { GIT_AUTHOR_NAME: "Personal", GH_TOKEN: "personal-test-token" },
-          resolveProviderInstanceEnvironment: (_id, env) =>
-            Effect.succeed({ ...env, GIT_AUTHOR_NAME: "Provider" }),
-        }).pipe(
-          Effect.provideService(OfficeGitPolicy.OfficeGitPolicy, {
-            environmentForMessage: () => Effect.die("unused"),
-            withThreadExecution: (_input, operation) => operation,
-            environmentForThread: ({ threadId }) =>
-              Effect.succeed(
-                threadId === "office:terminal"
-                  ? {
-                      GIT_AUTHOR_NAME: "Office bot",
-                      GH_TOKEN: "",
-                      OFFICE_GIT_COAUTHOR: "Requester <requester@example.test>",
-                    }
-                  : undefined,
-              ),
-          }),
-        );
-        yield* manager.open(
-          openInput({
-            threadId: "office:terminal",
-            providerInstanceId: ProviderInstanceId.make("codex"),
-            env: { NO_COLOR: "1", GIT_AUTHOR_NAME: "Caller" },
-          }),
-        );
-        yield* manager.open(openInput({ threadId: "personal:terminal" }));
-        expect(ptyAdapter.spawnInputs[0]?.env).toMatchObject({
-          GIT_AUTHOR_NAME: "Office bot",
-          GH_TOKEN: "",
-          NO_COLOR: "1",
-        });
-        expect(ptyAdapter.spawnInputs[1]?.env).toMatchObject({
-          GIT_AUTHOR_NAME: "Personal",
-          GH_TOKEN: "personal-test-token",
-        });
-        expect(ptyAdapter.spawnInputs[1]?.env.OFFICE_GIT_COAUTHOR).toBeUndefined();
-      }),
-  );
-  it.effect("does not spawn a personal shell when Office identity resolution fails", () =>
-    Effect.gen(function* () {
-      const { manager, ptyAdapter } = yield* createManager().pipe(
-        Effect.provideService(OfficeGitPolicy.OfficeGitPolicy, {
-          environmentForMessage: () => Effect.die("unused"),
-          withThreadExecution: (_input, operation) => operation,
-          environmentForThread: () =>
-            Effect.fail(new OfficeError({ message: "Office request identity is unavailable." })),
-        }),
-      );
-      const result = yield* manager
-        .open(openInput({ threadId: "office:terminal" }))
-        .pipe(Effect.result);
-      expect(result._tag).toBe("Failure");
-      if (result._tag === "Failure") expect(result.failure._tag).toBe("TerminalGitIdentityError");
-      expect(ptyAdapter.spawnInputs).toHaveLength(0);
-    }),
-  );
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

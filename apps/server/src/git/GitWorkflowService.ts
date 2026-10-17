@@ -1,12 +1,10 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 
 import {
   GitManagerError,
   GitCommandError,
-  isOfficeError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
   type VcsCreateRefInput,
@@ -33,7 +31,6 @@ import {
 import * as GitManager from "./GitManager.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
-import * as OfficeGitPolicy from "../office/OfficeGitPolicy.ts";
 
 export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
@@ -65,10 +62,7 @@ export class GitWorkflowService extends Context.Service<
     readonly invalidateLocalStatus: (cwd: string) => Effect.Effect<void, never>;
     readonly invalidateRemoteStatus: (cwd: string) => Effect.Effect<void, never>;
     readonly invalidateStatus: (cwd: string) => Effect.Effect<void, never>;
-    readonly pullCurrentBranch: (
-      cwd: string,
-      threadId?: import("@t3tools/contracts").ThreadId | undefined,
-    ) => Effect.Effect<VcsPullResult, GitCommandError>;
+    readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
     readonly runStackedAction: (
       input: GitRunStackedActionInput,
       options?: GitManager.GitRunStackedActionOptions,
@@ -174,29 +168,6 @@ export const make = Effect.gen(function* () {
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
-  const officeGit = yield* Effect.serviceOption(OfficeGitPolicy.OfficeGitPolicy);
-  const withThread = <A, E extends GitManagerServiceError>(
-    input: {
-      readonly cwd: string;
-      readonly threadId?: import("@t3tools/contracts").ThreadId | undefined;
-    },
-    operation: Effect.Effect<A, E>,
-  ) =>
-    Option.isNone(officeGit)
-      ? operation
-      : officeGit.value.withThreadExecution(input, operation).pipe(
-          Effect.mapError((cause) =>
-            isOfficeError(cause)
-              ? new GitManagerError({
-                  operation: "GitWorkflowService.officeIdentity",
-                  cwd: input.cwd,
-                  detail: "Could not prepare the Office Git identity.",
-                  cause,
-                })
-              : cause,
-          ),
-        );
-
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
     cwd: string,
@@ -379,45 +350,22 @@ export const make = Effect.gen(function* () {
     invalidateLocalStatus: gitManager.invalidateLocalStatus,
     invalidateRemoteStatus: gitManager.invalidateRemoteStatus,
     invalidateStatus: gitManager.invalidateStatus,
-    pullCurrentBranch: (cwd, threadId) => {
-      const operation = ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
+    pullCurrentBranch: (cwd) =>
+      ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
         Effect.andThen(git.pullCurrentBranch(cwd)),
-      );
-      return Option.isNone(officeGit)
-        ? operation
-        : officeGit.value.withThreadExecution({ cwd, threadId }, operation).pipe(
-            Effect.mapError((cause) =>
-              isOfficeError(cause)
-                ? new GitCommandError({
-                    operation: "GitWorkflowService.officeIdentity",
-                    command: "git pull",
-                    cwd,
-                    detail: "Could not prepare the Office Git identity.",
-                    cause,
-                  })
-                : cause,
-            ),
-          );
-    },
+      ),
     runStackedAction: (input, options) =>
-      withThread(
-        input,
-        ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
-          Effect.andThen(gitManager.runStackedAction(input, options)),
-        ),
+      ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
+        Effect.andThen(gitManager.runStackedAction(input, options)),
       ),
     resolvePullRequest: routeGitManager(
       "GitWorkflowService.resolvePullRequest",
       gitManager.resolvePullRequest,
     ),
-    preparePullRequestThread: (input) =>
-      withThread(
-        input,
-        routeGitManager(
-          "GitWorkflowService.preparePullRequestThread",
-          gitManager.preparePullRequestThread,
-        )(input),
-      ),
+    preparePullRequestThread: routeGitManager(
+      "GitWorkflowService.preparePullRequestThread",
+      gitManager.preparePullRequestThread,
+    ),
     listRefs: (input) =>
       detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
         Effect.flatMap((isGitRepository) =>

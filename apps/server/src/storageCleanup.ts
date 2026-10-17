@@ -2,7 +2,7 @@ import {
   GitCommandError,
   OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderSessionJson,
-  type OfficeWorktreeCleanupOutcome,
+  type ThreadWorktreeReleaseOutcome,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -51,7 +51,6 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as OfficeGitPolicy from "./office/OfficeGitPolicy.ts";
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
@@ -195,7 +194,7 @@ export class StorageCleanup extends Context.Service<
     readonly drain: Effect.Effect<void>;
     readonly releaseThreadWorktree: (
       threadId: ThreadId,
-    ) => Effect.Effect<OfficeWorktreeCleanupOutcome>;
+    ) => Effect.Effect<ThreadWorktreeReleaseOutcome>;
   }
 >()("t3/storageCleanup") {}
 
@@ -213,15 +212,6 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const pool = yield* Effect.serviceOption(TreehouseWorktrees.TreehouseWorktrees);
-  const officeGit = yield* Effect.serviceOption(OfficeGitPolicy.OfficeGitPolicy);
-  const withThreadGit = <A, E, R>(
-    threadId: ThreadId,
-    cwd: string,
-    operation: Effect.Effect<A, E, R>,
-  ) =>
-    Option.isNone(officeGit)
-      ? operation
-      : officeGit.value.withThreadExecution({ threadId, cwd }, operation);
   const liveTerminals = new Map<string, Map<string, TerminalSummary>>();
   const noteTerminal = (terminal: TerminalSummary) => {
     const threadTerminals =
@@ -471,9 +461,9 @@ const make = Effect.gen(function* () {
       );
   });
 
-  // Office can purge canonical history only after this succeeds. Resolve the
-  // checkout from native thread state; never trust a worker's stale path.
-  const releaseThreadWorktree = (threadId: ThreadId): Effect.Effect<OfficeWorktreeCleanupOutcome> =>
+  // Release before purging external history. Resolve the checkout from native
+  // thread state; never trust a caller's stale path.
+  const releaseThreadWorktree = (threadId: ThreadId): Effect.Effect<ThreadWorktreeReleaseOutcome> =>
     Effect.gen(function* () {
       const initial = yield* readThreads();
       const thread = initial.threads.find((entry) => entry.id === threadId);
@@ -543,11 +533,7 @@ const make = Effect.gen(function* () {
             worktreeKeepWhen: "any-local-files" as const,
           };
           if ((yield* localChangesReason(cwd, rules)) !== null) return "dirty";
-          yield* withThreadGit(
-            threadId,
-            cwd,
-            cleanupGit(project.workspaceRoot, ["fetch", "--all", "--prune"], "git fetch"),
-          );
+          yield* cleanupGit(project.workspaceRoot, ["fetch", "--all", "--prune"], "git fetch");
           const unpushed = yield* git.execute({
             operation: "StorageCleanup.remoteBackup",
             cwd,
@@ -885,7 +871,6 @@ const make = Effect.gen(function* () {
         // from that branch when the thread is resumed.
         yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
       }).pipe(
-        (effect) => withThreadGit(thread.id, worktreePath, effect),
         (effect) => withWorkspaceLease(worktreePath, effect),
         Effect.catch((error) =>
           Effect.gen(function* () {

@@ -2,18 +2,17 @@
 
 T3 Work is a fork of T3 Code. Most changes are in the desktop and web client
 and still work against an unmodified T3 server of the same version.
-**Firstmate** and **Office** are the exceptions: it changes the server, so it needs this fork's
-server. Against a stock server, Firstmate is hidden and Office has no groups.
+**Firstmate** changes the server, so it needs this fork's server.
+Against a stock server, Firstmate is hidden.
 
 ## Fork changes and merge rules
 
-| Area                                      | Server change | Location                                                      |
-| ----------------------------------------- | ------------- | ------------------------------------------------------------- |
-| Code and Work modes, Work sidebar         | No            | `apps/web/src/components/work/`, `LegacySidebar.tsx`          |
-| Chat dock                                 | No            | `apps/web/src/components/work/DockChatPanel.tsx`              |
-| Desktop app identity and data directories | No            | `apps/desktop/src/app/`, `scripts/lib/brand-assets.ts`        |
-| Office, Slack channel groups              | **Yes**       | `apps/server/src/office/`, `packages/contracts/src/office.ts` |
-| Firstmate                                 | **Yes**       | See [Firstmate](#firstmate)                                   |
+| Area                                      | Server change | Location                                               |
+| ----------------------------------------- | ------------- | ------------------------------------------------------ |
+| Code and Work modes, Work sidebar         | No            | `apps/web/src/components/work/`, `LegacySidebar.tsx`   |
+| Chat dock                                 | No            | `apps/web/src/components/work/DockChatPanel.tsx`       |
+| Desktop app identity and data directories | No            | `apps/desktop/src/app/`, `scripts/lib/brand-assets.ts` |
+| Firstmate                                 | **Yes**       | See [Firstmate](#firstmate)                            |
 
 Keep fork code in its own files. When an upstream file must change, limit the
 edit to an import plus one registration line, and mark it with a
@@ -77,20 +76,6 @@ hover the archive button takes the status icon's place (`ThreadStatusIcon` in
   under Reduce Motion
 - still icons for Monitoring (an eye), approval, input, Plan Ready, and Failed
 - a dot for an unseen completion
-
-## Office mode
-
-Choose **Office** in the sidebar brand menu. It reuses the Work Projects UI,
-with groups supplied by Slack channels. Bot DMs use `DM · person`. Chats
-without a Slack source use **Other chats**. Groups cannot be renamed or filed
-manually; their stable IDs and labels come from Office.
-
-Office metadata is stored in the fork server, separate from the upstream
-thread model. Connected fork environments stream it to the client. This is
-organization, not a new access boundary. Existing server grants still apply.
-Convex retains the Office history; this view does not import old conversations.
-Until the worker registers chats, Office shows an empty state with no seed data.
-The worker's `T3_OFFICE_MODE=true` switch is reserved for cutover.
 
 ## Chat dock
 

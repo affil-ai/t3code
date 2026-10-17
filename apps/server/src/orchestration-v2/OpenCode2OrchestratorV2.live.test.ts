@@ -68,7 +68,6 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
-import * as OfficeService from "../office/OfficeService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
@@ -224,7 +223,6 @@ const layerOrchestration = RuntimeLayer.layer.pipe(
 
 // Starts the continuation run a provider wake asks for, as the production layer does.
 const layerContinuationWorker = ProviderContinuationService.layer.pipe(
-  Layer.provide(OfficeService.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
   Layer.provide(
     Layer.unwrap(
       Effect.gen(function* () {

@@ -254,7 +254,7 @@ write skills on request.
   tasks in the fork's UI; the server keeps its `scheduledTasks` names. A custom
   agent's sidebar ends there, so its worker chats are reached from its
   tasks; those chats, every coordinator chat, and agent home projects stay
-  out of the Work and Office lists. The selected agent is kept per client
+  out of the Work list. The selected agent is kept per client
   in `selectedAgentStore.ts`; an archived or missing choice falls back to
   Firstmate. A hosted sign-in other than Vivek's prefers the first custom
   agent until the user picks one.

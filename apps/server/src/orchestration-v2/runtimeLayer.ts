@@ -51,8 +51,6 @@ import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import * as OfficeGitPolicy from "../office/OfficeGitPolicy.ts";
-import * as OfficeService from "../office/OfficeService.ts";
 import * as TreehouseRuntime from "../workspace/treehouseRuntimeLayer.ts";
 import * as TreehouseThreadWorkspaces from "../workspace/TreehouseThreadWorkspaces.ts";
 
@@ -62,9 +60,8 @@ export const layerEventInfrastructure = Layer.mergeAll(
   OrchestrationCommandReceipts.layer,
 );
 
-const layerRuntimePolicyProvided = RuntimePolicy.layerWithOfficeGit.pipe(
-  Layer.provide(RuntimePolicy.layerFromProjectStore.pipe(Layer.provide(ProjectStore.layer))),
-  Layer.provide(OfficeGitPolicy.runtimeLayer),
+const layerRuntimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
+  Layer.provide(ProjectStore.layer),
 );
 
 const layerEventStoreProvided = EventStore.layerFromOrchestrationEventStore.pipe(
@@ -299,7 +296,6 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
   ),
 );
 const layerProviderContinuationWorkerProvided = ProviderContinuationService.layer.pipe(
-  Layer.provide(OfficeService.layer),
   Layer.provide(
     Layer.mergeAll(
       ProviderContinuationRequests.layer,

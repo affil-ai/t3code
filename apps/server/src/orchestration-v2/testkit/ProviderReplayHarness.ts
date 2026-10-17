@@ -54,7 +54,6 @@ import * as TurnItemPositionStore from "../TurnItemPositionStore.ts";
 import * as RuntimeRequestService from "../RuntimeRequestService.ts";
 import * as ThreadCommandExecutor from "../ThreadCommandExecutor.ts";
 import * as ThreadForkService from "../ThreadForkService.ts";
-import * as OfficeService from "../../office/OfficeService.ts";
 import {
   runOrchestratorV2Scenario,
   type OrchestratorV2ScenarioStepError,
@@ -471,7 +470,6 @@ export function layerWithRegistry<Error>(
   const layerContinuationWorkerProvided =
     options.runContinuationWorker === true
       ? ProviderContinuationService.layer.pipe(
-          Layer.provide(OfficeService.layer.pipe(Layer.provide(layerDatabase))),
           Layer.provide(
             Layer.mergeAll(
               layerContinuationRequests,

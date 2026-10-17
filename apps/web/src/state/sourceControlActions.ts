@@ -212,7 +212,6 @@ export function useVcsPullAction(scope: SourceControlActionScope) {
       environmentId: target.environmentId,
       input: {
         cwd: target.cwd,
-        ...(scope.threadId === undefined ? {} : { threadId: scope.threadId }),
       },
     });
   }, [pull, scope]);

@@ -2549,66 +2549,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
 
-  it.effect(
-    "keeps the Office requester of a running Claude background task when another requester posts",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarness;
-          const now = yield* DateTime.now;
-          const turn = (ordinal: number, coauthor: string) => ({
-            ...makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now,
-              attemptId: RunAttemptId.make("office-git-claude-" + ordinal),
-              text: "Commit the requested change",
-              attachments: [],
-              providerTurnOrdinal: ordinal,
-            }),
-            runtimePolicy: {
-              ...CLAUDE_TEST_RUNTIME_POLICY,
-              executionEnvironment: {
-                GIT_AUTHOR_NAME: "office-of-the-cto[bot]",
-                OFFICE_GIT_COAUTHOR: coauthor,
-              },
-            },
-          });
-          const originalTurn = turn(1, "Vivek <vivek@example.test>");
-          yield* harness.runtime.startTurn(originalTurn);
-          const original = harness.getOpenedOptions();
-          assert.equal(original?.env?.GIT_AUTHOR_NAME, "office-of-the-cto[bot]");
-          assert.equal(original?.env?.OFFICE_GIT_COAUTHOR, "Vivek <vivek@example.test>");
-          yield* harness.offerAndWait(wakeTaskStarted);
-          yield* harness.offerAndWait(turnOneResult);
-          yield* Queue.take(harness.terminalReceipts);
-          assert.isTrue(yield* harness.hasPendingBackgroundWork);
-          const refused = yield* harness.runtime
-            .startTurn(turn(2, "Lilly <lilly@example.test>"))
-            .pipe(Effect.result);
-          assert.equal(refused._tag, "Failure");
-          if (refused._tag === "Failure")
-            assert.instanceOf(
-              refused.failure.cause,
-              ClaudeAdapterV2.ClaudeBackgroundWorkBlocksQueryReplacementError,
-            );
-          assert.strictEqual(harness.getOpenedOptions(), original);
-          assert.lengthOf(harness.offeredMessages, 1);
-          assert.equal(original?.env?.OFFICE_GIT_COAUTHOR, "Vivek <vivek@example.test>");
-          yield* harness.offerAndWait(wakeNotification);
-          yield* harness.offerAndWait(wakeTurnInit);
-          assert.equal(
-            harness.continuationRequests[0]?.originMessageId,
-            originalTurn.message.messageId,
-          );
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
-          ),
-        ),
-      ),
-  );
-
   it.effect.each([
     { isError: false, title: "Check weather" },
     { isError: true, title: "Check weather" },

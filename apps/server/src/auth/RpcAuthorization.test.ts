@@ -36,10 +36,12 @@ describe("RPC authorization scopes", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
 
-  it("requires operate access to stop a workflow", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.stopWorkflow)).toBe(
-      AuthOrchestrationOperateScope,
-    );
+  it("requires operate access to stop a workflow or release a checkout", () => {
+    for (const method of [
+      ORCHESTRATION_V2_WS_METHODS.stopWorkflow,
+      ORCHESTRATION_V2_WS_METHODS.releaseThreadWorktree,
+    ])
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
   });
 
   it("authorizes background policy reporting and observation deliberately", () => {

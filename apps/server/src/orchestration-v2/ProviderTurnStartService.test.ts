@@ -171,6 +171,9 @@ function makeLocalCommandHarness(input: {
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
   readonly openFailure?: unknown;
+  readonly policyFailure?: unknown;
+  readonly interruptPolicy?: boolean;
+  readonly interruptRunBeforePolicyFailure?: boolean;
   /** Opens the session, then fails loading its provider thread. */
   readonly ensureThreadFailure?: unknown;
   /**
@@ -498,7 +501,23 @@ function makeLocalCommandHarness(input: {
   );
   const resolveRuntimePolicy = vi.fn(
     ({ thread }: Parameters<RuntimePolicy.RuntimePolicyV2Shape["resolve"]>[0]) =>
-      Effect.succeed({ cwd: thread.worktreePath ?? "/tmp/native-account-command" } as never),
+      input.interruptPolicy === true
+        ? Effect.interrupt
+        : "policyFailure" in input
+          ? Effect.sync(() => {
+              if (input.interruptRunBeforePolicyFailure === true) interruptRun();
+            }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new RuntimePolicy.RuntimePolicyResolveError({
+                    projectId: thread.projectId,
+                    providerInstanceId: newInstanceId,
+                    cause: input.policyFailure,
+                  }),
+                ),
+              ),
+            )
+          : Effect.succeed({ cwd: thread.worktreePath ?? "/tmp/native-account-command" } as never),
   );
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const getThreadRecords = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getThreadRecords"]>(() =>
@@ -748,6 +767,88 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
   }),
+);
+
+effectIt.effect("fails a starting run when runtime policy cannot resolve before session open", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      policyFailure: new Error("Project not found."),
+    });
+
+    yield* harness.start;
+
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    const projection = harness.projection();
+    expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.attempts[0]).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.nodes[0]).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.turnItems).toMatchObject([
+      {
+        type: "error",
+        title: "Runtime policy failed to resolve",
+        status: "failed",
+        failure: { class: "provider_error", message: "Project not found." },
+      },
+    ]);
+  }),
+);
+
+effectIt.effect(
+  "retries runtime policy resolution without opening a session or settling early",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Continue", policyFailure: "unavailable" });
+
+      const error = yield* harness.startWithRetry.pipe(Effect.flip);
+
+      expect(error._tag).toBe("ProviderTurnStartError");
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    }),
+);
+
+effectIt.effect("keeps a runtime-policy failure retryable when terminal persistence fails", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      policyFailure: "unavailable",
+      writeFailure: new Error("database unavailable"),
+    });
+
+    const error = yield* harness.start.pipe(Effect.flip);
+
+    expect(error._tag).toBe("ProviderTurnStartError");
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.writeIfRunCurrent).toHaveBeenCalledOnce();
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    expect(harness.events).toEqual([]);
+  }),
+);
+
+effectIt.effect(
+  "does not terminalize runtime-policy interruption or overwrite an interrupted run",
+  () =>
+    Effect.gen(function* () {
+      const interrupted = makeLocalCommandHarness({ text: "Continue", interruptPolicy: true });
+      const exit = yield* Effect.exit(interrupted.start);
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure") expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+      expect(interrupted.writeIfRunCurrent).not.toHaveBeenCalled();
+      expect(interrupted.open).not.toHaveBeenCalled();
+
+      const changed = makeLocalCommandHarness({
+        text: "Continue",
+        policyFailure: "unavailable",
+        interruptRunBeforePolicyFailure: true,
+      });
+      yield* changed.start;
+      expect(changed.projection().runs.at(-1)?.status).toBe("interrupted");
+      expect(changed.events).toEqual([]);
+      expect(changed.open).not.toHaveBeenCalled();
+    }),
 );
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>

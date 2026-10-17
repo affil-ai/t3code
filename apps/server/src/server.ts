@@ -8,8 +8,6 @@ import * as TreehouseRuntime from "./workspace/treehouseRuntimeLayer.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as Firstmate from "./firstmate/index.ts"; // fork: firstmate
-import * as Office from "./office/index.ts"; // fork: office
-import * as OfficeGitPolicy from "./office/OfficeGitPolicy.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
@@ -367,7 +365,6 @@ const layerGit = Layer.empty.pipe(
 );
 
 const layerGitWorkflow = GitWorkflowService.layer.pipe(
-  Layer.provide(OfficeGitPolicy.runtimeLayer),
   Layer.provideMerge(layerVcsDriverRegistry),
   Layer.provideMerge(layerGit),
 );
@@ -413,7 +410,6 @@ const layerCheckpointStore = CheckpointStore.layer.pipe(Layer.provide(layerVcsDr
 const layerPortScanner = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
 const layerTerminal = TerminalManager.layer.pipe(
-  Layer.provide(OfficeGitPolicy.runtimeLayer),
   Layer.provide(layerPtyAdapter),
   Layer.provide(layerPortScanner),
   Layer.provide(layerNativeTelemetry),
@@ -558,10 +554,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // Asks T3 Connect to deliver webhooks it held while this environment was offline.
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
-  StorageCleanup.layer.pipe(
-    Layer.provide(ProjectionStoreV2.layer),
-    Layer.provide(OfficeGitPolicy.runtimeLayer),
-  ),
+  StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   layerThreadPullRequestWorker,
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -584,7 +577,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     Layer.provide(ProjectionStoreV2.layer),
   ),
   Firstmate.runtimeLayer, // fork: firstmate
-  Office.runtimeLayer, // fork: office
   Layer.effectDiscard(
     Effect.gen(function* () {
       const service = yield* DelegatedTaskQuestionReactor.DelegatedTaskQuestionReactor;

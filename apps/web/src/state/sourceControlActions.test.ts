@@ -132,12 +132,11 @@ beforeEach(() => {
 });
 
 describe("source control callback grants", () => {
-  it("carries the Office chat identity through Pull without adding one to project-only actions", async () => {
+  it("pulls by repository without adding thread-specific identity", async () => {
     state.scopes.get(secondary)!.add(AuthSourceControlWriteScope);
-    const officeThreadId = ThreadId.make("office:chat");
-    await useVcsPullAction({ ...scope, threadId: officeThreadId }).run();
+    await useVcsPullAction({ ...scope, threadId: ThreadId.make("thread:chat") }).run();
     await useVcsPullAction(scope).run();
-    expect(state.inputs).toEqual([{ cwd: "/repo", threadId: officeThreadId }, { cwd: "/repo" }]);
+    expect(state.inputs).toEqual([{ cwd: "/repo" }, { cwd: "/repo" }]);
   });
   it.each(cases)("$name uses the selected environment's permission", async ({ create }) => {
     const action = create();

@@ -60,7 +60,6 @@ export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
 export * from "./scheduledTask.ts";
 export * from "./firstmate.ts"; // fork: firstmate
-export * from "./office.ts"; // fork: office
 export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";

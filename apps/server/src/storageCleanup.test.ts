@@ -14,14 +14,14 @@ import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
   DEFAULT_SERVER_SETTINGS,
-  OfficeError,
+  GitCommandError,
   StorageCleanupReport,
   type WorktreeKeepWhen,
   type StorageCleanupSettings,
 } from "@t3tools/contracts";
 import * as ServerConfig from "./config.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
-import * as OfficeGitPolicy from "./office/OfficeGitPolicy.ts";
+import * as TreehouseWorktrees from "./workspace/TreehouseWorktrees.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Settings from "./serverSettings.ts";
@@ -286,6 +286,10 @@ const cleanupFixture = (
     worktreeAfterDays: 8,
     worktreeOnDelete: true,
   },
+  options: {
+    readonly pool?: TreehouseWorktrees.TreehouseWorktrees["Service"];
+    readonly retiredPoolLease?: boolean;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -322,27 +326,28 @@ const cleanupFixture = (
     let editBeforeRemoval = false;
     let openSessionCwd: string | null = null;
     let sessionLive = true;
-    let officeAccessUnavailable = false;
+    let fetchUnavailable = false;
     let fullStatusCalls = 0;
     let snapshotReads = 0;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
-      Effect.provideService(OfficeGitPolicy.OfficeGitPolicy, {
-        environmentForMessage: () => Effect.sync(() => undefined),
-        environmentForThread: () => Effect.sync(() => undefined),
-        withThreadExecution: (_input, operation) =>
-          Effect.gen(function* () {
-            if (officeAccessUnavailable)
-              return yield* new OfficeError({ message: "Office GitHub access is unavailable." });
-            return yield* operation;
-          }),
-      }),
+      (effect) =>
+        options.pool === undefined
+          ? effect
+          : Effect.provideService(effect, TreehouseWorktrees.TreehouseWorktrees, options.pool),
       Effect.provideService(ServerConfig.ServerConfig, config),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
         execute: (input) =>
           Effect.gen(function* () {
+            if (fetchUnavailable && input.args.includes("fetch"))
+              return yield* new GitCommandError({
+                operation: "cleanup-test",
+                command: "git fetch",
+                cwd: input.cwd,
+                detail: "GitHub access is unavailable.",
+              });
             if (editBeforeRemoval && input.args.includes("remove"))
               yield* fs.writeFileString(`${worktree}/tracked.txt`, "late edit\n");
             return yield* git.execute(input);
@@ -398,24 +403,26 @@ const cleanupFixture = (
       } as unknown as Orchestrator.OrchestratorV2["Service"]),
       Effect.provideService(SqlClient.SqlClient, ((strings: TemplateStringsArray) =>
         Effect.sync(() =>
-          openSessionCwd !== null && strings.join("").includes("projection_provider_sessions")
-            ? [
-                {
-                  payload_json: JSON.stringify({
-                    id: "session-1",
-                    driver: "codex",
-                    providerInstanceId: "codex",
-                    status: "ready",
-                    cwd: openSessionCwd,
-                    model: null,
-                    capabilities: CodexProviderCapabilitiesV2,
-                    createdAt: "2026-06-01T12:00:00.000Z",
-                    updatedAt: "2026-06-01T12:00:00.000Z",
-                    lastError: null,
-                  }),
-                },
-              ]
-            : [],
+          options.retiredPoolLease === true && strings.join("").includes("active = 0")
+            ? [{ retired: 1 }]
+            : openSessionCwd !== null && strings.join("").includes("projection_provider_sessions")
+              ? [
+                  {
+                    payload_json: JSON.stringify({
+                      id: "session-1",
+                      driver: "codex",
+                      providerInstanceId: "codex",
+                      status: "ready",
+                      cwd: openSessionCwd,
+                      model: null,
+                      capabilities: CodexProviderCapabilitiesV2,
+                      createdAt: "2026-06-01T12:00:00.000Z",
+                      updatedAt: "2026-06-01T12:00:00.000Z",
+                      lastError: null,
+                    }),
+                  },
+                ]
+              : [],
         )) as unknown as SqlClient.SqlClient),
       Effect.provideService(GitManager.GitManager, {
         invalidateStatus: () => Effect.void,
@@ -467,8 +474,8 @@ const cleanupFixture = (
       setThreads: (next: typeof threads) => {
         threads = next;
       },
-      setOfficeAccessUnavailable: () => {
-        officeAccessUnavailable = true;
+      setFetchUnavailable: () => {
+        fetchUnavailable = true;
       },
       setSessionLive: (live: boolean) => {
         sessionLive = live;
@@ -546,22 +553,69 @@ const runCleanupTest = <A, E>(
 ) => effect.pipe(Effect.provide(cleanupTestLayer), Effect.scoped);
 
 describe("storage cleanup reports and local file policies", () => {
-  it.live("retains a remotely backed Office checkout when bot access is unavailable", () =>
+  it.live("explicit release preserves active and queued work and another thread's checkout", () =>
     runCleanupTest(
       Effect.gen(function* () {
-        const { service, fs, worktree, repo, command, setOfficeAccessUnavailable } =
+        const { service, fs, worktree, setThreads } = yield* cleanupFixture();
+        const owner = shell({ branch: "feature", worktreePath: worktree });
+        setThreads([{ ...owner, activeRunId: RunId.make("active-run"), status: "running" }]);
+        expect(yield* service.releaseThreadWorktree(owner.id)).toBe("busy");
+        setThreads([
+          {
+            ...owner,
+            status: "queued",
+          },
+        ]);
+        expect(yield* service.releaseThreadWorktree(owner.id)).toBe("busy");
+        setThreads([owner, { ...owner, id: ThreadId.make("other-owner"), status: "running" }]);
+        expect(yield* service.releaseThreadWorktree(owner.id)).toBe("completed");
+        expect(yield* fs.exists(worktree)).toBe(true);
+      }),
+    ),
+  );
+
+  it.live("explicit release never returns a retired pool slot reused by another owner", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        let releases = 0;
+        const pool = TreehouseWorktrees.TreehouseWorktrees.of({
+          enabled: true,
+          acquire: () => Effect.die("unused acquire"),
+          ensure: () => Effect.die("unused ensure"),
+          ownsPath: () => Effect.succeed(true),
+          release: () =>
+            Effect.sync(() => {
+              releases++;
+              return true;
+            }),
+        });
+        const { service, fs, worktree } = yield* cleanupFixture(undefined, {
+          pool,
+          retiredPoolLease: true,
+        });
+        expect(yield* service.releaseThreadWorktree(ThreadId.make("thread-1"))).toBe("completed");
+        expect(releases).toBe(0);
+        expect(yield* fs.exists(worktree)).toBe(true);
+      }),
+    ),
+  );
+
+  it.live("retains a remotely backed checkout when fetching fails", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, worktree, repo, command, setFetchUnavailable } =
           yield* cleanupFixture();
         const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
         yield* command(remote, ["init", "--bare"]);
         yield* command(repo, ["remote", "add", "origin", remote]);
         yield* command(repo, ["push", "origin", "main"]);
-        setOfficeAccessUnavailable();
+        setFetchUnavailable();
         expect(yield* service.releaseThreadWorktree(ThreadId.make("thread-1"))).toBe("retry");
         expect(yield* fs.exists(worktree)).toBe(true);
       }),
     ),
   );
-  it.live("Office cleanup keeps ignored source even when automatic cleanup permits it", () =>
+  it.live("explicit release keeps ignored source even when automatic cleanup permits it", () =>
     runCleanupTest(
       Effect.gen(function* () {
         const { service, fs, worktree, setPolicy } = yield* cleanupFixture();
@@ -572,7 +626,7 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live("Office cleanup keeps clean commits that have no remote backup", () =>
+  it.live("explicit release keeps clean commits that have no remote backup", () =>
     runCleanupTest(
       Effect.gen(function* () {
         const { service, fs, worktree } = yield* cleanupFixture();
@@ -581,7 +635,7 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live("Office cleanup removes only an idle, clean, remotely backed checkout", () =>
+  it.live("explicit release removes only an idle, clean, remotely backed checkout", () =>
     runCleanupTest(
       Effect.gen(function* () {
         const { service, fs, worktree, repo, command, setOpenSessionCwd } = yield* cleanupFixture();

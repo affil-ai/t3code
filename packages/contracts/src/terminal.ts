@@ -329,15 +329,6 @@ export class TerminalProviderEnvironmentError extends Schema.TaggedError<Termina
   }
 }
 
-export class TerminalGitIdentityError extends Schema.TaggedError<TerminalGitIdentityError>()(
-  "TerminalGitIdentityError",
-  { threadId: TrimmedNonEmptyStringSchema, cause: Schema.Defect() },
-) {
-  override get message() {
-    return "Could not prepare the terminal's Git identity.";
-  }
-}
-
 export class TerminalNotRunningError extends Schema.TaggedError<TerminalNotRunningError>()(
   "TerminalNotRunningError",
   {
@@ -386,7 +377,6 @@ export const TerminalError = Schema.Union([
   TerminalSessionLookupError,
   TerminalProviderInstanceNotFoundError,
   TerminalProviderEnvironmentError,
-  TerminalGitIdentityError,
   TerminalNotRunningError,
   TerminalWriteError,
   TerminalResizeError,

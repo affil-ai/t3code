@@ -7,7 +7,6 @@
  * @module TerminalManager
  */
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
-import * as OfficeGitPolicy from "../office/OfficeGitPolicy.ts";
 import {
   DEFAULT_TERMINAL_ID,
   TerminalCwdError,
@@ -19,7 +18,6 @@ import {
   TerminalNotRunningError,
   TerminalProviderInstanceNotFoundError,
   TerminalProviderEnvironmentError,
-  TerminalGitIdentityError,
   TerminalResizeError,
   TerminalSessionLookupError,
   TerminalWriteError,
@@ -41,7 +39,6 @@ import {
   ClaudeSettings,
   CodexSettings,
   ProviderInstanceId,
-  ThreadId,
 } from "@t3tools/contracts";
 import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -1501,15 +1498,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const baseEnv = options.env ?? process.env;
   const shellResolver = options.shellResolver ?? (() => defaultShellResolver(platform, baseEnv));
   const processRunner = yield* ProcessRunner.ProcessRunner;
-  const officeGit = yield* Effect.serviceOption(OfficeGitPolicy.OfficeGitPolicy);
   const resolveLaunchInputEnvironment = Effect.fn("terminal.resolveLaunchInputEnvironment")(
     function* <Input extends TerminalOpenInput | TerminalAttachInput | TerminalRestartInput>(
       input: Input,
     ): Effect.fn.Return<
       Input,
-      | TerminalProviderInstanceNotFoundError
-      | TerminalProviderEnvironmentError
-      | TerminalGitIdentityError
+      TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
     > {
       let env = input.env;
       if (input.providerInstanceId !== undefined) {
@@ -1520,19 +1514,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           });
         }
         env = yield* resolver(input.providerInstanceId, env);
-      }
-      if (Option.isSome(officeGit) && input.cwd !== undefined) {
-        const scoped = yield* officeGit.value
-          .environmentForThread({
-            threadId: ThreadId.make(input.threadId),
-            cwd: input.cwd,
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) => new TerminalGitIdentityError({ threadId: input.threadId, cause }),
-            ),
-          );
-        if (scoped !== undefined) env = { ...env, ...scoped };
       }
       return env === undefined ? input : { ...input, env };
     },

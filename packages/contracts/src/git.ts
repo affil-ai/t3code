@@ -121,7 +121,6 @@ export type VcsStatusSubscriptionInput = typeof VcsStatusSubscriptionInput.Type;
 
 export const VcsPullInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
-  threadId: Schema.optional(ThreadId),
 });
 export type VcsPullInput = typeof VcsPullInput.Type;
 

@@ -51,7 +51,6 @@ import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
   restartCancelledBackgroundWorkNote,
-  rootRestartContinuationRun,
 } from "./RestartBackgroundNote.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
@@ -544,38 +543,7 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
-      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
-        thread: projection.thread,
-        modelSelection: run.modelSelection,
-        messageId:
-          run.restartContinuationOfRunId === undefined
-            ? run.userMessageId
-            : rootRestartContinuationRun(run, projection.runs).userMessageId,
-      });
-      const existingSessionProjection = projection.providerSessions.find(
-        (candidate) => candidate.id === providerSessionId,
-      );
-      const sessionResult = yield* Effect.result(
-        providerSessions.open({
-          threadId: projection.thread.id,
-          providerSessionId,
-          modelSelection: run.modelSelection,
-          runtimePolicy: resolvedRuntimePolicy,
-          ...(existingSessionProjection === undefined
-            ? {}
-            : { resumeFromSession: existingSessionProjection }),
-          ...(providerThread.nativeThreadRef?.nativeId == null
-            ? {}
-            : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
-          ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
-            ? {}
-            : {
-                initialProviderItemIdentityVersion:
-                  providerThread.nativeMetadata.itemIdentityVersion,
-              }),
-        }),
-      );
-      // The last start attempt fails the run with the provider's own reason
+      // The last start attempt fails the run with the startup failure's reason
       // instead of leaving it `starting` after the effect gives up. A run that
       // already left `starting` is not overwritten, and a failed write returns
       // its error to the effect worker.
@@ -608,6 +576,45 @@ export const layer: Layer.Layer<
             },
           });
         });
+      const policyResult = yield* Effect.result(
+        runtimePolicy.resolve({
+          thread: projection.thread,
+          modelSelection: run.modelSelection,
+        }),
+      );
+      if (policyResult._tag === "Failure") {
+        if (input.willRetry === true) return yield* policyResult.failure;
+        yield* settleStartFailure({
+          signal: "runtime-policy-resolve-failure",
+          title: "Runtime policy failed to resolve",
+          error: policyResult.failure,
+        });
+        return;
+      }
+      const resolvedRuntimePolicy = policyResult.success;
+      const existingSessionProjection = projection.providerSessions.find(
+        (candidate) => candidate.id === providerSessionId,
+      );
+      const sessionResult = yield* Effect.result(
+        providerSessions.open({
+          threadId: projection.thread.id,
+          providerSessionId,
+          modelSelection: run.modelSelection,
+          runtimePolicy: resolvedRuntimePolicy,
+          ...(existingSessionProjection === undefined
+            ? {}
+            : { resumeFromSession: existingSessionProjection }),
+          ...(providerThread.nativeThreadRef?.nativeId == null
+            ? {}
+            : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
+          ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
+            ? {}
+            : {
+                initialProviderItemIdentityVersion:
+                  providerThread.nativeMetadata.itemIdentityVersion,
+              }),
+        }),
+      );
       if (sessionResult._tag === "Failure") {
         if (input.willRetry === true) return yield* sessionResult.failure;
         yield* settleStartFailure({

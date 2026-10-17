@@ -10,7 +10,7 @@ import { readAgentsHome, useAgentsHome } from "~/state/agents";
 
 /**
  * Every agent's coordinator chat, Firstmate's included, as scoped keys for
- * the Work and Office sidebar lists to leave out: those chats have their own
+ * the Work sidebar list to leave out: those chats have their own
  * rows in Agents mode and under Search. Search still finds them.
  */
 export function useAgentCoordinatorThreadKeys(): ReadonlySet<string> {

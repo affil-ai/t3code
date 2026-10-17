@@ -25,7 +25,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -215,6 +215,7 @@ import {
   OrchestrationV2GetThreadProjectionError,
   OrchestrationV2RpcSchemas,
   OrchestrationV2ThreadLaunchError,
+  ThreadWorktreeReleaseOutcome,
 } from "./orchestrationV2.ts";
 import {
   ProjectCreateNewInput,
@@ -348,7 +349,6 @@ import {
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
 import { FirstmateRpcs } from "./firstmate.ts"; // fork: firstmate
-import { OfficeRpcs } from "./office.ts"; // fork: office
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   ProjectCloneActionInput,
@@ -1619,6 +1619,15 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   stream: true,
 });
 
+const WsOrchestrationV2ReleaseThreadWorktreeRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.releaseThreadWorktree,
+  {
+    payload: Schema.Struct({ threadId: ThreadId }),
+    success: ThreadWorktreeReleaseOutcome,
+    error: EnvironmentAuthorizationError,
+  },
+);
+
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
   payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
@@ -1939,7 +1948,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   ...FirstmateRpcs, // fork: firstmate
-  ...OfficeRpcs, // fork: office
+  WsOrchestrationV2ReleaseThreadWorktreeRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,

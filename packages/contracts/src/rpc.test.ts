@@ -37,6 +37,7 @@ describe("WebSocket RPC contracts", () => {
 
     expect(methods).toEqual(expect.arrayContaining(Object.values(ORCHESTRATION_V2_WS_METHODS)));
     expect(methods.filter((method) => method.startsWith("orchestrationV1."))).toEqual([]);
+    expect(methods.filter((method) => method.startsWith("office."))).toEqual([]);
   });
 
   it("rejects server-internal commands sent to dispatchCommand", () => {

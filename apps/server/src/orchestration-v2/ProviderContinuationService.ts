@@ -7,7 +7,6 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
-import * as OfficeService from "../office/OfficeService.ts";
 
 const CONTINUATION_MESSAGE_TEXT = "Background task completed.";
 
@@ -63,7 +62,6 @@ export const layer = Layer.effectDiscard(
     const ids = yield* IdAllocator.IdAllocatorV2;
     const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const threads = yield* ThreadManagementService.ThreadManagementService;
-    const office = yield* OfficeService.OfficeService;
     const retryAttempts = yield* Ref.make(new Map<string, number>());
 
     const clearRetryAttempt = (key: string) =>
@@ -128,15 +126,6 @@ export const layer = Layer.effectDiscard(
             fixtureName: "delegated-completion",
             commandName: "dispatch",
           });
-          const sourceRun = projection.runs.find(
-            (candidate) => candidate.id === request.delegatedCompletion?.parentRunId,
-          );
-          if (sourceRun !== undefined)
-            yield* office.inheritRequester({
-              threadId: request.threadId,
-              sourceMessageId: sourceRun.userMessageId,
-              messageId: delivery.messageId,
-            });
           yield* threads
             .dispatch({
               type: "message.dispatch",
@@ -220,12 +209,6 @@ export const layer = Layer.effectDiscard(
             ordinal: projection.messages.length + 1,
           }));
         const commandId = CommandId.make(`provider-continuation:${messageId}`);
-        if (request.originMessageId !== undefined)
-          yield* office.inheritRequester({
-            threadId: request.threadId,
-            sourceMessageId: request.originMessageId,
-            messageId,
-          });
         const dispatch = threads.dispatch({
           type: "message.dispatch",
           commandId,

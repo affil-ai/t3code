@@ -124,7 +124,6 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Firstmate from "./firstmate/index.ts"; // fork: firstmate
-import * as Office from "./office/index.ts"; // fork: office
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import {
   archivedShellStreamItemFromThreadShell,
@@ -1243,7 +1242,6 @@ const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const firstmate = yield* Firstmate.FirstmateService; // fork: firstmate
-      const office = yield* Office.OfficeService; // fork: office
       const secretRequests = yield* SecretRequests.SecretRequests;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -2071,7 +2069,8 @@ const layerWsRpc = (
             ),
           ),
         ...Firstmate.rpcHandlers(firstmate), // fork: firstmate
-        ...Office.rpcHandlers(office, storageCleanup), // fork: office
+        [ORCHESTRATION_V2_WS_METHODS.releaseThreadWorktree]: (input) =>
+          storageCleanup.releaseThreadWorktree(input.threadId),
         [WS_METHODS.scheduledTasksList]: (_input) =>
           scheduledTasks.list().pipe(Effect.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
@@ -2833,7 +2832,7 @@ const layerWsRpc = (
             .pipe(Effect.map((cancelled) => ({ cancelled }))),
         [WS_METHODS.vcsRefreshStatus]: (input) => vcsStatusBroadcaster.refreshStatus(input.cwd),
         [WS_METHODS.vcsPull]: (input) =>
-          gitWorkflow.pullCurrentBranch(input.cwd, input.threadId).pipe(
+          gitWorkflow.pullCurrentBranch(input.cwd).pipe(
             Effect.matchCauseEffect({
               onFailure: (cause) => Effect.failCause(cause),
               onSuccess: (result) =>

@@ -3299,10 +3299,22 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   stopWorkflow: "orchestration.stopWorkflow",
   getTurnItem: "orchestration.getTurnItem",
   launchThread: "orchestration.launchThread",
+  releaseThreadWorktree: "orchestration.releaseThreadWorktree",
   subscribeArchivedShell: "orchestration.subscribeArchivedShell",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
+
+/** Safe release can be retried without deleting the thread or its history. */
+export const ThreadWorktreeReleaseOutcome = Schema.Literals([
+  "completed",
+  "busy",
+  "dirty",
+  "unpushed",
+  "unsafe",
+  "retry",
+]);
+export type ThreadWorktreeReleaseOutcome = typeof ThreadWorktreeReleaseOutcome.Type;
 
 export const OrchestrationV2ArchivedShellSnapshot = Schema.Struct({
   schemaVersion: PositiveInt,

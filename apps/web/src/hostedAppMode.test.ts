@@ -90,7 +90,7 @@ describe("hosted identity default", () => {
     expect(useWorkModeStore.getState().hasExplicitMode).toBe(true);
   });
 
-  it.each(["code", "work", "office"] as const)(
+  it.each(["code", "work"] as const)(
     "preserves a legacy saved %s mode as an explicit choice",
     async (mode) => {
       const { WORK_MODE_STORAGE_KEY } = await loadAppMode();
@@ -109,6 +109,22 @@ describe("hosted identity default", () => {
     },
   );
 
+  it("migrates the retired Office mode to Work without fetching a new identity default", async () => {
+    const { WORK_MODE_STORAGE_KEY } = await loadAppMode();
+    window.localStorage.setItem(
+      WORK_MODE_STORAGE_KEY,
+      JSON.stringify({ state: { mode: "office" }, version: 1 }),
+    );
+    vi.resetModules();
+    const { initializeHostedAppMode, useWorkModeStore } = await loadAppMode();
+
+    await initializeHostedAppMode();
+
+    expect(useWorkModeStore.getState().mode).toBe("work");
+    expect(useWorkModeStore.getState().hasExplicitMode).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("persists an explicit choice even when the chosen mode is already the default", async () => {
     const { initializeHostedAppMode, useWorkModeStore } = await loadAppMode();
     await initializeHostedAppMode();
@@ -119,7 +135,7 @@ describe("hosted identity default", () => {
     vi.mocked(fetch).mockResolvedValue(Response.json({ email: "another@affil.ai" }));
     const reloaded = await loadAppMode();
     await reloaded.initializeHostedAppMode();
-    reloaded.useWorkModeStore.getState().applyIdentityDefault("office");
+    reloaded.useWorkModeStore.getState().applyIdentityDefault("code");
 
     expect(reloaded.useWorkModeStore.getState().mode).toBe("work");
     expect(reloaded.useWorkModeStore.getState().hasExplicitMode).toBe(true);
@@ -135,12 +151,12 @@ describe("hosted identity default", () => {
     );
     const { initializeHostedAppMode, useWorkModeStore } = await loadAppMode();
     const initialized = initializeHostedAppMode();
-    useWorkModeStore.getState().setMode("office");
+    useWorkModeStore.getState().setMode("code");
     resolveIdentity(Response.json({ email: "vivek@affil.ai" }));
 
     await initialized;
 
-    expect(useWorkModeStore.getState().mode).toBe("office");
+    expect(useWorkModeStore.getState().mode).toBe("code");
     expect(useWorkModeStore.getState().hasExplicitMode).toBe(true);
   });
 
