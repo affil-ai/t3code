@@ -20,6 +20,7 @@ import {
   type FirstmateColumnId,
   mapFirstmateBoard,
 } from "../firstmate/firstmateBoard.logic";
+import { FirstmateTaskLinkList } from "../firstmate/FirstmateTaskSummary";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { COLUMN_DOT, COLUMN_LABELS, taskNextStep } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -97,6 +98,12 @@ function PlanningCard({
           <span className="truncate text-2xs text-sidebar-muted-foreground/80">{nextStep}</span>
         ) : null}
       </button>
+      <FirstmateTaskLinkList
+        environmentId={environmentId}
+        task={task}
+        threadId={coordinatorThreadId}
+        className="mt-0.5 pl-2"
+      />
     </li>
   );
 }
@@ -182,6 +189,12 @@ function TaskRow({
           ) : null}
         </TooltipPopup>
       </Tooltip>
+      <FirstmateTaskLinkList
+        environmentId={environmentId}
+        task={task}
+        threadId={coordinatorThreadId}
+        className="mt-0.5 pl-2"
+      />
     </li>
   );
 }

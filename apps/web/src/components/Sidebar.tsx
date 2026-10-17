@@ -1,4 +1,4 @@
-import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
+import { type EnvironmentId, type FirstmateTask, type ScopedProjectRef } from "@t3tools/contracts";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
 import {
@@ -268,6 +268,7 @@ import {
   type ProviderInstanceEntry,
 } from "../providerInstances";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
+import { useTaskByWorkerThreadKey } from "../state/agents";
 import { useStableCallback } from "../hooks/useStableCallback";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Button, InlineButton } from "./ui/button";
@@ -287,6 +288,7 @@ import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarT
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { MiddleTruncate } from "./ui/middle-truncate";
+import { FirstmateTaskSummary } from "./firstmate/FirstmateTaskSummary";
 import {
   composerDraftHasUserContent,
   DraftId,
@@ -437,6 +439,7 @@ function SidebarProviderStack(props: {
 
 function SidebarThreadTooltip({
   thread,
+  task,
   project,
   projectDisplayName,
   environmentLabel,
@@ -451,6 +454,7 @@ function SidebarThreadTooltip({
   terminalProcessCount,
 }: {
   thread: SidebarThreadSummary;
+  task: FirstmateTask | null;
   project: ProjectFaviconProject | null;
   projectDisplayName: string | null;
   environmentLabel: string | null;
@@ -473,9 +477,15 @@ function SidebarThreadTooltip({
     .map((instanceId) => providerEntryByInstanceId.get(instanceId)?.displayName ?? instanceId);
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
   return (
-    <ThreadHoverCardPopup side="right" align="start" sideOffset={4}>
+    <ThreadHoverCardPopup
+      side="right"
+      align="start"
+      sideOffset={4}
+      className={cn(task !== null && "max-h-[min(80vh,40rem)] max-w-xl overflow-y-auto")}
+    >
       <ThreadHoverCard
         title={thread.title}
+        className={task !== null ? "max-w-xl" : undefined}
         footer={
           supportsMultiplePullRequests && thread.pullRequests.length > 0 ? (
             <div className="border-t border-border/60 pt-2 pl-0.5 text-xs text-muted-foreground">
@@ -569,6 +579,13 @@ function SidebarThreadTooltip({
                 : "Error occurred"}
             </div>
           </div>
+        ) : null}
+        {task !== null ? (
+          <FirstmateTaskSummary
+            environmentId={thread.environmentId}
+            task={task}
+            threadId={thread.id}
+          />
         ) : null}
       </ThreadHoverCard>
     </ThreadHoverCardPopup>
@@ -1156,6 +1173,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   project: EnvironmentProject | null;
   projectDisplayName: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
+  taskByWorkerThreadKey: ReadonlyMap<string, FirstmateTask>;
   timestampFormat: TimestampFormat;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
@@ -1387,6 +1405,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   const detailsTooltip = (
     <SidebarThreadTooltip
       thread={thread}
+      task={props.taskByWorkerThreadKey.get(threadKey) ?? null}
       project={props.project}
       projectDisplayName={props.projectDisplayName}
       environmentLabel={props.environmentLabel}
@@ -2250,6 +2269,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
   environmentLabel: string | null;
   environmentMachine: EnvironmentMachineKind;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
+  taskByWorkerThreadKey: ReadonlyMap<string, FirstmateTask>;
   isHighlighted: boolean;
   isRouteActive: boolean;
   resultId: string;
@@ -2409,6 +2429,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
         </TooltipTrigger>
         <SidebarThreadTooltip
           thread={thread}
+          task={props.taskByWorkerThreadKey.get(scopedThreadKey(threadRef)) ?? null}
           project={props.project}
           projectDisplayName={props.projectDisplayName}
           environmentLabel={props.environmentLabel}
@@ -2430,6 +2451,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 export default function Sidebar() {
   const projects = useProjects();
   const threads = useThreadShells();
+  const taskByWorkerThreadKey = useTaskByWorkerThreadKey();
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -5186,6 +5208,7 @@ export default function Sidebar() {
                           providerEntriesByEnvironment.get(thread.environmentId) ??
                           EMPTY_PROVIDER_ENTRIES
                         }
+                        taskByWorkerThreadKey={taskByWorkerThreadKey}
                         isHighlighted={activeSearchResultIndex === index}
                         isRouteActive={routeThreadKey === threadKey}
                         resultId={`sidebar-thread-search-result-${index}`}
@@ -5348,6 +5371,7 @@ export default function Sidebar() {
                               providerEntriesByEnvironment.get(thread.environmentId) ??
                               EMPTY_PROVIDER_ENTRIES
                             }
+                            taskByWorkerThreadKey={taskByWorkerThreadKey}
                             timestampFormat={timestampFormat}
                             onThreadClick={handleThreadClick}
                             onThreadActivate={navigateToThread}

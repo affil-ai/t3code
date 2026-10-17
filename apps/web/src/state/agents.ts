@@ -16,6 +16,7 @@ import {
   type AgentProfile,
   type AgentProfileId,
   type EnvironmentId,
+  type FirstmateTask,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 
@@ -141,6 +142,7 @@ export function useCustomAgentWorkerThreadKeys(): ReadonlySet<string> {
 }
 
 const NO_THREAD_AGENTS: ReadonlyMap<string, AgentProfileId> = new Map();
+const NO_WORKER_TASKS: ReadonlyMap<string, FirstmateTask> = new Map();
 
 /**
  * Which agent a thread belongs to, by scoped thread key: every agent's
@@ -173,4 +175,29 @@ const agentByThreadKeyAtom = Atom.make((get): ReadonlyMap<string, AgentProfileId
 
 export function useAgentByThreadKey(): ReadonlyMap<string, AgentProfileId> {
   return useAtomValue(agentByThreadKeyAtom);
+}
+
+/**
+ * Which task owns a worker chat, by scoped thread key. The sidebar and thread
+ * hover card use this to show task context without changing the thread model.
+ */
+const taskByWorkerThreadKeyAtom = Atom.make((get): ReadonlyMap<string, FirstmateTask> => {
+  const home = get(agentsHomeAtom);
+  if (home === null) return NO_WORKER_TASKS;
+  const byKey = new Map<string, FirstmateTask>();
+  for (const agent of home.agents) {
+    const result = get(
+      agentsEnvironment.tasks({ environmentId: home.environmentId, input: { agentId: agent.id } }),
+    );
+    if (!AsyncResult.isSuccess(result)) continue;
+    for (const task of result.value.tasks) {
+      if (task.workerThreadId === null) continue;
+      byKey.set(scopedThreadKey(scopeThreadRef(home.environmentId, task.workerThreadId)), task);
+    }
+  }
+  return byKey.size === 0 ? NO_WORKER_TASKS : byKey;
+}).pipe(Atom.withLabel("agents:task-by-worker-thread-key"));
+
+export function useTaskByWorkerThreadKey(): ReadonlyMap<string, FirstmateTask> {
+  return useAtomValue(taskByWorkerThreadKeyAtom);
 }
