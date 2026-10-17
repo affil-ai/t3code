@@ -191,7 +191,7 @@ function AgentTab({
       data-dragging={isDragging || undefined}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
-        "group/agent-tab relative flex min-w-0 shrink-0 cursor-pointer touch-pan-x items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
+        "group/agent-tab relative flex min-w-0 shrink-0 cursor-pointer touch-pan-x items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
         isDragging && "relative z-10 cursor-grabbing bg-sidebar-row-hover shadow-sm",
       )}
       onClick={() => {
