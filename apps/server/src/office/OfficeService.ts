@@ -25,6 +25,11 @@ export class OfficeService extends Context.Service<
       readonly threadId: ThreadId;
       readonly messageId: MessageId;
     }) => Effect.Effect<OfficeRequester | null, OfficeError>;
+    /** Resolve an unregistered message only when the Office thread has one requester identity. */
+    readonly requesterForMessageWithFallback: (input: {
+      readonly threadId: ThreadId;
+      readonly messageId: MessageId;
+    }) => Effect.Effect<OfficeRequester | null, OfficeError>;
     readonly inheritRequester: (input: {
       readonly threadId: ThreadId;
       readonly sourceMessageId: MessageId;
@@ -127,6 +132,33 @@ export const layer = Layer.effect(
           if (!rows[0])
             return yield* new OfficeError({ message: "Office request identity is unavailable." });
           return yield* decodeRequester(rows[0].requester_json);
+        }).pipe(
+          Effect.mapError((cause) =>
+            isOfficeError(cause)
+              ? cause
+              : new OfficeError({ message: "Could not resolve Office request identity.", cause }),
+          ),
+        ),
+      requesterForMessageWithFallback: ({ threadId, messageId }) =>
+        Effect.gen(function* () {
+          const bound =
+            yield* sql`SELECT thread_id FROM office_thread WHERE thread_id = ${threadId}`;
+          if (!bound.length) {
+            if (threadId.startsWith("office:"))
+              return yield* new OfficeError({ message: "Office request identity is unavailable." });
+            return null;
+          }
+          const exact = yield* sql<{
+            requester_json: string;
+          }>`SELECT requester_json FROM office_git_request
+            WHERE thread_id = ${threadId} AND message_id = ${messageId}`;
+          if (exact[0]) return yield* decodeRequester(exact[0].requester_json);
+          const requesters = yield* sql<{
+            requester_json: string;
+          }>`SELECT DISTINCT requester_json FROM office_git_request WHERE thread_id = ${threadId}`;
+          if (requesters.length !== 1)
+            return yield* new OfficeError({ message: "Office request identity is unavailable." });
+          return yield* decodeRequester(requesters[0]!.requester_json);
         }).pipe(
           Effect.mapError((cause) =>
             isOfficeError(cause)

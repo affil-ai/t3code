@@ -106,6 +106,31 @@ describe("OfficeService", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("falls back only when an Office thread has one requester", () =>
+    Effect.gen(function* () {
+      const service = yield* OfficeService;
+      yield* service.upsertThread(registration);
+      const generated = MessageId.make("server-generated-message");
+      expect(
+        yield* service.requesterForMessageWithFallback({
+          threadId: entry.threadId,
+          messageId: generated,
+        }),
+      ).toEqual(request.requester);
+      yield* service.upsertThread({
+        ...registration,
+        request: {
+          messageId: MessageId.make("another-request"),
+          requester: { name: "Lilly", email: "lilly@example.test" },
+        },
+      });
+      const ambiguous = yield* service
+        .requesterForMessageWithFallback({ threadId: entry.threadId, messageId: generated })
+        .pipe(Effect.flip);
+      expect(ambiguous.message).toBe("Office request identity is unavailable.");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect(
     "rejects a changed requester on retry without changing grouping or the original requester",
     () =>

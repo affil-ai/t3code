@@ -186,6 +186,36 @@ describe("Office Git identity", () => {
         }),
       ),
   );
+  it.effect("recovers an unregistered server message when the requester is unambiguous", () =>
+    withRepository(({ cwd }) =>
+      Effect.gen(function* () {
+        const office = yield* OfficeService.OfficeService;
+        const policy = yield* OfficeGitPolicy.OfficeGitPolicy;
+        yield* office.upsertThread({
+          ...entry,
+          request: { messageId, requester: { name: "Vivek", email: "vivek@example.test" } },
+        });
+        const generated = MessageId.make("message:server-generated");
+        const environment = yield* policy.environmentForMessage({
+          threadId,
+          messageId: generated,
+          cwd,
+        });
+        expect(environment?.OFFICE_GIT_COAUTHOR).toBe("Vivek <vivek@example.test>");
+        yield* office.upsertThread({
+          ...entry,
+          request: {
+            messageId: MessageId.make("message:another-requester"),
+            requester: { name: "Lilly", email: "lilly@example.test" },
+          },
+        });
+        const failure = yield* policy
+          .environmentForMessage({ threadId, messageId: generated, cwd })
+          .pipe(Effect.flip);
+        expect(failure.message).toBe("Office request identity is unavailable.");
+      }),
+    ),
+  );
   it.effect(
     "uses the bot with the immutable requester, keeps hooks, and leaves personal commits alone",
     () =>

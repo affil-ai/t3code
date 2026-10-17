@@ -51,6 +51,7 @@ import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
   restartCancelledBackgroundWorkNote,
+  rootRestartContinuationRun,
 } from "./RestartBackgroundNote.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
@@ -547,8 +548,9 @@ export const layer: Layer.Layer<
         thread: projection.thread,
         modelSelection: run.modelSelection,
         messageId:
-          projection.runs.find((candidate) => candidate.id === run.restartContinuationOfRunId)
-            ?.userMessageId ?? run.userMessageId,
+          run.restartContinuationOfRunId === undefined
+            ? run.userMessageId
+            : rootRestartContinuationRun(run, projection.runs).userMessageId,
       });
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,

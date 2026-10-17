@@ -15,6 +15,7 @@ import {
   pendingRestartCancelledBackgroundWork,
   restartCancelledBackgroundWorkNote,
   restartContinuationNote,
+  rootRestartContinuationRun,
   mergeRestartCancelledBackgroundWork,
 } from "./RestartBackgroundNote.ts";
 
@@ -42,6 +43,24 @@ const turnFor = (source: OrchestrationV2Run) => ({
   runAttemptId: source.activeAttemptId,
   providerThreadId: source.providerThreadId!,
   status: "completed" as const,
+});
+
+it("follows restart ancestry to the original run", () => {
+  const original = run(1, codexThread);
+  const first = run(2, codexThread, { restartContinuationOfRunId: original.id });
+  const second = run(3, codexThread, { restartContinuationOfRunId: first.id });
+  assert.equal(rootRestartContinuationRun(second, [second, first, original]), original);
+  assert.equal(
+    rootRestartContinuationRun(second, [
+      second,
+      first,
+      original,
+      run(4, codexThread, { restartContinuationOfRunId: second.id }),
+    ]),
+    original,
+  );
+  const cyclic = run(5, codexThread, { restartContinuationOfRunId: RunId.make("run:missing") });
+  assert.equal(rootRestartContinuationRun(cyclic, [cyclic]), cyclic);
 });
 
 it("keeps the note for the provider thread that lost the work across a provider switch", () => {

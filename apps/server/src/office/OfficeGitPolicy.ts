@@ -247,9 +247,13 @@ const make = Effect.gen(function* () {
         // Setup can run before a native run exists. Registration precedes launch.
         const receipts = threads[0]?.message_id
           ? []
-          : yield* sql<{ message_id: string }>`
-        SELECT message_id FROM office_git_request WHERE thread_id = ${rootThreadId}
-        ORDER BY rowid DESC LIMIT 1`;
+          : yield* sql<{ message_id: string; requester_json: string }>`
+        SELECT message_id, requester_json FROM office_git_request WHERE thread_id = ${rootThreadId}`;
+        if (
+          receipts.length > 0 &&
+          new Set(receipts.map((receipt) => receipt.requester_json)).size !== 1
+        )
+          return yield* new OfficeError({ message: "Office request identity is unavailable." });
         const messageId = threads[0]?.message_id ?? receipts[0]?.message_id;
         if (messageId === undefined)
           return yield* new OfficeError({ message: "Office request identity is unavailable." });
@@ -267,7 +271,7 @@ const make = Effect.gen(function* () {
       ),
     environmentForMessage: (input) =>
       Effect.gen(function* () {
-        const requester = yield* office.requesterForMessage(input);
+        const requester = yield* office.requesterForMessageWithFallback(input);
         if (requester === null) return undefined;
         // A missing broker must fail Office execution before a personal helper can run.
         for (const name of ["gh", "git-credential-office-app"]) {

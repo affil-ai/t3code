@@ -161,6 +161,21 @@ export function isRestartContinuationSource(
     : source.status === "cancelled";
 }
 
+/** Follow restart provenance to the oldest available run without trusting ordinals or recency. */
+export function rootRestartContinuationRun<
+  T extends Pick<OrchestrationV2Run, "id" | "restartContinuationOfRunId">,
+>(run: T, runs: ReadonlyArray<T>): T {
+  let current = run;
+  const visited = new Set([current.id]);
+  while (current.restartContinuationOfRunId !== undefined) {
+    const previous = runs.find((candidate) => candidate.id === current.restartContinuationOfRunId);
+    if (previous === undefined || visited.has(previous.id)) break;
+    visited.add(previous.id);
+    current = previous;
+  }
+  return current;
+}
+
 /**
  * The note a restart continuation of `source` carries, and whether the turn it
  * continues had settled (the note is then the whole prompt). A continuation cut
