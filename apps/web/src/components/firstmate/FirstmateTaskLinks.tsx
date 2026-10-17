@@ -177,8 +177,18 @@ export function ExternalTaskLink({
   readonly className?: string;
 }) {
   const handlers = useTaskLinkHandlers(environmentId, link.url);
+  const isPullRequest = isPullRequestUrl(link.url);
+  const pullRequestTarget = usePullRequestPreviewTarget(environmentId, link.url);
+  const pullRequestSummary = useEnvironmentQuery(
+    pullRequestTarget === null ? null : linkedPullRequestDetailAtom(pullRequestTarget),
+  ).data;
   if (handlers === null) return null;
+  if (isPullRequest && pullRequestSummary?.state === "closed") return null;
   const { href, onClick: handleClick, onContextMenu: handleContextMenu } = handlers;
+  const label =
+    isPullRequest && pullRequestSummary?.state === "merged"
+      ? link.label.replace(/\s*\([^)]*\)\s*$/, "")
+      : link.label;
 
   return (
     <a
@@ -196,7 +206,7 @@ export function ExternalTaskLink({
       ) : (
         <LinkIcon className="size-3 shrink-0" />
       )}
-      <span className="truncate">{link.label}</span>
+      <span className="truncate">{label}</span>
     </a>
   );
 }
