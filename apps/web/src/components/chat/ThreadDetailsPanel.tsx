@@ -1,6 +1,7 @@
 import type {
   EditorId,
   EnvironmentId,
+  FirstmateTask,
   ProjectScript,
   ResolvedKeybindingsConfig,
   ThreadId,
@@ -22,6 +23,7 @@ import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 import { useIsWorkMode } from "../../workModeStore";
+import { FirstmateTaskSummary } from "../firstmate/FirstmateTaskSummary";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -32,6 +34,7 @@ export interface ThreadDetailsPanelProps extends Pick<
   forceNewWorktree?: boolean;
   environmentId: EnvironmentId;
   threadId: ThreadId;
+  task?: FirstmateTask | null;
   draftId?: DraftId;
   activeProjectName: string | undefined;
   activeProjectScripts: ReadonlyArray<ProjectScript> | undefined;
@@ -181,6 +184,14 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
           {density === "full" && !props.draftId ? (
             <ThreadRelationshipsPanel
               environmentId={props.environmentId}
+              threadId={props.threadId}
+            />
+          ) : null}
+
+          {density === "full" && !props.draftId && props.task ? (
+            <FirstmateTaskSummary
+              environmentId={props.environmentId}
+              task={props.task}
               threadId={props.threadId}
             />
           ) : null}

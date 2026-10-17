@@ -4,15 +4,17 @@
  * task event history.
  */
 import type { EnvironmentId, FirstmateTask, ThreadId } from "@t3tools/contracts";
-import { ImageIcon } from "lucide-react";
+import { ChevronRightIcon, ImageIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
+import { useFirstmateTask } from "~/state/firstmate";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { ExternalTaskLink } from "./FirstmateTaskLinks";
 import {
   CoordinatorThreadContext,
+  EVENT_ACTOR_LABELS,
   relativeAge,
   taskNextStep,
-  taskStatusLabel,
 } from "./firstmateTasksShared";
 
 const SECTION_LABEL_CLASS = "text-2xs font-medium text-muted-foreground";
@@ -22,15 +24,25 @@ const SECTION_TEXT_CLASS =
 function SummarySection({
   title,
   children,
+  defaultOpen = true,
 }: {
   readonly title: string;
   readonly children: React.ReactNode;
+  readonly defaultOpen?: boolean;
 }) {
   return (
-    <section className="min-w-0 space-y-0.5">
-      <h3 className={SECTION_LABEL_CLASS}>{title}</h3>
-      {children}
-    </section>
+    <Collapsible defaultOpen={defaultOpen} className="min-w-0" render={<section />}>
+      <CollapsibleTrigger className="group flex w-full items-center gap-1 text-left">
+        <ChevronRightIcon
+          aria-hidden
+          className="size-3 shrink-0 text-muted-foreground transition-transform duration-150 motion-reduce:transition-none group-data-panel-open:rotate-90"
+        />
+        <span className={SECTION_LABEL_CLASS}>{title}</span>
+      </CollapsibleTrigger>
+      <CollapsiblePanel>
+        <div className="pt-0.5 pl-4">{children}</div>
+      </CollapsiblePanel>
+    </Collapsible>
   );
 }
 
@@ -77,16 +89,13 @@ export function FirstmateTaskSummary({
   const nextStep = taskNextStep(task);
   const artifacts = task.artifacts ?? [];
   const evidenceTitle = task.state === "dropped" ? "Why it was dropped" : "Evidence";
+  const detailQuery = useFirstmateTask(environmentId, task.id);
+  const events = detailQuery.data?.events ?? null;
 
   return (
     <CoordinatorThreadContext value={threadId}>
       <div className={cn("min-w-0 space-y-2 border-t border-border/60 pt-2", className)}>
-        <div className="min-w-0 space-y-0.5">
-          <div className="text-2xs font-medium text-muted-foreground">Task</div>
-          <div className="wrap-break-word text-sm font-medium text-foreground">{task.title}</div>
-          <div className="text-2xs text-muted-foreground">{taskStatusLabel(task)}</div>
-        </div>
-        <SummarySection title="What you asked">
+        <SummarySection title="What you asked" defaultOpen={false}>
           <p className={SECTION_TEXT_CLASS}>{task.intent}</p>
         </SummarySection>
         {nextStep !== null ? (
@@ -94,7 +103,7 @@ export function FirstmateTaskSummary({
             <p className={SECTION_TEXT_CLASS}>{nextStep}</p>
           </SummarySection>
         ) : null}
-        <SummarySection title="Done when">
+        <SummarySection title="Done when" defaultOpen={false}>
           <p className={SECTION_TEXT_CLASS}>{task.definitionOfDone}</p>
         </SummarySection>
         {task.closeEvidence ? (
@@ -111,7 +120,7 @@ export function FirstmateTaskSummary({
                     key={`${artifact.label}:${artifact.url}`}
                     environmentId={environmentId}
                     link={artifact}
-                    className="inline-flex min-w-0 items-center gap-1.5 text-xs text-foreground/80 hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                    className="inline-flex min-w-0 items-center gap-1.5 text-xs text-foreground/80 hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   />
                 ) : (
                   <div
@@ -143,11 +152,29 @@ export function FirstmateTaskSummary({
             <FirstmateTaskLinkList environmentId={environmentId} task={task} threadId={threadId} />
           </SummarySection>
         ) : null}
-        <SummarySection title="History">
-          <p className="text-xs leading-5 text-foreground/80">
-            Opened {relativeAge(task.createdAt)} · Updated {relativeAge(task.updatedAt)}
-            {task.closedAt ? ` · Closed ${relativeAge(task.closedAt)}` : null}
-          </p>
+        <SummarySection title="History" defaultOpen={false}>
+          {detailQuery.error && events === null ? (
+            <p className={SECTION_TEXT_CLASS}>Could not load the history.</p>
+          ) : events === null ? (
+            <p className="text-xs text-muted-foreground">Loading history…</p>
+          ) : events.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No history yet.</p>
+          ) : (
+            <ol className="relative space-y-2 border-s border-border/70 ps-3">
+              {events.toReversed().map((event) => (
+                <li key={event.id} className="relative">
+                  <span
+                    aria-hidden
+                    className="absolute top-1 -left-[0.9375rem] size-1.5 rounded-full bg-muted-foreground/50 ring-2 ring-background"
+                  />
+                  <p className="text-xs leading-5 text-foreground/80">{event.summary}</p>
+                  <p className="text-2xs text-muted-foreground">
+                    {EVENT_ACTOR_LABELS[event.actor]} · {relativeAge(event.createdAt)}
+                  </p>
+                </li>
+              ))}
+            </ol>
+          )}
         </SummarySection>
       </div>
     </CoordinatorThreadContext>

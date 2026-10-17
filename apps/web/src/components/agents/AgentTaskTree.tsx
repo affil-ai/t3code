@@ -20,7 +20,7 @@ import {
   type FirstmateColumnId,
   mapFirstmateBoard,
 } from "../firstmate/firstmateBoard.logic";
-import { FirstmateTaskLinkList, FirstmateTaskSummary } from "../firstmate/FirstmateTaskSummary";
+import { FirstmateTaskLinkList } from "../firstmate/FirstmateTaskSummary";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { COLUMN_DOT, COLUMN_LABELS, taskNextStep } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -180,16 +180,10 @@ function TaskRow({
             <WorkerStatusDot environmentId={environmentId} workerThreadId={task.workerThreadId} />
           ) : null}
         </TooltipTrigger>
-        <TooltipPopup
-          side="right"
-          align="start"
-          className="max-h-[min(80vh,40rem)] max-w-xl overflow-y-auto"
-        >
-          <FirstmateTaskSummary
-            environmentId={environmentId}
-            task={task}
-            threadId={coordinatorThreadId}
-          />
+        <TooltipPopup side="right" align="start">
+          <p className="max-w-xs text-xs text-muted-foreground">
+            Open the task chat to view its details.
+          </p>
         </TooltipPopup>
       </Tooltip>
       <FirstmateTaskLinkList
