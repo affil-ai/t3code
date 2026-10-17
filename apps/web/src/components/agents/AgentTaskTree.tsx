@@ -20,7 +20,7 @@ import {
   type FirstmateColumnId,
   mapFirstmateBoard,
 } from "../firstmate/firstmateBoard.logic";
-import { FirstmateTaskLinkList } from "../firstmate/FirstmateTaskSummary";
+import { FirstmateTaskLinkList, FirstmateTaskSummary } from "../firstmate/FirstmateTaskSummary";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { COLUMN_DOT, COLUMN_LABELS, taskNextStep } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -148,7 +148,6 @@ function TaskRow({
   const { isMobile, setOpenMobile } = useSidebar();
   const threadId = task.workerThreadId ?? coordinatorThreadId;
   const active = task.workerThreadId !== null && activeRouteKey === `${environmentId}:${threadId}`;
-  const nextStep = taskNextStep(task);
   return (
     <li>
       <Tooltip>
@@ -181,12 +180,16 @@ function TaskRow({
             <WorkerStatusDot environmentId={environmentId} workerThreadId={task.workerThreadId} />
           ) : null}
         </TooltipTrigger>
-        <TooltipPopup side="right" className="max-w-72">
-          <span className="block font-medium">{task.title}</span>
-          {nextStep !== null ? <span className="block opacity-80">{nextStep}</span> : null}
-          {task.workerThreadId === null ? (
-            <span className="block opacity-60">No worker yet</span>
-          ) : null}
+        <TooltipPopup
+          side="right"
+          align="start"
+          className="max-h-[min(80vh,40rem)] max-w-xl overflow-y-auto"
+        >
+          <FirstmateTaskSummary
+            environmentId={environmentId}
+            task={task}
+            threadId={coordinatorThreadId}
+          />
         </TooltipPopup>
       </Tooltip>
       <FirstmateTaskLinkList
