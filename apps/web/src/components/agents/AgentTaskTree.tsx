@@ -224,7 +224,7 @@ export function AgentTaskTree({
             <span className="truncate">{COLUMN_LABELS[column]}</span>
             <span className="tabular-nums">{columns[column].length}</span>
           </h3>
-          <ul className="flex flex-col">
+          <ul className="flex flex-col gap-1.5">
             {columns[column].map((task) =>
               column === "planning" ? (
                 <PlanningCard
