@@ -703,6 +703,8 @@ function surfaceTitle(
       return "Agents";
     case "firstmate": // fork: firstmate
       return firstmateTabTitle(); // fork: firstmate
+    case "task-details": // fork: firstmate
+      return "Details";
     case "chat":
       return chatTitlesById?.get(surface.id) ?? "Chat";
     case "device":
@@ -792,6 +794,8 @@ function SurfaceIcon({
       return <Bot className="size-3 shrink-0" />;
     case "firstmate": // fork: firstmate
       return <FirstmateTabIcon />; // fork: firstmate
+    case "task-details": // fork: firstmate
+      return <ListChecks className="size-3 shrink-0" />;
     case "chat":
       return <MessageSquare className="size-3 shrink-0" />;
     case "device":

@@ -296,6 +296,7 @@ import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { FirstmateTasksSurface } from "./firstmate/firstmateTab"; // fork: firstmate
+import { TaskDetailsSurface } from "./firstmate/TaskDetailsSurface"; // fork: firstmate
 import { useIsAgentCoordinatorChat } from "./firstmate/agentCoordinatorChat"; // fork: firstmate
 import { AgentsPanel } from "./AgentsPanel";
 import {
@@ -305,6 +306,7 @@ import {
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
+import { useTaskByWorkerThreadKey } from "../state/agents";
 import { DeviceSetup } from "./device/DeviceSetup";
 import { Dialog } from "./ui/dialog";
 import { WizardPopup } from "./ui/wizard";
@@ -492,7 +494,6 @@ import {
 } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel, type ThreadDetailsPanelProps } from "./chat/ThreadDetailsPanel";
-import { useTaskByWorkerThreadKey } from "../state/agents";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   type EnvironmentOption,
@@ -2517,6 +2518,13 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThreadKnownSessions]);
   const activeThreadRef = useActiveThreadRef(activeThread);
   const taskByWorkerThreadKey = useTaskByWorkerThreadKey();
+  const activeWorkerTask = activeThreadRef
+    ? (taskByWorkerThreadKey.get(scopedThreadKey(activeThreadRef)) ?? null)
+    : null;
+  useEffect(() => {
+    if (activeThreadRef === null || activeWorkerTask === null) return;
+    useRightPanelStore.getState().open(activeThreadRef, "task-details");
+  }, [activeThreadRef, activeWorkerTask]);
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const activeEnvironmentServerBrowser = useEnvironmentSupportsServerBrowser(
     activeThreadRef?.environmentId ?? null,
@@ -11272,6 +11280,8 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "firstmate" ? ( // fork: firstmate
       <FirstmateTasksSurface threadRef={activeThreadRef} /> // fork: firstmate
+    ) : renderedRightPanelSurface?.kind === "task-details" && activeThreadRef ? ( // fork: firstmate
+      <TaskDetailsSurface threadRef={activeThreadRef} /> // fork: firstmate
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
         <DevicePanel
@@ -11340,9 +11350,6 @@ export default function ChatView(props: ChatViewProps) {
     forceNewWorktree: multipleModelSelections !== null,
     environmentId: activeThread.environmentId,
     threadId: activeThread.id,
-    task: activeThreadRef
-      ? (taskByWorkerThreadKey.get(scopedThreadKey(activeThreadRef)) ?? null)
-      : null,
     ...(draftId ? { draftId } : {}),
     activeProjectName: activeProject?.title,
     activeProjectScripts: activeProject ? activeProjectScripts : undefined,
