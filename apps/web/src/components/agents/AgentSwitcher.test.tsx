@@ -15,6 +15,7 @@ import { AgentTaskTree } from "./AgentTaskTree";
 const mocks = vi.hoisted(() => ({
   mobile: true,
   navigate: vi.fn(),
+  workerShell: null as { updatedAt: string } | null,
   researchTasks: [] as Array<{ state: string; nextActor: string; workerThreadId: string | null }>,
   firstmateAppearance: { name: "Firstmate", icon: "compass" } as {
     name: string;
@@ -72,7 +73,8 @@ vi.mock("~/state/firstmate", () => ({
           snapshot: { ...firstmate, ...mocks.firstmateAppearance, tasks: [] },
         },
 }));
-vi.mock("~/state/entities", () => ({ useThreadShell: () => null }));
+vi.mock("~/state/entities", () => ({ useThreadShell: () => mocks.workerShell }));
+vi.mock("../Sidebar.logic", () => ({ resolveThreadStatusPill: () => null }));
 vi.mock("../firstmate/firstmateModel", () => ({ useFirstmateModelSelection: () => null }));
 vi.mock("./agentCommands", () => ({ useAgentCommands: () => ({ pending: null }) }));
 vi.mock("./AgentDialog", () => ({ AgentDialog: () => null }));
@@ -111,6 +113,7 @@ beforeEach(() => {
   });
   mocks.mobile = true;
   mocks.navigate.mockReset();
+  mocks.workerShell = null;
   mocks.firstmateAppearance = { name: "Firstmate", icon: "compass" };
   useSelectedAgentStore.setState({
     selectedAgentId: null,
@@ -269,6 +272,43 @@ describe("agent switcher navigation", () => {
     await click(trigger);
     await act(() => vi.advanceTimersByTimeAsync(500));
     expect(document.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it("puts deployment first and backlog last, with worker age instead of descriptions", async () => {
+    vi.setSystemTime(new Date("2026-10-18T12:00:00Z"));
+    mocks.workerShell = { updatedAt: "2026-10-18T10:00:00Z" };
+    const tasks = ["backlog", "in_progress", "ready_for_deployment"].map((status) => ({
+      id: status,
+      title: status,
+      status,
+      state: "open",
+      nextActor: "user",
+      intent: "Description should not appear",
+      nextStep: "Next step should not appear",
+      updatedAt: "2026-10-18T11:59:00Z",
+      workerThreadId: ThreadId.make("worker-chat"),
+    })) as FirstmateTask[];
+    await act(() =>
+      root.render(
+        <SidebarProvider>
+          <AgentTaskTree
+            environmentId={environmentId}
+            coordinatorThreadId={firstmate.coordinatorThreadId!}
+            tasks={tasks}
+            activeRouteKey={null}
+          />
+        </SidebarProvider>,
+      ),
+    );
+    const sections = [...container.querySelectorAll("section")];
+    expect(sections[0]?.getAttribute("aria-label")).toBe("Ready for deployment");
+    const backlog = sections.at(-1)!;
+    expect(backlog.getAttribute("aria-label")).toBe("Backlog");
+    expect(backlog.textContent).toContain("Last active 2h ago");
+    expect(backlog.textContent).not.toContain("Description should not appear");
+    expect(backlog.textContent).not.toContain("Next step should not appear");
+    await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000));
+    expect(backlog.textContent).toContain("Last active 3h ago");
   });
 
   it.each(["worker", "coordinator"] as const)(

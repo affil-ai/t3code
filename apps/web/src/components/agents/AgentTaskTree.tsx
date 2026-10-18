@@ -1,19 +1,20 @@
 /**
  * An agent's open tasks in the sidebar, in the Tasks panel's sections
- * (Needs you attention, followed by lifecycle sections). A task
- * with a worker opens the worker's chat, with a dot for what the worker is
- * doing. A Planning or Backlog task is a card with its title,
- * intent, and next step; with a worker it opens that chat, otherwise the
- * task's detail in the Tasks panel beside the agent's chat. Closed tasks stay
- * in the panel.
+ * (Ready for deployment first, followed by attention and other lifecycle
+ * sections). A task with a worker opens the worker's chat, with a dot for
+ * what the worker is doing. A Planning task is a card with its title, intent,
+ * and next step. A Backlog task shows the last activity age of its worker
+ * instead of its description. Closed tasks stay in the panel.
  */
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, FirstmateTask, ThreadId } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 
 import { cn } from "~/lib/utils";
+import { useNowMinute } from "~/hooks/useNowMinute";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
+import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { type FirstmateColumnId, mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
@@ -84,12 +85,16 @@ function PlanningCard({
             <WorkerStatusDot environmentId={environmentId} workerThreadId={task.workerThreadId} />
           ) : null}
         </span>
-        {excerpt ? (
+        {task.status === "backlog" ? (
+          <span className="truncate text-xs leading-4 text-sidebar-muted-foreground/80">
+            <BacklogActivity environmentId={environmentId} workerThreadId={task.workerThreadId} />
+          </span>
+        ) : excerpt ? (
           <span className="line-clamp-2 text-xs leading-4 text-sidebar-muted-foreground/80">
             {excerpt}
           </span>
         ) : null}
-        {nextStep !== null ? (
+        {task.status !== "backlog" && nextStep !== null ? (
           <span className="truncate text-2xs text-sidebar-muted-foreground/80">{nextStep}</span>
         ) : null}
       </button>
@@ -97,13 +102,31 @@ function PlanningCard({
   );
 }
 
+function BacklogActivity({
+  environmentId,
+  workerThreadId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly workerThreadId: ThreadId | null;
+}) {
+  const shell = useThreadShell(
+    workerThreadId === null ? null : scopeThreadRef(environmentId, workerThreadId),
+  );
+  useNowMinute();
+  if (workerThreadId === null) return "No worker yet";
+  if (shell === null) return "Worker activity unavailable";
+  const label = formatRelativeTimeLabel(shell.updatedAt);
+  if (!label) return "Worker activity unavailable";
+  return <time dateTime={shell.updatedAt}>Last active {label}</time>;
+}
+
 const OPEN_COLUMNS: Exclude<FirstmateColumnId, "done">[] = [
+  "ready",
   "needs-you",
-  "backlog",
   "planning",
   "in-progress",
   "in-review",
-  "ready",
+  "backlog",
 ];
 
 function WorkerStatusDot({
