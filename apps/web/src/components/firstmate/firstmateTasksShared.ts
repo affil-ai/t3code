@@ -4,7 +4,12 @@
  *
  * @module firstmateTasksShared
  */
-import type { FirstmateTask, FirstmateTaskEvent, ThreadId } from "@t3tools/contracts";
+import {
+  firstmateTaskStatus,
+  type FirstmateTask,
+  type FirstmateTaskEvent,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { createContext } from "react";
 
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -14,6 +19,7 @@ import type { FirstmateColumnId } from "./firstmateBoard.logic";
 export const CoordinatorThreadContext = createContext<ThreadId | null>(null);
 
 export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
+  backlog: "Backlog",
   "needs-you": "Needs you",
   ready: "Ready for deployment",
   planning: "Planning",
@@ -23,6 +29,7 @@ export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
 };
 
 export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = {
+  backlog: "Nothing in backlog",
   "needs-you": "Nothing needs you",
   ready: "Nothing ready to deploy",
   planning: "Nothing being planned",
@@ -32,6 +39,7 @@ export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = 
 
 /** A small dot per column; it is the board's only color. */
 export const COLUMN_DOT: Record<FirstmateColumnId, string> = {
+  backlog: "bg-muted-foreground/40",
   "needs-you": "bg-warning",
   ready: "bg-success",
   planning: "bg-primary/60",
@@ -65,6 +73,7 @@ export function relativeAge(value: string): string {
 
 /** What the card's meta line says about who has the ball, when the task has no next step. */
 export function taskStatusLabel(task: FirstmateTask): string {
+  if (firstmateTaskStatus(task) === "backlog") return "Parked";
   const closed = CLOSED_STATE_LABELS[task.state];
   if (closed) return closed;
   return `Next: ${NEXT_ACTOR_LABELS[task.nextActor]}`;

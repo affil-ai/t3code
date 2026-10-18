@@ -41,7 +41,7 @@ const shared = {
 const FirstmateTaskListTool = Tool.make("firstmate_task_list", {
   ...shared,
   description:
-    "List the tasks on your board. Omit state to list every task that is not done or dropped.",
+    "List the tasks on your board. Filter by status (including backlog) or legacy state. Omit both to list every task that is not done or dropped. Backlog is intentionally parked: do not start workers or schedule wakes for it.",
   parameters: FirstmateTaskListInput,
   success: FirstmateTaskListResult,
 })
@@ -62,7 +62,7 @@ const FirstmateTaskGetTool = Tool.make("firstmate_task_get", {
 const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
   ...shared,
   description:
-    "Create a task on your board. Only an agent's coordinator chat may create its tasks. Give it a nextStep: a short imperative phrase naming the PR or decision, which the board shows in place of who acts next.",
+    "Create a task on your board. Only an agent's coordinator chat may create its tasks. Set status explicitly: backlog for deferred work, planning, in_progress, in_review, or ready_for_deployment. Backlog is parked: do not launch a worker until the user asks to start it. Give it a nextStep: a short imperative phrase naming the PR or decision.",
   parameters: FirstmateTaskCreateInput,
   success: FirstmateTaskMutationResult,
 })
@@ -72,7 +72,7 @@ const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
 const FirstmateTaskUpdateTool = Tool.make("firstmate_task_update", {
   ...shared,
   description:
-    'Partially update a task on your board and append an event. Only an agent\'s coordinator chat may update its tasks. Whenever you change state or nextActor, also set nextStep: a short imperative phrase naming the PR or decision ("Approve merge of #4118", "Waiting on Office review"), not a sentence about who acts. Closing requires closeEvidence. Set state waiting while a PR waits on reviews or checks, and ready once it is reviewed and green and only the user\'s merge or deploy remains; put the PR in links or artifacts.',
+    'Partially update a task on your board and append an event. Only an agent\'s coordinator chat may update its tasks. Set status explicitly for lifecycle moves: backlog, planning, in_progress, in_review, ready_for_deployment, done, or canceled. Use nextActor separately for who acts next. Whenever you change status, state, or nextActor, also set nextStep: a short imperative phrase naming the PR or decision ("Approve merge of #4118", "Waiting on Office review"), not a sentence about who acts. Closing requires closeEvidence. Backlog tasks are parked and do not wake the coordinator.',
   parameters: FirstmateTaskUpdateInput,
   success: FirstmateTaskMutationResult,
 })

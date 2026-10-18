@@ -1,8 +1,8 @@
 /**
  * An agent's open tasks in the sidebar, in the Tasks panel's sections
- * (Needs you, Ready for deployment, Planning, In progress, In review). A task
+ * (Needs you attention, followed by lifecycle sections). A task
  * with a worker opens the worker's chat, with a dot for what the worker is
- * doing. A Planning task (the coordinator acts next) is a card with its title,
+ * doing. A Planning or Backlog task is a card with its title,
  * intent, and next step; with a worker it opens that chat, otherwise the
  * task's detail in the Tasks panel beside the agent's chat. Closed tasks stay
  * in the panel.
@@ -15,11 +15,7 @@ import { cn } from "~/lib/utils";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
-import {
-  FIRSTMATE_COLUMN_IDS,
-  type FirstmateColumnId,
-  mapFirstmateBoard,
-} from "../firstmate/firstmateBoard.logic";
+import { type FirstmateColumnId, mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { COLUMN_DOT, COLUMN_LABELS, taskNextStep } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -101,9 +97,14 @@ function PlanningCard({
   );
 }
 
-const OPEN_COLUMNS = FIRSTMATE_COLUMN_IDS.filter(
-  (column): column is Exclude<FirstmateColumnId, "done"> => column !== "done",
-);
+const OPEN_COLUMNS: Exclude<FirstmateColumnId, "done">[] = [
+  "needs-you",
+  "backlog",
+  "planning",
+  "in-progress",
+  "in-review",
+  "ready",
+];
 
 function WorkerStatusDot({
   environmentId,
@@ -216,7 +217,7 @@ export function AgentTaskTree({
           </h3>
           <ul className="flex flex-col">
             {columns[column].map((task) =>
-              column === "planning" ? (
+              column === "planning" || column === "backlog" || task.workerThreadId === null ? (
                 <PlanningCard
                   key={task.id}
                   environmentId={environmentId}

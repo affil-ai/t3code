@@ -52,6 +52,88 @@ const snapshot = Effect.fn("firstmateSnapshotTestHelper")(function* (
 });
 
 describe("FirstmateService", () => {
+  it.effect("persists lifecycle separately from attention and supports backlog promotion", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const { task } = yield* service.create(FM, {
+        title: "Later",
+        intent: "Keep this for later",
+        definitionOfDone: "Delivered",
+        status: "backlog",
+        wakeAt: "1970-01-01T00:00:00.000Z",
+      });
+      expect(task).toMatchObject({ status: "backlog", state: "open", wakeAt: null });
+      yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Needs a decision",
+        nextActor: "user",
+      });
+      expect((yield* service.get(FM, { taskId: task.id })).task.status).toBe("backlog");
+      expect((yield* service.list(FM, { status: "backlog" })).tasks).toHaveLength(1);
+      yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Plan it",
+        status: "planning",
+        nextActor: "coordinator",
+      });
+      expect((yield* service.list(FM, { status: "backlog" })).tasks).toHaveLength(0);
+      const review = yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Review",
+        status: "in_review",
+        nextActor: "external",
+      });
+      expect(review.task).toMatchObject({ status: "in_review", state: "waiting" });
+      const attention = yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Resolve review",
+        nextActor: "coordinator",
+      });
+      expect(attention.task.status).toBe("in_review");
+      const ready = yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Checks passed",
+        state: "ready",
+        nextActor: "user",
+      });
+      expect(ready.task.status).toBe("ready_for_deployment");
+      expect(
+        yield* service
+          .update(FM, {
+            taskId: task.id,
+            summary: "Wrong pair",
+            status: "in_progress",
+            state: "done",
+            closeEvidence: "No",
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "FirstmateError" });
+      expect(
+        yield* service
+          .update(FM, {
+            taskId: task.id,
+            summary: "No evidence",
+            status: "done",
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "FirstmateError" });
+      yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Shipped",
+        status: "done",
+        closeEvidence: "Verified release",
+      });
+      expect((yield* service.list(FM)).tasks).toHaveLength(0);
+      expect((yield* service.list(FM, { status: "done" })).tasks).toHaveLength(1);
+      const reopened = yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Follow-up",
+        status: "planning",
+      });
+      expect(reopened.task).toMatchObject({ state: "open", status: "planning", closedAt: null });
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
   it.effect("starts unconfigured, sets and clears the coordinator", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;

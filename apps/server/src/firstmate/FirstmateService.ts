@@ -28,6 +28,8 @@ import {
   FirstmateTaskUpdateInput as TaskUpdateInput,
   FirstmateTaskListInput as TaskListInput,
   type FirstmateTaskArtifact,
+  firstmateTaskStatus,
+  firstmateStateForStatus,
   FirstmateSetAppearanceInput as AppearanceInput,
   MessageId,
   type ModelSelection,
@@ -69,6 +71,7 @@ export type FirstmateSnapshot = typeof ContractFirstmateSnapshot.Type;
 export type FirstmateTaskListInput = typeof TaskListInput.Type;
 export type FirstmateTaskCreateInput = typeof TaskCreateInput.Type;
 export type FirstmateTaskUpdateInput = typeof TaskUpdateInput.Type;
+
 export interface FirstmateTaskGetInput {
   readonly taskId: FirstmateTask["id"];
 }
@@ -335,7 +338,29 @@ export const layer = Layer.effect(
 
     // --- tasks ------------------------------------------------------------
 
+    const assertCanPark = Effect.fn("Firstmate.assertCanPark")(function* (
+      workerThreadId: ThreadId | null,
+    ) {
+      if (workerThreadId === null) return;
+      const worker = yield* threads.getThreadShell(workerThreadId);
+      if (
+        worker !== null &&
+        (worker.activeRunId !== null ||
+          ["preparing", "queued", "starting", "running", "waiting"].includes(worker.status) ||
+          (worker.pendingBackgroundTasks?.length ?? 0) > 0)
+      ) {
+        return yield* error(
+          "The worker is still active. Stop or finish its work before moving this task to backlog.",
+        );
+      }
+    });
+
     const selectRows = (agentId: AgentProfileId, input?: FirstmateTaskListInput) => {
+      if (input?.status !== undefined) {
+        if (input.state !== undefined)
+          return sql<TaskRow>`SELECT * FROM firstmate_task WHERE agent_id = ${agentId} AND status = ${input.status} AND state = ${input.state} ORDER BY updated_at DESC, task_id DESC`;
+        return sql<TaskRow>`SELECT * FROM firstmate_task WHERE agent_id = ${agentId} AND status = ${input.status} ORDER BY updated_at DESC, task_id DESC`;
+      }
       if (input?.state !== undefined) {
         return sql<TaskRow>`SELECT * FROM firstmate_task WHERE agent_id = ${agentId} AND state = ${input.state} ORDER BY updated_at DESC, task_id DESC`;
       }
@@ -470,6 +495,13 @@ export const layer = Layer.effect(
         .withTransaction(
           Effect.gen(function* () {
             const input = yield* decodeCreateInput(raw);
+            const status =
+              input.status ??
+              firstmateTaskStatus({
+                state: "open",
+                nextActor: input.nextActor ?? "coordinator",
+              });
+            if (status === "backlog") yield* assertCanPark(input.workerThreadId ?? null);
             const at = yield* now();
             const taskId = asTaskId(
               `firstmate-task:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
@@ -480,11 +512,12 @@ export const layer = Layer.effect(
               title: input.title,
               intent: input.intent,
               definitionOfDone: input.definitionOfDone,
-              state: "open",
+              state: firstmateStateForStatus(status),
+              status,
               nextActor: input.nextActor ?? "coordinator",
               nextStep: input.nextStep ?? null,
               note: input.note ?? "",
-              wakeAt: input.wakeAt ?? null,
+              wakeAt: status === "backlog" ? null : (input.wakeAt ?? null),
               workerThreadId: input.workerThreadId ?? null,
               links: input.links ?? [],
               artifacts: yield* keepArtifacts(taskId, input.artifacts ?? []),
@@ -504,6 +537,7 @@ export const layer = Layer.effect(
             intent: task.intent,
             definition_of_done: task.definitionOfDone,
             state: task.state,
+            status: task.status ?? null,
             next_actor: task.nextActor,
             next_step: task.nextStep ?? null,
             note: task.note,
@@ -537,7 +571,27 @@ export const layer = Layer.effect(
             const input = yield* decodeUpdateInput(raw);
             const existing = yield* readOwnTask(agentId, input.taskId);
             if (existing === undefined) return yield* error("Task was not found.", input.taskId);
-            const nextState = input.state ?? existing.state;
+            // Old callers can still move the lifecycle with state. Changing
+            // the next actor alone never changes the stored status.
+            const status =
+              input.status ??
+              (input.state !== undefined && input.state !== existing.state
+                ? firstmateTaskStatus({
+                    state: input.state,
+                    nextActor: input.nextActor ?? existing.nextActor,
+                  })
+                : firstmateTaskStatus(existing));
+            const nextState = firstmateStateForStatus(status);
+            if (status === "backlog")
+              yield* assertCanPark(
+                input.workerThreadId === undefined ? existing.workerThreadId : input.workerThreadId,
+              );
+            if (
+              input.status !== undefined &&
+              input.state !== undefined &&
+              input.state !== nextState
+            )
+              return yield* error("Status and state disagree. Send status only.", input.taskId);
             const closing = nextState === "done" || nextState === "dropped";
             const evidence =
               input.closeEvidence === undefined ? existing.closeEvidence : input.closeEvidence;
@@ -552,10 +606,15 @@ export const layer = Layer.effect(
                 ? {}
                 : { definitionOfDone: input.definitionOfDone }),
               state: nextState,
+              status,
               ...(input.nextActor === undefined ? {} : { nextActor: input.nextActor }),
               ...(input.nextStep === undefined ? {} : { nextStep: input.nextStep }),
               ...(input.note === undefined ? {} : { note: input.note }),
-              ...(input.wakeAt === undefined ? {} : { wakeAt: input.wakeAt }),
+              ...(status === "backlog"
+                ? { wakeAt: null }
+                : input.wakeAt === undefined
+                  ? {}
+                  : { wakeAt: input.wakeAt }),
               ...(input.workerThreadId === undefined
                 ? {}
                 : { workerThreadId: input.workerThreadId }),
@@ -574,7 +633,7 @@ export const layer = Layer.effect(
             yield* sql`
           UPDATE firstmate_task SET
             title = ${next.title}, intent = ${next.intent}, definition_of_done = ${next.definitionOfDone},
-            state = ${next.state}, next_actor = ${next.nextActor}, next_step = ${next.nextStep ?? null}, note = ${next.note}, wake_at = ${next.wakeAt},
+            state = ${next.state}, status = ${next.status ?? null}, next_actor = ${next.nextActor}, next_step = ${next.nextStep ?? null}, note = ${next.note}, wake_at = ${next.wakeAt},
             worker_thread_id = ${next.workerThreadId}, links_json = ${encodeLinks(next.links)},
             artifacts_json = ${encodeArtifacts(next.artifacts ?? [])},
             close_evidence = ${next.closeEvidence}, updated_at = ${next.updatedAt}, closed_at = ${next.closedAt},

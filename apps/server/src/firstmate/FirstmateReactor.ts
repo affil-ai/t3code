@@ -164,9 +164,39 @@ const make = Effect.gen(function* () {
     });
 
   /** Sends one agent's wakes to its coordinator chat, folding into a queued wake. */
-  const deliver = (target: ThreadId, projectId: ProjectId, wakes: ReadonlyArray<FirstmateWake>) =>
+  const deliver = (
+    target: ThreadId,
+    projectId: ProjectId,
+    wakes: ReadonlyArray<FirstmateWake>,
+    parkedTaskIds: ReadonlySet<string>,
+  ) =>
     Effect.gen(function* () {
       const pending = yield* pendingWake(projectId, target);
+      const pendingWakes = pending?.wakes.filter((wake) => !parkedTaskIds.has(wake.taskId)) ?? [];
+      if (
+        pending !== undefined &&
+        pendingWakes.length !== pending.wakes.length &&
+        wakes.length === 0
+      ) {
+        const updateId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        if (pendingWakes.length === 0) {
+          yield* threads.dispatch({
+            type: "queued-run.cancel",
+            commandId: CommandId.make(`firstmate:wake-cancel-parked:${updateId}`),
+            threadId: target,
+            runId: pending.runId,
+          });
+          return;
+        }
+        yield* threads.dispatch({
+          type: "queued-notification.revise",
+          commandId: CommandId.make(`firstmate:wake-remove-parked:${updateId}`),
+          threadId: target,
+          runId: pending.runId,
+          text: wakeDigest(pendingWakes),
+          notification: wakeNotification(pendingWakes),
+        });
+      }
       // A restart or stop holds the coordinator's queue until someone resumes it,
       // and a wake folded into a held run never reaches the coordinator. Once no
       // turn is in flight, send the held digest again as a new wake and drop the
@@ -174,7 +204,7 @@ const make = Effect.gen(function* () {
       // too, so the wake keeps folding into the held run until that turn ends.
       if (pending?.held === true && !pending.busy) {
         const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
-        const merged = mergeWakes(pending.wakes, wakes);
+        const merged = mergeWakes(pendingWakes, wakes);
         // With nothing in flight the wake starts a turn; the held queue only blocks
         // queued sends. Sending before cancelling means a failure between the two
         // repeats the wake rather than losing it.
@@ -200,7 +230,7 @@ const make = Effect.gen(function* () {
         const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
         if (pending !== undefined) {
           // At most one wake waits: fold this pass into the one already queued.
-          const merged = mergeWakes(pending.wakes, wakes);
+          const merged = mergeWakes(pendingWakes, wakes);
           yield* threads.dispatch({
             type: "queued-notification.revise",
             commandId: CommandId.make(`firstmate:wake-revise:${wakeId}`),
@@ -244,6 +274,9 @@ const make = Effect.gen(function* () {
         }
         if (shells.size === 0) return;
         const tasks = yield* firstmate.listStored();
+        const parkedTaskIds = new Set(
+          tasks.filter((task) => task.status === "backlog").map((task) => String(task.id)),
+        );
         const now = yield* Clock.currentTimeMillis;
         const previouslySeen = yield* Ref.get(seen);
         const activeKeys = new Set<string>();
@@ -252,6 +285,9 @@ const make = Effect.gen(function* () {
         for (const task of tasks) {
           // Defensive even when listStored's default query excludes closed tasks.
           if (task.state === "done" || task.state === "dropped") continue;
+          // Backlog is intentionally parked. It remains visible on the board
+          // but must not wake the coordinator or trigger orphan recovery.
+          if (task.status === "backlog") continue;
           if (!shells.has(task.agentId)) continue;
           const taskReasons: FirstmateWakeReason[] = [];
           const worker =
@@ -364,7 +400,7 @@ const make = Effect.gen(function* () {
           }
         }
         for (const { agentId, threadId, shell } of shells.values()) {
-          yield* deliver(threadId, shell.projectId, wakesByAgent.get(agentId) ?? []);
+          yield* deliver(threadId, shell.projectId, wakesByAgent.get(agentId) ?? [], parkedTaskIds);
         }
         // Markers are saved only after the enqueue succeeds. A failed send fails
         // this pass before here, so the next pass reports the same wakes again.

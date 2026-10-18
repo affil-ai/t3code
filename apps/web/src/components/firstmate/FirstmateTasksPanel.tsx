@@ -1,8 +1,8 @@
 /**
  * An agent's Tasks panel, a right-panel surface beside its coordinator chat.
- * Tasks stack in sections (Needs you, Ready for deployment, In progress,
- * In review, and a folded Done), newest activity first. It is read-only: the user changes tasks by
- * talking to the chat. A card drills into the task's intent, definition of
+ * Tasks stack in an attention section (Needs you), explicit lifecycle
+ * sections, and a folded Done section, newest activity first. It is read-only:
+ * the user changes tasks by talking to the chat. A card drills into the task's intent, definition of
  * done, evidence, links, and event log, with a back button to the list.
  */
 import {
@@ -29,6 +29,7 @@ import { Spinner } from "../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   type FirstmateColumnId,
+  firstmateColumnForTask,
   firstmateTaskActivityAt,
   mapFirstmateBoard,
 } from "./firstmateBoard.logic";
@@ -113,6 +114,8 @@ function TaskCard({
             <span className="truncate">{taskStatusLabel(task)}</span>
           )}
           <span aria-hidden>·</span>
+          <span className="truncate">{COLUMN_LABELS[firstmateColumnForTask(task)]}</span>
+          <span aria-hidden>·</span>
           <span className="shrink-0 tabular-nums">
             {relativeAge(firstmateTaskActivityAt(task))}
           </span>
@@ -163,7 +166,7 @@ function TaskList({
   readonly onOpen: (task: FirstmateTask) => void;
 }) {
   return (
-    <ul className="flex flex-col gap-1.5">
+    <ul role="list" className="flex flex-col gap-1.5">
       {tasks.map((task) => (
         <TaskCard
           key={task.id}
@@ -203,12 +206,14 @@ function ActiveSection({
   );
 }
 
-/** Closed tasks stay folded away unless the user opens them. */
-function DoneSection({
+/** Parked and closed work stays folded until the user opens it. */
+function FoldedSection({
+  column,
   environmentId,
   tasks,
   onOpen,
 }: {
+  readonly column: "backlog" | "done";
   readonly environmentId: EnvironmentId;
   readonly tasks: readonly FirstmateTask[];
   readonly onOpen: (task: FirstmateTask) => void;
@@ -218,7 +223,7 @@ function DoneSection({
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      render={<section aria-label={COLUMN_LABELS.done} />}
+      render={<section aria-label={COLUMN_LABELS[column]} />}
       className="flex min-w-0 flex-col"
     >
       <CollapsibleTrigger
@@ -226,7 +231,7 @@ function DoneSection({
         disabled={tasks.length === 0}
       >
         <ColumnHeader
-          column="done"
+          column={column}
           count={tasks.length}
           trailing={
             tasks.length > 0 ? (
@@ -242,7 +247,9 @@ function DoneSection({
         />
       </CollapsibleTrigger>
       {tasks.length === 0 ? (
-        <p className="px-1.5 pt-0.5 pb-1 text-xs text-muted-foreground/70">Nothing closed yet</p>
+        <p className="px-1.5 pt-0.5 pb-1 text-xs text-muted-foreground/70">
+          {column === "backlog" ? "Nothing in backlog" : "Nothing closed yet"}
+        </p>
       ) : null}
       <CollapsiblePanel animate={false}>
         <TaskList environmentId={environmentId} tasks={tasks} onOpen={onOpen} />
@@ -267,7 +274,20 @@ function TaskSections({
   return (
     <ScrollArea className="min-h-0 flex-1" scrollFade>
       <div className="flex flex-col gap-3 px-2 pt-1 pb-4">
-        {(["planning", "needs-you", "ready", "in-progress", "in-review"] as const).map((column) => (
+        <ActiveSection
+          column="needs-you"
+          environmentId={environmentId}
+          tasks={columns["needs-you"]}
+          onOpen={onOpen}
+        />
+        <p className="px-1.5 text-xs text-muted-foreground">All work · grouped by status</p>
+        <FoldedSection
+          column="backlog"
+          environmentId={environmentId}
+          tasks={columns.backlog}
+          onOpen={onOpen}
+        />
+        {(["planning", "in-progress", "in-review", "ready"] as const).map((column) => (
           <ActiveSection
             key={column}
             column={column}
@@ -276,7 +296,12 @@ function TaskSections({
             onOpen={onOpen}
           />
         ))}
-        <DoneSection environmentId={environmentId} tasks={columns.done} onOpen={onOpen} />
+        <FoldedSection
+          column="done"
+          environmentId={environmentId}
+          tasks={columns.done}
+          onOpen={onOpen}
+        />
         {/* Automations are triggers, not board work: rule them off. */}
         <div role="separator" className="-mx-2 my-1 border-t border-border" />
         <ScheduledSection environmentId={environmentId} threadId={threadId} />

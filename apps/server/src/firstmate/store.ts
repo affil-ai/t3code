@@ -20,6 +20,8 @@ import {
   FIRSTMATE_DEFAULT_ICON,
   FIRSTMATE_DEFAULT_NAME,
   type FirstmateTask,
+  type FirstmateTaskStatus,
+  firstmateTaskStatus,
   FirstmateTaskArtifact,
   FirstmateTaskId,
   FirstmateTaskLink,
@@ -47,6 +49,7 @@ export interface TaskRow {
   readonly intent: string;
   readonly definition_of_done: string;
   readonly state: string;
+  readonly status: string | null;
   readonly next_actor: string;
   readonly next_step: string | null;
   readonly note: string;
@@ -96,6 +99,11 @@ const decodeModelSelection = Schema.decodeUnknownOption(modelSelectionJson);
 export const encodeModelSelection = Schema.encodeSync(modelSelectionJson);
 
 export function taskFromRow(row: TaskRow): StoredTask {
+  const status = firstmateTaskStatus({
+    ...(row.status == null ? {} : { status: row.status as FirstmateTaskStatus }),
+    state: row.state as FirstmateTask["state"],
+    nextActor: row.next_actor as FirstmateTask["nextActor"],
+  });
   return {
     id: FirstmateTaskId.make(row.task_id),
     agentId: AgentProfileId.make(row.agent_id),
@@ -103,6 +111,7 @@ export function taskFromRow(row: TaskRow): StoredTask {
     intent: row.intent,
     definitionOfDone: row.definition_of_done,
     state: row.state as FirstmateTask["state"],
+    status,
     nextActor: row.next_actor as FirstmateTask["nextActor"],
     nextStep: row.next_step,
     note: row.note,
@@ -200,6 +209,22 @@ export const ensureSchema = Effect.gen(function* () {
       `ALTER TABLE firstmate_task ADD COLUMN agent_id TEXT NOT NULL DEFAULT '${FIRSTMATE_AGENT_ID}'`,
     );
   }
+  if (!taskColumns.has("status")) {
+    yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN status TEXT`);
+  }
+  // Freeze the legacy classification once. A next-actor change after startup
+  // must not move an existing task to another lifecycle section.
+  yield* sql`
+    UPDATE firstmate_task SET status = CASE
+      WHEN state = 'done' THEN 'done'
+      WHEN state = 'dropped' THEN 'canceled'
+      WHEN state = 'ready' THEN 'ready_for_deployment'
+      WHEN state = 'waiting' THEN 'in_review'
+      WHEN next_actor = 'coordinator' THEN 'planning'
+      WHEN next_actor = 'external' THEN 'in_review'
+      ELSE 'in_progress' END
+    WHERE status IS NULL
+  `;
   yield* sql`CREATE INDEX IF NOT EXISTS firstmate_task_state_updated ON firstmate_task(state, updated_at)`;
   yield* sql`CREATE INDEX IF NOT EXISTS firstmate_task_worker ON firstmate_task(worker_thread_id)`;
   yield* sql`CREATE INDEX IF NOT EXISTS firstmate_task_agent ON firstmate_task(agent_id, state, updated_at)`;

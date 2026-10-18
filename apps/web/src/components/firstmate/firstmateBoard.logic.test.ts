@@ -22,6 +22,7 @@ function task(
   updatedAt = "2026-10-12T10:00:00.000Z",
   closedAt: string | null = null,
   workerThreadId: string | null = null,
+  status: FirstmateTask["status"] = undefined,
 ): FirstmateTask {
   return {
     id,
@@ -29,6 +30,7 @@ function task(
     intent: `Intent for ${id}`,
     definitionOfDone: `Done for ${id}`,
     state,
+    status,
     nextActor,
     note: "",
     wakeAt: null,
@@ -42,22 +44,34 @@ function task(
 }
 
 describe("firstmateColumnForTask", () => {
+  it.each([
+    ["backlog", "backlog"],
+    ["planning", "planning"],
+    ["in_progress", "in-progress"],
+    ["in_review", "in-review"],
+    ["ready_for_deployment", "ready"],
+    ["done", "done"],
+    ["canceled", "done"],
+  ] as const)("keeps %s in %s for every next actor", (status, column) => {
+    for (const nextActor of ACTORS)
+      expect(firstmateColumnForTask({ ...task("t", "open", nextActor), status })).toBe(column);
+  });
   // Every state and next-actor pair, with the column it must land in.
   const expected: Record<
     FirstmateTask["state"],
     Record<FirstmateTask["nextActor"], FirstmateColumnId>
   > = {
     open: {
-      user: "needs-you",
+      user: "in-progress",
       worker: "in-progress",
       coordinator: "planning",
       external: "in-review",
     },
-    ready: { user: "ready", worker: "ready", coordinator: "planning", external: "ready" },
+    ready: { user: "ready", worker: "ready", coordinator: "ready", external: "ready" },
     waiting: {
-      user: "needs-you",
+      user: "in-review",
       worker: "in-review",
-      coordinator: "planning",
+      coordinator: "in-review",
       external: "in-review",
     },
     done: { user: "done", worker: "done", coordinator: "done", external: "done" },
@@ -76,8 +90,18 @@ describe("firstmateColumnForTask", () => {
     expect(firstmateColumnForTask(task("t", "done", "user"))).toBe("done");
   });
 
-  it("keeps a decision for the user in Needs you while the task waits", () => {
-    expect(firstmateColumnForTask(task("t", "waiting", "user"))).toBe("needs-you");
+  it("uses explicit status instead of inferring lifecycle from the next actor", () => {
+    expect(
+      firstmateColumnForTask(task("backlog", "open", "worker", undefined, null, null, "backlog")),
+    ).toBe("backlog");
+    expect(
+      firstmateColumnForTask(task("review", "open", "user", undefined, null, null, "in_review")),
+    ).toBe("in-review");
+  });
+
+  it("keeps lifecycle status separate from Needs you", () => {
+    expect(firstmateColumnForTask(task("t", "waiting", "user"))).toBe("in-review");
+    expect(mapFirstmateBoard([task("t", "waiting", "user")])["needs-you"]).toHaveLength(1);
   });
 
   it("keeps a ready task out of Needs you even when the user acts next", () => {
@@ -88,11 +112,11 @@ describe("firstmateColumnForTask", () => {
     expect(firstmateColumnForTask(task("t", "waiting", "worker"))).toBe("in-review");
   });
 
-  it("plans a task the coordinator acts on, with or without a worker", () => {
+  it("maps legacy planning but preserves review work handed back to the coordinator", () => {
     expect(firstmateColumnForTask(task("t", "open", "coordinator"))).toBe("planning");
     expect(
       firstmateColumnForTask(task("t", "waiting", "coordinator", undefined, null, "worker")),
-    ).toBe("planning");
+    ).toBe("in-review");
   });
 
   it("does not plan a closed task", () => {
@@ -102,12 +126,24 @@ describe("firstmateColumnForTask", () => {
 });
 
 describe("mapFirstmateBoard", () => {
+  it("shows attention alongside lifecycle without counting parked or closed tasks", () => {
+    const review = { ...task("review", "waiting", "user"), status: "in_review" as const };
+    const backlog = { ...task("backlog", "open", "user"), status: "backlog" as const };
+    const done = { ...task("done", "done", "user"), status: "done" as const };
+    const columns = mapFirstmateBoard([review, backlog, done]);
+    expect(columns["needs-you"].map((t) => t.id)).toEqual(["review"]);
+    expect(columns["in-review"].map((t) => t.id)).toEqual(["review"]);
+    expect(columns.backlog.map((t) => t.id)).toEqual(["backlog"]);
+    expect(countFirstmateOpenTasks([review, backlog, done])).toBe(2);
+  });
   it("places every task in exactly one column", () => {
     const tasks = STATES.flatMap((state) =>
       ACTORS.map((actor) => task(`${state}-${actor}`, state, actor)),
     );
     const columns = mapFirstmateBoard(tasks);
-    const placed = FIRSTMATE_COLUMN_IDS.flatMap((column) => columns[column].map((t) => t.id));
+    const placed = FIRSTMATE_COLUMN_IDS.filter((column) => column !== "needs-you").flatMap(
+      (column) => columns[column].map((t) => t.id),
+    );
     expect(placed.toSorted()).toEqual(tasks.map((t) => t.id).toSorted());
   });
 
@@ -156,8 +192,8 @@ describe("counts", () => {
     task("e", "ready", "user"),
   ];
 
-  it("counts what needs the user, leaving out ready tasks", () => {
-    expect(countFirstmateNeedsYou(tasks)).toBe(2);
+  it("counts attention across lifecycle sections, including deployment decisions", () => {
+    expect(countFirstmateNeedsYou(tasks)).toBe(3);
   });
 
   it("leaves planning tasks out of the Needs-you count", () => {

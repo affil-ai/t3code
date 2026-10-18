@@ -56,7 +56,8 @@ This is a fork-only feature. Keep it modular so upstream merges stay easy.
 | `title`                              | Short label                                                                                                          |
 | `intent`                             | The user's request in their own words                                                                                |
 | `definitionOfDone`                   | What closes the task                                                                                                 |
-| `state`                              | `open`, `waiting` (in review), `ready` (only the user's merge or deploy left), `done`, or `dropped`                  |
+| `status`                             | Explicit lifecycle: `backlog`, `planning`, `in_progress`, `in_review`, `ready_for_deployment`, `done`, `canceled`    |
+| `state`                              | Legacy operational value, maintained from status by the service; old callers may still write it                      |
 | `nextActor`                          | `coordinator`, `worker`, `user`, or `external`                                                                       |
 | `note`                               | One-line current status                                                                                              |
 | `wakeAt`                             | ISO time or null                                                                                                     |
@@ -283,17 +284,20 @@ write skills on request.
   own resolvers), then opens the new chat. A deleted coordinator gets a "Stop
   using this chat" button instead.
 - The panel is narrow: sections stack vertically, mapped in a pure, tested
-  logic file. Rules apply in this order:
-  - Done: `done` or `dropped`. Show the latest 20, collapsed by default
-    (listed last).
-  - Planning (listed first): `nextActor` is `coordinator` on an open, waiting, or ready
-    task. The sidebar shows these as cards (title, intent excerpt, next
-    step); a card with a `workerThreadId` opens that chat, otherwise the
-    task's detail in the panel.
-  - Ready for deployment: `state` is `ready`, whoever else acts next.
-  - Needs you: `nextActor` is `user`.
-  - In review: `state` is `waiting`, or `nextActor` is `external`.
-  - In progress: `nextActor` is `worker` or `coordinator`.
+  logic file. Lifecycle sections use explicit `status`. Changing `nextActor`
+  does not move a task between these sections.
+  - Needs you is a separate attention view for tasks whose next actor is the
+    user, excluding backlog and closed work. The same task remains in its
+    lifecycle section. Deployment decisions also appear in Needs you.
+  - All work contains Backlog, Planning, In progress, In review, Ready for
+    deployment, and Done. Backlog and Done are collapsed in the panel.
+  - Backlog is intentionally parked. The reactor ignores it and removes its
+    queued wakes. Parking clears `wakeAt` and rejects a linked active worker;
+    it never stops a worker. Promotion is an explicit status update.
+  - Done includes completed and canceled work; keep the latest 20.
+  - Old rows receive a status at startup. Old wire payloads use the same
+    compatibility mapping. `state` updates from old callers still work, but
+    new callers should send `status` and let the service maintain `state`.
 - A card shows the title, the worker chat link, status, and age, plus its
   links. Clicking it drills into the task inside the panel, with a back
   button: the intent, the definition of done, the close evidence, review

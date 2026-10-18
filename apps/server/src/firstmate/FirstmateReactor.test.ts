@@ -1031,6 +1031,71 @@ describe("FirstmateReactor", () => {
     ),
   );
 
+  it.effect("does not wake parked tasks, and resumes orphan detection after promotion", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        const task = yield* createTask(harness.service, { status: "backlog", wakeAt: epoch });
+        yield* TestClock.adjust("11 minutes");
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+        yield* harness.service.update(FM, {
+          taskId: task.id,
+          status: "planning",
+          summary: "Start planning",
+        });
+        yield* TestClock.adjust("11 minutes");
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("rejects parking an active worker and removes a parked task's held wake", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        const task = yield* createTask(harness.service, {
+          nextActor: "worker",
+          workerThreadId: workerId,
+        });
+        yield* harness.setWorker(
+          shell(workerId, {
+            status: "running",
+            activeRunId: RunId.make("run:live"),
+          }),
+        );
+        expect(
+          yield* harness.service
+            .update(FM, {
+              taskId: task.id,
+              status: "backlog",
+              summary: "Park it",
+            })
+            .pipe(Effect.flip),
+        ).toMatchObject({ _tag: "FirstmateError" });
+        yield* harness.setWorker(shell(workerId));
+        yield* harness.service.update(FM, {
+          taskId: task.id,
+          status: "backlog",
+          summary: "Park idle work",
+        });
+        yield* Ref.set(harness.queued, {
+          runId: "run:queued",
+          held: true,
+          text: `Wake-up from your task board:\n- ${task.id} Task one: orphan\n`,
+        });
+        yield* harness.reactor.sweep();
+        expect(yield* Ref.get(harness.sends)).toHaveLength(0);
+        expect(yield* Ref.get(harness.revisions)).toMatchObject([
+          { type: "queued-run.cancel", runId: "run:queued" },
+        ]);
+      }),
+    ),
+  );
+
   it.effect("does not treat a task with a running worker as an orphan", () =>
     Effect.scoped(
       Effect.gen(function* () {

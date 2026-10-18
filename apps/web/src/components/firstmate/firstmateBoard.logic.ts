@@ -1,8 +1,9 @@
-import type { FirstmateTask } from "@t3tools/contracts";
+import { firstmateTaskStatus, type FirstmateTask } from "@t3tools/contracts";
 
 export const FIRSTMATE_COLUMN_IDS = [
-  "planning",
   "needs-you",
+  "backlog",
+  "planning",
   "ready",
   "in-progress",
   "in-review",
@@ -15,29 +16,32 @@ export type FirstmateBoardColumns = Readonly<Record<FirstmateColumnId, readonly 
 /** The board keeps this many closed tasks, matching what the server sends. */
 export const FIRSTMATE_DONE_LIMIT = 20;
 
-/**
- * The one column a task belongs to. The design's column rules overlap, so they
- * apply in this order:
- *
- * 1. Done: the task is done or dropped, whoever was last named to act.
- * 2. Planning: the coordinator acts next on an open, waiting, or ready task.
- *    It is thinking, briefing, or deciding, with or without a worker chat.
- * 3. Ready for deployment: reviewed and green (state `ready`). Only the user's
- *    merge or deploy remains, so it stays out of Needs you, which is for
- *    decisions.
- * 4. Needs you: the user acts next, even on a waiting task, so the board
- *    never hides a decision behind a waiting state.
- * 5. In review: the task is waiting on reviews or checks (state `waiting`), or
- *    someone outside acts next.
- * 6. In progress: the worker acts next.
- */
+/** Maps explicit status to a lifecycle column, with legacy fallback. */
 export function firstmateColumnForTask(task: FirstmateTask): FirstmateColumnId {
-  if (task.state === "done" || task.state === "dropped") return "done";
-  if (task.nextActor === "coordinator") return "planning";
-  if (task.state === "ready") return "ready";
-  if (task.nextActor === "user") return "needs-you";
-  if (task.state === "waiting" || task.nextActor === "external") return "in-review";
-  return "in-progress";
+  switch (firstmateTaskStatus(task)) {
+    case "backlog":
+      return "backlog";
+    case "planning":
+      return "planning";
+    case "ready_for_deployment":
+      return "ready";
+    case "in_review":
+      return "in-review";
+    case "done":
+    case "canceled":
+      return "done";
+    case "in_progress":
+      return "in-progress";
+  }
+}
+
+/** Needs you is an attention view, independent from lifecycle status. */
+function firstmateNeedsYou(task: FirstmateTask): boolean {
+  return (
+    task.nextActor === "user" &&
+    firstmateColumnForTask(task) !== "done" &&
+    firstmateColumnForTask(task) !== "backlog"
+  );
 }
 
 function timestamp(value: string | null): number {
@@ -61,15 +65,17 @@ function newestFirst(left: FirstmateTask, right: FirstmateTask): number {
 /** Groups tasks into columns, newest activity first, keeping the latest closed tasks. */
 export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoardColumns {
   const columns: Record<FirstmateColumnId, FirstmateTask[]> = {
+    backlog: [],
     planning: [],
-    "needs-you": [],
     ready: [],
     "in-progress": [],
     "in-review": [],
+    "needs-you": [],
     done: [],
   };
   for (const task of tasks) {
     columns[firstmateColumnForTask(task)].push(task);
+    if (firstmateNeedsYou(task)) columns["needs-you"].push(task);
   }
   for (const column of FIRSTMATE_COLUMN_IDS) {
     columns[column].sort(newestFirst);
@@ -79,11 +85,7 @@ export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoa
 }
 
 export function countFirstmateNeedsYou(tasks: readonly FirstmateTask[]): number {
-  let count = 0;
-  for (const task of tasks) {
-    if (firstmateColumnForTask(task) === "needs-you") count += 1;
-  }
-  return count;
+  return tasks.filter(firstmateNeedsYou).length;
 }
 
 export function countFirstmateOpenTasks(tasks: readonly FirstmateTask[]): number {

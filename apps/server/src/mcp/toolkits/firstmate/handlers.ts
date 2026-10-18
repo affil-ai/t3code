@@ -61,10 +61,8 @@ const make = Effect.gen(function* () {
         Effect.map((agents) => ({ agents })),
       ),
     ),
-    agent_tasks: McpToolAccess.reads(({ agentId, state }) =>
-      requireAgentCoordinator.pipe(
-        Effect.andThen(firstmate.list(agentId, state === undefined ? {} : { state })),
-      ),
+    agent_tasks: McpToolAccess.reads(({ agentId, ...filters }) =>
+      requireAgentCoordinator.pipe(Effect.andThen(firstmate.list(agentId, filters))),
     ),
     agent_create: McpToolAccess.writes((input) =>
       Effect.gen(function* () {

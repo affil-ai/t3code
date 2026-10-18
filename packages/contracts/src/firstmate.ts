@@ -36,8 +36,52 @@ export type FirstmateTaskEventId = typeof FirstmateTaskEventId.Type;
 export const FirstmateTaskState = Schema.Literals(["open", "waiting", "ready", "done", "dropped"]);
 export type FirstmateTaskState = typeof FirstmateTaskState.Type;
 
+/** The explicit lifecycle status shown by the Tasks panel. */
+export const FirstmateTaskStatus = Schema.Literals([
+  "backlog",
+  "planning",
+  "in_progress",
+  "in_review",
+  "ready_for_deployment",
+  "done",
+  "canceled",
+]);
+export type FirstmateTaskStatus = typeof FirstmateTaskStatus.Type;
+
 export const FirstmateNextActor = Schema.Literals(["coordinator", "worker", "user", "external"]);
 export type FirstmateNextActor = typeof FirstmateNextActor.Type;
+
+/** Compatibility at the boundary only; actor changes must not change a saved status. */
+export function firstmateTaskStatus(task: {
+  readonly status?: FirstmateTaskStatus | undefined;
+  readonly state: FirstmateTaskState;
+  readonly nextActor: FirstmateNextActor;
+}): FirstmateTaskStatus {
+  if (task.status !== undefined) return task.status;
+  if (task.state === "done") return "done";
+  if (task.state === "dropped") return "canceled";
+  if (task.state === "ready") return "ready_for_deployment";
+  if (task.state === "waiting") return "in_review";
+  if (task.nextActor === "coordinator") return "planning";
+  if (task.nextActor === "external") return "in_review";
+  return "in_progress";
+}
+
+/** Legacy operational state is maintained by the service, not independently authored. */
+export function firstmateStateForStatus(status: FirstmateTaskStatus): FirstmateTaskState {
+  switch (status) {
+    case "done":
+      return "done";
+    case "canceled":
+      return "dropped";
+    case "in_review":
+      return "waiting";
+    case "ready_for_deployment":
+      return "ready";
+    default:
+      return "open";
+  }
+}
 
 export const FirstmateTaskEventActor = Schema.Literals(["coordinator", "user", "system"]);
 export type FirstmateTaskEventActor = typeof FirstmateTaskEventActor.Type;
@@ -89,6 +133,8 @@ export const FirstmateTask = Schema.Struct({
   intent: FirstmateIntent,
   definitionOfDone: TrimmedNonEmptyString,
   state: FirstmateTaskState,
+  /** Optional for wire compatibility with servers predating explicit status. */
+  status: Schema.optional(FirstmateTaskStatus),
   nextActor: FirstmateNextActor,
   /** Older servers omit it; read it as none. */
   nextStep: Schema.optional(Schema.NullOr(Schema.String)),
@@ -208,6 +254,9 @@ export const FirstmateTaskDetail = Schema.Struct({
 export type FirstmateTaskDetail = typeof FirstmateTaskDetail.Type;
 
 export const FirstmateTaskListInput = Schema.Struct({
+  status: Schema.optional(FirstmateTaskStatus).annotate({
+    description: "Filter by lifecycle status, including backlog or closed statuses.",
+  }),
   state: Schema.optional(FirstmateTaskState).annotate({
     description: "Filter by state. Omit to list every task that is not done or dropped.",
   }),
@@ -237,6 +286,9 @@ export const FirstmateTaskCreateInput = Schema.Struct({
   title: TrimmedNonEmptyString,
   intent: FirstmateIntent.annotate({ description: "The user's request in their own words." }),
   definitionOfDone: TrimmedNonEmptyString,
+  status: Schema.optional(
+    Schema.Literals(["backlog", "planning", "in_progress", "in_review", "ready_for_deployment"]),
+  ).annotate({ description: "Lifecycle status. Backlog is parked; do not start workers for it." }),
   nextActor: Schema.optional(FirstmateNextActor).annotate({
     description: "Who acts next. Omit for coordinator.",
   }),
@@ -264,10 +316,13 @@ export const FirstmateTaskUpdateInput = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   intent: Schema.optional(FirstmateIntent),
   definitionOfDone: Schema.optional(TrimmedNonEmptyString),
-  state: Schema.optional(FirstmateTaskState),
+  status: Schema.optional(FirstmateTaskStatus),
+  state: Schema.optional(FirstmateTaskState).annotate({
+    description: "Legacy compatibility input. Prefer status; the server maintains state from it.",
+  }),
   nextActor: Schema.optional(FirstmateNextActor),
   nextStep: Schema.optional(Schema.NullOr(FirstmateNextStep)).annotate({
-    description: `${NEXT_STEP_DESCRIPTION} Write it whenever state or nextActor changes. Null clears it.`,
+    description: `${NEXT_STEP_DESCRIPTION} Write it whenever status or nextActor changes. Null clears it.`,
   }),
   note: Schema.optional(Schema.String),
   wakeAt: Schema.optional(Schema.NullOr(IsoDateTime)),
@@ -286,7 +341,12 @@ export const FirstmateTaskUpdateInput = Schema.Struct({
   }),
 }).check(
   Schema.makeFilter(
-    (input) => (input.state !== "done" && input.state !== "dropped") || input.closeEvidence != null,
+    (input) =>
+      (input.state !== "done" &&
+        input.state !== "dropped" &&
+        input.status !== "done" &&
+        input.status !== "canceled") ||
+      input.closeEvidence != null,
     { expected: "closeEvidence when moving a task to done or dropped" },
   ),
 );
@@ -378,6 +438,7 @@ export type AgentListToolResult = typeof AgentListToolResult.Type;
 
 export const AgentTasksToolInput = Schema.Struct({
   agentId: AgentProfileId,
+  status: Schema.optional(FirstmateTaskStatus),
   state: Schema.optional(FirstmateTaskState).annotate({
     description: "Filter by state. Omit to list every task that is not done or dropped.",
   }),
