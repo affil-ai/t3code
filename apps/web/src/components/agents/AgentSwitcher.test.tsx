@@ -304,11 +304,11 @@ describe("agent switcher navigation", () => {
     expect(sections[0]?.getAttribute("aria-label")).toBe("Ready for deployment");
     const backlog = sections.at(-1)!;
     expect(backlog.getAttribute("aria-label")).toBe("Backlog");
-    expect(backlog.textContent).toContain("Last active 2h ago");
+    expect(backlog.textContent).toContain("2h ago");
     expect(backlog.textContent).not.toContain("Description should not appear");
     expect(backlog.textContent).not.toContain("Next step should not appear");
     await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000));
-    expect(backlog.textContent).toContain("Last active 3h ago");
+    expect(backlog.textContent).toContain("3h ago");
   });
 
   it.each(["worker", "coordinator"] as const)(

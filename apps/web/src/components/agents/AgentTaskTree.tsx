@@ -117,7 +117,7 @@ function BacklogActivity({
   if (shell === null) return "Worker activity unavailable";
   const label = formatRelativeTimeLabel(shell.updatedAt);
   if (!label) return "Worker activity unavailable";
-  return <time dateTime={shell.updatedAt}>Last active {label}</time>;
+  return <time dateTime={shell.updatedAt}>{label}</time>;
 }
 
 const OPEN_COLUMNS: Exclude<FirstmateColumnId, "done">[] = [
