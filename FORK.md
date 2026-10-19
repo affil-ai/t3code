@@ -44,7 +44,8 @@ choice is stored locally under `t3work:work-mode:v1`.
 The Work sidebar has two sections (`apps/web/src/components/LegacySidebar.tsx`,
 `apps/web/src/components/work/workChats.logic.ts`):
 
-- **Projects** are created by the user and are not tied to a repository.
+- **Projects** includes user-created Work projects and registered repositories.
+  Repository rows keep the Code sidebar's environment grouping and chat actions.
 - **Chats** lists every chat that is not in a project.
 
 To file a chat, drag it onto a project or use its context menu. To unfile it,
@@ -201,14 +202,10 @@ PATH="$PWD/node_modules/.bin:$HOME/.cargo/bin:$PATH" \
   --build-version <version>
 ```
 
-The DMG and ZIP go to `release/`. Quit the app before replacing it. To install
-the ZIP:
-
-```sh
-ditto -x -k release/T3-Work-<version>-arm64.zip /Applications
-codesign --force --deep --sign "Apple Development" '/Applications/T3 Work.app'
-codesign --verify --deep --strict '/Applications/T3 Work.app'
-```
+The DMG and ZIP go to `release/`. Use the fork-owned
+[paired release workflow](docs/operations/fork-release.md) to sign, stage,
+and install the app. Its detached installer waits for idle, quits gracefully,
+and relaunches through LaunchServices. Never overwrite a running app bundle.
 
 Sign with a stable certificate, not ad hoc (`--sign -`). An ad hoc signature
 changes with every build, so macOS treats each build as a new app and asks

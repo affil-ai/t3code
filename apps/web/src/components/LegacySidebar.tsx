@@ -253,6 +253,7 @@ import { useCustomAgentWorkerThreadKeys } from "~/state/agents"; // fork: agents
 import { Separator } from "./ui/separator"; // fork: agents
 import { useFirstmateCoordinatorThreadKeys } from "./firstmate/useFirstmateCoordinatorThreadKeys"; // fork: firstmate
 import { readFirstmateHomeProjectKeys } from "./firstmate/firstmateChatLists"; // fork: firstmate
+import { workRepositories } from "./work/workRepositories"; // fork: repositories in Work
 import {
   readAgentHomeProjectKeys,
   useAgentCoordinatorThreadKeys,
@@ -3348,6 +3349,8 @@ interface SidebarProjectsContentProps {
 const WORK_PROJECT_INDENT_PX = 12;
 
 interface SidebarWorkSectionsProps {
+  repositoryRows: React.ReactNode;
+  hasRepositories: boolean;
   routeThreadKey: string | null;
   openPullRequestsInRightPanel: boolean;
   newThreadShortcutLabel: string | null;
@@ -3850,7 +3853,8 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
           </Tooltip>
         </div>
         <SidebarMenu>{projectTree.map(renderProject)}</SidebarMenu>
-        {projectTree.length === 0 ? (
+        {props.repositoryRows}
+        {projectTree.length === 0 && !props.hasRepositories ? (
           <div className="px-2 pt-2 text-center text-secondary-label text-xs">
             Create a project and drag chats into it
           </div>
@@ -3996,6 +4000,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
   const showAgentSections = appMode === "work" && selectedAgent !== null;
   const showWorkLists =
     appMode !== "work" || selectedAgent === null || isFirstmateAgent(selectedAgent);
+  const workRepositoryProjects = workRepositories(
+    sortedProjects,
+    new Set([...readFirstmateHomeProjectKeys(), ...readAgentHomeProjectKeys()]),
+    (member) => scopedProjectKey(scopeProjectRef(member.environmentId, member.id)),
+  );
 
   return (
     <SidebarContent
@@ -4042,6 +4051,36 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
       ) : null}
       {!showWorkLists ? null : isWorkMode ? (
         <SidebarWorkSections
+          hasRepositories={workRepositoryProjects.length > 0}
+          repositoryRows={
+            <SidebarMenu data-testid="work-repositories">
+              {workRepositoryProjects.map((project) => (
+                <SidebarProjectListRow
+                  key={project.projectKey}
+                  project={project}
+                  isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
+                  activeRouteThreadKey={
+                    activeRouteProjectKey === project.projectKey ? routeThreadKey : null
+                  }
+                  openPullRequestsInRightPanel={openPullRequestsInRightPanel}
+                  newThreadShortcutLabel={newThreadShortcutLabel}
+                  handleNewThread={handleNewThread}
+                  archiveThread={archiveThread}
+                  deleteThread={deleteThread}
+                  markThreadUnread={markThreadUnread}
+                  threadJumpLabelByKey={threadJumpLabelByKey}
+                  attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
+                  expandThreadListForProject={expandThreadListForProject}
+                  collapseThreadListForProject={collapseThreadListForProject}
+                  dragInProgressRef={dragInProgressRef}
+                  suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
+                  suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
+                  isManualProjectSorting={false}
+                  dragHandleProps={null}
+                />
+              ))}
+            </SidebarMenu>
+          }
           routeThreadKey={routeThreadKey}
           openPullRequestsInRightPanel={openPullRequestsInRightPanel}
           newThreadShortcutLabel={newThreadShortcutLabel}

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Preparation only: builds never activate a server or quit the desktop app.
+// Builds never activate a server or quit the desktop app. Activation is separate.
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -15,8 +15,8 @@ import {
 } from "./release-check.mjs";
 
 const repository = "https://github.com/affil-ai/t3code.git";
-const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const stateRoot = resolve(
+export const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+export const stateRoot = resolve(
   process.env.T3_FORK_RELEASE_STATE ?? join(homedir(), ".local/state/t3-fork-release"),
 );
 
@@ -49,7 +49,7 @@ export async function withLock(path, operation) {
     await fs.mkdir(path, { mode: 0o700 });
   } catch (error) {
     if (error.code === "EEXIST")
-      throw new Error("Release is locked; inspect its owner before retrying");
+      throw new Error("Release is locked; inspect its owner before retrying", { cause: error });
     throw error;
   }
   try {
@@ -63,7 +63,7 @@ export async function withLock(path, operation) {
   }
 }
 
-function run(command, args, options = {}) {
+export function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: sourceRoot,
     encoding: "utf8",
@@ -79,17 +79,17 @@ function run(command, args, options = {}) {
   return (result.stdout ?? "").trim();
 }
 
-async function readJson(path) {
+export async function readJson(path) {
   return JSON.parse(await fs.readFile(path, "utf8"));
 }
 
-async function digest(path) {
+export async function digest(path) {
   const hash = createHash("sha256");
   for await (const data of createReadStream(path)) hash.update(data);
   return hash.digest("hex");
 }
 
-function jobPath(version) {
+export function jobPath(version) {
   validateRequest({ schema: 1, repository: "affil-ai/t3code", commit: "a".repeat(40), version });
   return join(stateRoot, "releases", version);
 }
@@ -120,7 +120,7 @@ async function request(commit, version) {
   return saveRequest(stateRoot, { ...value, createdAt: new Date().toISOString() });
 }
 
-async function build(version) {
+export async function build(version) {
   const job = jobPath(version);
   const value = validateRequest(await readJson(join(job, "request.json")));
   const platform = `${process.platform}-${process.arch}`;
@@ -241,6 +241,15 @@ async function build(version) {
           env,
         );
         artifact = join(checkout, "release", `T3-Work-${version}-arm64.zip`);
+        // Sign before hashing/exchanging. Apple credentials never leave this host.
+        const stage = join(attempt, "signed");
+        await fs.mkdir(stage);
+        execute("ditto", ["-x", "-k", artifact, stage]);
+        const app = join(stage, "T3 Work.app");
+        execute("codesign", ["--force", "--deep", "--sign", "Apple Development", app]);
+        execute("codesign", ["--verify", "--deep", "--strict", app]);
+        artifact = join(attempt, `T3-Work-${version}-arm64.zip`);
+        execute("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app, artifact]);
       }
       const result = {
         platform,
@@ -260,7 +269,7 @@ async function build(version) {
   });
 }
 
-async function manifest(version) {
+export async function manifest(version) {
   const folder = jobPath(version);
   const requestValue = validateRequest(await readJson(join(folder, "request.json")));
   const artifacts = [];
@@ -291,7 +300,7 @@ export function workloadCounts(home) {
   return counts;
 }
 
-async function checkDeploy(version) {
+export async function checkDeploy(version) {
   assertCutoverTime();
   const home = process.env.T3CODE_HOME ?? join(homedir(), ".t3");
   const folder = jobPath(version);
@@ -355,7 +364,17 @@ async function main() {
   else if (command === "check-deploy") result = await checkDeploy(a);
   else if (command === "queue") result = await queue();
   else if (command === "mac-pull") result = await macPull(a, b);
-  else
+  else if (command === "exchange") {
+    const { exchange } = await import("./transport.mjs");
+    result = await exchange(a, b, process.argv[5]);
+  } else if (command === "receipt") {
+    if (!["linux-x64", "darwin-arm64"].includes(b)) throw Error("Invalid platform");
+    result = await readJson(join(jobPath(a), `${b}.json`));
+  } else if (command === "location") result = { path: jobPath(a) };
+  else if (command === "import") {
+    const { importArtifact } = await import("./transport.mjs");
+    result = await importArtifact(a, b);
+  } else
     throw new Error(
       "Usage: release.mjs request COMMIT VERSION | build VERSION | manifest VERSION | check-deploy VERSION | queue | mac-pull SSH_ALIAS REMOTE_REPO",
     );

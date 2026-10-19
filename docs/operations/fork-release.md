@@ -5,7 +5,7 @@ depend on a separate machine-configuration repository. Host credentials and
 release checkpoints stay in private local state.
 
 The release driver supports private requests, isolated host builds, and a
-Mac-side pull of Ubuntu requests. It does not install either artifact.
+Mac-side pull of Ubuntu requests. Building does not install either artifact.
 From the repository root:
 
 ```sh
@@ -34,9 +34,65 @@ resource monitor; it does not reuse unproven installed binaries.
 
 The Mac pull command is one bounded queue pass, not an installed daemon.
 It uses outbound SSH from the Mac; it does not require an inbound Mac port.
-It builds locally and keeps its receipt on the Mac. Artifact exchange, signing
-verification, and coordinated safe activation must still be completed before
-calling this an end-to-end release system.
+Mac builds are signed with the local Apple Development identity before hashing.
+That identity must already exist in the Mac keychain.
+
+## Paired release
+
+Initiate the release on Ubuntu with `request` and `build`. Use the full commit
+from canonical Affil main and a new version. On the Mac, run `mac-pull`, then:
+
+```sh
+node scripts/fork-release/release.mjs exchange VERSION SSH_ALIAS REMOTE_CHECKOUT
+```
+
+This transfers both artifacts over SSH, checks their hashes on each host, and
+writes paired manifests. It does not install anything. Transfer attempts use
+unique files and preserve previous artifacts.
+
+Before activation, identify the source commit of each installed runtime. On
+each host run:
+
+```sh
+node scripts/fork-release/activate.mjs qualify VERSION INSTALLED_SOURCE_SHA
+```
+
+Qualification accepts only updates with unchanged server, contracts, and shared
+source. It records the current installed version and database schema fingerprint.
+Changes to those sources require a separate database and protocol review; this
+tool does not override that gate. Do not guess the installed source commit.
+Linux qualification also tests the deployed Office worker's version predicate
+and the live orchestration protocol. The Office worker remains in Nextcard.
+
+Once both qualifications pass, start the detached installer from the Mac:
+
+```sh
+node scripts/fork-release/handoff.mjs start VERSION SSH_ALIAS REMOTE_CHECKOUT
+```
+
+The one-shot launchd job waits up to 24 hours for both hosts to be idle. It does
+not create a recurring schedule. It installs Linux through the native updater
+using a loopback-only artifact mirror. It then installs the Mac bundle through
+a graceful quit and LaunchServices relaunch. It never force-kills the app.
+This works when the initiating chat is hosted in the Mac app: the installer
+waits until the chat turn has ended.
+
+The Mac must stay awake and connected. An existing launchd job is never replaced.
+Inspect its private `handoff.json`, `handoff-error.json`, and `handoff.log` before
+retrying. After a completed or exited job, remove only
+`gui/UID/com.affil.t3-fork-release` with `launchctl bootout` before starting a new
+release. Never remove a running job or its lock to bypass pending work.
+
+An install can finish on one host while the other becomes busy. Check each
+platform's `*-installed.json`. A failed or interrupted activation without a
+receipt requires reconciliation; the version string alone is not provenance.
+Keep the previous runtime and app bundle. No automatic database restore or
+binary rollback is attempted after startup.
+
+The installer verifies target API versions and Linux service health. This is
+not UI acceptance. Verify local and remote threads, repository navigation,
+browser proxy access, and Office behavior in the actual clients before marking
+the release complete.
 
 `manifest <fork-version>` combines both local platform receipts.
 `check-deploy <fork-version>` verifies both local artifact files and reads
