@@ -251,7 +251,7 @@ async function macInstall(version, manifest, log) {
     if (!stopped) throw Error("App did not quit cleanly; bundle untouched");
     await log.write("quit cleanly\n");
     // A last-moment incoming run must never be silently discarded.
-    assertIdle(workloadCounts(home));
+    assertIdle(workloadCounts(home, null, true));
     const previous = join(stage, "previous.app");
     await fs.rename(app, previous);
     try {

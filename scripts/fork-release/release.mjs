@@ -298,11 +298,32 @@ export async function manifest(version) {
   return result;
 }
 
-export function readReleaseDatabase(home, sql) {
+export function readReleaseDatabase(home, sql, stopped = false) {
+  const database = `${home}/userdata/statev2.sqlite`;
+  // Only the installer, after confirming both app and API have exited, uses this.
+  // Never ignore a WAL: it can contain committed work not in the main file yet.
+  const assertNoWal = () => {
+    if (NodeFS.existsSync(`${database}-wal`) || NodeFS.existsSync(`${database}-shm`)) {
+      throw Error("Stopped database still has WAL state; refuse immutable read");
+    }
+  };
+  if (stopped && (NodeFS.existsSync(`${database}-wal`) || NodeFS.existsSync(`${database}-shm`))) {
+    const checkpoint = spawnSync(
+      "sqlite3",
+      ["-cmd", ".timeout 5000", database, "pragma wal_checkpoint(truncate);"],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    if (checkpoint.error || checkpoint.status !== 0) {
+      throw Error("Stopped database WAL checkpoint failed; refuse installation");
+    }
+  }
+  if (stopped) assertNoWal();
+  const before = stopped ? NodeFS.statSync(database) : null;
+  const target = stopped ? `${pathToFileURL(database).href}?mode=ro&immutable=1` : database;
   const result = spawnSync(
     "sqlite3",
-    ["-readonly", "-cmd", ".timeout 5000", "-json", `${home}/userdata/statev2.sqlite`, sql],
-    { encoding: "utf8", timeout: 120_000 },
+    ["-readonly", "-cmd", ".timeout 5000", "-json", target, sql],
+    { encoding: "utf8", timeout: 10_000 },
   );
   if (result.error || result.status !== 0) {
     NodeFS.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
@@ -324,10 +345,21 @@ export function readReleaseDatabase(home, sql) {
             : (result.error?.code ?? "query failed");
     throw Error(`Release database check failed: ${reason}; app must remain unchanged`);
   }
+  if (stopped) {
+    assertNoWal();
+    const after = NodeFS.statSync(database);
+    if (
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs
+    ) {
+      throw Error("Stopped database changed during verification");
+    }
+  }
   return JSON.parse(result.stdout || "[]");
 }
 
-export function workloadCounts(home, restartThread = null) {
+export function workloadCounts(home, restartThread = null, stopped = false) {
   if (restartThread && (process.platform !== "darwin" || !/^[a-f0-9-]{36}$/.test(restartThread))) {
     throw Error("Only an explicit local Mac caller may use graceful restart");
   }
@@ -337,7 +369,8 @@ export function workloadCounts(home, restartThread = null) {
     (restartThread ? `and not (thread_id='${restartThread}' and status='running') ` : "") +
     "group by status;";
   const counts = { running: 0, starting: 0, queued: 0, waiting: 0 };
-  for (const row of readReleaseDatabase(home, sql)) counts[row.status] = Number(row["count(*)"]);
+  for (const row of readReleaseDatabase(home, sql, stopped))
+    counts[row.status] = Number(row["count(*)"]);
   return counts;
 }
 

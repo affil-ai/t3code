@@ -132,3 +132,24 @@ test("workload reads fail closed and do not create a missing live database", asy
     await fs.rm(root, { recursive: true });
   }
 });
+
+test("stopped database check reads queued work without creating WAL and rejects sidecars", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "fork-offline-test-"));
+  try {
+    await fs.mkdir(join(root, "userdata"));
+    const database = join(root, "userdata/statev2.sqlite");
+    assert.equal(
+      spawnSync("sqlite3", [
+        database,
+        "pragma journal_mode=wal; create table orchestration_v2_projection_runs(status text); insert into orchestration_v2_projection_runs values('queued');",
+      ]).status,
+      0,
+    );
+    assert.equal(workloadCounts(root, null, true).queued, 1);
+    await assert.rejects(fs.stat(`${database}-wal`), { code: "ENOENT" });
+    await fs.writeFile(`${database}-wal`, "uncheckpointed");
+    assert.throws(() => workloadCounts(root, null, true), /WAL state/);
+  } finally {
+    await fs.rm(root, { recursive: true });
+  }
+});
