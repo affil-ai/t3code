@@ -20,6 +20,19 @@ export const THREAD_JUMP_KEYBINDING_COMMANDS = [
 ] as const;
 export type ThreadJumpKeybindingCommand = (typeof THREAD_JUMP_KEYBINDING_COMMANDS)[number];
 
+// fork: Work sidebar navigation.
+export const AGENT_JUMP_KEYBINDING_COMMANDS = [
+  "agent.jump.1",
+  "agent.jump.2",
+  "agent.jump.3",
+  "agent.jump.4",
+  "agent.jump.5",
+  "agent.jump.6",
+  "agent.jump.7",
+  "agent.jump.8",
+  "agent.jump.9",
+] as const;
+
 export const MODEL_PICKER_JUMP_KEYBINDING_COMMANDS = [
   "modelPicker.jump.1",
   "modelPicker.jump.2",
@@ -57,6 +70,9 @@ const MODEL_PICKER_KEYBINDING_COMMANDS = [
 export type ModelPickerKeybindingCommand = (typeof MODEL_PICKER_KEYBINDING_COMMANDS)[number];
 
 export const STATIC_KEYBINDING_COMMANDS = [
+  ...AGENT_JUMP_KEYBINDING_COMMANDS,
+  "task.previous",
+  "task.next",
   "sidebar.toggle",
   "navigation.back",
   "navigation.forward",

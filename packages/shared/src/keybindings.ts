@@ -1,4 +1,5 @@
 import {
+  AGENT_JUMP_KEYBINDING_COMMANDS,
   type KeybindingRule,
   type KeybindingShortcut,
   type KeybindingWhenNode,
@@ -202,6 +203,22 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
     when: "modelPickerOpen && isDesktop",
   })),
   { key: "c", command: "usage.cost", when: "usagePageOpen" },
+  // fork: Work sidebar navigation takes precedence over thread jumps.
+  ...AGENT_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: `mod+${index + 1}`,
+    command,
+    when: "workMode && !modelPickerOpen && !terminalFocus && !previewFocus && isDesktop",
+  })),
+  {
+    key: "mod+arrowup",
+    command: "task.previous",
+    when: "workMode && !editableFocus && !terminalFocus && !previewFocus && !modelPickerOpen",
+  },
+  {
+    key: "mod+arrowdown",
+    command: "task.next",
+    when: "workMode && !editableFocus && !terminalFocus && !previewFocus && !modelPickerOpen",
+  },
   { key: "t", command: "usage.tokens", when: "usagePageOpen" },
   { key: "l", command: "usage.limits", when: "usagePageOpen" },
   { key: "mod+shift+1", command: "usage.period.day", when: "usagePageOpen" },

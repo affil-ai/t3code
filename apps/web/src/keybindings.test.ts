@@ -1028,6 +1028,25 @@ describe("resolveChatShortcutCommand", () => {
 });
 
 describe("resolveShortcutCommand", () => {
+  it("resolves Work agent and task navigation shortcuts", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "3", metaKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        context: { workMode: true, isDesktop: true },
+      }),
+      "agent.jump.3",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "ArrowUp", metaKey: true }),
+        DEFAULT_RESOLVED_KEYBINDINGS,
+        {
+          context: { workMode: true, isDesktop: true, editableFocus: false },
+        },
+      ),
+      "task.previous",
+    );
+  });
+
   it("resolves a custom stop-thread shortcut", () => {
     const keybindings = compile([{ shortcut: modShortcut("escape"), command: "thread.stop" }]);
 

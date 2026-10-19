@@ -66,6 +66,7 @@ import { useAgentCommands } from "./agentCommands";
 import { AgentDialog } from "./AgentDialog";
 import { AgentRowSubtitle, AgentSidebarRow } from "./AgentSidebarRow";
 import { orderAgents, reorderAgentIds, resolveSelectedAgent } from "./selectedAgent.logic";
+import { AgentJumpShortcuts } from "./WorkSidebarShortcuts";
 
 type RowMenuAction = "edit" | "archive";
 
@@ -354,6 +355,7 @@ export function AgentSwitcher() {
   return (
     // Keep a small gap between the titlebar and the agent row.
     <SidebarMenu className="relative mt-1" data-testid="agent-switcher">
+      <AgentJumpShortcuts agents={orderedAgents} onSelect={switchTo} />
       <SidebarMenuItem className="mb-0">
         <DndContext
           sensors={tabSensors}

@@ -19,6 +19,7 @@ import {
 } from "@t3tools/shared/keybindings";
 import { isElectron } from "./env";
 import { projectScriptIdFromCommand } from "./projectScripts";
+import { useWorkModeStore } from "./workModeStore"; // fork: Work shortcut context
 
 export type { ShortcutEventLike, ShortcutModifierStateLike } from "@t3tools/shared/keybindings";
 export { shortcutKeyFromEvent } from "@t3tools/shared/keybindings";
@@ -63,6 +64,7 @@ function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatc
     isWeb: !isElectron,
     isDesktop: isElectron,
     editableFocus: false,
+    workMode: useWorkModeStore.getState().mode === "work",
     ...options?.context,
   };
 }

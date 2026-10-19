@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { BotIcon } from "lucide-react";
+import { useRef } from "react";
 
 import { cn } from "~/lib/utils";
 import { useNowMinute } from "~/hooks/useNowMinute";
@@ -22,22 +23,26 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
-import { type FirstmateColumnId, mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
+import { mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { COLUMN_DOT, COLUMN_LABELS } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useSidebar } from "../ui/sidebar";
+import { useWorkSidebarShortcut } from "./WorkSidebarShortcuts";
+import { adjacentSidebarTask, OPEN_TASK_COLUMNS, sidebarNavigationTasks } from "./taskNavigation";
 
 function PlanningCard({
   environmentId,
   coordinatorThreadId,
   task,
   activeRouteKey,
+  onOpen,
 }: {
   readonly environmentId: EnvironmentId;
   readonly coordinatorThreadId: ThreadId;
   readonly task: FirstmateTask;
   readonly activeRouteKey: string | null;
+  readonly onOpen: (task: FirstmateTask) => void;
 }) {
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -45,6 +50,7 @@ function PlanningCard({
   const active =
     task.workerThreadId !== null && activeRouteKey === `${environmentId}:${task.workerThreadId}`;
   const open = () => {
+    onOpen(task);
     if (isMobile) setOpenMobile(false);
     if (task.workerThreadId !== null) {
       void navigate({
@@ -64,7 +70,7 @@ function PlanningCard({
     });
   };
   return (
-    <li>
+    <li data-task-id={task.id}>
       <button
         type="button"
         onClick={open}
@@ -128,15 +134,6 @@ function BacklogActivity({
   return <time dateTime={shell.updatedAt}>{label}</time>;
 }
 
-const OPEN_COLUMNS: Exclude<FirstmateColumnId, "done">[] = [
-  "ready",
-  "needs-you",
-  "planning",
-  "in-progress",
-  "in-review",
-  "backlog",
-];
-
 function WorkerStatusDot({
   environmentId,
   workerThreadId,
@@ -164,17 +161,19 @@ function TaskRow({
   coordinatorThreadId,
   task,
   activeRouteKey,
+  onOpen,
 }: {
   readonly environmentId: EnvironmentId;
   readonly coordinatorThreadId: ThreadId;
   readonly task: FirstmateTask;
   readonly activeRouteKey: string | null;
+  readonly onOpen: (task: FirstmateTask) => void;
 }) {
   const { isMobile, setOpenMobile } = useSidebar();
   const threadId = task.workerThreadId ?? coordinatorThreadId;
   const active = task.workerThreadId !== null && activeRouteKey === `${environmentId}:${threadId}`;
   return (
-    <li>
+    <li data-task-id={task.id}>
       <Tooltip>
         <TooltipTrigger
           render={
@@ -182,6 +181,14 @@ function TaskRow({
               to="/$environmentId/$threadId"
               params={{ environmentId, threadId }}
               onClick={(event) => {
+                if (
+                  event.button === 0 &&
+                  !event.metaKey &&
+                  !event.ctrlKey &&
+                  !event.shiftKey &&
+                  !event.altKey
+                )
+                  onOpen(task);
                 if (
                   isMobile &&
                   event.button === 0 &&
@@ -227,13 +234,60 @@ export function AgentTaskTree({
   readonly tasks: readonly FirstmateTask[];
   readonly activeRouteKey: string | null;
 }) {
+  const navigate = useNavigate();
+  const { isMobile, setOpenMobile } = useSidebar();
+  const selected = useRef<{ id: string; routeKey: string } | null>(null);
+  const tree = useRef<HTMLDivElement>(null);
+  const rememberTask = (task: FirstmateTask) => {
+    selected.current = {
+      id: task.id,
+      routeKey: `${environmentId}:${task.workerThreadId ?? coordinatorThreadId}`,
+    };
+  };
+  useWorkSidebarShortcut((command) => {
+    if (command !== "task.previous" && command !== "task.next") return false;
+    const ordered = sidebarNavigationTasks(tasks);
+    const currentId =
+      selected.current?.routeKey === activeRouteKey
+        ? selected.current.id
+        : (ordered.find(
+            (task) =>
+              task.workerThreadId !== null &&
+              `${environmentId}:${task.workerThreadId}` === activeRouteKey,
+          )?.id ?? null);
+    const target = adjacentSidebarTask(
+      ordered,
+      currentId,
+      command === "task.next" ? "next" : "previous",
+    );
+    if (target === null) return true;
+    rememberTask(target);
+    if (isMobile) setOpenMobile(false);
+    if (target.workerThreadId === null) {
+      const ref = scopeThreadRef(environmentId, coordinatorThreadId);
+      useFirstmateTaskFocusStore.getState().requestTask({
+        threadKey: scopedThreadKey(ref),
+        taskId: target.id,
+      });
+      useRightPanelStore.getState().open(ref, "firstmate");
+    }
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId, threadId: target.workerThreadId ?? coordinatorThreadId },
+    });
+    const row = [...(tree.current?.querySelectorAll<HTMLElement>("[data-task-id]") ?? [])].find(
+      (element) => element.dataset.taskId === target.id,
+    );
+    row?.scrollIntoView?.({ block: "nearest" });
+    return true;
+  });
   const columns = mapFirstmateBoard(tasks);
-  const sections = OPEN_COLUMNS.filter((column) => columns[column].length > 0);
+  const sections = OPEN_TASK_COLUMNS.filter((column) => columns[column].length > 0);
   if (sections.length === 0) {
     return <p className="px-2 py-1 text-sm text-sidebar-muted-foreground/70">No open tasks</p>;
   }
   return (
-    <div className="flex flex-col gap-3">
+    <div ref={tree} className="flex flex-col gap-3">
       {sections.map((column) => (
         <section key={column} aria-label={COLUMN_LABELS[column]}>
           <h3 className="mb-1 flex h-6 items-center gap-1.5 pr-1.5 pl-2 text-xs font-medium text-sidebar-muted-foreground/80">
@@ -253,6 +307,7 @@ export function AgentTaskTree({
                   coordinatorThreadId={coordinatorThreadId}
                   task={task}
                   activeRouteKey={activeRouteKey}
+                  onOpen={rememberTask}
                 />
               ) : (
                 <TaskRow
@@ -261,6 +316,7 @@ export function AgentTaskTree({
                   coordinatorThreadId={coordinatorThreadId}
                   task={task}
                   activeRouteKey={activeRouteKey}
+                  onOpen={rememberTask}
                 />
               ),
             )}
