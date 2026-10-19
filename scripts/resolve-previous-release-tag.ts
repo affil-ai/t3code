@@ -2,18 +2,87 @@
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Array from "effect/Array";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as String from "effect/String";
-import { Command, Flag } from "effect/unstable/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Command, Flag } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-const ReleaseChannel = Schema.Literals(["stable", "nightly"]);
+const ReleaseChannel = Schema.Literals(["stable", "nightly", "preview"]);
 type ReleaseChannel = typeof ReleaseChannel.Type;
+
+export class InvalidReleaseTagError extends Schema.TaggedError<InvalidReleaseTagError>()(
+  "InvalidReleaseTagError",
+  {
+    channel: ReleaseChannel,
+    currentTag: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Invalid ${this.channel} release tag '${this.currentTag}'.`;
+  }
+}
+
+const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+const releaseTagListProcessContext = {
+  executable: Schema.Literal("git"),
+  argumentCount: NonNegativeInt,
+  cwd: Schema.String,
+};
+
+export class ReleaseTagListProcessError extends Schema.TaggedError<ReleaseTagListProcessError>()(
+  "ReleaseTagListProcessError",
+  {
+    ...releaseTagListProcessContext,
+    operation: Schema.Literals(["spawn", "read-stdout", "read-stderr", "wait-for-exit"]),
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to list release tags during process operation "${this.operation}".`;
+  }
+}
+
+export class ReleaseTagListProcessExitError extends Schema.TaggedError<ReleaseTagListProcessExitError>()(
+  "ReleaseTagListProcessExitError",
+  {
+    ...releaseTagListProcessContext,
+    exitCode: Schema.Number,
+    stdoutLength: NonNegativeInt,
+    stderrLength: NonNegativeInt,
+  },
+) {
+  override get message(): string {
+    return `Release tag listing exited with code ${this.exitCode}.`;
+  }
+}
+
+export class PreviousReleaseTagGitHubOutputConfigError extends Schema.TaggedError<PreviousReleaseTagGitHubOutputConfigError>()(
+  "PreviousReleaseTagGitHubOutputConfigError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to resolve the GITHUB_OUTPUT path for the previous release tag.";
+  }
+}
+
+export class PreviousReleaseTagGitHubOutputAppendError extends Schema.TaggedError<PreviousReleaseTagGitHubOutputAppendError>()(
+  "PreviousReleaseTagGitHubOutputAppendError",
+  {
+    outputPath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to append the previous release tag to ${this.outputPath}.`;
+  }
+}
 
 interface StableVersion {
   readonly major: number;
@@ -82,10 +151,12 @@ const parseStableTag = (tag: string): StableVersion | undefined => {
   if (!major || !minor || !patch) return undefined;
 
   const prereleaseIdentifiers = prerelease ? prerelease.split(".") : [];
-  // Nightly tags also start with `v` and carry a `nightly.*` prerelease
-  // identifier. They must not be considered stable candidates when resolving
-  // the previous stable tag.
-  if (prereleaseIdentifiers[0] === "nightly") return undefined;
+  // Nightly and preview tags also start with `v` and carry their channel as
+  // the prerelease identifier. They must not be considered stable candidates
+  // when resolving the previous stable tag.
+  if (prereleaseIdentifiers[0] === "nightly" || prereleaseIdentifiers[0] === "preview") {
+    return undefined;
+  }
 
   return {
     major: Number(major),
@@ -103,10 +174,15 @@ const compareNightlyVersions = (left: NightlyVersion, right: NightlyVersion): nu
   return left.runNumber - right.runNumber;
 };
 
-const parseNightlyTag = (tag: string): NightlyVersion | undefined => {
+const parseNightlyTag = (
+  tag: string,
+  channel: "nightly" | "preview" = "nightly",
+): NightlyVersion | undefined => {
   // Accept both the current `v<semver>` format and the legacy `nightly-v<semver>`
   // format so release note diffs keep working across the tag-format transition.
-  const match = /^(?:nightly-)?v(\d+)\.(\d+)\.(\d+)-nightly\.(\d{8})\.(\d+)$/.exec(tag);
+  const match = new RegExp(
+    `^(?:nightly-)?v(\\d+)\\.(\\d+)\\.(\\d+)-${channel}\\.(\\d{8})\\.(\\d+)$`,
+  ).exec(tag);
   if (!match) return undefined;
 
   const [, major, minor, patch, date, runNumber] = match;
@@ -121,59 +197,122 @@ const parseNightlyTag = (tag: string): NightlyVersion | undefined => {
   };
 };
 
-const resolvePreviousReleaseTag = (
+export const resolvePreviousReleaseTag = (
   channel: ReleaseChannel,
   currentTag: string,
   tags: ReadonlyArray<string>,
-): string | undefined => {
-  if (channel === "stable") {
-    const current = parseStableTag(currentTag);
+) =>
+  Effect.gen(function* () {
+    if (channel === "stable") {
+      const current = parseStableTag(currentTag);
+      if (!current) {
+        return yield* new InvalidReleaseTagError({ channel, currentTag });
+      }
+
+      const candidates = tags
+        .map((tag) => ({ tag, parsed: parseStableTag(tag) }))
+        .filter(
+          (entry): entry is { tag: string; parsed: StableVersion } => entry.parsed !== undefined,
+        )
+        .filter((entry) => compareStableVersions(entry.parsed, current) < 0)
+        .toSorted((left, right) => compareStableVersions(right.parsed, left.parsed));
+
+      return candidates[0]?.tag;
+    }
+
+    const current = parseNightlyTag(currentTag, channel);
     if (!current) {
-      throw new Error(`Invalid stable release tag '${currentTag}'.`);
+      return yield* new InvalidReleaseTagError({ channel, currentTag });
     }
 
     const candidates = tags
-      .map((tag) => ({ tag, parsed: parseStableTag(tag) }))
+      .map((tag) => ({ tag, parsed: parseNightlyTag(tag, channel) }))
       .filter(
-        (entry): entry is { tag: string; parsed: StableVersion } => entry.parsed !== undefined,
+        (entry): entry is { tag: string; parsed: NightlyVersion } => entry.parsed !== undefined,
       )
-      .filter((entry) => compareStableVersions(entry.parsed, current) < 0)
-      .toSorted((left, right) => compareStableVersions(right.parsed, left.parsed));
+      .filter((entry) => compareNightlyVersions(entry.parsed, current) < 0)
+      .toSorted((left, right) => compareNightlyVersions(right.parsed, left.parsed));
 
     return candidates[0]?.tag;
-  }
+  });
 
-  const current = parseNightlyTag(currentTag);
-  if (!current) {
-    throw new Error(`Invalid nightly release tag '${currentTag}'.`);
-  }
-
-  const candidates = tags
-    .map((tag) => ({ tag, parsed: parseNightlyTag(tag) }))
-    .filter((entry): entry is { tag: string; parsed: NightlyVersion } => entry.parsed !== undefined)
-    .filter((entry) => compareNightlyVersions(entry.parsed, current) < 0)
-    .toSorted((left, right) => compareNightlyVersions(right.parsed, left.parsed));
-
-  return candidates[0]?.tag;
-};
-
-const listGitTags = Effect.fn("listGitTags")(function* () {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const child = yield* spawner.spawn(ChildProcess.make("git", ["tag", "--list"]));
-  const tags = yield* child.stdout.pipe(
+const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
+  stream.pipe(
     Stream.decodeText(),
     Stream.runFold(
       () => "",
       (acc, chunk) => acc + chunk,
     ),
-    Effect.map(String.split(/\r?\n/)),
-    Effect.map(Array.map(String.trim)),
-    Effect.map(Array.filter(String.isNonEmpty)),
   );
-  return tags;
+
+export const listGitTags = Effect.fn("listGitTags")(function* (cwd = process.cwd()) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const args = ["tag", "--list"] as const;
+  const context = {
+    executable: "git",
+    argumentCount: args.length,
+    cwd,
+  } as const;
+  const child = yield* spawner.spawn(ChildProcess.make("git", args, { cwd })).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ReleaseTagListProcessError({
+          ...context,
+          operation: "spawn",
+          cause,
+        }),
+    ),
+  );
+  const [stdout, stderr, exitCode] = yield* Effect.all(
+    [
+      collectStreamAsString(child.stdout).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ReleaseTagListProcessError({
+              ...context,
+              operation: "read-stdout",
+              cause,
+            }),
+        ),
+      ),
+      collectStreamAsString(child.stderr).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ReleaseTagListProcessError({
+              ...context,
+              operation: "read-stderr",
+              cause,
+            }),
+        ),
+      ),
+      child.exitCode.pipe(
+        Effect.map(Number),
+        Effect.mapError(
+          (cause) =>
+            new ReleaseTagListProcessError({
+              ...context,
+              operation: "wait-for-exit",
+              cause,
+            }),
+        ),
+      ),
+    ],
+    { concurrency: "unbounded" },
+  );
+
+  if (exitCode !== 0) {
+    return yield* new ReleaseTagListProcessExitError({
+      ...context,
+      exitCode,
+      stdoutLength: stdout.length,
+      stderrLength: stderr.length,
+    });
+  }
+
+  return stdout.split(/\r?\n/).map(String.trim).filter(String.isNonEmpty);
 });
 
-const writeOutput = Effect.fn("writeOutput")(function* (
+export const writePreviousReleaseTagOutput = Effect.fn("writePreviousReleaseTagOutput")(function* (
   previousTag: string | undefined,
   writeGithubOutput: boolean,
 ) {
@@ -181,8 +320,23 @@ const writeOutput = Effect.fn("writeOutput")(function* (
 
   if (writeGithubOutput) {
     const fs = yield* FileSystem.FileSystem;
-    const githubOutputPath = yield* Config.nonEmptyString("GITHUB_OUTPUT");
-    yield* fs.writeFileString(githubOutputPath, entry, { flag: "a" });
+    const githubOutputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT").pipe(
+      Effect.mapError(
+        (cause) =>
+          new PreviousReleaseTagGitHubOutputConfigError({
+            cause,
+          }),
+      ),
+    );
+    yield* fs.writeFileString(githubOutputPath, entry, { flag: "a" }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PreviousReleaseTagGitHubOutputAppendError({
+            outputPath: githubOutputPath,
+            cause,
+          }),
+      ),
+    );
     return;
   }
 
@@ -192,21 +346,21 @@ const writeOutput = Effect.fn("writeOutput")(function* (
 const command = Command.make(
   "resolve-previous-release-tag",
   {
-    channel: Flag.choice("channel", ReleaseChannel.literals).pipe(
+    channel: Flag.Literals("channel", ReleaseChannel.literals).pipe(
       Flag.withDescription("Release channel whose previous tag should be resolved."),
     ),
-    currentTag: Flag.string("current-tag").pipe(
+    currentTag: Flag.String("current-tag").pipe(
       Flag.withDescription("Current release tag to compare against."),
     ),
-    githubOutput: Flag.boolean("github-output").pipe(
+    githubOutput: Flag.Boolean("github-output").pipe(
       Flag.withDescription("Write values to GITHUB_OUTPUT instead of stdout."),
       Flag.withDefault(false),
     ),
   },
   ({ channel, currentTag, githubOutput }) =>
     listGitTags().pipe(
-      Effect.map((tags) => resolvePreviousReleaseTag(channel, currentTag, tags)),
-      Effect.flatMap((previousTag) => writeOutput(previousTag, githubOutput)),
+      Effect.flatMap((tags) => resolvePreviousReleaseTag(channel, currentTag, tags)),
+      Effect.flatMap((previousTag) => writePreviousReleaseTagOutput(previousTag, githubOutput)),
     ),
 ).pipe(Command.withDescription("Resolve the previous release tag for a stable or nightly series."));
 

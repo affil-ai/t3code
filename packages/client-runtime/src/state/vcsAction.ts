@@ -1,10 +1,13 @@
 import {
   EnvironmentId,
   type EnvironmentId as EnvironmentIdType,
+  GitActionProgressPhase,
   type GitActionProgressEvent,
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
-  type GitStackedAction,
+  GitStackedAction,
+  type ThreadId,
+  type ProjectId,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -12,28 +15,33 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { AsyncResult, Atom, type AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
-import { runStream } from "../rpc/client.ts";
+import * as Persistence from "../platform/persistence.ts";
+import { runStreamGuarded, RpcPermissionGuard } from "../rpc/client.ts";
 import {
   createRuntimeCommand,
   runStreamInEnvironment,
   type AtomCommand,
   type AtomCommandResult,
 } from "./runtime.ts";
+import { createCommandPermissions } from "./commandPermissions.ts";
 import { vcsCommandScheduler } from "./vcsCommandScheduler.ts";
+import { invalidateCachedVcsRefs } from "./vcsRefInvalidation.ts";
 
-export type VcsActionOperation =
-  | "refresh_status"
-  | "run_change_request"
-  | "pull"
-  | "switch_ref"
-  | "create_ref"
-  | "create_worktree"
-  | "init"
-  | "publish_repository"
-  | "prepare_pull_request_thread";
+export const VcsActionOperation = Schema.Literals([
+  "refresh_status",
+  "run_change_request",
+  "pull",
+  "switch_ref",
+  "create_ref",
+  "create_worktree",
+  "init",
+  "publish_repository",
+  "prepare_pull_request_thread",
+]);
+export type VcsActionOperation = typeof VcsActionOperation.Type;
 
 export interface VcsActionState {
   readonly isRunning: boolean;
@@ -71,22 +79,75 @@ export interface RunVcsStackedActionInput {
   readonly commitMessage?: string;
   readonly featureBranch?: boolean;
   readonly filePaths?: ReadonlyArray<string>;
+  /** The thread the action runs beside; the server links a pull request it creates to it. */
+  readonly threadId?: ThreadId;
+  readonly projectId?: ProjectId;
   readonly onProgress?: (event: GitActionProgressEvent) => void;
 }
 
-export class VcsActionUnavailableError extends Schema.TaggedErrorClass<VcsActionUnavailableError>()(
+export class VcsActionUnavailableError extends Schema.TaggedError<VcsActionUnavailableError>()(
   "VcsActionUnavailableError",
   {
-    message: Schema.String,
+    operation: VcsActionOperation,
+    environmentId: Schema.NullOr(EnvironmentId),
+    cwd: Schema.NullOr(Schema.String),
   },
-) {}
+) {
+  override get message(): string {
+    return `Source control operation '${this.operation.replaceAll("_", " ")}' is unavailable.`;
+  }
+}
 
-export class VcsActionExecutionError extends Schema.TaggedErrorClass<VcsActionExecutionError>()(
-  "VcsActionExecutionError",
+export class VcsActionRemoteFailureError extends Schema.TaggedError<VcsActionRemoteFailureError>()(
+  "VcsActionRemoteFailureError",
   {
-    message: Schema.String,
+    actionId: Schema.String,
+    transportActionId: Schema.String,
+    action: GitStackedAction,
+    environmentId: EnvironmentId,
+    cwd: Schema.String,
+    phase: Schema.NullOr(GitActionProgressPhase),
+    remoteMessageLength: Schema.Number,
   },
-) {}
+) {
+  override get message(): string {
+    const phase = this.phase === null ? "execution" : this.phase;
+    return `Source control action '${this.action}' failed during ${phase}.`;
+  }
+}
+
+export class VcsActionMissingTerminalEventError extends Schema.TaggedError<VcsActionMissingTerminalEventError>()(
+  "VcsActionMissingTerminalEventError",
+  {
+    actionId: Schema.String,
+    transportActionId: Schema.String,
+    action: GitStackedAction,
+    environmentId: EnvironmentId,
+    cwd: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Source control action '${this.action}' ended without a terminal result.`;
+  }
+}
+
+export class VcsActionTargetKeyParseError extends Schema.TaggedError<VcsActionTargetKeyParseError>()(
+  "VcsActionTargetKeyParseError",
+  {
+    keyLength: Schema.Number,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Invalid source control action target key (${this.keyLength} characters).`;
+  }
+}
+
+export const VcsActionExecutionError = Schema.Union([
+  VcsActionRemoteFailureError,
+  VcsActionMissingTerminalEventError,
+]);
+export type VcsActionExecutionError = typeof VcsActionExecutionError.Type;
 
 export const EMPTY_VCS_ACTION_STATE = Object.freeze<VcsActionState>({
   isRunning: false,
@@ -104,15 +165,18 @@ export const EMPTY_VCS_ACTION_STATE = Object.freeze<VcsActionState>({
 
 const nowMs = (): number => DateTime.toEpochMillis(DateTime.nowUnsafe());
 let nextLocalActionId = 0;
+const decodeVcsActionTargetKey = Schema.decodeUnknownSync(
+  Schema.Tuple([EnvironmentId, Schema.String]),
+);
 
-export const vcsActionStateAtom = Atom.family((key: string) => {
+const vcsActionStateAtom = Atom.family((key: string) => {
   return Atom.make(EMPTY_VCS_ACTION_STATE).pipe(
     Atom.keepAlive,
     Atom.withLabel(`vcs-action:${key}`),
   );
 });
 
-export const EMPTY_VCS_ACTION_ATOM = Atom.make(EMPTY_VCS_ACTION_STATE).pipe(
+const EMPTY_VCS_ACTION_ATOM = Atom.make(EMPTY_VCS_ACTION_STATE).pipe(
   Atom.keepAlive,
   Atom.withLabel("vcs-action:null"),
 );
@@ -124,15 +188,16 @@ export function getVcsActionTargetKey(target: VcsActionTarget): string | null {
   return JSON.stringify([target.environmentId, target.cwd]);
 }
 
-function parseVcsActionTargetKey(key: string): ResolvedVcsActionTarget {
-  const [environmentId, cwd] = JSON.parse(key) as [string, string];
-  return {
-    environmentId: EnvironmentId.make(environmentId),
-    cwd,
-  };
+export function parseVcsActionTargetKey(key: string): ResolvedVcsActionTarget {
+  try {
+    const [environmentId, cwd] = decodeVcsActionTargetKey(JSON.parse(key));
+    return { environmentId, cwd };
+  } catch (cause) {
+    throw new VcsActionTargetKeyParseError({ keyLength: key.length, cause });
+  }
 }
 
-export function getVcsActionStateAtom(target: VcsActionTarget) {
+function getVcsActionStateAtom(target: VcsActionTarget) {
   const key = getVcsActionTargetKey(target);
   return key === null ? EMPTY_VCS_ACTION_ATOM : vcsActionStateAtom(key);
 }
@@ -158,7 +223,7 @@ export function beginVcsActionState(
   };
 }
 
-export function failVcsActionState(
+function failVcsActionState(
   operation: VcsActionOperation,
   actionId: string,
   error: unknown,
@@ -200,6 +265,7 @@ export function consumeVcsActionProgress<E, R>(
     readonly target: ResolvedVcsActionTarget;
     readonly transportActionId: string;
     readonly actionId: string;
+    readonly action: GitStackedAction;
     readonly onProgress: (event: GitActionProgressEvent) => Effect.Effect<void>;
   },
 ): Effect.Effect<GitRunStackedActionResult, E | VcsActionExecutionError, R> {
@@ -226,15 +292,25 @@ export function consumeVcsActionProgress<E, R>(
           return Effect.succeed(terminalEvent.result);
         }
         if (terminalEvent?.kind === "action_failed") {
-          return Effect.fail(
-            new VcsActionExecutionError({
-              message: terminalEvent.message,
+          return Effect.fail<VcsActionExecutionError>(
+            new VcsActionRemoteFailureError({
+              actionId: input.actionId,
+              transportActionId: input.transportActionId,
+              action: terminalEvent.action,
+              environmentId: input.target.environmentId,
+              cwd: input.target.cwd,
+              phase: terminalEvent.phase,
+              remoteMessageLength: terminalEvent.message.length,
             }),
           );
         }
-        return Effect.fail(
-          new VcsActionExecutionError({
-            message: "Source control action ended without a result.",
+        return Effect.fail<VcsActionExecutionError>(
+          new VcsActionMissingTerminalEventError({
+            actionId: input.actionId,
+            transportActionId: input.transportActionId,
+            action: input.action,
+            environmentId: input.target.environmentId,
+            cwd: input.target.cwd,
           }),
         );
       }),
@@ -319,7 +395,7 @@ export function applyVcsActionProgressEvent(
     case "action_finished":
       return {
         ...current,
-        isRunning: false,
+        isRunning: true,
         actionId: event.actionId,
         action: event.action,
         operation: "run_change_request",
@@ -327,7 +403,8 @@ export function applyVcsActionProgressEvent(
       };
     case "action_failed":
       return {
-        ...EMPTY_VCS_ACTION_STATE,
+        ...current,
+        isRunning: true,
         actionId: event.actionId,
         action: event.action,
         operation: "run_change_request",
@@ -337,35 +414,44 @@ export function applyVcsActionProgressEvent(
 }
 
 export function createVcsActionManager<R, E>(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
+  runtime: Atom.AtomRuntime<EnvironmentRegistry | Persistence.EnvironmentCacheStore | R, E>,
 ) {
-  const unavailableTargetKey = "vcs-action-target:unavailable";
   const runStackedActionCommands = new Map<
     string,
     AtomCommand<RunVcsStackedActionInput, GitRunStackedActionResult, unknown>
   >();
-  const getRunStackedActionCommand = (key: string) => {
-    const existing = runStackedActionCommands.get(key);
+  const getRunStackedActionCommand = (requestedTarget: VcsActionTarget) => {
+    const targetKey = getVcsActionTargetKey(requestedTarget);
+    const commandKey =
+      targetKey ??
+      JSON.stringify([
+        "vcs-action-target:unavailable",
+        requestedTarget.environmentId,
+        requestedTarget.cwd,
+      ]);
+    const existing = runStackedActionCommands.get(commandKey);
     if (existing !== undefined) {
       return existing;
     }
-    const target = key === unavailableTargetKey ? null : parseVcsActionTargetKey(key);
-    const stateAtom = target === null ? EMPTY_VCS_ACTION_ATOM : vcsActionStateAtom(key);
+    const target = targetKey === null ? null : parseVcsActionTargetKey(targetKey);
+    const stateAtom = targetKey === null ? EMPTY_VCS_ACTION_ATOM : vcsActionStateAtom(targetKey);
     const command = createRuntimeCommand<
-      EnvironmentRegistry | R,
+      EnvironmentRegistry | Persistence.EnvironmentCacheStore | R,
       E,
       RunVcsStackedActionInput,
       GitRunStackedActionResult,
       unknown
     >(runtime, {
-      label: `vcs-action:run-stacked:${key}`,
+      label: `vcs-action:run-stacked:${commandKey}`,
       scheduler: vcsCommandScheduler,
-      concurrency: { mode: "serial", key: () => key },
+      concurrency: { mode: "serial", key: () => commandKey },
       execute: (input: RunVcsStackedActionInput, registry) => {
         if (target === null) {
           return Effect.fail(
             new VcsActionUnavailableError({
-              message: "Source control action is unavailable.",
+              operation: "run_change_request",
+              environmentId: requestedTarget.environmentId,
+              cwd: requestedTarget.cwd,
             }),
           );
         }
@@ -386,16 +472,25 @@ export function createVcsActionManager<R, E>(
           ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
           ...(input.featureBranch ? { featureBranch: true } : {}),
           ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
+          ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+          ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
         };
+        const clearOwnedState = Effect.sync(() => {
+          const current = registry.get(stateAtom);
+          if (current.actionId === input.actionId) {
+            registry.set(stateAtom, EMPTY_VCS_ACTION_STATE);
+          }
+        });
         return consumeVcsActionProgress(
           runStreamInEnvironment(
             target.environmentId,
-            runStream(WS_METHODS.gitRunStackedAction, rpcInput),
+            runStreamGuarded(WS_METHODS.gitRunStackedAction, rpcInput),
           ),
           {
             target,
             transportActionId,
             actionId: input.actionId,
+            action: input.action,
             onProgress: (event) =>
               Effect.sync(() => {
                 const current = registry.get(stateAtom);
@@ -413,6 +508,12 @@ export function createVcsActionManager<R, E>(
               }),
           },
         ).pipe(
+          Effect.provideService(RpcPermissionGuard, {
+            authorize: (id, method, payload) =>
+              createCommandPermissions(runtime, method).authorize(registry, id, payload),
+          }),
+          Effect.ensuring(invalidateCachedVcsRefs(registry, target)),
+          Effect.tap(() => clearOwnedState),
           Effect.tapError((error) =>
             Effect.sync(() => {
               const current = registry.get(stateAtom);
@@ -424,10 +525,11 @@ export function createVcsActionManager<R, E>(
               }
             }),
           ),
+          Effect.onInterrupt(() => clearOwnedState),
         );
       },
     });
-    runStackedActionCommands.set(key, command);
+    runStackedActionCommands.set(commandKey, command);
     return command;
   };
 
@@ -446,10 +548,7 @@ export function createVcsActionManager<R, E>(
 
   return {
     stateAtom: getVcsActionStateAtom,
-    runStackedAction: (target: VcsActionTarget) => {
-      const key = getVcsActionTargetKey(target);
-      return getRunStackedActionCommand(key ?? unavailableTargetKey);
-    },
+    runStackedAction: (target: VcsActionTarget) => getRunStackedActionCommand(target),
     track: async <A, E>(
       registry: AtomRegistry.AtomRegistry,
       target: VcsActionTarget,
@@ -461,7 +560,9 @@ export function createVcsActionManager<R, E>(
         return AsyncResult.failure<never, VcsActionUnavailableError>(
           Cause.fail(
             new VcsActionUnavailableError({
-              message: "Source control action is unavailable.",
+              operation: input.operation,
+              environmentId: target.environmentId,
+              cwd: target.cwd,
             }),
           ),
         );

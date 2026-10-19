@@ -1,70 +1,97 @@
-import type { EnvironmentApi, LocalApi, ScopedThreadRef } from "@t3tools/contracts";
-import { isPreviewableUrl } from "@t3tools/shared/preview";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
+import * as Schema from "effect/Schema";
 
-import { usePanelLayoutStore } from "~/panelLayoutStore";
-import { isPreviewSupportedInRuntime } from "~/previewStateStore";
+import {
+  browserDefaultOpenProfileId,
+  browserDefaultOpenViewport,
+  resolveBrowserDefaults,
+} from "~/browser/browserDefaults";
+import { isWebUrl, resolveBrowserLinkTargetPreference } from "~/browser/browserLinkTarget";
+import type { OpenPreviewMutation } from "~/browser/openFileInPreview";
+import { isPreviewAvailableFor, previewRuntimeFor } from "~/browser/previewRuntime";
+import { recordVisitForThread } from "~/browserHistoryStore";
+import { applyPreviewServerSnapshot } from "~/previewStateStore";
+import { useRightPanelStore } from "~/rightPanelStore";
 
-interface OpenTerminalLinkInPreviewInput {
+const terminalLinkErrorContext = {
+  environmentId: Schema.String,
+  threadId: Schema.String,
+  targetOrigin: Schema.String,
+  cause: Schema.Defect(),
+};
+
+export class TerminalLinkPreviewOpenError extends Schema.TaggedError<TerminalLinkPreviewOpenError>()(
+  "TerminalLinkPreviewOpenError",
+  terminalLinkErrorContext,
+) {
+  override get message(): string {
+    return `Failed to open terminal link ${this.targetOrigin} in preview for thread ${this.threadId}.`;
+  }
+}
+
+interface OpenTerminalLinkInPreviewInput<E> {
   readonly url: string;
-  readonly position: { x: number; y: number };
   readonly threadRef: ScopedThreadRef;
-  readonly api: EnvironmentApi;
-  readonly localApi: LocalApi;
-  /** Called whenever the URL ultimately needs to open in the system browser. */
+  readonly openPreview: OpenPreviewMutation<E>;
   readonly fallbackToBrowser: () => void;
+  /** Cmd/Ctrl-click bypasses the preference and opens in the system browser. */
+  readonly forceBrowser: boolean;
 }
 
 /**
- * Handles a terminal-link click that resolves to a URL.
- *
- * - For non-loopback / unsupported runtimes, defers to the system browser.
- * - For previewable URLs in the desktop build, presents a context menu to
- *   choose between the in-app preview and the system browser.
- *
- * Failures fall back to the system browser so a stuck context-menu doesn't
- * leave the user without a way to open the link.
+ * Opens a terminal hyperlink where the "Open links in" setting says, unless a
+ * Cmd/Ctrl-click explicitly requests the system browser.
  */
-export async function openTerminalLinkInPreview(
-  input: OpenTerminalLinkInPreviewInput,
+export async function openTerminalLinkInPreview<E>(
+  input: OpenTerminalLinkInPreviewInput<E>,
 ): Promise<void> {
   const supportsPreview =
-    isPreviewableUrl(input.url) &&
-    isPreviewSupportedInRuntime() &&
-    input.threadRef.threadId.length > 0;
+    !input.forceBrowser &&
+    isWebUrl(input.url) &&
+    isPreviewAvailableFor(input.threadRef.environmentId) &&
+    input.threadRef.threadId.length > 0 &&
+    (await resolveBrowserLinkTargetPreference()) === "app";
 
   if (!supportsPreview) {
     input.fallbackToBrowser();
     return;
   }
 
-  let choice: "open-in-preview" | "open-in-browser" | null;
-  try {
-    choice = await input.localApi.contextMenu.show(
-      [
-        { id: "open-in-preview", label: "Open in preview" },
-        { id: "open-in-browser", label: "Open in browser" },
-      ],
-      input.position,
-    );
-  } catch {
-    input.fallbackToBrowser();
-    return;
-  }
+  const errorContext = {
+    environmentId: input.threadRef.environmentId,
+    threadId: input.threadRef.threadId,
+    targetOrigin: new URL(input.url).origin,
+  };
 
-  if (choice === "open-in-preview") {
-    try {
-      await input.api.preview.open({
-        threadId: input.threadRef.threadId,
-        url: input.url,
-      });
-      usePanelLayoutStore.getState().addTab(input.threadRef, "right", { kind: "browser" });
-    } catch {
-      input.fallbackToBrowser();
+  const defaults = await resolveBrowserDefaults();
+  const runtime = previewRuntimeFor(input.threadRef.environmentId);
+  const result = await input.openPreview({
+    environmentId: input.threadRef.environmentId,
+    input: {
+      threadId: input.threadRef.threadId,
+      url: input.url,
+      // Same reason as `openUrlInPreview`: this path handles its own result
+      // mapping, so the configured defaults are applied explicitly.
+      viewport: browserDefaultOpenViewport(defaults),
+      profileId: browserDefaultOpenProfileId(defaults),
+      ...(runtime === undefined ? {} : { runtime }),
+    },
+  });
+  if (result._tag === "Failure") {
+    if (isAtomCommandInterrupted(result)) {
+      return;
     }
+    console.error(
+      new TerminalLinkPreviewOpenError({
+        ...errorContext,
+        cause: result.cause,
+      }),
+    );
+    input.fallbackToBrowser();
     return;
   }
-
-  if (choice === "open-in-browser") {
-    input.fallbackToBrowser();
-  }
+  recordVisitForThread(input.threadRef, input.url);
+  applyPreviewServerSnapshot(input.threadRef, result.value);
+  useRightPanelStore.getState().openBrowser(input.threadRef, result.value.tabId);
 }

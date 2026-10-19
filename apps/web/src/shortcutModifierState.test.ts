@@ -1,12 +1,83 @@
-import { describe, expect, it } from "vite-plus/test";
+// @vitest-environment jsdom
+
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   areShortcutModifierStatesEqual,
-  clearShortcutModifierState,
-  readShortcutModifierState,
-  setShortcutModifierState,
-  syncShortcutModifierStateFromKeyboardEvent,
+  shortcutModifierStateAfterKeyboardEvent,
+  useShortcutModifierState,
+  type ShortcutModifierState,
 } from "./shortcutModifierState";
+
+const emptyState = (): ShortcutModifierState => ({
+  metaKey: false,
+  ctrlKey: false,
+  altKey: false,
+  shiftKey: false,
+});
+
+describe("useShortcutModifierState", () => {
+  let root: Root;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it.each(["keyup", "paste", "blur"] as const)(
+    "does not render for unchanged modifiers after %s resets the state",
+    async (reset) => {
+      const render = vi.fn();
+      function Consumer() {
+        render(useShortcutModifierState());
+        return null;
+      }
+      await act(async () => {
+        root.render(createElement(Consumer));
+      });
+      const press = async (type: "keydown" | "keyup", key: string, shiftKey = false) => {
+        await act(async () => {
+          window.dispatchEvent(new KeyboardEvent(type, { key, shiftKey }));
+        });
+      };
+
+      await press("keydown", "Shift", true);
+      expect(render).toHaveBeenLastCalledWith({ ...emptyState(), shiftKey: true });
+      if (reset === "keyup") {
+        await press("keyup", "Shift");
+      } else {
+        await act(async () => {
+          window.dispatchEvent(new Event(reset));
+        });
+      }
+      expect(render).toHaveBeenLastCalledWith(emptyState());
+      render.mockClear();
+
+      for (const key of "typing") {
+        await press("keydown", key);
+        await press("keyup", key);
+      }
+      await act(async () => {
+        window.dispatchEvent(new Event("paste"));
+        window.dispatchEvent(new Event("blur"));
+      });
+      expect(render).not.toHaveBeenCalled();
+      await press("keydown", "Shift", true);
+      expect(render).toHaveBeenCalledExactlyOnceWith({ ...emptyState(), shiftKey: true });
+    },
+  );
+});
 
 function keyboardEventLike(type: "keydown" | "keyup", init: Partial<KeyboardEvent>): KeyboardEvent {
   return {
@@ -36,111 +107,98 @@ describe("shortcutModifierState", () => {
     ).toBe(false);
   });
 
-  it("preserves the current store object when modifier values do not change", () => {
-    clearShortcutModifierState();
-
-    const initialState = readShortcutModifierState();
-    setShortcutModifierState({
-      metaKey: false,
-      ctrlKey: false,
-      altKey: false,
-      shiftKey: false,
-    });
-
-    expect(readShortcutModifierState()).toBe(initialState);
-
-    setShortcutModifierState({
-      metaKey: false,
-      ctrlKey: true,
-      altKey: false,
-      shiftKey: false,
-    });
-    const updatedState = readShortcutModifierState();
-    expect(updatedState).not.toBe(initialState);
-    expect(updatedState).toEqual({
-      metaKey: false,
-      ctrlKey: true,
-      altKey: false,
-      shiftKey: false,
-    });
-
-    setShortcutModifierState({
-      metaKey: false,
-      ctrlKey: true,
-      altKey: false,
-      shiftKey: false,
-    });
-    expect(readShortcutModifierState()).toBe(updatedState);
-
-    clearShortcutModifierState();
-    const clearedState = readShortcutModifierState();
-    expect(clearedState).toEqual({
-      metaKey: false,
-      ctrlKey: false,
-      altKey: false,
-      shiftKey: false,
-    });
-    expect(clearedState).not.toBe(updatedState);
-
-    clearShortcutModifierState();
-    expect(readShortcutModifierState()).toBe(clearedState);
+  it("preserves the current object when modifier values do not change", () => {
+    const initialState = emptyState();
+    const nextState = shortcutModifierStateAfterKeyboardEvent(
+      initialState,
+      keyboardEventLike("keyup", { key: "Shift" }),
+    );
+    expect(nextState).toBe(initialState);
   });
 
   it("tracks bare modifier keydown and keyup events explicitly", () => {
-    clearShortcutModifierState();
-
-    syncShortcutModifierStateFromKeyboardEvent(
+    let state = emptyState();
+    state = shortcutModifierStateAfterKeyboardEvent(
+      state,
       keyboardEventLike("keydown", {
         key: "Meta",
         metaKey: false,
       }),
     );
-    expect(readShortcutModifierState()).toEqual({
+    expect(state).toEqual({
       metaKey: true,
       ctrlKey: false,
       altKey: false,
       shiftKey: false,
     });
 
-    syncShortcutModifierStateFromKeyboardEvent(
+    state = shortcutModifierStateAfterKeyboardEvent(
+      state,
       keyboardEventLike("keydown", {
         key: "Shift",
         metaKey: true,
         shiftKey: false,
       }),
     );
-    expect(readShortcutModifierState()).toEqual({
+    expect(state).toEqual({
       metaKey: true,
       ctrlKey: false,
       altKey: false,
       shiftKey: true,
     });
 
-    syncShortcutModifierStateFromKeyboardEvent(
+    state = shortcutModifierStateAfterKeyboardEvent(
+      state,
       keyboardEventLike("keyup", {
         key: "Meta",
         metaKey: true,
         shiftKey: true,
       }),
     );
-    expect(readShortcutModifierState()).toEqual({
+    expect(state).toEqual({
       metaKey: false,
       ctrlKey: false,
       altKey: false,
       shiftKey: true,
     });
 
-    syncShortcutModifierStateFromKeyboardEvent(
+    state = shortcutModifierStateAfterKeyboardEvent(
+      state,
       keyboardEventLike("keyup", {
         key: "Shift",
         shiftKey: true,
       }),
     );
-    expect(readShortcutModifierState()).toEqual({
+    expect(state).toEqual({
       metaKey: false,
       ctrlKey: false,
       altKey: false,
       shiftKey: false,
     });
+  });
+
+  it("ignores poisoned modifier flags on non-modifier keys", () => {
+    // A dictation paste (synthetic ⌘V) can leave the browser reporting
+    // metaKey=true on later real key events. Enter to submit must not
+    // re-mark ⌘ as held.
+    const state = shortcutModifierStateAfterKeyboardEvent(
+      emptyState(),
+      keyboardEventLike("keydown", { key: "Enter", metaKey: true }),
+    );
+    expect(state).toEqual(emptyState());
+  });
+
+  it("clears a held modifier when a non-modifier key reports it released", () => {
+    const heldMeta: ShortcutModifierState = {
+      metaKey: true,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+    };
+    const state = shortcutModifierStateAfterKeyboardEvent(
+      heldMeta,
+      keyboardEventLike("keydown", { key: "a", metaKey: false }),
+    );
+    expect(state).toEqual(emptyState());
   });
 });

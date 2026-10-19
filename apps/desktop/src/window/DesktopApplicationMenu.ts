@@ -1,26 +1,35 @@
-import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import type * as Electron from "electron";
 
-import * as DesktopObservability from "../app/DesktopObservability.ts";
-import * as ElectronApp from "../electron/ElectronApp.ts";
+import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
-export interface DesktopApplicationMenuShape {
-  readonly configure: Effect.Effect<void>;
+export class DesktopApplicationMenuActionError extends Schema.TaggedError<DesktopApplicationMenuActionError>()(
+  "DesktopApplicationMenuActionError",
+  {
+    action: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Desktop menu action "${this.action}" failed.`;
+  }
 }
 
 export class DesktopApplicationMenu extends Context.Service<
   DesktopApplicationMenu,
-  DesktopApplicationMenuShape
+  {
+    readonly configure: Effect.Effect<void>;
+  }
 >()("@t3tools/desktop/window/DesktopApplicationMenu") {}
 
 type DesktopApplicationMenuRuntimeServices =
@@ -28,22 +37,34 @@ type DesktopApplicationMenuRuntimeServices =
   | DesktopWindow.DesktopWindow
   | ElectronDialog.ElectronDialog;
 
-const { logInfo: logUpdaterInfo } = DesktopObservability.makeComponentLogger("desktop-updater");
+const { logInfo: logUpdaterInfo } = makeComponentLogger("desktop-updater");
 
-const { logError: logMenuError } = DesktopObservability.makeComponentLogger("desktop-menu");
+const { logError: logMenuError } = makeComponentLogger("desktop-menu");
 
 const dispatchMenuAction = Effect.fn("desktop.menu.dispatchMenuAction")(function* (
   action: string,
 ): Effect.fn.Return<void, DesktopWindow.DesktopWindowError, DesktopWindow.DesktopWindow> {
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
-  yield* desktopWindow.dispatchMenuAction(action);
+  yield* desktopWindow.dispatchMenuAction(action, {
+    reveal: action !== "paste-as-text",
+  });
 });
 
-const checkForUpdatesFromMenu: Effect.Effect<
-  void,
-  never,
-  DesktopUpdates.DesktopUpdates | ElectronDialog.ElectronDialog
-> = Effect.gen(function* () {
+const zoomMainWindow = Effect.fn("desktop.menu.zoomMainWindow")(function* (
+  direction: DesktopWindow.MainWindowZoomDirection,
+): Effect.fn.Return<void, never, DesktopWindow.DesktopWindow> {
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  yield* desktopWindow.zoomMain(direction);
+});
+
+const runMainContentsCommand = Effect.fn("desktop.menu.runMainContentsCommand")(function* (
+  command: DesktopWindow.MainWindowContentsCommand,
+): Effect.fn.Return<void, never, DesktopWindow.DesktopWindow> {
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  yield* desktopWindow.runMainContentsCommand(command);
+});
+
+const checkForUpdatesFromMenu = Effect.gen(function* () {
   const updates = yield* DesktopUpdates.DesktopUpdates;
   const electronDialog = yield* ElectronDialog.ElectronDialog;
   const result = yield* updates.check("menu");
@@ -67,11 +88,7 @@ const checkForUpdatesFromMenu: Effect.Effect<
   }
 }).pipe(Effect.withSpan("desktop.menu.checkForUpdates"));
 
-const handleCheckForUpdatesMenuClick: Effect.Effect<
-  void,
-  DesktopWindow.DesktopWindowError,
-  DesktopUpdates.DesktopUpdates | ElectronDialog.ElectronDialog | DesktopWindow.DesktopWindow
-> = Effect.gen(function* () {
+const handleCheckForUpdatesMenuClick = Effect.gen(function* () {
   const updates = yield* DesktopUpdates.DesktopUpdates;
   const electronDialog = yield* ElectronDialog.ElectronDialog;
   const disabledReason = yield* updates.disabledReason;
@@ -94,11 +111,10 @@ const handleCheckForUpdatesMenuClick: Effect.Effect<
   yield* checkForUpdatesFromMenu;
 }).pipe(Effect.withSpan("desktop.menu.handleCheckForUpdatesClick"));
 
-const make = Effect.gen(function* () {
-  const electronApp = yield* ElectronApp.ElectronApp;
+/** @public Service construction is part of the canonical Effect module API. */
+export const make = Effect.gen(function* () {
   const electronMenu = yield* ElectronMenu.ElectronMenu;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
-  const appName = yield* electronApp.name;
   const context = yield* Effect.context<DesktopApplicationMenuRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
 
@@ -110,12 +126,10 @@ const make = Effect.gen(function* () {
       effect.pipe(
         Effect.annotateLogs({ action }),
         Effect.withSpan("desktop.menu.action"),
-        Effect.catchCause((cause) =>
-          logMenuError("desktop menu action failed", {
-            action,
-            cause: Cause.pretty(cause),
-          }),
-        ),
+        Effect.catchCause((cause) => {
+          const error = new DesktopApplicationMenuActionError({ action, cause });
+          return logMenuError(error.message, { error });
+        }),
       ),
     );
   };
@@ -127,13 +141,32 @@ const make = Effect.gen(function* () {
     const settingsClick = () => {
       runMenuEffect("open-settings", dispatchMenuAction("open-settings"));
     };
+    // Chromium already pastes as plain text for this chord, so the accelerator
+    // needs nothing from the menu: the composer and the terminal each arm
+    // themselves from the same keydown. Routing it through the renderer anyway
+    // lands a second, injected paste and doubles the text. Only a menu click,
+    // which produces no keystroke for them to see, needs that round trip.
+    const pasteAsTextClick = (
+      _item: Electron.MenuItem,
+      _window: Electron.BaseWindow | undefined,
+      event: Electron.KeyboardEvent,
+    ) => {
+      if (event.triggeredByAccelerator === true) return;
+      runMenuEffect("paste-as-text", dispatchMenuAction("paste-as-text"));
+    };
+    const zoomClick = (direction: DesktopWindow.MainWindowZoomDirection) => () => {
+      runMenuEffect(`zoom-${direction}`, zoomMainWindow(direction));
+    };
+    const mainContentsClick = (command: DesktopWindow.MainWindowContentsCommand) => () => {
+      runMenuEffect(command, runMainContentsCommand(command));
+    };
     const template: Electron.MenuItemConstructorOptions[] = [];
 
     if (environment.platform === "darwin") {
       template.push({
-        label: appName,
+        label: environment.displayName,
         submenu: [
-          { role: "about" },
+          { role: "about", label: `About ${environment.displayName}` },
           {
             label: "Check for Updates...",
             click: checkForUpdatesClick,
@@ -147,11 +180,11 @@ const make = Effect.gen(function* () {
           { type: "separator" },
           { role: "services" },
           { type: "separator" },
-          { role: "hide" },
+          { role: "hide", label: `Hide ${environment.displayName}` },
           { role: "hideOthers" },
           { role: "unhide" },
           { type: "separator" },
-          { role: "quit" },
+          { role: "quit", label: `Quit ${environment.displayName}` },
         ],
       });
     }
@@ -173,18 +206,64 @@ const make = Effect.gen(function* () {
           { role: environment.platform === "darwin" ? "close" : "quit" },
         ],
       },
-      { role: "editMenu" },
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          {
+            label: "Paste as Text",
+            accelerator: "CmdOrCtrl+Shift+V",
+            click: pasteAsTextClick,
+          },
+          { role: "delete" },
+          { type: "separator" },
+          { role: "selectAll" },
+          ...(environment.platform === "darwin"
+            ? [
+                { type: "separator" as const },
+                {
+                  label: "Speech",
+                  submenu: [{ role: "startSpeaking" as const }, { role: "stopSpeaking" as const }],
+                },
+              ]
+            : []),
+        ],
+      },
       {
         label: "View",
         submenu: [
-          { role: "reload" },
-          { role: "forceReload" },
-          { role: "toggleDevTools" },
+          /*
+            Not the reload, DevTools or zoom roles: those act on the focused
+            webContents, so with a browser page focused they reload or zoom
+            the guest page and the app UI appears stuck. These always target
+            the main window (see DesktopWindow.zoomMain).
+          */
+          { label: "Reload", accelerator: "CmdOrCtrl+R", click: mainContentsClick("reload") },
+          {
+            label: "Force Reload",
+            accelerator: "Shift+CmdOrCtrl+R",
+            click: mainContentsClick("forceReload"),
+          },
+          {
+            label: "Toggle Developer Tools",
+            accelerator: environment.platform === "darwin" ? "Alt+Command+I" : "Ctrl+Shift+I",
+            click: mainContentsClick("toggleDevTools"),
+          },
           { type: "separator" },
-          { role: "resetZoom" },
-          { role: "zoomIn", accelerator: "CmdOrCtrl+=" },
-          { role: "zoomIn", accelerator: "CmdOrCtrl+Plus", visible: false },
-          { role: "zoomOut" },
+          { label: "Actual Size", accelerator: "CmdOrCtrl+0", click: zoomClick("reset") },
+          { label: "Zoom In", accelerator: "CmdOrCtrl+=", click: zoomClick("in") },
+          {
+            label: "Zoom In",
+            accelerator: "CmdOrCtrl+Plus",
+            visible: false,
+            click: zoomClick("in"),
+          },
+          { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: zoomClick("out") },
           { type: "separator" },
           { role: "togglefullscreen" },
         ],

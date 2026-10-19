@@ -1,24 +1,33 @@
 import type { DiscoveredLocalServer, ScopedThreadRef } from "@t3tools/contracts";
+import {
+  mapAtomCommandResult,
+  type AtomCommandResult,
+} from "@t3tools/client-runtime/state/runtime";
 
 import { resolveDiscoveredServerUrl } from "~/browser/browserTargetResolver";
-import { ensureEnvironmentApi } from "~/environmentApi";
-import { usePanelLayoutStore } from "~/panelLayoutStore";
-import { usePreviewStateStore } from "~/previewStateStore";
+import type { BrowserSettingsReadError, OpenPreviewMutation } from "~/browser/openFileInPreview";
+import { recordVisitForThread } from "~/browserHistoryStore";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { openPreviewSession } from "./openPreviewSession";
+import { previewRuntimeFor } from "~/browser/previewRuntime";
 
-export async function openDiscoveredPort(input: {
+export async function openDiscoveredPort<E>(input: {
   readonly threadRef: ScopedThreadRef;
   readonly port: DiscoveredLocalServer;
-}): Promise<void> {
-  const api = ensureEnvironmentApi(input.threadRef.environmentId);
-  const resolvedUrl = resolveDiscoveredServerUrl(input.threadRef.environmentId, input.port.url);
-  const previewState = usePreviewStateStore.getState();
-  await openPreviewSession({
-    previewApi: api.preview,
+  readonly openPreview: OpenPreviewMutation<E>;
+}): Promise<AtomCommandResult<void, E | BrowserSettingsReadError>> {
+  // A server tab runs on the environment, where loopback is already right.
+  const resolvedUrl =
+    previewRuntimeFor(input.threadRef.environmentId) === "server"
+      ? input.port.url
+      : resolveDiscoveredServerUrl(input.threadRef.environmentId, input.port.url);
+  const result = await openPreviewSession({
+    openPreview: input.openPreview,
     threadRef: input.threadRef,
     url: resolvedUrl,
-    applyServerSnapshot: previewState.applyServerSnapshot,
-    rememberUrl: previewState.rememberUrl,
   });
-  usePanelLayoutStore.getState().addTab(input.threadRef, "right", { kind: "browser" });
+  return mapAtomCommandResult(result, (snapshot) => {
+    recordVisitForThread(input.threadRef, input.port.url);
+    useRightPanelStore.getState().openBrowser(input.threadRef, snapshot.tabId);
+  });
 }

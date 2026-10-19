@@ -1,204 +1,11 @@
-import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
+import { parsePatchFiles } from "@pierre/diffs/utils/parsePatchFiles";
+import { parseDiffFromFile } from "@pierre/diffs";
+import type { FileDiffMetadata } from "@pierre/diffs/types";
 
-export const DIFF_THEME_NAMES = {
+const DIFF_THEME_NAMES = {
   light: "pierre-light",
   dark: "pierre-dark",
 } as const;
-
-export const DIFF_RENDER_UNSAFE_CSS = `
-:host {
-  --diffs-font-family: var(
-    --font-mono,
-    "SF Mono",
-    Monaco,
-    Consolas,
-    "Ubuntu Mono",
-    "Liberation Mono",
-    "Courier New",
-    monospace
-  );
-  --diffs-font-size: 11px;
-  --diffs-line-height: 17px;
-}
-
-[data-diffs-header],
-[data-diff],
-[data-file],
-[data-error-wrapper],
-[data-virtualizer-buffer] {
-  --diffs-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
-  --diffs-light-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
-  --diffs-dark-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
-  --diffs-token-light-bg: transparent;
-  --diffs-token-dark-bg: transparent;
-
-  --diffs-bg-context-override: color-mix(in srgb, var(--background) 97%, var(--foreground));
-  --diffs-bg-hover-override: color-mix(in srgb, var(--background) 94%, var(--foreground));
-  --diffs-bg-separator-override: color-mix(in srgb, var(--background) 95%, var(--foreground));
-  --diffs-bg-buffer-override: color-mix(in srgb, var(--background) 90%, var(--foreground));
-
-  --diffs-bg-addition-override: color-mix(in srgb, var(--background) 92%, var(--success));
-  --diffs-bg-addition-number-override: color-mix(in srgb, var(--background) 88%, var(--success));
-  --diffs-bg-addition-hover-override: color-mix(in srgb, var(--background) 85%, var(--success));
-  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--background) 80%, var(--success));
-
-  --diffs-bg-deletion-override: color-mix(in srgb, var(--background) 92%, var(--destructive));
-  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--background) 88%, var(--destructive));
-  --diffs-bg-deletion-hover-override: color-mix(in srgb, var(--background) 85%, var(--destructive));
-  --diffs-bg-deletion-emphasis-override: color-mix(
-    in srgb,
-    var(--background) 80%,
-    var(--destructive)
-  );
-
-  background-color: var(--diffs-bg) !important;
-}
-
-[data-file-info] {
-  background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
-  border-block-color: var(--border) !important;
-  color: var(--foreground) !important;
-}
-
-[data-diffs-header] {
-  position: sticky !important;
-  top: 0;
-  z-index: 4;
-  min-height: 32px !important;
-  padding-block: 0 !important;
-  padding-inline: 6px !important;
-  gap: 6px !important;
-  align-items: center !important;
-  background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
-  border-bottom: 1px solid var(--border) !important;
-}
-
-[data-diffs-header] [data-header-content] {
-  align-items: center !important;
-  gap: 6px !important;
-}
-
-[data-diffs-header] [data-title] {
-  font-size: 12px !important;
-}
-
-[data-diffs-header] [data-change-icon] {
-  width: 14px !important;
-  height: 14px !important;
-}
-
-[data-diffs-header] [data-metadata] {
-  display: flex !important;
-  align-items: center !important;
-  gap: 6px !important;
-}
-
-[data-diffs-header] [data-metadata] > * {
-  display: inline-flex !important;
-  align-items: center !important;
-  height: 16px !important;
-  line-height: 16px !important;
-}
-
-[data-diffs-header] [data-additions-count],
-[data-diffs-header] [data-deletions-count] {
-  font-size: 12px !important;
-  font-variant-numeric: tabular-nums;
-}
-
-/* "Ghost line" treatment for the collapsed "XX unmodified lines" context
- * separators. The library defaults to a solid full-width grey band (32px tall,
- * 8px margin) that competes visually with the actual diff. We strip the fill,
- * draw a single faint hairline through the row, mute the count text, and only
- * reveal the expand chevrons on hover so unmodified regions recede. */
-[data-separator=line-info],
-[data-separator=line-info-basic] {
-  height: 22px !important;
-  margin-block: 1px !important;
-  background-color: transparent !important;
-}
-
-[data-separator=line-info] [data-separator-wrapper],
-[data-separator=line-info-basic] [data-separator-wrapper] {
-  background-color: transparent !important;
-  background-image: linear-gradient(
-    to bottom,
-    transparent calc(50% - 0.5px),
-    var(--border) calc(50% - 0.5px),
-    var(--border) calc(50% + 0.5px),
-    transparent calc(50% + 0.5px)
-  ) !important;
-}
-
-[data-separator=line-info] [data-separator-content],
-[data-separator=line-info-basic] [data-separator-content] {
-  background-color: transparent !important;
-}
-
-/* Mask the hairline behind the count text so the line appears to break around
- * the words rather than strike through them. */
-[data-separator=line-info] [data-unmodified-lines],
-[data-separator=line-info-basic] [data-unmodified-lines] {
-  background-color: var(--diffs-bg) !important;
-  padding-inline: 6px !important;
-  font-size: 11px !important;
-  color: var(--diffs-fg-number) !important;
-}
-
-/* Expand chevrons stay invisible until the row is hovered. */
-[data-separator=line-info] [data-expand-button],
-[data-separator=line-info-basic] [data-expand-button] {
-  background-color: transparent !important;
-  opacity: 0 !important;
-  transition: opacity 120ms ease !important;
-}
-
-[data-separator=line-info]:hover [data-expand-button],
-[data-separator=line-info-basic]:hover [data-expand-button] {
-  opacity: 1 !important;
-}
-`;
-
-export const INLINE_DIFF_RENDER_UNSAFE_CSS = `
-:host {
-  --diffs-font-family: var(
-    --font-mono,
-    "SF Mono",
-    Monaco,
-    Consolas,
-    "Ubuntu Mono",
-    "Liberation Mono",
-    "Courier New",
-    monospace
-  );
-  --diffs-font-size: 12px;
-  --diffs-line-height: 18px;
-  --diffs-bg: var(--background) !important;
-  --diffs-light-bg: var(--background) !important;
-  --diffs-dark-bg: var(--background) !important;
-  --diffs-token-light-bg: transparent;
-  --diffs-token-dark-bg: transparent;
-}
-
-[data-diffs-header] {
-  min-height: 44px;
-  padding-inline: 16px !important;
-  gap: 8px !important;
-  background-color: var(--background) !important;
-  border-bottom: 1px solid var(--border) !important;
-}
-
-[data-diff],
-[data-file],
-[data-error-wrapper],
-[data-virtualizer-buffer] {
-  background-color: var(--background) !important;
-}
-
-[data-title] {
-  color: var(--foreground) !important;
-}
-`;
 
 export type DiffThemeName = (typeof DIFF_THEME_NAMES)[keyof typeof DIFF_THEME_NAMES];
 
@@ -239,6 +46,7 @@ export type RenderablePatch =
   | {
       kind: "files";
       files: FileDiffMetadata[];
+      sourceFiles: FileDiffMetadata[];
     }
   | {
       kind: "raw";
@@ -246,9 +54,118 @@ export type RenderablePatch =
       reason: string;
     };
 
+export interface DiffLineStat {
+  additions: number;
+  deletions: number;
+}
+
+export function getDiffLineStat(files: ReadonlyArray<FileDiffMetadata>): DiffLineStat {
+  return files.reduce<DiffLineStat>(
+    (total, file) => {
+      for (const hunk of file.hunks) {
+        total.additions += hunk.additionLines;
+        total.deletions += hunk.deletionLines;
+      }
+
+      return total;
+    },
+    { additions: 0, deletions: 0 },
+  );
+}
+
+interface RenderablePatchOptions {
+  ignoreWhitespace?: boolean;
+  /**
+   * Pierre's partial-patch parser keeps hunk render starts in source-file
+   * coordinates. Its virtualizer iterates partial patches as compact rows, so
+   * review diffs need compact render starts while retaining collapsedBefore
+   * for the "N unmodified lines" separator.
+   */
+  compactPartialHunkOffsets?: boolean;
+}
+
+function hideWhitespaceChanges(file: FileDiffMetadata): FileDiffMetadata {
+  let splitDelta = 0;
+  let unifiedDelta = 0;
+  const hunks = file.hunks.map((hunk) => {
+    const oldContents = file.deletionLines
+      .slice(hunk.deletionLineIndex, hunk.deletionLineIndex + hunk.deletionCount)
+      .map((line) => `${line.replace(/\s/g, "")}\n`)
+      .join("");
+    const newContents = file.additionLines
+      .slice(hunk.additionLineIndex, hunk.additionLineIndex + hunk.additionCount)
+      .map((line) => `${line.replace(/\s/g, "")}\n`)
+      .join("");
+    const filtered = parseDiffFromFile(
+      { name: file.name, contents: oldContents },
+      { name: file.name, contents: newContents },
+      { context: Infinity },
+    ).hunks[0];
+    const next = {
+      ...hunk,
+      additionLines: filtered?.additionLines ?? 0,
+      deletionLines: filtered?.deletionLines ?? 0,
+      hunkContent: filtered
+        ? filtered.hunkContent.map((content) => ({
+            ...content,
+            additionLineIndex: content.additionLineIndex + hunk.additionLineIndex,
+            deletionLineIndex: content.deletionLineIndex + hunk.deletionLineIndex,
+          }))
+        : [
+            {
+              type: "context" as const,
+              lines: hunk.additionCount,
+              additionLineIndex: hunk.additionLineIndex,
+              deletionLineIndex: hunk.deletionLineIndex,
+            },
+          ],
+      splitLineStart: hunk.splitLineStart + splitDelta,
+      unifiedLineStart: hunk.unifiedLineStart + unifiedDelta,
+      splitLineCount: filtered?.splitLineCount ?? hunk.additionCount,
+      unifiedLineCount: filtered?.unifiedLineCount ?? hunk.additionCount,
+    };
+    splitDelta += next.splitLineCount - hunk.splitLineCount;
+    unifiedDelta += next.unifiedLineCount - hunk.unifiedLineCount;
+    return next;
+  });
+  return {
+    ...file,
+    hunks,
+    splitLineCount: file.splitLineCount + splitDelta,
+    unifiedLineCount: file.unifiedLineCount + unifiedDelta,
+    ...(file.cacheKey ? { cacheKey: `${file.cacheKey}:ignore-whitespace` } : {}),
+  };
+}
+
+function compactPartialHunkOffsets(file: FileDiffMetadata): FileDiffMetadata {
+  if (!file.isPartial) return file;
+
+  let splitLineStart = 0;
+  let unifiedLineStart = 0;
+  const hunks = file.hunks.map((hunk) => {
+    const compactHunk = {
+      ...hunk,
+      splitLineStart,
+      unifiedLineStart,
+    };
+    splitLineStart += hunk.splitLineCount;
+    unifiedLineStart += hunk.unifiedLineCount;
+    return compactHunk;
+  });
+
+  return {
+    ...file,
+    hunks,
+    splitLineCount: splitLineStart,
+    unifiedLineCount: unifiedLineStart,
+    ...(file.cacheKey ? { cacheKey: `${file.cacheKey}:compact-partial` } : {}),
+  };
+}
+
 export function getRenderablePatch(
   patch: string | undefined,
   cacheScope = "diff-panel",
+  options: RenderablePatchOptions = {},
 ): RenderablePatch | null {
   if (!patch) return null;
   const normalizedPatch = patch.trim();
@@ -259,9 +176,13 @@ export function getRenderablePatch(
       normalizedPatch,
       buildPatchCacheKey(normalizedPatch, cacheScope),
     );
-    const files = parsedPatches.flatMap((parsedPatch) => parsedPatch.files);
+    const sourceFiles = parsedPatches.flatMap((parsedPatch) => parsedPatch.files);
+    const files = sourceFiles.map((file) => {
+      const filtered = options.ignoreWhitespace ? hideWhitespaceChanges(file) : file;
+      return options.compactPartialHunkOffsets ? compactPartialHunkOffsets(filtered) : filtered;
+    });
     if (files.length > 0) {
-      return { kind: "files", files };
+      return { kind: "files", files, sourceFiles };
     }
 
     return {
@@ -278,16 +199,96 @@ export function getRenderablePatch(
   }
 }
 
+/**
+ * The file's own name. Git quotes and escapes a name holding a tab, a newline, a quote or a
+ * backslash, and the parser decodes it, so this is the name the host knows the file by.
+ */
 export function resolveFileDiffPath(fileDiff: FileDiffMetadata): string {
-  const raw = fileDiff.name ?? fileDiff.prevName ?? "";
-  if (raw.startsWith("a/") || raw.startsWith("b/")) {
-    return raw.slice(2);
-  }
-  return raw;
+  return fileDiff.name ?? fileDiff.prevName ?? "";
+}
+
+/**
+ * What the file was called before the change. Only a rename makes it differ from the current
+ * path, and the hosts that resolve a diff position against both sides need both names.
+ */
+export function resolveFileDiffPreviousPath(fileDiff: FileDiffMetadata): string {
+  return fileDiff.prevName ?? fileDiff.name ?? "";
+}
+
+/**
+ * Stable across re-renders of the same file, distinct for every block in a
+ * patch. A type change (regular file to symlink) arrives as a deletion and an
+ * addition of the same path, so the change type is part of the identity.
+ */
+export function buildFileDiffIdentityKey(fileDiff: FileDiffMetadata): string {
+  return `${resolveFileDiffPreviousPath(fileDiff)}\u0000${resolveFileDiffPath(fileDiff)}\u0000${fileDiff.type}`;
 }
 
 export function buildFileDiffRenderKey(fileDiff: FileDiffMetadata): string {
-  return fileDiff.cacheKey ?? `${fileDiff.prevName ?? "none"}:${fileDiff.name}`;
+  const cacheKey = fileDiff.cacheKey;
+  if (!cacheKey) return `${fileDiff.prevName ?? "none"}:${fileDiff.name}`;
+
+  return cacheKey.endsWith(":hydrated") ? cacheKey.slice(0, -":hydrated".length) : cacheKey;
+}
+
+function hashFileDiffPart(hash: number, value: string | number | boolean | undefined): number {
+  const serialized = value === undefined ? "undefined" : String(value);
+  const withLength = fnv1a32(`${typeof value}:${serialized.length}:`, hash);
+  return fnv1a32(serialized, withLength);
+}
+
+/**
+ * Content-only version for CodeView reconciliation. Pierre's cache key includes
+ * the whole patch, so using it here would repaint every file when one changes.
+ */
+export function buildFileDiffContentVersion(fileDiff: FileDiffMetadata): number {
+  let hash = FNV_OFFSET_BASIS_32;
+  const append = (value: string | number | boolean | undefined) => {
+    hash = hashFileDiffPart(hash, value);
+  };
+
+  append(fileDiff.name);
+  append(fileDiff.prevName);
+  append(fileDiff.lang);
+  append(fileDiff.newObjectId);
+  append(fileDiff.prevObjectId);
+  append(fileDiff.mode);
+  append(fileDiff.prevMode);
+  append(fileDiff.type);
+  append(fileDiff.isPartial);
+  append(fileDiff.splitLineCount);
+  append(fileDiff.unifiedLineCount);
+
+  for (const line of fileDiff.additionLines) append(line);
+  for (const line of fileDiff.deletionLines) append(line);
+  for (const hunk of fileDiff.hunks) {
+    append(hunk.collapsedBefore);
+    append(hunk.additionStart);
+    append(hunk.additionCount);
+    append(hunk.additionLines);
+    append(hunk.additionLineIndex);
+    append(hunk.deletionStart);
+    append(hunk.deletionCount);
+    append(hunk.deletionLines);
+    append(hunk.deletionLineIndex);
+    append(hunk.hunkContext);
+    append(hunk.hunkSpecs);
+    append(hunk.splitLineStart);
+    append(hunk.splitLineCount);
+    append(hunk.unifiedLineStart);
+    append(hunk.unifiedLineCount);
+    append(hunk.noEOFCRAdditions);
+    append(hunk.noEOFCRDeletions);
+    for (const content of hunk.hunkContent) {
+      append(content.type);
+      append(content.additionLineIndex);
+      append(content.deletionLineIndex);
+      append(content.type === "change" ? content.additions : content.lines);
+      append(content.type === "change" ? content.deletions : undefined);
+    }
+  }
+
+  return hash;
 }
 
 export function getDiffCollapseIconClassName(fileDiff: FileDiffMetadata): string {
@@ -304,3 +305,74 @@ export function getDiffCollapseIconClassName(fileDiff: FileDiffMetadata): string
       return "text-muted-foreground/80";
   }
 }
+
+/**
+ * Maps every diff/file surface the @pierre/diffs renderer paints onto the
+ * app's code tokens, so themed palettes reach the code body, gutter, and
+ * row tints instead of the renderer's bundled colors. Shared by the diff
+ * panel and the file preview.
+ */
+export const DIFF_SURFACE_THEME_UNSAFE_CSS = `
+[data-diffs-header],
+[data-diff],
+[data-file],
+[data-error-wrapper],
+[data-virtualizer-buffer] {
+  --diffs-header-font-family: var(--font-sans) !important;
+  --diffs-font-family: var(--font-mono) !important;
+  --diffs-bg: var(--code-background) !important;
+  --diffs-light-bg: var(--code-background) !important;
+  --diffs-dark-bg: var(--code-background) !important;
+  --diffs-token-light-bg: transparent;
+  --diffs-token-dark-bg: transparent;
+
+  /* Gutter, context, and row tints all derive from the code surface the diff
+     body sits on — mixing from the canvas leaves the gutter looking unthemed
+     when a palette separates the two. */
+  --diffs-bg-context-override: color-mix(in srgb, var(--code-background) 97%, var(--code-foreground));
+  --diffs-bg-hover-override: color-mix(in srgb, var(--code-background) 94%, var(--code-foreground));
+  --diffs-bg-separator-override: color-mix(
+    in srgb,
+    var(--code-background) 95%,
+    var(--code-foreground)
+  );
+  --diffs-bg-buffer-override: color-mix(in srgb, var(--code-background) 90%, var(--code-foreground));
+
+  --diffs-bg-addition-override: light-dark(
+    color-mix(in srgb, var(--code-background) 50%, var(--diff-addition)),
+    color-mix(in srgb, var(--code-background) 70%, var(--diff-addition))
+  );
+  --diffs-bg-addition-number-override: light-dark(
+    color-mix(in srgb, var(--code-background) 35%, var(--diff-addition)),
+    color-mix(in srgb, var(--code-background) 60%, var(--diff-addition))
+  );
+  --diffs-bg-addition-hover-override: color-mix(in srgb, var(--code-background) 85%, var(--diff-addition));
+  --diffs-bg-addition-emphasis-override: color-mix(
+    in srgb,
+    var(--code-background) 80%,
+    var(--diff-addition)
+  );
+
+  --diffs-bg-deletion-override: light-dark(
+    color-mix(in srgb, var(--code-background) 50%, var(--diff-deletion)),
+    color-mix(in srgb, var(--code-background) 70%, var(--diff-deletion))
+  );
+  --diffs-bg-deletion-number-override: light-dark(
+    color-mix(in srgb, var(--code-background) 35%, var(--diff-deletion)),
+    color-mix(in srgb, var(--code-background) 60%, var(--diff-deletion))
+  );
+  --diffs-bg-deletion-hover-override: color-mix(
+    in srgb,
+    var(--code-background) 85%,
+    var(--diff-deletion)
+  );
+  --diffs-bg-deletion-emphasis-override: color-mix(
+    in srgb,
+    var(--code-background) 80%,
+    var(--diff-deletion)
+  );
+
+  background-color: var(--diffs-bg) !important;
+  color: var(--code-foreground) !important;
+}
+`;

@@ -9,9 +9,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 
-interface NightlyReleaseMetadata {
+export interface NightlyReleaseMetadata {
   readonly baseVersion: string;
   readonly version: string;
   readonly tag: string;
@@ -29,6 +29,53 @@ const DesktopPackageJsonSchema = Schema.Struct({
   version: Schema.NonEmptyString,
 });
 
+export class InvalidDesktopPackageVersionError extends Schema.TaggedError<InvalidDesktopPackageVersionError>()(
+  "InvalidDesktopPackageVersionError",
+  {
+    version: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Invalid desktop package version '${this.version}'.`;
+  }
+}
+
+export class NightlyReleaseDesktopPackageError extends Schema.TaggedError<NightlyReleaseDesktopPackageError>()(
+  "NightlyReleaseDesktopPackageError",
+  {
+    operation: Schema.Literals(["read", "decode"]),
+    packageJsonPath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to ${this.operation} desktop package metadata at ${this.packageJsonPath}.`;
+  }
+}
+
+export class NightlyReleaseGitHubOutputConfigError extends Schema.TaggedError<NightlyReleaseGitHubOutputConfigError>()(
+  "NightlyReleaseGitHubOutputConfigError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to resolve the GITHUB_OUTPUT path for nightly release metadata.";
+  }
+}
+
+export class NightlyReleaseGitHubOutputAppendError extends Schema.TaggedError<NightlyReleaseGitHubOutputAppendError>()(
+  "NightlyReleaseGitHubOutputAppendError",
+  {
+    outputPath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to append nightly release metadata to ${this.outputPath}.`;
+  }
+}
+
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
 );
@@ -42,11 +89,23 @@ export const resolveNightlyTargetVersion = (version: string) => {
   const stableCore = resolveNightlyBaseVersion(version);
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(stableCore);
   if (!match) {
-    throw new Error(`Invalid desktop package version '${version}'.`);
+    return Effect.fail(new InvalidDesktopPackageVersionError({ version }));
   }
 
   const [, major, minor, patch] = match;
-  return `${major}.${minor}.${Number(patch) + 1}`;
+  return Effect.succeed(`${major}.${minor}.${Number(patch) + 1}`);
+};
+
+/** Prerelease trains that share nightly's date-and-run versioning. */
+export const PrereleaseChannel = Schema.Literals(["nightly", "preview"]);
+export type PrereleaseChannel = typeof PrereleaseChannel.Type;
+
+// The preview label is deliberately loud: the releases page is the one place
+// a preview build can be found, and its name is the first thing a visitor
+// reads before the warning in the body.
+const CHANNEL_RELEASE_LABELS: Record<PrereleaseChannel, string> = {
+  nightly: "Nightly",
+  preview: "Preview (maintainer test build, do not install)",
 };
 
 export const resolveNightlyReleaseMetadata = (
@@ -54,32 +113,50 @@ export const resolveNightlyReleaseMetadata = (
   date: string,
   runNumber: number,
   sha: string,
+  channel: PrereleaseChannel = "nightly",
 ) => {
   const shortSha = sha.slice(0, 12);
-  const version = `${baseVersion}-nightly.${date}.${runNumber}`;
+  const version = `${baseVersion}-${channel}.${date}.${runNumber}`;
   return {
     baseVersion,
     version,
     tag: `v${version}`,
-    name: `T3 Code Nightly ${version} (${shortSha})`,
+    name: `T3 Code ${CHANNEL_RELEASE_LABELS[channel]} ${version} (${shortSha})`,
     shortSha,
   };
 };
 
-const readDesktopBaseVersion = Effect.fn("readDesktopBaseVersion")(function* (
+export const readDesktopBaseVersion = Effect.fn("readDesktopBaseVersion")(function* (
   rootDir: string | undefined,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspaceRoot = rootDir ? path.resolve(rootDir) : yield* RepoRoot;
   const packageJsonPath = path.join(workspaceRoot, "apps/desktop/package.json");
-  const packageJson = yield* fs
-    .readFileString(packageJsonPath)
-    .pipe(Effect.flatMap(decodeDesktopPackageJson));
-  return resolveNightlyTargetVersion(packageJson.version);
+  const packageJsonSource = yield* fs.readFileString(packageJsonPath).pipe(
+    Effect.mapError(
+      (cause) =>
+        new NightlyReleaseDesktopPackageError({
+          operation: "read",
+          packageJsonPath,
+          cause,
+        }),
+    ),
+  );
+  const packageJson = yield* decodeDesktopPackageJson(packageJsonSource).pipe(
+    Effect.mapError(
+      (cause) =>
+        new NightlyReleaseDesktopPackageError({
+          operation: "decode",
+          packageJsonPath,
+          cause,
+        }),
+    ),
+  );
+  return yield* resolveNightlyTargetVersion(packageJson.version);
 });
 
-const writeOutput = Effect.fn("writeOutput")(function* (
+export const writeNightlyReleaseOutput = Effect.fn("writeNightlyReleaseOutput")(function* (
   metadata: NightlyReleaseMetadata,
   writeGithubOutput: boolean,
 ) {
@@ -94,9 +171,24 @@ const writeOutput = Effect.fn("writeOutput")(function* (
   ] as const;
 
   if (writeGithubOutput) {
-    const githubOutputPath = yield* Config.nonEmptyString("GITHUB_OUTPUT");
+    const githubOutputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT").pipe(
+      Effect.mapError(
+        (cause) =>
+          new NightlyReleaseGitHubOutputConfigError({
+            cause,
+          }),
+      ),
+    );
     const serialized = entries.map(([key, value]) => `${key}=${value}\n`).join("");
-    yield* fs.writeFileString(githubOutputPath, serialized, { flag: "a" });
+    yield* fs.writeFileString(githubOutputPath, serialized, { flag: "a" }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new NightlyReleaseGitHubOutputAppendError({
+            outputPath: githubOutputPath,
+            cause,
+          }),
+      ),
+    );
   } else {
     for (const [key, value] of entries) {
       yield* Console.log(`${key}=${value}`);
@@ -107,31 +199,37 @@ const writeOutput = Effect.fn("writeOutput")(function* (
 const command = Command.make(
   "resolve-nightly-release",
   {
-    date: Flag.string("date").pipe(
+    date: Flag.String("date").pipe(
       Flag.withSchema(DateSchema),
       Flag.withDescription("Nightly build date in YYYYMMDD."),
     ),
-    runNumber: Flag.string("run-number").pipe(
+    runNumber: Flag.String("run-number").pipe(
       Flag.withSchema(RunNumberSchema),
       Flag.withDescription("GitHub Actions run number."),
     ),
-    sha: Flag.string("sha").pipe(
+    sha: Flag.String("sha").pipe(
       Flag.withSchema(ShaSchema),
       Flag.withDescription("Commit sha for the nightly build."),
     ),
-    githubOutput: Flag.boolean("github-output").pipe(
+    channel: Flag.Literals("channel", PrereleaseChannel.literals).pipe(
+      Flag.withDescription("Prerelease channel whose identifier the version carries."),
+      Flag.withDefault("nightly" as const),
+    ),
+    githubOutput: Flag.Boolean("github-output").pipe(
       Flag.withDescription("Write values to GITHUB_OUTPUT instead of stdout."),
       Flag.withDefault(false),
     ),
-    root: Flag.string("root").pipe(
+    root: Flag.String("root").pipe(
       Flag.withDescription("Workspace root used to resolve apps/desktop/package.json."),
       Flag.optional,
     ),
   },
-  ({ date, runNumber, sha, githubOutput, root }) =>
+  ({ date, runNumber, sha, channel, githubOutput, root }) =>
     readDesktopBaseVersion(Option.getOrUndefined(root)).pipe(
-      Effect.map((baseVersion) => resolveNightlyReleaseMetadata(baseVersion, date, runNumber, sha)),
-      Effect.flatMap((metadata) => writeOutput(metadata, githubOutput)),
+      Effect.map((baseVersion) =>
+        resolveNightlyReleaseMetadata(baseVersion, date, runNumber, sha, channel),
+      ),
+      Effect.flatMap((metadata) => writeNightlyReleaseOutput(metadata, githubOutput)),
     ),
 ).pipe(Command.withDescription("Resolve nightly release version metadata."));
 

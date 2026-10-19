@@ -57,46 +57,55 @@ export type ConnectionTargetKind = ConnectionTarget["_tag"];
 
 export type NetworkStatus = "unknown" | "offline" | "online";
 
-export type ConnectionTransientReason =
-  | "network"
-  | "timeout"
-  | "transport"
-  | "endpoint-unavailable"
-  | "relay-unavailable"
-  | "remote-unavailable";
+export const ConnectionTransientReason = Schema.Literals([
+  "network",
+  "timeout",
+  "transport",
+  "endpoint-unavailable",
+  "relay-unavailable",
+  "remote-unavailable",
+]);
+export type ConnectionTransientReason = typeof ConnectionTransientReason.Type;
 
-export type ConnectionBlockedReason =
-  | "authentication"
-  | "configuration"
-  | "permission"
-  | "unsupported";
+export const ConnectionBlockedReason = Schema.Literals([
+  "authentication",
+  "configuration",
+  "permission",
+  "unsupported",
+]);
+export type ConnectionBlockedReason = typeof ConnectionBlockedReason.Type;
 
-export class ConnectionTransientError extends Schema.TaggedErrorClass<ConnectionTransientError>()(
+export class ConnectionTransientError extends Schema.TaggedError<ConnectionTransientError>()(
   "ConnectionTransientError",
   {
-    reason: Schema.Literals([
-      "network",
-      "timeout",
-      "transport",
-      "endpoint-unavailable",
-      "relay-unavailable",
-      "remote-unavailable",
-    ]),
-    message: Schema.String,
+    reason: ConnectionTransientReason,
+    detail: Schema.String,
     traceId: Schema.optionalKey(Schema.String),
   },
-) {}
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
 
-export class ConnectionBlockedError extends Schema.TaggedErrorClass<ConnectionBlockedError>()(
+export class ConnectionBlockedError extends Schema.TaggedError<ConnectionBlockedError>()(
   "ConnectionBlockedError",
   {
-    reason: Schema.Literals(["authentication", "configuration", "permission", "unsupported"]),
-    message: Schema.String,
+    reason: ConnectionBlockedReason,
+    detail: Schema.String,
     traceId: Schema.optionalKey(Schema.String),
+    /** The host speaks an older orchestration protocol; updating it restores the connection. */
+    serverUpdateRequired: Schema.optionalKey(Schema.Boolean),
   },
-) {}
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
 
 export type ConnectionAttemptError = ConnectionTransientError | ConnectionBlockedError;
+
+export const DPOP_ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 export type PreparedHttpAuthorization =
   | {
@@ -106,6 +115,7 @@ export type PreparedHttpAuthorization =
   | {
       readonly _tag: "Dpop";
       readonly accessToken: string;
+      readonly expiresAtEpochMs: number;
     };
 
 export interface PreparedConnection {

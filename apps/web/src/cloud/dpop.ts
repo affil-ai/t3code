@@ -27,7 +27,7 @@ const DPOP_KEY_STORE_NAME = "keys";
 const DPOP_KEY_ID = "relay-dpop-proof-key";
 const decodeDpopPublicJwk = Schema.decodeUnknownEffect(DpopPublicJwk);
 
-export const browserCryptoLayer = Layer.succeed(
+export const layer = Layer.succeed(
   Crypto.Crypto,
   Crypto.make({
     randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
@@ -107,43 +107,40 @@ export function writeStoredBrowserDpopKey(
   );
 }
 
-export const generateBrowserDpopKey: Effect.Effect<BrowserDpopKey, BrowserDpopError> = Effect.gen(
-  function* () {
-    const generated = yield* Effect.tryPromise({
-      try: () =>
-        crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
-          "sign",
-          "verify",
-        ]) as Promise<CryptoKeyPair>,
-      catch: (cause) => dpopError("Could not generate DPoP proof key.", cause),
-    });
-    const privateJwk = yield* Effect.tryPromise({
-      try: () => crypto.subtle.exportKey("jwk", generated.privateKey),
-      catch: (cause) => dpopError("Could not export DPoP private key.", cause),
-    });
-    const publicJwk = yield* Effect.tryPromise({
-      try: () => crypto.subtle.exportKey("jwk", generated.publicKey),
-      catch: (cause) => dpopError("Could not export DPoP public key.", cause),
-    }).pipe(
-      Effect.flatMap((jwk) => decodeDpopPublicJwk(jwk)),
-      Effect.mapError((cause) =>
-        cause instanceof BrowserDpopError
-          ? cause
-          : dpopError("Generated DPoP public key is invalid.", cause),
-      ),
-    );
-    const privateKey = yield* Effect.tryPromise({
-      try: () =>
-        importJWK(privateJwk as JWK, "ES256", { extractable: false }) as Promise<CryptoKey>,
-      catch: (cause) => dpopError("Could not import DPoP private key.", cause),
-    });
-    return {
-      privateKey,
-      publicJwk,
-      thumbprint: computeDpopJwkThumbprint(publicJwk),
-    };
-  },
-);
+export const generateBrowserDpopKey = Effect.gen(function* () {
+  const generated = yield* Effect.tryPromise({
+    try: () =>
+      crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+        "sign",
+        "verify",
+      ]) as Promise<CryptoKeyPair>,
+    catch: (cause) => dpopError("Could not generate DPoP proof key.", cause),
+  });
+  const privateJwk = yield* Effect.tryPromise({
+    try: () => crypto.subtle.exportKey("jwk", generated.privateKey),
+    catch: (cause) => dpopError("Could not export DPoP private key.", cause),
+  });
+  const publicJwk = yield* Effect.tryPromise({
+    try: () => crypto.subtle.exportKey("jwk", generated.publicKey),
+    catch: (cause) => dpopError("Could not export DPoP public key.", cause),
+  }).pipe(
+    Effect.flatMap((jwk) => decodeDpopPublicJwk(jwk)),
+    Effect.mapError((cause) =>
+      cause instanceof BrowserDpopError
+        ? cause
+        : dpopError("Generated DPoP public key is invalid.", cause),
+    ),
+  );
+  const privateKey = yield* Effect.tryPromise({
+    try: () => importJWK(privateJwk as JWK, "ES256", { extractable: false }) as Promise<CryptoKey>,
+    catch: (cause) => dpopError("Could not import DPoP private key.", cause),
+  });
+  return {
+    privateKey,
+    publicJwk,
+    thumbprint: computeDpopJwkThumbprint(publicJwk),
+  };
+});
 
 export function createBrowserDpopProof(input: {
   readonly method: string;
@@ -163,7 +160,7 @@ export function createBrowserDpopProof(input: {
     normalizedUrl.search = "";
     normalizedUrl.hash = "";
     const jti = yield* Crypto.Crypto.pipe(
-      Effect.flatMap((crypto) => crypto.randomUUIDv4),
+      Effect.flatMap((crypto) => crypto.randomUUIDv4()),
       Effect.mapError((cause) => dpopError("Could not generate DPoP proof identifier.", cause)),
     );
     const proof = yield* Effect.tryPromise({

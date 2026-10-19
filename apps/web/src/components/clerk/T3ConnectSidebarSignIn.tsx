@@ -3,6 +3,7 @@ import { LogInIcon } from "lucide-react";
 
 import { hasCloudPublicConfig } from "../../cloud/publicConfig";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
+import { T3_CONNECT_ACCOUNT_PAGES } from "./T3ConnectAccountPages";
 import { useT3ConnectAuthPrompt } from "./useT3ConnectAuthPrompt";
 
 export function T3ConnectSidebarSignIn() {
@@ -27,10 +28,21 @@ function ConfiguredT3ConnectSidebarAvatar() {
       appearance={{
         elements: {
           avatarBox: "size-7",
-          userButtonTrigger: "rounded-lg p-1 hover:bg-sidebar-accent",
+          userButtonTrigger: "rounded-lg p-1 hover:bg-sidebar-row-hover",
         },
       }}
-    />
+    >
+      {T3_CONNECT_ACCOUNT_PAGES.map((page) => (
+        <UserButton.UserProfilePage
+          key={page.url}
+          label={page.label}
+          labelIcon={page.icon}
+          url={page.url}
+        >
+          {page.content}
+        </UserButton.UserProfilePage>
+      ))}
+    </UserButton>
   );
 }
 
@@ -44,12 +56,8 @@ function ConfiguredT3ConnectSidebarSignIn() {
     <>
       <SidebarMenu>
         <SidebarMenuItem>
-          <SidebarMenuButton
-            size="sm"
-            className="gap-2 px-2 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={openAuthPrompt}
-          >
-            <LogInIcon className="size-4" />
+          <SidebarMenuButton onClick={openAuthPrompt}>
+            <LogInIcon />
             <span>Sign in to T3 Connect</span>
           </SidebarMenuButton>
         </SidebarMenuItem>

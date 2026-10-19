@@ -1,89 +1,98 @@
+import { useAtomValue } from "@effect/atom-react";
+import {
+  type AssetUrlState,
+  assetUrlStateFromResult,
+  blockedAssetUrlState,
+  EMPTY_ASSET_URL_ATOM,
+  resolveAssetUrl,
+} from "@t3tools/client-runtime/state/assets";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
-import { useEffect, useMemo, useState } from "react";
+import { AsyncResult } from "effect/reactivity";
+import { useCallback, useMemo } from "react";
 
-import { readEnvironmentApi } from "~/environmentApi";
-import { readEnvironmentConnection } from "~/environments/runtime";
+import { assetEnvironment } from "~/state/assets";
+import { useFilesystemReadAccess } from "~/state/filesystem";
+import { usePreparedConnection } from "~/state/session";
+import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 
-const REFRESH_MARGIN_MS = 30_000;
+export { resolveAssetUrl, type AssetUrlState } from "@t3tools/client-runtime/state/assets";
 
-interface CachedAssetUrl {
-  readonly url: string;
-  readonly expiresAt: number;
+export function useAssetUrlState(
+  environmentId: EnvironmentId | null,
+  resource: AssetResource | null,
+): AssetUrlState {
+  const blocked = blockedAssetUrlState(resource, useFilesystemReadAccess(environmentId));
+  const preparedConnection = usePreparedConnection(environmentId);
+  const result = useAtomValue(
+    blocked !== null || environmentId === null || resource === null
+      ? EMPTY_ASSET_URL_ATOM
+      : assetEnvironment.createUrl({ environmentId, input: { resource } }),
+  );
+  if (blocked !== null) return blocked;
+  return assetUrlStateFromResult(
+    result,
+    preparedConnection._tag === "Some" ? preparedConnection.value.httpBaseUrl : null,
+  );
 }
 
-const assetUrlCache = new Map<string, CachedAssetUrl>();
-const assetUrlRequests = new Map<string, Promise<CachedAssetUrl>>();
-
-function assetCacheKey(environmentId: EnvironmentId, resource: AssetResource): string {
-  return `${environmentId}:${JSON.stringify(resource)}`;
-}
-
-export async function resolveAssetUrl(
-  environmentId: EnvironmentId,
-  resource: AssetResource,
-): Promise<CachedAssetUrl> {
-  const key = assetCacheKey(environmentId, resource);
-  const cached = assetUrlCache.get(key);
-  if (cached && cached.expiresAt - REFRESH_MARGIN_MS > Date.now()) {
-    return cached;
-  }
-
-  const inFlight = assetUrlRequests.get(key);
-  if (inFlight) {
-    return inFlight;
-  }
-
-  const request = (async () => {
-    const api = readEnvironmentApi(environmentId);
-    const connection = readEnvironmentConnection(environmentId);
-    if (!api || !connection) {
-      throw new Error("Environment is not connected.");
-    }
-    const result = await api.assets.createUrl({ resource });
-    const cachedResult = {
-      url: new URL(result.relativeUrl, connection.knownEnvironment.target.httpBaseUrl).toString(),
-      expiresAt: result.expiresAt,
-    };
-    assetUrlCache.set(key, cachedResult);
-    return cachedResult;
-  })().finally(() => {
-    assetUrlRequests.delete(key);
+export function useAssetUrlRefresh(
+  environmentId: EnvironmentId | null,
+  resource: AssetResource | null,
+): () => Promise<string | null> {
+  const connection = usePreparedConnection(environmentId);
+  const httpBaseUrl = connection._tag === "Some" ? connection.value.httpBaseUrl : null;
+  const refresh = useAtomQueryRunner(assetEnvironment.createUrl, {
+    reportFailure: false,
+    refresh: true,
   });
-  assetUrlRequests.set(key, request);
-  return request;
+  return useCallback(async () => {
+    if (environmentId === null || resource === null || httpBaseUrl === null) return null;
+    const result = await refresh({ environmentId, input: { resource } });
+    if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+    return resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
+  }, [environmentId, resource, refresh, httpBaseUrl]);
 }
 
-export function useAssetUrl(environmentId: EnvironmentId, resource: AssetResource): string | null {
-  const resourceJson = JSON.stringify(resource);
-  const stableResource = useMemo(() => JSON.parse(resourceJson) as AssetResource, [resourceJson]);
-  const key = assetCacheKey(environmentId, stableResource);
-  const [url, setUrl] = useState<string | null>(() => assetUrlCache.get(key)?.url ?? null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const load = () => {
-      void resolveAssetUrl(environmentId, stableResource)
-        .then((result) => {
-          if (cancelled) return;
-          setUrl(result.url);
-          refreshTimer = setTimeout(
-            load,
-            Math.max(0, result.expiresAt - Date.now() - REFRESH_MARGIN_MS),
-          );
-        })
-        .catch(() => {
-          if (!cancelled) setUrl(null);
-        });
-    };
-    load();
-
-    return () => {
-      cancelled = true;
-      if (refreshTimer) clearTimeout(refreshTimer);
-    };
-  }, [environmentId, key, stableResource]);
-
-  return url;
+export function useAssetUrls(
+  environmentId: EnvironmentId,
+  resources: ReadonlyArray<AssetResource>,
+): ReadonlyArray<string | null> {
+  const preparedConnection = usePreparedConnection(environmentId);
+  const { canReadFiles } = useFilesystemReadAccess(environmentId);
+  const allowedResources = useMemo(
+    () =>
+      canReadFiles
+        ? resources
+        : resources.filter(
+            (resource) =>
+              resource._tag !== "workspace-file" &&
+              resource._tag !== "media-file" &&
+              resource._tag !== "draft-workspace-file",
+          ),
+    [canReadFiles, resources],
+  );
+  const results = useAtomValue(
+    assetEnvironment.createUrls({
+      environmentId,
+      resources: allowedResources,
+    }),
+  );
+  return useMemo(() => {
+    if (preparedConnection._tag === "None") return resources.map(() => null);
+    let resultIndex = 0;
+    return resources.map((resource) => {
+      if (
+        !canReadFiles &&
+        (resource._tag === "workspace-file" ||
+          resource._tag === "media-file" ||
+          resource._tag === "draft-workspace-file")
+      )
+        return null;
+      const result = results[resultIndex++];
+      return result && AsyncResult.isSuccess(result)
+        ? resolveAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl)
+        : null;
+    });
+  }, [canReadFiles, preparedConnection, resources, results]);
 }

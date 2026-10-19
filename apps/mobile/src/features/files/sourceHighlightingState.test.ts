@@ -1,5 +1,5 @@
-import { AtomRegistry } from "effect/unstable/reactivity";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { AtomRegistry } from "effect/reactivity";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -88,7 +88,7 @@ describe("sourceHighlightingState", () => {
       expect(AsyncResult.isSuccess(registry.get(atom))).toBe(true);
     });
     firstUnmount();
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     const secondUnmount = registry.mount(atom);
     await vi.waitFor(() => {

@@ -85,13 +85,3 @@ export function useMediaQuery(query: BreakpointQuery | MediaQueryInput | (string
 export function useIsMobile(): boolean {
   return useMediaQuery("max-md");
 }
-
-/**
- * True on touch-first devices (coarse pointer, no hover) — e.g. phones and
- * tablets. Distinct from {@link useIsMobile}, which only reflects viewport
- * width: a desktop browser resized narrow still has a fine pointer and can
- * hover, so it should keep hover-driven affordances.
- */
-export function useIsTouchDevice(): boolean {
-  return useMediaQuery("(pointer: coarse) and (hover: none)");
-}

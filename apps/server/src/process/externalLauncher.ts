@@ -9,30 +9,61 @@
 import {
   EDITORS,
   ExternalLauncherError,
+  ExternalLauncherBrowserSpawnError,
+  ExternalLauncherCommandNotFoundError,
+  ExternalLauncherEditorSpawnError,
+  ExternalLauncherUnknownEditorError,
+  ExternalLauncherUnsupportedEditorError,
+  ExternalLauncherUnsupportedTargetError,
   type EditorId,
+  type FileManagerRevealKind,
   type LaunchEditorInput,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveEditorCommand } from "@t3tools/shared/editor";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  isCommandAvailable,
+  resolveSpawnCommand,
+  withPathDirectoryListings,
+} from "@t3tools/shared/shell";
+import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64 from "effect/encoding/Base64";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 // ==============================
 // Definitions
 // ==============================
 
-export { ExternalLauncherError };
+export {
+  ExternalLauncherError,
+  ExternalLauncherBrowserSpawnError,
+  ExternalLauncherCommandNotFoundError,
+  ExternalLauncherEditorSpawnError,
+  ExternalLauncherUnknownEditorError,
+  ExternalLauncherUnsupportedEditorError,
+  ExternalLauncherUnsupportedTargetError,
+} from "@t3tools/contracts";
 export type { LaunchEditorInput };
 interface EditorLaunch {
+  readonly editor: EditorId;
+  readonly target: string;
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  /** Defaults to true. See WINDOWS_POWERSHELL_DETACHED. */
+  readonly detached?: boolean;
 }
 
 interface ProcessLaunch {
@@ -47,6 +78,14 @@ interface TargetPathAndPosition {
   readonly column: Option.Option<string>;
 }
 
+/**
+ * Windows command shims (`code.cmd`) forward arguments through `%*`, which
+ * cmd.exe parses a second time after the first escaping layer is gone: a
+ * line break ends the command there, and a double quote closes the quoting
+ * that keeps `&` or `|` literal. Neither can occur in a Windows path.
+ */
+// oxlint-disable-next-line no-control-regex
+const WINDOWS_SHIM_UNSAFE_ARG_PATTERN = /[\u0000-\u001f\u007f"]/;
 const TARGET_WITH_POSITION_PATTERN = /^(.*?):(\d+)(?::(\d+))?$/;
 const POWERSHELL_ARGUMENTS_PREFIX = [
   "-NoProfile",
@@ -55,6 +94,12 @@ const POWERSHELL_ARGUMENTS_PREFIX = [
   "Bypass",
   "-EncodedCommand",
 ] as const;
+
+// Windows PowerShell started with DETACHED_PROCESS exits 0 without running its
+// command, so native Windows launches through it stay attached. The child is
+// still unref'd with ignored stdio, so nothing waits on it. WSL interop
+// PowerShell starts from a Linux process and keeps the detached launch.
+const WINDOWS_POWERSHELL_DETACHED = false;
 
 const DETACHED_IGNORE_STDIO_OPTIONS = {
   detached: true,
@@ -74,20 +119,28 @@ const compactEnv = (input: Record<string, Option.Option<string>>): NodeJS.Proces
   );
 
 const BrowserLaunchEnvConfig = Config.all({
-  SYSTEMROOT: Config.string("SYSTEMROOT").pipe(Config.option),
-  windir: Config.string("windir").pipe(Config.option),
-  WSL_DISTRO_NAME: Config.string("WSL_DISTRO_NAME").pipe(Config.option),
-  WSL_INTEROP: Config.string("WSL_INTEROP").pipe(Config.option),
-  SSH_CONNECTION: Config.string("SSH_CONNECTION").pipe(Config.option),
-  SSH_TTY: Config.string("SSH_TTY").pipe(Config.option),
-  container: Config.string("container").pipe(Config.option),
+  SYSTEMROOT: Config.String("SYSTEMROOT").pipe(Config.option),
+  windir: Config.String("windir").pipe(Config.option),
+  WSL_DISTRO_NAME: Config.String("WSL_DISTRO_NAME").pipe(Config.option),
+  WSL_INTEROP: Config.String("WSL_INTEROP").pipe(Config.option),
+  SSH_CONNECTION: Config.String("SSH_CONNECTION").pipe(Config.option),
+  SSH_TTY: Config.String("SSH_TTY").pipe(Config.option),
+  container: Config.String("container").pipe(Config.option),
+  DISPLAY: Config.String("DISPLAY").pipe(Config.option),
+  WAYLAND_DISPLAY: Config.String("WAYLAND_DISPLAY").pipe(Config.option),
 }).pipe(Config.map(compactEnv));
 
 const CommandLookupEnvConfig = Config.all({
-  PATH: Config.string("PATH").pipe(Config.option),
-  Path: Config.string("Path").pipe(Config.option),
-  path: Config.string("path").pipe(Config.option),
-  PATHEXT: Config.string("PATHEXT").pipe(Config.option),
+  PATH: Config.String("PATH").pipe(Config.option),
+  Path: Config.String("Path").pipe(Config.option),
+  path: Config.String("path").pipe(Config.option),
+  PATHEXT: Config.String("PATHEXT").pipe(Config.option),
+  HOME: Config.String("HOME").pipe(Config.option),
+  LOCALAPPDATA: Config.String("LOCALAPPDATA").pipe(Config.option),
+  ProgramFiles: Config.String("ProgramFiles").pipe(Config.option),
+  ProgramW6432: Config.String("ProgramW6432").pipe(Config.option),
+  XDG_DATA_HOME: Config.String("XDG_DATA_HOME").pipe(Config.option),
+  "ProgramFiles(x86)": Config.String("ProgramFiles(x86)").pipe(Config.option),
 }).pipe(Config.map(compactEnv));
 
 const readBrowserLaunchEnv = BrowserLaunchEnvConfig.pipe(Effect.orElseSucceed(() => ({})));
@@ -133,26 +186,6 @@ function resolveCommandEditorArgs(
   }
 }
 
-function resolveEditorArgs(
-  editor: (typeof EDITORS)[number],
-  target: string,
-): ReadonlyArray<string> {
-  const baseArgs = "baseArgs" in editor ? editor.baseArgs : [];
-  return [...baseArgs, ...resolveCommandEditorArgs(editor, target)];
-}
-
-const resolveAvailableCommand = Effect.fn("externalLauncher.resolveAvailableCommand")(function* (
-  commands: ReadonlyArray<string>,
-  env: NodeJS.ProcessEnv,
-): Effect.fn.Return<Option.Option<string>, never, FileSystem.FileSystem | Path.Path> {
-  for (const command of commands) {
-    if (yield* isCommandAvailable(command, { env })) {
-      return Option.some(command);
-    }
-  }
-  return Option.none();
-});
-
 function encodeUtf16LeBase64(input: string): string {
   const bytes = new Uint8Array(input.length * 2);
   for (let index = 0; index < input.length; index += 1) {
@@ -160,7 +193,7 @@ function encodeUtf16LeBase64(input: string): string {
     bytes[index * 2] = code & 0xff;
     bytes[index * 2 + 1] = code >>> 8;
   }
-  return Encoding.encodeBase64(bytes);
+  return Base64.encode(bytes);
 }
 
 function escapePowerShellStringLiteral(input: string): string {
@@ -175,7 +208,13 @@ function resolveWslPowerShellPath(): string {
   return "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 }
 
-function shouldUseWindowsBrowserFromWsl(
+// File reveals from WSL resolve PowerShell through the interop PATH rather
+// than the fixed /mnt/c mount: the automount root is configurable, and a
+// PATH-resolved command keeps the advertised capability aligned with the
+// availability check `launchEditor` performs before spawning.
+const WSL_POWERSHELL_COMMAND = "powershell.exe";
+
+function shouldUseWindowsHostFromWsl(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv = {},
 ): boolean {
@@ -188,7 +227,11 @@ function shouldUseWindowsBrowserFromWsl(
   );
 }
 
-function resolveWindowsBrowserLaunch(target: string, command: string): ProcessLaunch {
+function resolveWindowsBrowserLaunch(
+  target: string,
+  command: string,
+  detached: boolean,
+): ProcessLaunch {
   const encodedCommand = encodeUtf16LeBase64(
     `$ProgressPreference = 'SilentlyContinue'; Start ${escapePowerShellStringLiteral(target)}`,
   );
@@ -196,7 +239,7 @@ function resolveWindowsBrowserLaunch(target: string, command: string): ProcessLa
     command,
     args: [...POWERSHELL_ARGUMENTS_PREFIX, encodedCommand],
     options: {
-      detached: true,
+      detached,
       shell: false,
       stdin: "ignore",
       stdout: "ignore",
@@ -205,15 +248,161 @@ function resolveWindowsBrowserLaunch(target: string, command: string): ProcessLa
   };
 }
 
-function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
+function hasGraphicalLinuxSession(env: NodeJS.ProcessEnv): boolean {
+  return [env.DISPLAY, env.WAYLAND_DISPLAY].some(
+    (value) => value !== undefined && value.trim().length > 0,
+  );
+}
+
+function fileManagerCommandForPlatform(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
   switch (platform) {
     case "darwin":
       return "open";
     case "win32":
       return "explorer";
     default:
-      return "xdg-open";
+      if (shouldUseWindowsHostFromWsl(platform, env)) {
+        return env.WSL_DISTRO_NAME?.trim() ? "explorer.exe" : undefined;
+      }
+      return hasGraphicalLinuxSession(env) ? "xdg-open" : undefined;
   }
+}
+
+// A graphical session variable plus an executable `xdg-open` does not prove
+// that opening a directory does anything: without an `inode/directory` MIME
+// handler, `xdg-open` exits nonzero after the launcher has already detached,
+// so the client would see a silent no-op. Require the handler before
+// advertising the file manager on Linux.
+//
+// The probe carries its own timeout well inside the scan timeout
+// `server.getConfig` applies to editor discovery: that outer timeout degrades
+// to an empty editor list, so a hung `xdg-mime` (broken D-Bus or desktop
+// session) must cost only the file manager, not every discovered editor.
+const LINUX_DIRECTORY_HANDLER_PROBE_TIMEOUT = "2 seconds";
+
+const hasUsableLinuxDirectoryHandler = Effect.fn("externalLauncher.hasUsableLinuxDirectoryHandler")(
+  function* (
+    env: NodeJS.ProcessEnv,
+  ): Effect.fn.Return<
+    boolean,
+    never,
+    FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+  > {
+    if (!(yield* isCommandAvailable("xdg-mime", { env }))) {
+      return false;
+    }
+
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return yield* spawner
+      .spawn(
+        ChildProcess.make("xdg-mime", ["query", "default", "inode/directory"], {
+          stdin: "ignore",
+          stderr: "ignore",
+        }),
+      )
+      .pipe(
+        Effect.flatMap((handle) =>
+          Effect.all([handle.stdout.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode], {
+            concurrency: "unbounded",
+          }),
+        ),
+        Effect.map(([stdout, exitCode]) => exitCode === 0 && stdout.trim().length > 0),
+        Effect.scoped,
+        Effect.timeout(LINUX_DIRECTORY_HANDLER_PROBE_TIMEOUT),
+        Effect.orElseSucceed(() => false),
+      );
+  },
+);
+
+const isUsableFileManagerCommand = Effect.fn("externalLauncher.isUsableFileManagerCommand")(
+  function* (
+    command: string,
+    env: NodeJS.ProcessEnv,
+  ): Effect.fn.Return<
+    boolean,
+    never,
+    FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+  > {
+    if (!(yield* isCommandAvailable(command, { env }))) {
+      return false;
+    }
+    return command !== "xdg-open" || (yield* hasUsableLinuxDirectoryHandler(env));
+  },
+);
+
+// The file-manager command a launch can actually run, not just the platform
+// preference. WSL hosts prefer the Windows Explorer bridge, but interop can
+// exist without `explorer.exe` on PATH (appendWindowsPath=false) or without a
+// distro name while WSLg still provides a working Linux file manager, so they
+// keep the `xdg-open` fallback instead of losing the editor entirely.
+const resolveUsableFileManagerCommand = Effect.fn(
+  "externalLauncher.resolveUsableFileManagerCommand",
+)(function* (
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): Effect.fn.Return<
+  string | undefined,
+  never,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  const command = fileManagerCommandForPlatform(platform, env);
+  if (command !== undefined && (yield* isUsableFileManagerCommand(command, env))) {
+    return command;
+  }
+  if (
+    shouldUseWindowsHostFromWsl(platform, env) &&
+    hasGraphicalLinuxSession(env) &&
+    (yield* isUsableFileManagerCommand("xdg-open", env))
+  ) {
+    return "xdg-open";
+  }
+  return undefined;
+});
+
+// Reveal on Windows and WSL runs through PowerShell (see
+// resolveFileManagerRevealLaunch), not the `explorer` command that gates the
+// file-manager editor itself, so the capability must probe the executables the
+// reveal actually spawns. Callers gate on file-manager availability first;
+// the Linux "files" kind relies on that gate for the directory-handler probe,
+// while the WSL fallback re-probes because its availability may have come
+// from the Explorer bridge instead.
+const fileManagerRevealKindForPlatform = Effect.fn(
+  "externalLauncher.fileManagerRevealKindForPlatform",
+)(function* (
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): Effect.fn.Return<
+  FileManagerRevealKind | undefined,
+  never,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  if (platform === "darwin") return "finder";
+  if (platform === "win32") {
+    return (yield* isCommandAvailable(resolvePowerShellPath(env), { env }))
+      ? "file-explorer"
+      : undefined;
+  }
+  if (shouldUseWindowsHostFromWsl(platform, env)) {
+    if (
+      env.WSL_DISTRO_NAME?.trim() &&
+      (yield* isCommandAvailable("explorer.exe", { env })) &&
+      (yield* isCommandAvailable(WSL_POWERSHELL_COMMAND, { env }))
+    ) {
+      return "file-explorer";
+    }
+    return hasGraphicalLinuxSession(env) && (yield* isUsableFileManagerCommand("xdg-open", env))
+      ? "files"
+      : undefined;
+  }
+  return hasGraphicalLinuxSession(env) ? "files" : undefined;
+});
+
+function resolveWslFileManagerPath(target: string, distroName: string): string {
+  const relativePath = target.replace(/^\/+/, "").replaceAll("/", "\\");
+  return `\\\\wsl.localhost\\${distroName}${relativePath.length > 0 ? `\\${relativePath}` : ""}`;
 }
 
 function buildBrowserLaunch(
@@ -230,11 +419,15 @@ function buildBrowserLaunch(
   }
 
   if (platform === "win32") {
-    return resolveWindowsBrowserLaunch(target, resolvePowerShellPath(env));
+    return resolveWindowsBrowserLaunch(
+      target,
+      resolvePowerShellPath(env),
+      WINDOWS_POWERSHELL_DETACHED,
+    );
   }
 
-  if (shouldUseWindowsBrowserFromWsl(platform, env)) {
-    return resolveWindowsBrowserLaunch(target, resolveWslPowerShellPath());
+  if (shouldUseWindowsHostFromWsl(platform, env)) {
+    return resolveWindowsBrowserLaunch(target, resolveWslPowerShellPath(), true);
   }
 
   return {
@@ -247,19 +440,22 @@ function buildBrowserLaunch(
 const buildAvailableEditors = Effect.fn("externalLauncher.buildAvailableEditors")(function* (
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-): Effect.fn.Return<ReadonlyArray<EditorId>, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  ReadonlyArray<EditorId>,
+  never,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
   const available: EditorId[] = [];
 
   for (const editor of EDITORS) {
     if (editor.commands === null) {
-      const command = fileManagerCommandForPlatform(platform);
-      if (yield* isCommandAvailable(command, { env })) {
+      if ((yield* resolveUsableFileManagerCommand(platform, env)) !== undefined) {
         available.push(editor.id);
       }
       continue;
     }
 
-    const command = yield* resolveAvailableCommand(editor.commands, env);
+    const command = yield* resolveEditorCommand(editor, env);
     if (Option.isSome(command)) {
       available.push(editor.id);
     }
@@ -271,41 +467,72 @@ const buildAvailableEditors = Effect.fn("externalLauncher.buildAvailableEditors"
 const resolveBrowserLaunch = Effect.fn("externalLauncher.resolveBrowserLaunch")(function* (
   target: string,
 ) {
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
   const env = yield* readBrowserLaunchEnv;
   return buildBrowserLaunch(target, platform, env);
 });
 
 const resolveAvailableEditors = Effect.fn("externalLauncher.resolveAvailableEditors")(function* () {
-  const platform = yield* HostProcessPlatform;
-  const env = yield* readCommandLookupEnv;
-  return yield* buildAvailableEditors(platform, env);
+  const platform = yield* HostProcess.Platform;
+  const env = { ...(yield* readBrowserLaunchEnv), ...(yield* readCommandLookupEnv) };
+  return yield* buildAvailableEditors(platform, env).pipe(withPathDirectoryListings);
 });
 
-/**
- * ExternalLauncherShape - Service API for browser and editor launch actions.
- */
-export interface ExternalLauncherShape {
-  readonly resolveAvailableEditors: () => Effect.Effect<ReadonlyArray<EditorId>>;
-  /**
-   * Launch a URL target in the default browser.
-   */
-  readonly launchBrowser: (target: string) => Effect.Effect<void, ExternalLauncherError>;
+const resolveFileManagerRevealKind = Effect.fn("externalLauncher.resolveFileManagerRevealKind")(
+  function* () {
+    const platform = yield* HostProcess.Platform;
+    const env = { ...(yield* readBrowserLaunchEnv), ...(yield* readCommandLookupEnv) };
+    return yield* fileManagerRevealKindForPlatform(platform, env);
+  },
+);
 
-  /**
-   * Launch a workspace path in a selected editor integration.
-   *
-   * Launches the editor as a detached process so server startup is not blocked.
-   */
-  readonly launchEditor: (input: LaunchEditorInput) => Effect.Effect<void, ExternalLauncherError>;
+// Editor discovery walks PATH for every known editor and runs for every
+// client connect (the server config embeds the available editors). Memoize
+// the discovered set for a bounded window so repeat connects skip even the
+// per-command cache lookups in @t3tools/shared/shell.
+//
+// The scan runs on its own fiber in the service scope, and every caller awaits
+// that one scan. Callers apply a timeout (`resolveAvailableEditorsForConfig`)
+// and disconnect mid-connect; neither may cancel a scan other connects are
+// waiting on, or throw away work a slow host (a busy server at startup, a
+// long PATH) needs more than one connect to finish. A failed scan clears the
+// entry so the next caller starts over rather than replaying the failure.
+// Expiry uses the monotonic clock (Clock.monotonicTimeNanos), matching the
+// command-resolution cache in @t3tools/shared/shell, so a backward wall-clock
+// adjustment cannot keep an expired entry alive.
+const EDITOR_DISCOVERY_CACHE_TTL_NANOS = 60_000_000_000n;
+
+interface EditorDiscoveryCacheEntry {
+  readonly scan: Deferred.Deferred<ReadonlyArray<EditorId>>;
+  /** Undefined while the scan is still running. */
+  readonly expiresAtNanos: bigint | undefined;
 }
 
 /**
  * ExternalLauncher - Service tag for browser/editor launch operations.
  */
-export class ExternalLauncher extends Context.Service<ExternalLauncher, ExternalLauncherShape>()(
-  "t3/process/externalLauncher",
-) {}
+export class ExternalLauncher extends Context.Service<
+  ExternalLauncher,
+  {
+    readonly resolveAvailableEditors: () => Effect.Effect<ReadonlyArray<EditorId>>;
+    /**
+     * Reveal kind for the host, or undefined when the executable a reveal
+     * actually spawns is unavailable. Only meaningful when
+     * `resolveAvailableEditors` includes "file-manager": on Linux that
+     * availability check also carries the directory-handler probe this
+     * capability relies on.
+     */
+    readonly resolveFileManagerRevealKind: () => Effect.Effect<FileManagerRevealKind | undefined>;
+    /** Launch a URL target in the default browser. */
+    readonly launchBrowser: (target: string) => Effect.Effect<void, ExternalLauncherError>;
+    /**
+     * Launch a workspace path in a selected editor integration.
+     *
+     * Launches the editor as a detached process so server startup is not blocked.
+     */
+    readonly launchEditor: (input: LaunchEditorInput) => Effect.Effect<void, ExternalLauncherError>;
+  }
+>()("t3/process/externalLauncher") {}
 
 // ==============================
 // Implementations
@@ -313,9 +540,13 @@ export class ExternalLauncher extends Context.Service<ExternalLauncher, External
 
 const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
   input: LaunchEditorInput,
-): Effect.fn.Return<EditorLaunch, ExternalLauncherError, FileSystem.FileSystem | Path.Path> {
-  const platform = yield* HostProcessPlatform;
-  const env = yield* readCommandLookupEnv;
+): Effect.fn.Return<
+  EditorLaunch,
+  ExternalLauncherError,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  const platform = yield* HostProcess.Platform;
+  const env = { ...(yield* readBrowserLaunchEnv), ...(yield* readCommandLookupEnv) };
   yield* Effect.annotateCurrentSpan({
     "externalLauncher.editor": input.editor,
     "externalLauncher.cwd": input.cwd,
@@ -323,30 +554,157 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
   });
   const editorDef = EDITORS.find((editor) => editor.id === input.editor);
   if (!editorDef) {
-    return yield* new ExternalLauncherError({ message: `Unknown editor: ${input.editor}` });
+    return yield* new ExternalLauncherUnknownEditorError({ editor: input.editor });
   }
 
   if (editorDef.commands) {
-    const command = Option.getOrElse(
-      yield* resolveAvailableCommand(editorDef.commands, env),
-      () => editorDef.commands[0],
+    const { command, baseArgs } = Option.getOrElse(
+      yield* resolveEditorCommand(editorDef, env),
+      () => ({
+        command: editorDef.commands[0],
+        baseArgs: "baseArgs" in editorDef ? editorDef.baseArgs : [],
+      }),
     );
     return {
+      editor: editorDef.id,
+      target: input.cwd,
       command,
-      args: resolveEditorArgs(editorDef, input.cwd),
+      args: [...baseArgs, ...resolveCommandEditorArgs(editorDef, input.cwd)],
     };
   }
 
   if (editorDef.id !== "file-manager") {
-    return yield* new ExternalLauncherError({ message: `Unsupported editor: ${input.editor}` });
+    return yield* new ExternalLauncherUnsupportedEditorError({ editor: input.editor });
   }
 
-  return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
+  const command = yield* resolveUsableFileManagerCommand(platform, env);
+  if (command === undefined) {
+    return yield* new ExternalLauncherUnsupportedEditorError({ editor: input.editor });
+  }
+
+  if (input.reveal === true) {
+    return yield* resolveFileManagerRevealLaunch(input.cwd, platform, env, command);
+  }
+
+  return {
+    editor: editorDef.id,
+    target: input.cwd,
+    command,
+    args:
+      command === "explorer.exe" && env.WSL_DISTRO_NAME !== undefined
+        ? [resolveWslFileManagerPath(input.cwd, env.WSL_DISTRO_NAME)]
+        : [input.cwd],
+  };
+});
+
+/**
+ * PowerShell source that launches File Explorer with its raw selection
+ * switch. Explorer's contract is the single argument `/select,"<path>"` with
+ * only the path quoted; Node's default spawn quoting wraps the whole argument
+ * when the path has spaces and Explorer misparses it, silently opening a
+ * fallback folder. A single `-ArgumentList` string in Windows PowerShell 5.1
+ * reaches the child's command line verbatim, preserving the raw switch.
+ */
+function buildFileExplorerRevealPowerShellSource(explorerCommand: string, target: string): string {
+  return `$ProgressPreference = 'SilentlyContinue'; Start-Process ${escapePowerShellStringLiteral(explorerCommand)} -ArgumentList ('/select,"' + ${escapePowerShellStringLiteral(target)} + '"')`;
+}
+
+function fileExplorerRevealLaunch(
+  target: string,
+  explorerTarget: string,
+  powershellCommand: string,
+): EditorLaunch {
+  return {
+    editor: "file-manager",
+    target,
+    command: powershellCommand,
+    args: [
+      ...POWERSHELL_ARGUMENTS_PREFIX,
+      encodeUtf16LeBase64(buildFileExplorerRevealPowerShellSource("explorer.exe", explorerTarget)),
+    ],
+  };
+}
+
+function normalizeWindowsFileManagerPath(target: string): string {
+  return target.replaceAll("/", "\\");
+}
+
+const resolveFileManagerRevealLaunch = Effect.fn("resolveFileManagerRevealLaunch")(function* (
+  target: string,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+  // The command resolveUsableFileManagerCommand picked; a WSL host that fell
+  // back to the Linux file manager must reveal through it as well.
+  command: string,
+): Effect.fn.Return<
+  EditorLaunch,
+  never,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  if (platform === "darwin") {
+    return { editor: "file-manager", target, command: "open", args: ["-R", target] };
+  }
+
+  if (platform === "win32") {
+    return {
+      ...fileExplorerRevealLaunch(
+        target,
+        normalizeWindowsFileManagerPath(target),
+        resolvePowerShellPath(env),
+      ),
+      detached: WINDOWS_POWERSHELL_DETACHED,
+    };
+  }
+
+  if (
+    command === "explorer.exe" &&
+    shouldUseWindowsHostFromWsl(platform, env) &&
+    env.WSL_DISTRO_NAME !== undefined
+  ) {
+    const explorerTarget = resolveWslFileManagerPath(target, env.WSL_DISTRO_NAME);
+    if (yield* isCommandAvailable(WSL_POWERSHELL_COMMAND, { env })) {
+      // Explorer's raw switch cannot express a double quote, and unlike
+      // Windows paths a WSL path may legally contain one: open the containing
+      // directory in File Explorer instead, matching the advertised
+      // "file-explorer" kind.
+      if (explorerTarget.includes('"')) {
+        const path = yield* Path.Path;
+        return {
+          editor: "file-manager",
+          target,
+          command: "explorer.exe",
+          args: [resolveWslFileManagerPath(path.dirname(target), env.WSL_DISTRO_NAME)],
+        };
+      }
+      return fileExplorerRevealLaunch(target, explorerTarget, WSL_POWERSHELL_COMMAND);
+    }
+    // Without interop PowerShell the capability advertised the Linux "files"
+    // kind when it advertised anything at all, so the reveal must open the
+    // Linux file manager the label promised, not File Explorer.
+    if (hasGraphicalLinuxSession(env) && (yield* isUsableFileManagerCommand("xdg-open", env))) {
+      const path = yield* Path.Path;
+      return { editor: "file-manager", target, command: "xdg-open", args: [path.dirname(target)] };
+    }
+    // Nothing was advertised here; open the parent in File Explorer as the
+    // best remaining effort for a stale client.
+    const path = yield* Path.Path;
+    return {
+      editor: "file-manager",
+      target,
+      command: "explorer.exe",
+      args: [resolveWslFileManagerPath(path.dirname(target), env.WSL_DISTRO_NAME)],
+    };
+  }
+
+  // Linux file managers have no portable "select this file" flag, so open
+  // the containing directory instead.
+  const path = yield* Path.Path;
+  return { editor: "file-manager", target, command, args: [path.dirname(target)] };
 });
 
 const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
   launch: ProcessLaunch,
-  errorMessage: string,
+  onError: (cause: unknown) => ExternalLauncherError,
 ): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const command = ChildProcess.make(launch.command, launch.args, launch.options);
@@ -355,7 +713,7 @@ const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
     Effect.flatMap((handle) => handle.unref),
     Effect.asVoid,
     Effect.scoped,
-    Effect.mapError((cause) => new ExternalLauncherError({ message: errorMessage, cause })),
+    Effect.mapError(onError),
   );
 });
 
@@ -363,7 +721,16 @@ const launchBrowser = Effect.fn("externalLauncher.launchBrowser")(function* (
   target: string,
 ): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
   const launch = yield* resolveBrowserLaunch(target);
-  return yield* launchAndUnref(launch, "Browser auto-open failed");
+  return yield* launchAndUnref(
+    launch,
+    (cause) =>
+      new ExternalLauncherBrowserSpawnError({
+        target,
+        command: launch.command,
+        args: launch.args,
+        cause,
+      }),
+  );
 });
 
 const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(function* (
@@ -375,29 +742,41 @@ const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(fu
 > {
   const env = yield* readCommandLookupEnv;
   if (!(yield* isCommandAvailable(launch.command, { env }))) {
-    return yield* new ExternalLauncherError({
-      message: `Editor command not found: ${launch.command}`,
+    return yield* new ExternalLauncherCommandNotFoundError({
+      editor: launch.editor,
+      command: launch.command,
     });
   }
 
   const spawnCommand = yield* resolveSpawnCommand(launch.command, launch.args, { env });
+  if (spawnCommand.shell && launch.args.some((arg) => WINDOWS_SHIM_UNSAFE_ARG_PATTERN.test(arg))) {
+    return yield* new ExternalLauncherUnsupportedTargetError({ editor: launch.editor });
+  }
   yield* launchAndUnref(
     {
       command: spawnCommand.command,
       args: spawnCommand.args,
       options: {
-        detached: true,
+        detached: launch.detached ?? true,
         shell: spawnCommand.shell,
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
       },
     },
-    "failed to spawn detached process",
+    (cause) =>
+      new ExternalLauncherEditorSpawnError({
+        editor: launch.editor,
+        target: launch.target,
+        command: spawnCommand.command,
+        args: spawnCommand.args,
+        cause,
+      }),
   );
 });
 
-const make = Effect.gen(function* () {
+/** @public Service construction is part of the canonical Effect module API. */
+export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -410,21 +789,74 @@ const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
 
-  return {
-    resolveAvailableEditors: () => provideCommandResolutionServices(resolveAvailableEditors()),
+  const scope = yield* Scope.Scope;
+  const editorDiscoveryCache = yield* Ref.make<Option.Option<EditorDiscoveryCacheEntry>>(
+    Option.none(),
+  );
+  const runEditorDiscovery = (scan: Deferred.Deferred<ReadonlyArray<EditorId>>) =>
+    provideCommandResolutionServices(resolveAvailableEditors()).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.onExit((exit) =>
+        Effect.gen(function* () {
+          const expiresAtNanos =
+            (yield* Clock.monotonicTimeNanos) + EDITOR_DISCOVERY_CACHE_TTL_NANOS;
+          yield* Ref.update(editorDiscoveryCache, (current) =>
+            Option.isNone(current) || current.value.scan !== scan
+              ? current
+              : Exit.isSuccess(exit)
+                ? Option.some({ scan, expiresAtNanos })
+                : Option.none(),
+          );
+          yield* Deferred.done(scan, exit);
+        }),
+      ),
+      Effect.interruptible,
+      Effect.forkIn(scope),
+    );
+  // Claiming the cache entry and starting its scan must not be split by an
+  // interrupt, or the entry would wait on a scan that never runs.
+  const acquireEditorDiscovery = Effect.gen(function* () {
+    const nowNanos = yield* Clock.monotonicTimeNanos;
+    const [scan, isNewScan] = yield* Ref.modify(
+      editorDiscoveryCache,
+      (
+        current,
+      ): [
+        [EditorDiscoveryCacheEntry["scan"], boolean],
+        Option.Option<EditorDiscoveryCacheEntry>,
+      ] => {
+        if (
+          Option.isSome(current) &&
+          (current.value.expiresAtNanos === undefined || current.value.expiresAtNanos > nowNanos)
+        ) {
+          return [[current.value.scan, false], current];
+        }
+        const scan = Deferred.makeUnsafe<ReadonlyArray<EditorId>>();
+        return [[scan, true], Option.some({ scan, expiresAtNanos: undefined })];
+      },
+    );
+    if (isNewScan) {
+      yield* runEditorDiscovery(scan);
+    }
+    return scan;
+  }).pipe(Effect.uninterruptible);
+  const cachedAvailableEditors = Effect.flatMap(acquireEditorDiscovery, Deferred.await);
+
+  return ExternalLauncher.of({
+    resolveAvailableEditors: () => cachedAvailableEditors,
+    resolveFileManagerRevealKind: () =>
+      provideCommandResolutionServices(resolveFileManagerRevealKind()).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
     launchBrowser: (target) =>
       launchBrowser(target).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ),
     launchEditor: (input) =>
       provideCommandResolutionServices(
-        Effect.flatMap(resolveEditorLaunch(input), (launch) =>
-          launchEditorProcess(launch).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          ),
-        ),
-      ),
-  } satisfies ExternalLauncherShape;
+        Effect.flatMap(resolveEditorLaunch(input), launchEditorProcess),
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+  });
 });
 
 export const layer = Layer.effect(ExternalLauncher, make);

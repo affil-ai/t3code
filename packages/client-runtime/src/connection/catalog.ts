@@ -1,10 +1,7 @@
 import { DesktopSshEnvironmentTargetSchema, EnvironmentId } from "@t3tools/contracts";
-import * as Context from "effect/Context";
-import type * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import type { ConnectionAttemptError } from "./model.ts";
 import {
   BearerConnectionTarget,
   PrimaryConnectionTarget,
@@ -25,6 +22,22 @@ export class BearerConnectionProfile extends Schema.TaggedClass<BearerConnection
     ...ConnectionProfileBase,
     httpBaseUrl: Schema.String,
     wsBaseUrl: Schema.String,
+    /**
+     * Set on a route the server reported while this client was connected,
+     * rather than one the user paired. Learned routes are replaced when the
+     * server reports a different address, for example after a DHCP change.
+     */
+    learned: Schema.optionalKey(Schema.Literal(true)),
+    /**
+     * "t3-connect" when the route authenticates with the environment's T3
+     * Connect credential instead of a stored bearer token.
+     */
+    authorization: Schema.optionalKey(Schema.Literal("t3-connect")),
+    /**
+     * "tailscale" on a learned route the server found on its Tailscale
+     * interface. A bare 100.64.0.0/10 address could belong to any VPN.
+     */
+    network: Schema.optionalKey(Schema.Literal("tailscale")),
   },
 ) {}
 
@@ -39,9 +52,27 @@ export class SshConnectionProfile extends Schema.TaggedClass<SshConnectionProfil
 export const ConnectionProfile = Schema.Union([BearerConnectionProfile, SshConnectionProfile]);
 export type ConnectionProfile = typeof ConnectionProfile.Type;
 
+/** One way to reach an environment: T3 Connect, a direct URL, or SSH. */
+export interface ConnectionRoute {
+  readonly target: ConnectionTarget;
+  readonly profile: Option.Option<ConnectionProfile>;
+}
+
+/**
+ * A saved environment. `target` and `profile` are its preferred route;
+ * `alternateRoutes` holds the others in preference order. Read them together
+ * with `connectionRoutes`.
+ */
 export interface ConnectionCatalogEntry {
   readonly target: ConnectionTarget;
   readonly profile: Option.Option<ConnectionProfile>;
+  readonly alternateRoutes?: ReadonlyArray<ConnectionRoute>;
+  /** False when the user switched the environment off: saved, but never connects. */
+  readonly enabled: boolean;
+  /** Discovery rejection stays visible while the saved connection is switched off. */
+  readonly unsupportedReason?: string;
+  /** The rejection came from an outdated host, which can still be updated remotely. */
+  readonly serverUpdateRequired?: boolean;
 }
 
 export class BearerConnectionCredential extends Schema.TaggedClass<BearerConnectionCredential>()(
@@ -92,11 +123,20 @@ export const ConnectionRegistration = Schema.Union([
 ]);
 export type ConnectionRegistration = typeof ConnectionRegistration.Type;
 
-export function connectionRegistrationTarget(
-  registration: ConnectionRegistration | PrimaryConnectionRegistration,
-): ConnectionTarget {
-  return registration.target;
-}
+/**
+ * Platform-managed registrations are reconciled from the host (the desktop
+ * bootstrap IPC) rather than persisted by the user. They cover the primary
+ * local environment plus any additional desktop-local backends running
+ * alongside it (e.g. a parallel WSL backend). The primary stays on same-origin
+ * cookie auth (`PrimaryConnectionRegistration`); secondary local backends live
+ * on a separate loopback origin and authenticate with a bearer token minted
+ * from their bootstrap credential (`BearerConnectionRegistration`).
+ */
+export const PlatformConnectionRegistration = Schema.Union([
+  PrimaryConnectionRegistration,
+  BearerConnectionRegistration,
+]);
+export type PlatformConnectionRegistration = typeof PlatformConnectionRegistration.Type;
 
 export function connectionRegistrationCatalogEntry(
   registration: ConnectionRegistration | PrimaryConnectionRegistration,
@@ -107,37 +147,14 @@ export function connectionRegistrationCatalogEntry(
       return {
         target: registration.target,
         profile: Option.none(),
+        enabled: true,
       };
     case "BearerConnectionRegistration":
     case "SshConnectionRegistration":
       return {
         target: registration.target,
         profile: Option.some(registration.profile),
+        enabled: true,
       };
   }
 }
-
-export class ConnectionProfileStore extends Context.Service<
-  ConnectionProfileStore,
-  {
-    readonly get: (
-      connectionId: string,
-    ) => Effect.Effect<Option.Option<ConnectionProfile>, ConnectionAttemptError>;
-    readonly put: (profile: ConnectionProfile) => Effect.Effect<void, ConnectionAttemptError>;
-    readonly remove: (connectionId: string) => Effect.Effect<void, ConnectionAttemptError>;
-  }
->()("@t3tools/client-runtime/connection/catalog/ConnectionProfileStore") {}
-
-export class ConnectionCredentialStore extends Context.Service<
-  ConnectionCredentialStore,
-  {
-    readonly get: (
-      connectionId: string,
-    ) => Effect.Effect<Option.Option<ConnectionCredential>, ConnectionAttemptError>;
-    readonly put: (
-      connectionId: string,
-      credential: ConnectionCredential,
-    ) => Effect.Effect<void, ConnectionAttemptError>;
-    readonly remove: (connectionId: string) => Effect.Effect<void, ConnectionAttemptError>;
-  }
->()("@t3tools/client-runtime/connection/catalog/ConnectionCredentialStore") {}

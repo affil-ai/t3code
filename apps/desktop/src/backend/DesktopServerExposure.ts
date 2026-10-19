@@ -1,49 +1,35 @@
-import * as NodeOS from "node:os";
-
 import {
   createAdvertisedEndpoint,
   type CreateAdvertisedEndpointInput,
 } from "@t3tools/shared/advertisedEndpoint";
-import type {
-  AdvertisedEndpoint,
-  AdvertisedEndpointProvider,
-  DesktopServerExposureMode,
-  DesktopServerExposureState,
+import {
+  DesktopServerExposureModeSchema,
+  type AdvertisedEndpoint,
+  type AdvertisedEndpointProvider,
+  type DesktopServerExposureMode,
+  type DesktopServerExposureState,
 } from "@t3tools/contracts";
+import { isTailscaleIpv4Address, readTailscaleStatus } from "@t3tools/tailscale";
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import * as HttpClient from "effect/http/HttpClient";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import { DEFAULT_DESKTOP_SETTINGS, type DesktopSettings } from "../settings/DesktopAppSettings.ts";
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
+import * as DesktopNetworkInterfaces from "./DesktopNetworkInterfaces.ts";
 import { resolveTailscaleAdvertisedEndpoints } from "./tailscaleEndpointProvider.ts";
-import { readTailscaleStatus } from "@t3tools/tailscale";
-import * as DesktopAppSettingsService from "../settings/DesktopAppSettings.ts";
 
 const TAILSCALE_STATUS_CACHE_TTL = Duration.seconds(60);
 
-export const DESKTOP_LOOPBACK_HOST = "127.0.0.1";
+const DESKTOP_LOOPBACK_HOST = "127.0.0.1";
 const DESKTOP_LAN_BIND_HOST = "0.0.0.0";
-
-export interface DesktopNetworkInterfaceInfo {
-  readonly address: string;
-  readonly family: string | number;
-  readonly internal: boolean;
-  readonly netmask?: string;
-  readonly mac?: string;
-  readonly cidr?: string | null;
-  readonly scopeid?: number;
-}
-
-export type DesktopNetworkInterfaces = Readonly<
-  Record<string, readonly DesktopNetworkInterfaceInfo[] | undefined>
->;
 
 interface ResolvedDesktopServerExposure {
   readonly mode: DesktopServerExposureMode;
@@ -80,7 +66,9 @@ const normalizeOptionalHost = (value: string | undefined): string | undefined =>
 };
 
 const isUsableLanIpv4Address = (address: string): boolean =>
-  !address.startsWith("127.") && !address.startsWith("169.254.");
+  !address.startsWith("127.") &&
+  !address.startsWith("169.254.") &&
+  !isTailscaleIpv4Address(address);
 
 const isHttpsEndpointUrl = (value: string): boolean => {
   try {
@@ -91,7 +79,7 @@ const isHttpsEndpointUrl = (value: string): boolean => {
 };
 
 const resolveLanAdvertisedHost = (
-  networkInterfaces: DesktopNetworkInterfaces,
+  networkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces,
   explicitHost: string | undefined,
 ): string | null => {
   const normalizedExplicitHost = normalizeOptionalHost(explicitHost);
@@ -116,7 +104,7 @@ const resolveLanAdvertisedHost = (
 const resolveDesktopServerExposure = (input: {
   readonly mode: DesktopServerExposureMode;
   readonly port: number;
-  readonly networkInterfaces: DesktopNetworkInterfaces;
+  readonly networkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces;
   readonly advertisedHostOverride?: string;
 }): ResolvedDesktopServerExposure => {
   const localHttpUrl = `http://${DESKTOP_LOOPBACK_HOST}:${input.port}`;
@@ -218,34 +206,54 @@ const resolveDesktopCoreAdvertisedEndpoints = (
   return endpoints;
 };
 
-type DesktopServerExposurePersistenceOperation = "server-exposure-mode" | "tailscale-serve";
-
-export class DesktopServerExposureNoNetworkAddressError extends Data.TaggedError(
+export class DesktopServerExposureNoNetworkAddressError extends Schema.TaggedError<DesktopServerExposureNoNetworkAddressError>()(
   "DesktopServerExposureNoNetworkAddressError",
-)<{
-  readonly port: number;
-}> {
-  override get message() {
+  {
+    port: Schema.Number,
+  },
+) {
+  override get message(): string {
     return `No reachable network address is available for desktop network access on port ${this.port}.`;
   }
 }
 
-export class DesktopServerExposurePersistenceError extends Data.TaggedError(
-  "DesktopServerExposurePersistenceError",
-)<{
-  readonly operation: DesktopServerExposurePersistenceOperation;
-  readonly cause: DesktopAppSettingsService.DesktopSettingsWriteError;
-}> {
-  override get message() {
-    return `Failed to persist desktop ${this.operation} settings.`;
+export class DesktopServerExposureModePersistenceError extends Schema.TaggedError<DesktopServerExposureModePersistenceError>()(
+  "DesktopServerExposureModePersistenceError",
+  {
+    mode: DesktopServerExposureModeSchema,
+    cause: Schema.instanceOf(DesktopAppSettings.DesktopSettingsWriteError),
+  },
+) {
+  override get message(): string {
+    return `Failed to persist desktop server exposure mode ${this.mode}.`;
   }
 }
 
-export type DesktopServerExposureSetModeError =
-  | DesktopServerExposureNoNetworkAddressError
-  | DesktopServerExposurePersistenceError;
+export class DesktopTailscaleServePersistenceError extends Schema.TaggedError<DesktopTailscaleServePersistenceError>()(
+  "DesktopTailscaleServePersistenceError",
+  {
+    enabled: Schema.Boolean,
+    port: Schema.NullOr(Schema.Number),
+    cause: Schema.instanceOf(DesktopAppSettings.DesktopSettingsWriteError),
+  },
+) {
+  override get message(): string {
+    return `Failed to persist desktop Tailscale Serve settings (enabled: ${this.enabled}, port: ${this.port ?? "unchanged"}).`;
+  }
+}
 
-export type DesktopServerExposureError = DesktopServerExposureSetModeError;
+export const DesktopServerExposureSetModeError = Schema.Union([
+  DesktopServerExposureNoNetworkAddressError,
+  DesktopServerExposureModePersistenceError,
+]);
+export type DesktopServerExposureSetModeError = typeof DesktopServerExposureSetModeError.Type;
+
+export const DesktopServerExposureError = Schema.Union([
+  DesktopServerExposureNoNetworkAddressError,
+  DesktopServerExposureModePersistenceError,
+  DesktopTailscaleServePersistenceError,
+]);
+export type DesktopServerExposureError = typeof DesktopServerExposureError.Type;
 
 export interface DesktopServerExposureBackendConfig {
   readonly port: number;
@@ -260,35 +268,24 @@ export interface DesktopServerExposureChange {
   readonly requiresRelaunch: boolean;
 }
 
-export interface DesktopServerExposureShape {
-  readonly getState: Effect.Effect<DesktopServerExposureState>;
-  readonly backendConfig: Effect.Effect<DesktopServerExposureBackendConfig>;
-  readonly configureFromSettings: (input: {
-    readonly port: number;
-  }) => Effect.Effect<DesktopServerExposureState>;
-  readonly setMode: (
-    mode: DesktopServerExposureMode,
-  ) => Effect.Effect<DesktopServerExposureChange, DesktopServerExposureSetModeError>;
-  readonly setTailscaleServeEnabled: (input: {
-    readonly enabled: boolean;
-    readonly port?: number;
-  }) => Effect.Effect<DesktopServerExposureChange, DesktopServerExposurePersistenceError>;
-  readonly getAdvertisedEndpoints: Effect.Effect<readonly AdvertisedEndpoint[]>;
-}
-
 export class DesktopServerExposure extends Context.Service<
   DesktopServerExposure,
-  DesktopServerExposureShape
+  {
+    readonly getState: Effect.Effect<DesktopServerExposureState>;
+    readonly backendConfig: Effect.Effect<DesktopServerExposureBackendConfig>;
+    readonly configureFromSettings: (input: {
+      readonly port: number;
+    }) => Effect.Effect<DesktopServerExposureState>;
+    readonly setMode: (
+      mode: DesktopServerExposureMode,
+    ) => Effect.Effect<DesktopServerExposureChange, DesktopServerExposureSetModeError>;
+    readonly setTailscaleServeEnabled: (input: {
+      readonly enabled: boolean;
+      readonly port?: number;
+    }) => Effect.Effect<DesktopServerExposureChange, DesktopTailscaleServePersistenceError>;
+    readonly getAdvertisedEndpoints: Effect.Effect<readonly AdvertisedEndpoint[]>;
+  }
 >()("@t3tools/desktop/backend/DesktopServerExposure") {}
-
-export interface DesktopNetworkInterfacesServiceShape {
-  readonly read: Effect.Effect<DesktopNetworkInterfaces>;
-}
-
-export class DesktopNetworkInterfacesService extends Context.Service<
-  DesktopNetworkInterfacesService,
-  DesktopNetworkInterfacesServiceShape
->()("@t3tools/desktop/backend/DesktopServerExposure/DesktopNetworkInterfacesService") {}
 
 interface RuntimeState {
   readonly requestedMode: DesktopServerExposureMode;
@@ -311,10 +308,10 @@ interface ResolvedRuntimeState {
 
 const initialRuntimeState = (): RuntimeState =>
   runtimeStateFromResolvedExposure({
-    requestedMode: DEFAULT_DESKTOP_SETTINGS.serverExposureMode,
-    settings: DEFAULT_DESKTOP_SETTINGS,
+    requestedMode: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.serverExposureMode,
+    settings: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
     exposure: resolveDesktopServerExposure({
-      mode: DEFAULT_DESKTOP_SETTINGS.serverExposureMode,
+      mode: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.serverExposureMode,
       port: 0,
       networkInterfaces: {},
     }),
@@ -348,7 +345,7 @@ const toResolvedExposure = (state: RuntimeState): ResolvedDesktopServerExposure 
 
 function runtimeStateFromResolvedExposure(input: {
   readonly requestedMode: DesktopServerExposureMode;
-  readonly settings: DesktopSettings;
+  readonly settings: DesktopAppSettings.DesktopSettings;
   readonly exposure: ResolvedDesktopServerExposure;
   readonly port: number;
 }): RuntimeState {
@@ -369,9 +366,9 @@ function runtimeStateFromResolvedExposure(input: {
 
 function resolveRuntimeState(input: {
   readonly requestedMode: DesktopServerExposureMode;
-  readonly settings: DesktopSettings;
+  readonly settings: DesktopAppSettings.DesktopSettings;
   readonly port: number;
-  readonly networkInterfaces: DesktopNetworkInterfaces;
+  readonly networkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces;
   readonly advertisedHostOverride: Option.Option<string>;
 }): ResolvedRuntimeState {
   const advertisedHostOverride = Option.getOrUndefined(input.advertisedHostOverride);
@@ -382,7 +379,14 @@ function resolveRuntimeState(input: {
     ...(advertisedHostOverride ? { advertisedHostOverride } : {}),
   });
   const unavailable =
-    input.requestedMode === "network-accessible" && requestedExposure.endpointUrl === null;
+    input.requestedMode === "network-accessible" &&
+    requestedExposure.endpointUrl === null &&
+    !Object.values(input.networkInterfaces).some((addresses) =>
+      addresses?.some(
+        (address) =>
+          !address.internal && address.family === "IPv4" && isTailscaleIpv4Address(address.address),
+      ),
+    );
   const exposure = unavailable
     ? resolveDesktopServerExposure({
         mode: "local-only",
@@ -408,13 +412,18 @@ const requiresBackendRelaunch = (previous: RuntimeState, next: RuntimeState): bo
   previous.bindHost !== next.bindHost ||
   previous.localHttpUrl !== next.localHttpUrl;
 
-const make = Effect.gen(function* () {
+/** @public Service construction is part of the canonical Effect module API. */
+export const make = Effect.gen(function* () {
   const config = yield* DesktopConfig.DesktopConfig;
-  const networkInterfaces = yield* DesktopNetworkInterfacesService;
+  const networkInterfaces = yield* DesktopNetworkInterfaces.DesktopNetworkInterfaces;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
-  const desktopSettings = yield* DesktopAppSettingsService.DesktopAppSettings;
+  const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const stateRef = yield* Ref.make(initialRuntimeState());
+  // Each change reads the runtime state, persists settings, then writes the
+  // state back. Run them one at a time so a change never writes over another
+  // with values it read before that change persisted.
+  const changePermit = yield* Semaphore.make(1);
 
   // Cache the `tailscale status` spawn for the TTL. On macOS, the Mac App
   // Store Tailscale CLI lives inside Tailscale's sandbox container, so each
@@ -476,8 +485,8 @@ const make = Effect.gen(function* () {
     const change = yield* desktopSettings.setServerExposureMode(mode).pipe(
       Effect.mapError(
         (cause) =>
-          new DesktopServerExposurePersistenceError({
-            operation: "server-exposure-mode",
+          new DesktopServerExposureModePersistenceError({
+            mode,
             cause,
           }),
       ),
@@ -488,7 +497,7 @@ const make = Effect.gen(function* () {
       state: toContractState(resolved.state),
       requiresRelaunch: change.changed || requiresBackendRelaunch(previous, resolved.state),
     };
-  });
+  }, changePermit.withPermit);
 
   const setTailscaleServeEnabled = Effect.fn("desktop.serverExposure.setTailscaleServeEnabled")(
     function* (input: { readonly enabled: boolean; readonly port?: number }) {
@@ -504,8 +513,9 @@ const make = Effect.gen(function* () {
         .pipe(
           Effect.mapError(
             (cause) =>
-              new DesktopServerExposurePersistenceError({
-                operation: "tailscale-serve",
+              new DesktopTailscaleServePersistenceError({
+                enabled: input.enabled,
+                port: input.port ?? null,
                 cause,
               }),
           ),
@@ -522,6 +532,7 @@ const make = Effect.gen(function* () {
         requiresRelaunch: result.changed,
       };
     },
+    changePermit.withPermit,
   );
 
   const getAdvertisedEndpoints = Effect.gen(function* () {
@@ -564,10 +575,3 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(DesktopServerExposure, make);
-
-export const networkInterfacesLayer = Layer.succeed(
-  DesktopNetworkInterfacesService,
-  DesktopNetworkInterfacesService.of({
-    read: Effect.sync(() => NodeOS.networkInterfaces()),
-  }),
-);

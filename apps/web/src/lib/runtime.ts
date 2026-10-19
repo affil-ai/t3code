@@ -1,42 +1,44 @@
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { FetchHttpClient } from "effect/unstable/http";
+import * as Socket from "effect/socket/Socket";
 
-import { remoteHttpClientLayer } from "@t3tools/client-runtime";
-import { httpHeaderRedactionLayer } from "@t3tools/shared/httpObservability";
-import {
-  PrimaryEnvironmentHttpClient,
-  primaryEnvironmentHttpClientLive,
-} from "../environments/primary/httpClient";
-import { primaryEnvironmentRequestInit } from "../environments/primary/requestInit";
+import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
+import * as RelayTracing from "@t3tools/shared/relayTracing";
+import * as PrimaryEnvironmentHttpClient from "../environments/primary/httpClient";
+import * as PrimaryEnvironmentHttpLayer from "../environments/primary/httpLayer";
 
-import { browserCryptoLayer } from "../cloud/dpop";
-import { webManagedRelayClientLayer } from "../cloud/managedRelayLayer";
-import { resolveCloudPublicConfig } from "../cloud/publicConfig";
+import * as Dpop from "../cloud/dpop";
+import * as ManagedRelayLayer from "../cloud/managedRelayLayer";
+import { resolveCloudPublicConfig, resolveRelayTracingConfig } from "../cloud/publicConfig";
+import * as ClientTracer from "../observability/clientTracer";
 
 function configuredRelayUrl(): string {
   return resolveCloudPublicConfig().relayUrl ?? "http://relay.invalid";
 }
 
-const webHttpClientLayer = remoteHttpClientLayer(globalThis.fetch);
+const layerHttpClient = layerRemoteHttpClient((input, init) => globalThis.fetch(input, init));
+const layerRelayTracing = RelayTracing.layer(resolveRelayTracingConfig(), {
+  serviceName: "t3code-web",
+  serviceVersion: import.meta.env.APP_VERSION,
+  runtime: "browser",
+  client: typeof window !== "undefined" && window.desktopBridge ? "desktop" : "web",
+}).pipe(Layer.provide(layerHttpClient));
 
-export const remoteHttpRuntime = ManagedRuntime.make(webHttpClientLayer);
+type RuntimeLayerSource =
+  | typeof layerHttpClient
+  | typeof Dpop.layer
+  | typeof Socket.layerWebSocketConstructorGlobal
+  | typeof layerRelayTracing
+  | typeof ClientTracer.layer
+  | ReturnType<typeof ManagedRelayLayer.layer>;
 
 const primaryHttpRuntime = ManagedRuntime.make(
-  primaryEnvironmentHttpClientLive.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        remoteHttpClientLayer((input, init) => globalThis.fetch(input, init)),
-        Layer.succeed(FetchHttpClient.RequestInit, primaryEnvironmentRequestInit),
-        httpHeaderRedactionLayer,
-      ),
-    ),
-  ),
+  PrimaryEnvironmentHttpClient.layer.pipe(Layer.provide(PrimaryEnvironmentHttpLayer.layer)),
 );
 
 export type PrimaryHttpEffectRunner = <A, E>(
-  effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient>,
+  effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
 ) => Promise<A>;
 
 const livePrimaryHttpRunner: PrimaryHttpEffectRunner = (effect) =>
@@ -44,19 +46,31 @@ const livePrimaryHttpRunner: PrimaryHttpEffectRunner = (effect) =>
 
 let primaryHttpRunner = livePrimaryHttpRunner;
 
-export const runPrimaryHttp = <A, E>(effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient>) =>
-  primaryHttpRunner(effect);
+export const runPrimaryHttp = <A, E>(
+  effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
+) => primaryHttpRunner(effect);
 
 export function __setPrimaryHttpRunnerForTests(runner?: PrimaryHttpEffectRunner): void {
   primaryHttpRunner = runner ?? livePrimaryHttpRunner;
 }
 
-export const webRuntime = ManagedRuntime.make(
-  Layer.mergeAll(
-    webHttpClientLayer,
-    browserCryptoLayer,
-    webManagedRelayClientLayer(configuredRelayUrl()).pipe(
-      Layer.provide(Layer.mergeAll(webHttpClientLayer, browserCryptoLayer)),
-    ),
+const layerRuntime = Layer.mergeAll(
+  layerHttpClient,
+  Dpop.layer,
+  Socket.layerWebSocketConstructorGlobal,
+  ClientTracer.layer,
+  layerRelayTracing,
+  ManagedRelayLayer.layer(configuredRelayUrl()).pipe(
+    Layer.provide(Layer.mergeAll(layerHttpClient, Dpop.layer)),
   ),
 );
+
+export const runtime: ManagedRuntime.ManagedRuntime<
+  Layer.Success<RuntimeLayerSource>,
+  Layer.Error<RuntimeLayerSource>
+> = ManagedRuntime.make(layerRuntime);
+
+export const layer: Layer.Layer<
+  Layer.Success<RuntimeLayerSource>,
+  Layer.Error<RuntimeLayerSource>
+> = Layer.effectContext(runtime.contextEffect);

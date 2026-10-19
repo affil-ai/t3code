@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { View } from "react-native";
 import { WebView } from "react-native-webview";
 
+import { AppActivityIndicator } from "../../components/AppActivityIndicator";
 import { AppText as Text } from "../../components/AppText";
+import { FilePreviewLoading } from "./FilePreviewFeedback";
 import { LoadingStrip } from "../../components/LoadingStrip";
 
 export function WorkspaceFileWebPreview(props: { readonly uri: string | null }) {
@@ -10,12 +12,7 @@ export function WorkspaceFileWebPreview(props: { readonly uri: string | null }) 
   const [loadError, setLoadError] = useState<string | null>(null);
 
   if (props.uri === null) {
-    return (
-      <View className="flex-1 items-center justify-center gap-3 bg-card px-6">
-        <ActivityIndicator />
-        <Text className="text-center text-[13px] text-foreground-muted">Preparing preview...</Text>
-      </View>
-    );
+    return <FilePreviewLoading message="Preparing preview..." background="card" />;
   }
 
   return (
@@ -23,10 +20,8 @@ export function WorkspaceFileWebPreview(props: { readonly uri: string | null }) 
       {loadProgress > 0 && loadProgress < 1 ? <LoadingStrip progress={loadProgress} /> : null}
       {loadError ? (
         <View className="border-b border-border bg-card px-4 py-2">
-          <Text className="text-[12px] font-t3-bold text-foreground">Preview failed</Text>
-          <Text className="mt-0.5 text-[12px] leading-[17px] text-foreground-muted">
-            {loadError}
-          </Text>
+          <Text className="text-xs font-t3-bold text-foreground">Preview failed</Text>
+          <Text className="mt-0.5 text-xs leading-snug text-foreground-muted">{loadError}</Text>
         </View>
       ) : null}
       <WebView
@@ -52,7 +47,7 @@ export function WorkspaceFileWebPreview(props: { readonly uri: string | null }) 
         }}
         renderLoading={() => (
           <View className="absolute inset-0 items-center justify-center bg-card">
-            <ActivityIndicator />
+            <AppActivityIndicator />
           </View>
         )}
         style={{ flex: 1, backgroundColor: "transparent" }}

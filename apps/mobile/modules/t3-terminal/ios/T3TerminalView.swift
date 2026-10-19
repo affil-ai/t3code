@@ -22,12 +22,143 @@ private enum GhosttyRuntime {
   }
 }
 
+/// Encodes hardware-keyboard combos that UITextField never surfaces through its
+/// text-editing delegate (control combos, Escape, Tab, arrow keys) into the byte
+/// sequences a terminal expects.
+///
+/// Capture uses UIKeyCommand with `wantsPriorityOverSystemBehavior` rather than
+/// `pressesBegan`: while a text field is first responder, iPadOS routes hardware key
+/// events through the text-input system, which can consume presses before they reach
+/// responder press callbacks. Registered key commands are matched deterministically
+/// before that happens.
+private enum TerminalHardwareKeyEncoder {
+  /// Characters that produce a control byte when combined with Ctrl.
+  private static let controlInputs = "abcdefghijklmnopqrstuvwxyz@[\\]^_-? "
+
+  static func makeKeyCommands(action: Selector) -> [UIKeyCommand] {
+    var commands: [UIKeyCommand] = []
+
+    let specialInputs = [
+      UIKeyCommand.inputEscape,
+      UIKeyCommand.inputUpArrow,
+      UIKeyCommand.inputDownArrow,
+      UIKeyCommand.inputLeftArrow,
+      UIKeyCommand.inputRightArrow,
+      "\t",
+    ]
+    for input in specialInputs {
+      commands.append(makeCommand(input: input, modifierFlags: [], action: action))
+    }
+    commands.append(makeCommand(input: "\t", modifierFlags: .shift, action: action))
+
+    for character in controlInputs {
+      commands.append(makeCommand(input: String(character), modifierFlags: .control, action: action))
+      commands.append(
+        makeCommand(input: String(character), modifierFlags: [.control, .shift], action: action)
+      )
+    }
+
+    return commands
+  }
+
+  private static func makeCommand(
+    input: String,
+    modifierFlags: UIKeyModifierFlags,
+    action: Selector
+  ) -> UIKeyCommand {
+    let command = UIKeyCommand(input: input, modifierFlags: modifierFlags, action: action)
+    command.wantsPriorityOverSystemBehavior = true
+    return command
+  }
+
+  static func sequence(input: String, modifiers: UIKeyModifierFlags) -> String? {
+    switch input {
+    case UIKeyCommand.inputEscape:
+      return "\u{1B}"
+    case UIKeyCommand.inputUpArrow:
+      return "\u{1B}[A"
+    case UIKeyCommand.inputDownArrow:
+      return "\u{1B}[B"
+    case UIKeyCommand.inputRightArrow:
+      return "\u{1B}[C"
+    case UIKeyCommand.inputLeftArrow:
+      return "\u{1B}[D"
+    case "\t":
+      return modifiers.contains(.shift) ? "\u{1B}[Z" : "\t"
+    default:
+      break
+    }
+
+    guard modifiers.contains(.control) else { return nil }
+    guard let scalar = input.lowercased().unicodeScalars.first else { return nil }
+    return controlSequence(for: scalar)
+  }
+
+  private static func controlSequence(for scalar: Unicode.Scalar) -> String? {
+    switch scalar {
+    case "a"..."z":
+      // Ctrl+A..Z -> 0x01..0x1A (Ctrl+C = ETX, Ctrl+Z = SUB, ...).
+      return UnicodeScalar(scalar.value - 96).map(String.init)
+    case " ", "@":
+      return "\u{00}"
+    case "[":
+      return "\u{1B}"
+    case "\\":
+      return "\u{1C}"
+    case "]":
+      return "\u{1D}"
+    case "^":
+      return "\u{1E}"
+    case "_", "-":
+      return "\u{1F}"
+    case "?":
+      return "\u{7F}"
+    default:
+      return nil
+    }
+  }
+}
+
+private enum TerminalInputSequence {
+  /// Terminal Enter is carriage return. Sending line feed instead is Ctrl+J,
+  /// which raw-mode TUIs may interpret as the literal J key.
+  static let carriageReturn = "\r"
+
+  static func normalizingReturn(_ input: String) -> String {
+    switch input {
+    case "\n", "\r\n":
+      return carriageReturn
+    default:
+      return input
+    }
+  }
+}
+
 private final class TerminalInputField: UITextField {
   var onDeleteBackward: (() -> Void)?
+  var onInsert: ((String) -> Void)?
+
+  private static let hardwareKeyCommands = TerminalHardwareKeyEncoder.makeKeyCommands(
+    action: #selector(handleHardwareKeyCommand(_:))
+  )
+
+  override var keyCommands: [UIKeyCommand]? {
+    Self.hardwareKeyCommands
+  }
 
   override func deleteBackward() {
     onDeleteBackward?()
     super.deleteBackward()
+  }
+
+  @objc
+  private func handleHardwareKeyCommand(_ command: UIKeyCommand) {
+    guard let input = command.input else { return }
+    guard let sequence = TerminalHardwareKeyEncoder.sequence(
+      input: input,
+      modifiers: command.modifierFlags
+    ) else { return }
+    onInsert?(sequence)
   }
 }
 
@@ -84,6 +215,32 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
 
   let onInput = EventDispatcher()
   let onResize = EventDispatcher()
+  let onCapture = EventDispatcher()
+  var captureRequest: Double = 0 {
+    didSet {
+      guard captureRequest > 0, captureRequest != oldValue else { return }
+      guard let surface else { onCapture(["text": ""]); return }
+      let selection = ghostty_selection_s(
+        top_left: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
+        bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
+        rectangle: false)
+      var captured = ghostty_text_s()
+      guard ghostty_surface_read_text(surface, selection, &captured) else { onCapture(["text": ""]); return }
+      defer { ghostty_surface_free_text(surface, &captured) }
+      let text = captured.text.flatMap { String(bytes: UnsafeBufferPointer(start: UnsafeRawPointer($0).assumingMemoryBound(to: UInt8.self), count: Int(captured.text_len)), encoding: .utf8) } ?? ""
+      // Android joins snapshot rows with "\n" and trims each row's trailing whitespace, so do
+      // the same here: identical terminal content must capture identically on both platforms.
+      let normalized = text.split(separator: "\n", omittingEmptySubsequences: false)
+        .map { row -> String in
+          var line = String(row)
+          // Kotlin's trimEnd only strips ASCII whitespace; match it exactly.
+          while let last = line.last, last.isASCII && last.isWhitespace { line.removeLast() }
+          return line
+        }
+        .joined(separator: "\n")
+      onCapture(["text": normalized])
+    }
+  }
 
   var terminalKey: String = "" {
     didSet {
@@ -105,6 +262,34 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
       guard oldValue != fontSize else { return }
       inputField.font = UIFont.monospacedSystemFont(ofSize: max(fontSize, 13), weight: .regular)
       refreshSurface()
+    }
+  }
+
+  var focusRequest: Double = 0 {
+    didSet {
+      guard oldValue != focusRequest else { return }
+      DispatchQueue.main.async { [weak self] in
+        self?.requestKeyboardFocus()
+      }
+    }
+  }
+
+  var readOnly = false {
+    didSet {
+      if readOnly {
+        inputField.resignFirstResponder()
+      }
+    }
+  }
+
+  var autoFocus = true {
+    didSet {
+      guard oldValue != autoFocus else { return }
+      if autoFocus {
+        requestKeyboardFocus()
+      } else {
+        inputField.resignFirstResponder()
+      }
     }
   }
 
@@ -138,7 +323,8 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
 
     applyTheme()
     clipsToBounds = true
-    contentScaleFactor = UIScreen.main.scale
+    // The real scale arrives with the window; layoutSubviews corrects it.
+    contentScaleFactor = traitCollection.displayScale
 
     terminalViewport.clipsToBounds = true
     terminalViewport.contentScaleFactor = contentScaleFactor
@@ -166,6 +352,9 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
     inputField.addTarget(self, action: #selector(handleInputEditingDidBegin), for: .editingDidBegin)
     inputField.onDeleteBackward = { [weak self] in
       self?.emitInput("\u{7F}")
+    }
+    inputField.onInsert = { [weak self] data in
+      self?.emitInput(data)
     }
 
     focusTapGesture.addTarget(self, action: #selector(handleViewportTap))
@@ -216,7 +405,7 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
   public override func didMoveToWindow() {
     super.didMoveToWindow()
 
-    guard window != nil else { return }
+    guard window != nil, autoFocus else { return }
     DispatchQueue.main.async { [weak self] in
       self?.requestKeyboardFocus()
     }
@@ -224,15 +413,18 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
 
   public func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
     if !string.isEmpty {
-      emitInput(string)
+      // Some software keyboards deliver Return through this delegate instead of
+      // textFieldShouldReturn, so normalize that path too.
+      emitInput(TerminalInputSequence.normalizingReturn(string))
       return false
     }
 
+    emitInput("\u{7F}")
     return false
   }
 
   public func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-    emitInput("\n")
+    emitInput(TerminalInputSequence.carriageReturn)
     textField.text = ""
     return false
   }
@@ -303,7 +495,7 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
       supports_selection_clipboard: false,
       wakeup_cb: { _ in },
       action_cb: { _, _, _ in false },
-      read_clipboard_cb: { _, _, _ in false },
+      read_clipboard_cb: { _, _, _, _, _, _ in GHOSTTY_CLIPBOARD_READ_UNSUPPORTED },
       confirm_read_clipboard_cb: { _, _, _, _ in },
       write_clipboard_cb: { _, _, _, _, _ in },
       close_surface_cb: { _, _ in }
@@ -379,6 +571,12 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
       return
     }
 
+    if buffer.isEmpty {
+      feedData(Data("\u{1B}[3J\u{1B}[H\u{1B}[2J".utf8))
+      lastAppliedBuffer = ""
+      return
+    }
+
     if buffer.hasPrefix(lastAppliedBuffer) {
       let suffix = String(buffer.dropFirst(lastAppliedBuffer.count))
       feedData(Data(suffix.utf8))
@@ -420,7 +618,7 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
       guard let input = String(data: bytes, encoding: .utf8), !input.isEmpty else { return }
 
       DispatchQueue.main.async {
-        view.onInput(["data": input])
+        view.emitInput(input)
       }
     }, userdata)
   }
@@ -488,20 +686,22 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
   }
 
   private func updateContentScale() {
-    let scale = window?.screen.scale ?? UIScreen.main.scale
+    // The trait collection follows the scene the view is in, which matters once
+    // iPhone apps run resizable and on external displays; UIScreen.main does not.
+    let scale = traitCollection.displayScale
     if contentScaleFactor != scale {
       contentScaleFactor = scale
     }
   }
 
   private func requestKeyboardFocus() {
-    guard window != nil else { return }
+    guard window != nil, !readOnly else { return }
     inputField.becomeFirstResponder()
     textInputModeDidChange()
   }
 
   private func emitInput(_ data: String) {
-    guard !data.isEmpty else { return }
+    guard !readOnly, !data.isEmpty else { return }
     onInput(["data": data])
   }
 

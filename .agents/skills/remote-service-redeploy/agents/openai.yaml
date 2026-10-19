@@ -1,4 +1,0 @@
-interface:
-  display_name: "Remote Service Redeploy"
-  short_description: "Rebuild and redeploy an SSH-hosted service"
-  default_prompt: "Use $remote-service-redeploy to update a remote SSH-hosted app behind a Cloudflare tunnel."

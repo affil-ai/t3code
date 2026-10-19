@@ -1,6 +1,8 @@
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -13,6 +15,8 @@ import { JsonRpcId, JsonRpcResponseEnvelope } from "./_internal/shared.ts";
 const isJsonRpcId = Schema.is(JsonRpcId);
 const isJsonRpcResponseEnvelope = Schema.is(JsonRpcResponseEnvelope);
 const isCodexAppServerError = Schema.is(CodexError.CodexAppServerError);
+const MAX_BUFFERED_RAW_MESSAGES = 32;
+const EXITED_OUTPUT_GRACE = "2 seconds";
 
 export interface CodexAppServerProtocolLogEvent {
   readonly direction: "incoming" | "outgoing";
@@ -34,6 +38,11 @@ export interface CodexAppServerIncomingRequest {
 export interface CodexAppServerPatchedProtocolOptions {
   readonly stdio: Stdio.Stdio;
   readonly terminationError?: Effect.Effect<CodexError.CodexAppServerError>;
+  /**
+   * Completes when the app-server process exits. Its stdout can stay open
+   * after that, while a command it started still holds the pipe.
+   */
+  readonly exited?: Effect.Effect<CodexError.CodexAppServerError>;
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: CodexAppServerProtocolLogEvent) => Effect.Effect<void, never>;
@@ -67,6 +76,11 @@ export interface CodexAppServerPatchedProtocol {
   ) => Effect.Effect<void, CodexError.CodexAppServerError>;
 }
 
+interface CodexAppServerPendingRequest {
+  readonly deferred: Deferred.Deferred<unknown, CodexError.CodexAppServerError>;
+  readonly method: string;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -86,41 +100,48 @@ function isIncomingResponse(value: unknown): value is typeof JsonRpcResponseEnve
   return isJsonRpcResponseEnvelope(value);
 }
 
-const encodeJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
-const decodeJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const encodeJsonString = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeJsonString = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 const encodeWireMessage = (
   message: Record<string, unknown>,
 ): Effect.Effect<string, CodexError.CodexAppServerProtocolParseError> =>
   encodeJsonString(message).pipe(
     Effect.map((encoded) => `${encoded}\n`),
-    Effect.mapError(
-      (cause) =>
-        new CodexError.CodexAppServerProtocolParseError({
-          detail: "Failed to encode Codex App Server message",
-          cause,
-        }),
-    ),
+    Effect.mapError((cause) => {
+      const method = typeof message.method === "string" ? message.method : undefined;
+      const requestId =
+        typeof message.id === "string" || typeof message.id === "number"
+          ? String(message.id)
+          : undefined;
+      return CodexError.CodexAppServerProtocolParseError.fromSchemaError(
+        "encode-wire-message",
+        cause,
+        {
+          ...(method === undefined ? {} : { method }),
+          ...(requestId === undefined ? {} : { requestId }),
+        },
+      );
+    }),
   );
 
 const decodeWireMessage = (
   line: string,
 ): Effect.Effect<unknown, CodexError.CodexAppServerProtocolParseError> =>
   decodeJsonString(line).pipe(
-    Effect.mapError(
-      (cause) =>
-        new CodexError.CodexAppServerProtocolParseError({
-          detail: "Failed to decode Codex App Server wire message",
-          cause,
-        }),
+    Effect.mapError((cause) =>
+      CodexError.CodexAppServerProtocolParseError.fromSchemaError("decode-wire-message", cause),
     ),
   );
 
-const normalizeIncomingError = (error: unknown, detail: string): CodexError.CodexAppServerError =>
+const normalizeIncomingError = (
+  error: unknown,
+  operation: CodexError.CodexAppServerTransportOperation,
+): CodexError.CodexAppServerError =>
   isCodexAppServerError(error)
     ? error
     : new CodexError.CodexAppServerTransportError({
-        detail,
+        operation,
         cause: error,
       });
 
@@ -140,15 +161,20 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
   function* (
     options: CodexAppServerPatchedProtocolOptions,
   ): Effect.fn.Return<CodexAppServerPatchedProtocol, never, Scope.Scope> {
+    const protocolScope = yield* Scope.Scope;
+    const requestHandlerScope = yield* Scope.fork(protocolScope, "parallel");
     const outgoing = yield* Queue.unbounded<string, Cause.Done<void>>();
-    const incomingNotifications = yield* Queue.unbounded<CodexAppServerIncomingNotification>();
-    const incomingRequests = yield* Queue.unbounded<CodexAppServerIncomingRequest>();
-    const pending = yield* Ref.make(
-      new Map<string, Deferred.Deferred<unknown, CodexError.CodexAppServerError>>(),
-    );
+    const incomingNotifications =
+      yield* Queue.sliding<CodexAppServerIncomingNotification>(MAX_BUFFERED_RAW_MESSAGES);
+    const incomingRequests =
+      yield* Queue.sliding<CodexAppServerIncomingRequest>(MAX_BUFFERED_RAW_MESSAGES);
+    const pending = yield* Ref.make(new Map<string, CodexAppServerPendingRequest>());
     const nextRequestId = yield* Ref.make(1);
-    const remainder = yield* Ref.make("");
+    const remainder: Array<string> = [];
     const terminationHandled = yield* Ref.make(false);
+    const terminationFailure = yield* Ref.make(Option.none<CodexError.CodexAppServerError>());
+    const terminationSignal = yield* Deferred.make<void>();
+    const activeRequestHandlers = yield* Ref.make(0);
 
     const logProtocol = (event: CodexAppServerProtocolLogEvent) => {
       if (event.direction === "incoming" && !options.logIncoming) {
@@ -166,7 +192,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     const failAllPending = (error: CodexError.CodexAppServerError) =>
       Ref.get(pending).pipe(
         Effect.flatMap((current) =>
-          Effect.forEach([...current.values()], (deferred) => Deferred.fail(deferred, error), {
+          Effect.forEach([...current.values()], ({ deferred }) => Deferred.fail(deferred, error), {
             discard: true,
           }),
         ),
@@ -181,8 +207,14 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
         return [
           Effect.gen(function* () {
             const error = yield* classify();
+            yield* Ref.set(terminationFailure, Option.some(error));
             yield* failAllPending(error);
             yield* Queue.end(outgoing);
+            yield* Deferred.succeed(terminationSignal, undefined);
+            yield* Scope.close(requestHandlerScope, Exit.void).pipe(
+              Effect.forkIn(protocolScope, { startImmediately: true }),
+              Effect.asVoid,
+            );
             if (options.onTermination) {
               yield* options.onTermination(error);
             }
@@ -193,6 +225,9 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
 
     const offerOutgoing = (message: Record<string, unknown>) =>
       Effect.gen(function* () {
+        const failure = yield* Ref.get(terminationFailure);
+        if (Option.isSome(failure)) return yield* failure.value;
+
         yield* logProtocol({
           direction: "outgoing",
           stage: "decoded",
@@ -204,7 +239,14 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
           stage: "raw",
           payload: encoded,
         });
-        yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
+        const accepted = yield* Queue.offer(outgoing, encoded);
+        if (!accepted) {
+          const closed = yield* Ref.get(terminationFailure);
+          return yield* Option.getOrElse(
+            closed,
+            () => new CodexError.CodexAppServerInputStreamEndedError({}),
+          );
+        }
       });
 
     const removePending = (requestId: string) =>
@@ -219,18 +261,16 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
 
     const resolvePending = (
       requestId: string,
-      handler: (
-        deferred: Deferred.Deferred<unknown, CodexError.CodexAppServerError>,
-      ) => Effect.Effect<void>,
+      handler: (pendingRequest: CodexAppServerPendingRequest) => Effect.Effect<void>,
     ) =>
       Ref.modify(pending, (current) => {
-        const deferred = current.get(requestId);
-        if (!deferred) {
+        const pendingRequest = current.get(requestId);
+        if (!pendingRequest) {
           return [Effect.void, current] as const;
         }
         const next = new Map(current);
         next.delete(requestId);
-        return [handler(deferred), next] as const;
+        return [handler(pendingRequest), next] as const;
       }).pipe(Effect.flatten);
 
     const respond = (requestId: string | number, result: unknown) =>
@@ -245,29 +285,68 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       const requestId = String(response.id);
       const protocolError = response.error;
       if (protocolError !== undefined) {
-        return resolvePending(requestId, (deferred) =>
+        return resolvePending(requestId, ({ deferred, method }) =>
           Deferred.fail(
             deferred,
-            CodexError.CodexAppServerRequestError.fromProtocolError(protocolError),
+            CodexError.CodexAppServerRequestError.fromProtocolError(
+              protocolError,
+              method,
+              requestId,
+            ),
           ),
         );
       }
-      return resolvePending(requestId, (deferred) => Deferred.succeed(deferred, response.result));
+      return resolvePending(requestId, ({ deferred }) =>
+        Deferred.succeed(deferred, response.result),
+      );
     };
 
     const handleRequest = (request: CodexAppServerIncomingRequest) =>
       Queue.offer(incomingRequests, request).pipe(
-        Effect.andThen(
-          options.onRequest
-            ? options.onRequest(request).pipe(
+        Effect.flatMap(() => {
+          const handler = options.onRequest;
+          if (!handler) return Effect.void;
+
+          return Ref.modify(activeRequestHandlers, (count) =>
+            count >= MAX_BUFFERED_RAW_MESSAGES ? [false, count] : [true, count + 1],
+          ).pipe(
+            Effect.flatMap((accepted) => {
+              if (!accepted) {
+                return respondError(
+                  request.id,
+                  CodexError.CodexAppServerRequestError.overloaded(
+                    "Too many Codex requests are already active.",
+                  ),
+                );
+              }
+
+              return handler(request).pipe(
                 Effect.matchEffect({
                   onFailure: (error) =>
-                    respondError(request.id, CodexError.normalizeToRequestError(error)),
+                    respondError(
+                      request.id,
+                      CodexError.CodexAppServerRequestError.fromAppServerError(
+                        error,
+                        request.method,
+                      ),
+                    ),
                   onSuccess: (result) => respond(request.id, result),
                 }),
-              )
-            : Effect.void,
-        ),
+                Effect.ensuring(
+                  Ref.update(activeRequestHandlers, (count) => Math.max(0, count - 1)),
+                ),
+                Effect.catch((error) =>
+                  handleTermination(() => Effect.succeed(error)).pipe(
+                    Effect.forkIn(protocolScope),
+                    Effect.asVoid,
+                  ),
+                ),
+                Effect.forkIn(requestHandlerScope, { startImmediately: true }),
+                Effect.asVoid,
+              );
+            }),
+          );
+        }),
         Effect.asVoid,
       );
 
@@ -277,24 +356,13 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
         Effect.asVoid,
       );
 
-    const routeMessage = (
-      message: unknown,
-    ): Effect.Effect<void, CodexError.CodexAppServerError> => {
-      if (isIncomingRequest(message)) {
-        return handleRequest(message);
-      }
-      if (isIncomingNotification(message)) {
-        return handleNotification(message);
-      }
-      if (isIncomingResponse(message)) {
-        return handleResponse(message);
-      }
-      return Effect.fail(
-        new CodexError.CodexAppServerProtocolParseError({
-          detail: "Received protocol message in an unknown shape",
-        }),
-      );
-    };
+    const routeMessage = Effect.fnUntraced(function* (message: unknown) {
+      if (Option.isSome(yield* Ref.get(terminationFailure))) return;
+      if (isIncomingRequest(message)) return yield* handleRequest(message);
+      if (isIncomingNotification(message)) return yield* handleNotification(message);
+      if (isIncomingResponse(message)) return yield* handleResponse(message);
+      return yield* CodexError.CodexAppServerProtocolParseError.fromUnroutableMessage(message);
+    });
 
     const handleLine = (line: string): Effect.Effect<void, CodexError.CodexAppServerError> => {
       if (line.trim().length === 0) {
@@ -318,8 +386,14 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
             direction: "incoming",
             stage: "decode_failed",
             payload: {
-              detail: error.detail,
-              cause: error.cause,
+              operation: error.operation,
+              ...(error.method === undefined ? {} : { method: error.method }),
+              ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
+              ...(error.issueCount === undefined ? {} : { issueCount: error.issueCount }),
+              ...(error.issueKinds === undefined ? {} : { issueKinds: error.issueKinds }),
+              ...(error.maximumPathDepth === undefined
+                ? {}
+                : { maximumPathDepth: error.maximumPathDepth }),
             },
           }),
         ),
@@ -328,35 +402,48 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     };
 
     yield* options.stdio.stdin.pipe(
+      Stream.interruptWhen(Deferred.await(terminationSignal)),
       Stream.decodeText(),
       Stream.runForEach((chunk) =>
-        Ref.modify(remainder, (current) => {
-          const combined = current + chunk;
-          const lines = combined.split("\n");
-          const nextRemainder = lines.pop() ?? "";
-          return [lines.map((line) => line.replace(/\r$/, "")), nextRemainder] as const;
+        Effect.sync(() => {
+          const lines: Array<string> = [];
+          let start = 0;
+          for (
+            let newline = chunk.indexOf("\n");
+            newline !== -1;
+            newline = chunk.indexOf("\n", start)
+          ) {
+            remainder.push(chunk.slice(start, newline));
+            lines.push(remainder.join("").replace(/\r$/, ""));
+            remainder.length = 0;
+            start = newline + 1;
+          }
+          // Keep unfinished lines in fragments so each chunk is scanned only once.
+          if (start < chunk.length) {
+            remainder.push(chunk.slice(start));
+          }
+          return lines;
         }).pipe(Effect.flatMap((lines) => Effect.forEach(lines, handleLine, { discard: true }))),
       ),
       Effect.matchEffect({
         onFailure: (error) =>
           handleTermination(() =>
-            Effect.succeed(normalizeIncomingError(error, "Codex App Server input stream failed")),
+            Effect.succeed(normalizeIncomingError(error, "read-input-stream")),
           ),
         onSuccess: () =>
-          Ref.get(remainder).pipe(
-            Effect.flatMap((line) => (line.trim().length === 0 ? Effect.void : handleLine(line))),
+          Effect.sync(() => {
+            const line = remainder.join("");
+            remainder.length = 0;
+            return line;
+          }).pipe(
+            Effect.flatMap(handleLine),
             Effect.matchEffect({
               onFailure: (error) => handleTermination(() => Effect.succeed(error)),
               onSuccess: () =>
                 handleTermination(
                   () =>
                     options.terminationError ??
-                    Effect.succeed(
-                      new CodexError.CodexAppServerTransportError({
-                        detail: "Codex App Server input stream ended",
-                        cause: new Error("Codex App Server input stream ended"),
-                      }),
-                    ),
+                    Effect.succeed(new CodexError.CodexAppServerInputStreamEndedError({})),
                 ),
             }),
           ),
@@ -366,6 +453,28 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
 
     yield* Stream.fromQueue(outgoing).pipe(Stream.run(options.stdio.stdout()), Effect.forkScoped);
 
+    if (options.exited) {
+      yield* options.exited.pipe(
+        // Output written just before exit still arrives; the pipe normally
+        // closes with the process and terminates the transport first.
+        Effect.tap(() => Effect.sleep(EXITED_OUTPUT_GRACE)),
+        Effect.flatMap((error) => handleTermination(() => Effect.succeed(error))),
+        Effect.forkScoped,
+      );
+    }
+
+    // Closing the client fails the requests still waiting on a reply, which
+    // would otherwise wait forever.
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        const closed = new CodexError.CodexAppServerInputStreamEndedError({});
+        yield* Ref.update(terminationFailure, (current) =>
+          Option.isSome(current) ? current : Option.some(closed),
+        );
+        yield* failAllPending(closed);
+      }),
+    );
+
     const request = (method: string, payload?: unknown) =>
       Effect.gen(function* () {
         const requestId = yield* Ref.modify(
@@ -373,16 +482,14 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
           (current) => [current, current + 1] as const,
         );
         const deferred = yield* Deferred.make<unknown, CodexError.CodexAppServerError>();
-        yield* Ref.update(pending, (current) => new Map(current).set(String(requestId), deferred));
+        yield* Ref.update(pending, (current) =>
+          new Map(current).set(String(requestId), { deferred, method }),
+        );
         yield* offerOutgoing({
           id: requestId,
           method,
           ...(payload !== undefined ? { params: payload } : {}),
-        }).pipe(
-          Effect.catch((error) =>
-            removePending(String(requestId)).pipe(Effect.andThen(Effect.fail(error))),
-          ),
-        );
+        }).pipe(Effect.tapError(() => removePending(String(requestId))));
         return yield* Deferred.await(deferred).pipe(
           Effect.onInterrupt(() => removePending(String(requestId))),
         );

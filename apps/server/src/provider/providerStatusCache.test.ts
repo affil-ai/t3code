@@ -9,6 +9,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Logger from "effect/Logger";
 
 import {
   hydrateCachedProvider,
@@ -42,6 +43,39 @@ const makeProvider = (
 });
 
 it.layer(NodeServices.layer)("providerStatusCache", (it) => {
+  it.effect("logs structural diagnostics without retaining invalid cache contents", () => {
+    const messages: Array<unknown> = [];
+    const logger = Logger.make<unknown, void>((options) => {
+      if (Array.isArray(options.message)) {
+        messages.push(...options.message);
+      } else {
+        messages.push(options.message);
+      }
+    });
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-provider-cache-invalid-" });
+      const cachePath = `${tempDir}/provider.json`;
+      const secretCacheValue = "secret-cache-value";
+      yield* fs.writeFileString(cachePath, `{ "token": "${secretCacheValue}" }`);
+
+      const result = yield* readProviderStatusCache(cachePath);
+
+      assert.strictEqual(result, undefined);
+      const failure = messages.find(
+        (message): message is Record<string, unknown> =>
+          typeof message === "object" && message !== null && "path" in message,
+      );
+      assert.exists(failure);
+      assert.strictEqual(failure.path, cachePath);
+      assert.strictEqual(typeof failure.errorTag, "string");
+      assert.ok(!("cause" in failure));
+      assert.ok(!("issues" in failure));
+      assert.ok(!Object.values(failure).map(String).join("\n").includes(secretCacheValue));
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
+
   it.effect("writes and reads provider status snapshots", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -145,6 +179,35 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         skills: cachedCodex.skills,
         message: cachedCodex.message,
       },
+    );
+  });
+
+  it("does not resurrect cached custom models that settings no longer declare", () => {
+    const builtIn = {
+      slug: "gpt-5.4",
+      name: "GPT-5.4",
+      isCustom: false,
+      capabilities: emptyCapabilities,
+    } as const;
+    const cachedCodex = makeProvider(CODEX_DRIVER, {
+      models: [
+        builtIn,
+        {
+          slug: "removed-custom",
+          name: "removed-custom",
+          isCustom: true,
+          capabilities: emptyCapabilities,
+        },
+      ],
+    });
+    const fallbackCodex = makeProvider(CODEX_DRIVER, { models: [builtIn] });
+
+    assert.deepStrictEqual(
+      hydrateCachedProvider({
+        cachedProvider: cachedCodex,
+        fallbackProvider: fallbackCodex,
+      }).models,
+      [builtIn],
     );
   });
 

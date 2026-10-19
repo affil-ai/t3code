@@ -2,13 +2,17 @@ import * as Schema from "effect/Schema";
 import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
-export const SourceControlProviderKind = Schema.Literals([
-  "github",
-  "gitlab",
-  "azure-devops",
-  "bitbucket",
-  "unknown",
-]);
+/**
+ * `SourceControlProviderKind` — open branded slug naming a source control host, such as `github`.
+ *
+ * Open on purpose, like `ProviderDriverKind`: a server can report a host this client does not
+ * ship a definition for, and clients fall back to a generic presentation instead of failing to
+ * decode. `unknown` is what the server reports for a remote it cannot attribute to any host.
+ */
+export const SourceControlProviderKind = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[a-z][a-z0-9-]*$/),
+).pipe(Schema.brand("SourceControlProviderKind"));
 export type SourceControlProviderKind = typeof SourceControlProviderKind.Type;
 
 export const SourceControlProviderInfo = Schema.Struct({
@@ -28,10 +32,14 @@ export const ChangeRequest = Schema.Struct({
   url: Schema.String,
   baseRefName: TrimmedNonEmptyString,
   headRefName: TrimmedNonEmptyString,
+  /** The head commit, when the provider's read includes it. */
+  headSha: Schema.optional(TrimmedNonEmptyString),
   state: ChangeRequestState,
-  updatedAt: Schema.Option(Schema.DateTimeUtc),
+  /** Present when the provider can tell that an open change request is still a draft. */
   isDraft: Schema.optional(Schema.Boolean),
-  hasConflicts: Schema.optional(Schema.Boolean),
+  closedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  mergedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  updatedAt: Schema.Option(Schema.DateTimeUtc),
   isCrossRepository: Schema.optional(Schema.Boolean),
   headRepositoryNameWithOwner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   headRepositoryOwnerLogin: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -120,6 +128,20 @@ export const SourceControlProviderAuth = Schema.Struct({
   account: Schema.Option(TrimmedNonEmptyString),
   host: Schema.Option(TrimmedNonEmptyString),
   detail: Schema.Option(TrimmedNonEmptyString),
+  /** Every login the provider CLI holds, across hosts. Only GitHub reports these today. */
+  accounts: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        host: TrimmedNonEmptyString,
+        account: TrimmedNonEmptyString,
+        active: Schema.Boolean,
+        authenticated: Schema.Boolean,
+        error: Schema.optionalKey(TrimmedNonEmptyString),
+        /** Set when the login comes from a token variable such as `GH_TOKEN`, which wins over Settings. */
+        environmentVariable: Schema.optionalKey(TrimmedNonEmptyString),
+      }),
+    ),
+  ),
 });
 export type SourceControlProviderAuth = typeof SourceControlProviderAuth.Type;
 
@@ -152,11 +174,15 @@ export const SourceControlDiscoveryResult = Schema.Struct({
 });
 export type SourceControlDiscoveryResult = typeof SourceControlDiscoveryResult.Type;
 
-export class SourceControlProviderError extends Schema.TaggedErrorClass<SourceControlProviderError>()(
+export class SourceControlProviderError extends Schema.TaggedError<SourceControlProviderError>()(
   "SourceControlProviderError",
   {
     provider: SourceControlProviderKind,
     operation: Schema.String,
+    cwd: Schema.String,
+    command: Schema.optional(Schema.String),
+    repository: Schema.optional(Schema.String),
+    reference: Schema.optional(Schema.String),
     detail: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   },
@@ -166,7 +192,7 @@ export class SourceControlProviderError extends Schema.TaggedErrorClass<SourceCo
   }
 }
 
-export class SourceControlRepositoryError extends Schema.TaggedErrorClass<SourceControlRepositoryError>()(
+export class SourceControlRepositoryError extends Schema.TaggedError<SourceControlRepositoryError>()(
   "SourceControlRepositoryError",
   {
     provider: SourceControlProviderKind,

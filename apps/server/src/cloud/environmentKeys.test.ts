@@ -6,10 +6,10 @@ import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import { getOrCreateEnvironmentKeyPairFromSecretStore } from "./environmentKeys.ts";
 
-const makeServerSecretStoreLayer = () =>
+const layerServerSecretStore = () =>
   ServerSecretStore.layer.pipe(
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-environment-keys-test-" })),
   );
@@ -28,7 +28,7 @@ it.layer(NodeServices.layer)("getOrCreateEnvironmentKeyPairFromSecretStore", (it
       assert.isTrue(Option.isSome(yield* secretStore.get("cloud-link-ed25519-key-pair")));
       assert.isTrue(Option.isNone(yield* secretStore.get("cloud-link-ed25519-private-key")));
       assert.isTrue(Option.isNone(yield* secretStore.get("cloud-link-ed25519-public-key")));
-    }).pipe(Effect.provide(makeServerSecretStoreLayer())),
+    }).pipe(Effect.provide(layerServerSecretStore())),
   );
 
   it.effect("migrates a legacy keypair into the atomic secret", () =>
@@ -42,7 +42,7 @@ it.layer(NodeServices.layer)("getOrCreateEnvironmentKeyPairFromSecretStore", (it
         publicKey: "public",
       });
       assert.isTrue(Option.isSome(yield* secretStore.get("cloud-link-ed25519-key-pair")));
-    }).pipe(Effect.provide(makeServerSecretStoreLayer())),
+    }).pipe(Effect.provide(layerServerSecretStore())),
   );
 
   it.effect("uses the persisted keypair when a concurrent creator wins", () =>
@@ -65,8 +65,8 @@ it.layer(NodeServices.layer)("getOrCreateEnvironmentKeyPairFromSecretStore", (it
           }).pipe(
             Effect.flatMap(() =>
               Effect.fail(
-                new ServerSecretStore.SecretStoreError({
-                  message: "Concurrent keypair creation won.",
+                new ServerSecretStore.SecretStorePersistError({
+                  resource: "environment signing key pair",
                   cause: PlatformError.systemError({
                     _tag: "AlreadyExists",
                     module: "FileSystem",
@@ -79,7 +79,7 @@ it.layer(NodeServices.layer)("getOrCreateEnvironmentKeyPairFromSecretStore", (it
           ),
         getOrCreateRandom: unusedSecretStoreOperation,
         remove: unusedSecretStoreOperation,
-      } satisfies ServerSecretStore.ServerSecretStoreShape;
+      } satisfies ServerSecretStore.ServerSecretStore["Service"];
 
       assert.deepEqual(yield* getOrCreateEnvironmentKeyPairFromSecretStore(secretStore), {
         privateKey: "winner-private",

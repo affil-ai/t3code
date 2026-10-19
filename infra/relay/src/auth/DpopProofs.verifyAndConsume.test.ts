@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no generateKeyPairSync or sign.
 import * as NodeCrypto from "node:crypto";
 
 import { describe, expect, it } from "@effect/vitest";
@@ -10,7 +11,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { RelayDb, type RelayDatabase } from "../db.ts";
+import * as RelayDb from "../db.ts";
 import { relayDpopProofs } from "../persistence/schema.ts";
 import * as DpopProofs from "./DpopProofs.ts";
 
@@ -78,8 +79,8 @@ function layer(
         }),
       };
     },
-  } as unknown as RelayDatabase;
-  return DpopProofs.layer.pipe(Layer.provide(Layer.succeed(RelayDb, fakeDb)));
+  } as unknown as RelayDb.RelayDb["Service"];
+  return DpopProofs.layer.pipe(Layer.provide(Layer.succeed(RelayDb.RelayDb, fakeDb)));
 }
 
 function consumeEachProofOnce() {
@@ -96,6 +97,34 @@ function consumeEachProofOnce() {
 }
 
 describe("DpopProofReplay.verifyAndConsume", () => {
+  it.effect("reports a signed proof outside the time window", () => {
+    const now = DateTime.makeUnsafe("2026-05-25T12:00:00.000Z");
+    const proof = makeDpopProof({
+      method: "POST",
+      url: "https://relay.example.com/v1/environments/env/connect",
+      iat: Math.floor(now.epochMilliseconds / 1_000) - 301,
+      jti: "proof-old",
+    });
+
+    return Effect.gen(function* () {
+      const replay = yield* DpopProofs.DpopProofReplay;
+      const error = yield* Effect.flip(
+        replay.verifyAndConsume({
+          proof: proof.proof,
+          method: "POST",
+          url: "https://relay.example.com/v1/environments/env/connect",
+          expectedThumbprint: proof.thumbprint,
+          now,
+        }),
+      );
+
+      expect(error).toMatchObject({
+        _tag: "DpopProofRejected",
+        code: "time_window",
+      });
+    }).pipe(Effect.provide(layer(() => Effect.die("unexpected replay persistence"))));
+  });
+
   it.effect("rejects replayed proofs after persistence consumes the jti once", () => {
     const now = DateTime.makeUnsafe("2026-05-25T12:00:00.000Z");
     const proof = makeDpopProof({
@@ -114,7 +143,7 @@ describe("DpopProofReplay.verifyAndConsume", () => {
         expectedThumbprint: proof.thumbprint,
         now,
       });
-      const second = yield* Effect.exit(
+      const second = yield* Effect.flip(
         replay.verifyAndConsume({
           proof: proof.proof,
           method: "POST",
@@ -125,7 +154,7 @@ describe("DpopProofReplay.verifyAndConsume", () => {
       );
 
       expect(first).toBe(proof.thumbprint);
-      expect(second._tag).toBe("Failure");
+      expect(second).toMatchObject({ _tag: "DpopProofRejected", code: "replayed" });
     }).pipe(Effect.provide(layer(consumeEachProofOnce())));
   });
 
@@ -140,7 +169,7 @@ describe("DpopProofReplay.verifyAndConsume", () => {
 
     return Effect.gen(function* () {
       const replay = yield* DpopProofs.DpopProofReplay;
-      const result = yield* Effect.exit(
+      const error = yield* Effect.flip(
         replay.verifyAndConsume({
           proof: proof.proof,
           method: "POST",
@@ -151,7 +180,10 @@ describe("DpopProofReplay.verifyAndConsume", () => {
         }),
       );
 
-      expect(result._tag).toBe("Failure");
+      expect(error).toMatchObject({
+        _tag: "DpopProofRejected",
+        code: "access_token_hash_mismatch",
+      });
     }).pipe(Effect.provide(layer(() => Effect.die("unexpected DPoP replay persistence"))));
   });
 
@@ -163,7 +195,7 @@ describe("DpopProofReplay.verifyAndConsume", () => {
       iat: Math.floor(now.epochMilliseconds / 1_000),
       jti: "proof-persistence-failure",
     });
-    const cause = "database unavailable";
+    const cause = { _tag: "DatabaseUnavailable" } as const;
 
     return Effect.gen(function* () {
       const replay = yield* DpopProofs.DpopProofReplay;
@@ -177,8 +209,16 @@ describe("DpopProofReplay.verifyAndConsume", () => {
         }),
       );
 
-      expect(error).toEqual(new DpopProofs.DpopProofReplayPersistenceError({ cause }));
-    }).pipe(Effect.provide(layer(() => Effect.fail({ _tag: cause }))));
+      expect(error).toMatchObject({
+        _tag: "DpopProofReplayPersistenceError",
+        operation: "consume",
+        thumbprint: proof.thumbprint,
+        jti: "proof-persistence-failure",
+        iat: Math.floor(now.epochMilliseconds / 1_000),
+      });
+      expect(error.cause).toBe(cause);
+      expect(error).not.toHaveProperty("proof");
+    }).pipe(Effect.provide(layer(() => Effect.fail(cause))));
   });
 
   it.effect("accepts proofs bound to the access token hash", () => {

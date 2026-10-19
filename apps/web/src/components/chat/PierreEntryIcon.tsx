@@ -62,20 +62,21 @@ const ICON_COLORS: Record<string, readonly [light: string, dark: string]> = {
 export const PierreEntryIcon = memo(function PierreEntryIcon(props: {
   pathValue: string;
   kind: "file" | "directory";
+  mimeType?: string | undefined;
   theme: "light" | "dark";
   className?: string;
 }) {
   useInsertionEffect(ensurePierreIconSprite, []);
   const icon = useMemo(
-    () => resolvePierreIconForEntry(props.pathValue, props.kind),
-    [props.kind, props.pathValue],
+    () => resolvePierreIconForEntry(props.pathValue, props.kind, props.mimeType),
+    [props.kind, props.pathValue, props.mimeType],
   );
 
   if (!icon) {
     return props.kind === "directory" ? (
-      <FolderIcon className={cn("size-4 text-muted-foreground/80", props.className)} />
+      <FolderIcon className={cn("size-4 text-icon-muted", props.className)} />
     ) : (
-      <FileIcon className={cn("size-4 text-muted-foreground/80", props.className)} />
+      <FileIcon className={cn("size-4 text-icon-muted", props.className)} />
     );
   }
 

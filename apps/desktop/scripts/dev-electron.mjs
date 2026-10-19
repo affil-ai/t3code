@@ -1,7 +1,7 @@
-import { spawn, spawnSync } from "node:child_process";
-import { watch } from "node:fs";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
-import { join } from "node:path";
+import * as NodePath from "node:path";
 
 import {
   desktopDir,
@@ -23,11 +23,27 @@ if (!Number.isInteger(port) || port <= 0) {
 
 const requiredFiles = [
   "dist-electron/main.cjs",
+  "dist-electron/electron/WindowsForegroundFocusWorker.cjs",
   "dist-electron/preload.cjs",
+  "dist-electron/snapShot/GlobalShiftShortcutWorker.cjs",
+  "dist-electron/snapShot/RegionSnapShotWorker.cjs",
+  "dist-electron/snapShot/SnapShotAccessibilityWorker.cjs",
   "../server/dist/bin.mjs",
 ];
 const watchedDirectories = [
   { directory: "dist-electron", files: new Set(["main.cjs", "preload.cjs"]) },
+  {
+    directory: "dist-electron/electron",
+    files: new Set(["WindowsForegroundFocusWorker.cjs"]),
+  },
+  {
+    directory: "dist-electron/snapShot",
+    files: new Set([
+      "GlobalShiftShortcutWorker.cjs",
+      "RegionSnapShotWorker.cjs",
+      "SnapShotAccessibilityWorker.cjs",
+    ]),
+  },
   { directory: "../server/dist", files: new Set(["bin.mjs"]) },
 ];
 const forcedShutdownTimeoutMs = 1_500;
@@ -36,6 +52,12 @@ const childTreeGracePeriodMs = 1_200;
 const remoteDebuggingPort = process.env.T3CODE_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone dev script has no Effect runtime.
 const hostPlatform = NodeOS.platform();
+
+NodeChildProcess.execFileSync(
+  process.execPath,
+  [NodePath.join(desktopDir, "scripts/build-browser-secret.mjs")],
+  { stdio: "inherit" },
+);
 
 await waitForResources({
   baseDir: desktopDir,
@@ -64,7 +86,7 @@ function killChildTreeByPid(pid, signal) {
     return;
   }
 
-  spawnSync("pkill", [`-${signal}`, "-P", String(pid)], { stdio: "ignore" });
+  NodeChildProcess.spawnSync("pkill", [`-${signal}`, "-P", String(pid)], { stdio: "ignore" });
 }
 
 function cleanupStaleDevApps() {
@@ -72,7 +94,9 @@ function cleanupStaleDevApps() {
     return;
   }
 
-  spawnSync("pkill", ["-f", "--", `--t3code-dev-root=${desktopDir}`], { stdio: "ignore" });
+  NodeChildProcess.spawnSync("pkill", ["-f", "--", `--t3code-dev-root=${desktopDir}`], {
+    stdio: "ignore",
+  });
 }
 
 function startApp() {
@@ -87,7 +111,7 @@ function startApp() {
     ? electronArgs
     : [...electronArgs, `--t3code-dev-root=${desktopDir}`, "dist-electron/main.cjs"];
   const electronCommand = resolveElectronLaunchCommand(launchArgs);
-  const app = spawn(electronCommand.electronPath, electronCommand.args, {
+  const app = NodeChildProcess.spawn(electronCommand.electronPath, electronCommand.args, {
     cwd: desktopDir,
     env: childEnv,
     stdio: "inherit",
@@ -180,8 +204,8 @@ function scheduleRestart() {
 
 function startWatchers() {
   for (const { directory, files } of watchedDirectories) {
-    const watcher = watch(
-      join(desktopDir, directory),
+    const watcher = NodeFS.watch(
+      NodePath.join(desktopDir, directory),
       { persistent: true },
       (_eventType, filename) => {
         if (typeof filename !== "string" || !files.has(filename)) {
@@ -202,7 +226,9 @@ function killChildTree(signal) {
   }
 
   // Kill direct children as a final fallback in case normal shutdown leaves stragglers.
-  spawnSync("pkill", [`-${signal}`, "-P", String(process.pid)], { stdio: "ignore" });
+  NodeChildProcess.spawnSync("pkill", [`-${signal}`, "-P", String(process.pid)], {
+    stdio: "ignore",
+  });
 }
 
 async function shutdown(exitCode) {

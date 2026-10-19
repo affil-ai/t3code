@@ -1,0 +1,133 @@
+import {
+  AgentCreateResult,
+  AgentCreateToolInput,
+  AgentListToolResult,
+  AgentProfile,
+  AgentTasksToolInput,
+  AgentUpdateInput,
+  FirstmateError,
+  FirstmateTaskCreateInput,
+  FirstmateTaskGetInput,
+  FirstmateTaskGetResult,
+  FirstmateTaskListInput,
+  FirstmateTaskListResult,
+  FirstmateTaskMutationResult,
+  FirstmateTaskUpdateInput,
+  OrchestratorMcpFailure,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as Tool from "effect/ai/Tool";
+import * as Toolkit from "effect/ai/Toolkit";
+
+import * as FirstmateService from "../../../firstmate/FirstmateService.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+
+const dependencies = [
+  McpInvocationContext.McpInvocationContext,
+  FirstmateService.FirstmateService,
+  ThreadManagementService.ThreadManagementService,
+];
+
+export const FirstmateToolError = Schema.Union([FirstmateError, OrchestratorMcpFailure]);
+export type FirstmateToolError = typeof FirstmateToolError.Type;
+
+const shared = {
+  failure: FirstmateToolError,
+  failureMode: "return" as const,
+  dependencies,
+};
+
+const FirstmateTaskListTool = Tool.make("firstmate_task_list", {
+  ...shared,
+  description:
+    "List the tasks on your board. Filter by status (including backlog) or legacy state. Omit both to list every task that is not done or dropped. Backlog is intentionally parked: do not start workers or schedule wakes for it.",
+  parameters: FirstmateTaskListInput,
+  success: FirstmateTaskListResult,
+})
+  .annotate(Tool.Title, "List tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const FirstmateTaskGetTool = Tool.make("firstmate_task_get", {
+  ...shared,
+  description: "Read one task on your board and its append-only event log.",
+  parameters: FirstmateTaskGetInput,
+  success: FirstmateTaskGetResult,
+})
+  .annotate(Tool.Title, "Get task")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
+  ...shared,
+  description:
+    "Create a task on your board. Only an agent's coordinator chat may create its tasks. Set status explicitly: backlog for deferred work, planning, in_progress, in_review, or ready_for_deployment. Backlog is parked: do not launch a worker until the user asks to start it. Give it a nextStep: a short imperative phrase naming the PR or decision.",
+  parameters: FirstmateTaskCreateInput,
+  success: FirstmateTaskMutationResult,
+})
+  .annotate(Tool.Title, "Create task")
+  .annotate(Tool.Destructive, true);
+
+const FirstmateTaskUpdateTool = Tool.make("firstmate_task_update", {
+  ...shared,
+  description:
+    'Partially update a task on your board and append an event. Only an agent\'s coordinator chat may update its tasks. Set status explicitly for lifecycle moves: backlog, planning, in_progress, in_review, ready_for_deployment, done, or canceled. Use nextActor separately for who acts next. Whenever you change status, state, or nextActor, also set nextStep: a short imperative phrase naming the PR or decision ("Approve merge of #4118", "Waiting on Office review"), not a sentence about who acts. Closing requires closeEvidence. Backlog tasks are parked and do not wake the coordinator.',
+  parameters: FirstmateTaskUpdateInput,
+  success: FirstmateTaskMutationResult,
+})
+  .annotate(Tool.Title, "Update task")
+  .annotate(Tool.Destructive, true);
+
+const AgentListTool = Tool.make("agent_list", {
+  ...shared,
+  description:
+    "List the user's agents: each one's id, name, role, and coordinator chat. Only an agent's coordinator chat may call it.",
+  // No `parameters`: Tool.make defaults to Tool.EmptyParams, which MCP accepts as an empty object.
+  success: AgentListToolResult,
+})
+  .annotate(Tool.Title, "List agents")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const AgentTasksTool = Tool.make("agent_tasks", {
+  ...shared,
+  description:
+    "Read another agent's task board, read-only. Omit state to list every task that is not done or dropped. Only an agent's coordinator chat may call it.",
+  parameters: AgentTasksToolInput,
+  success: FirstmateTaskListResult,
+})
+  .annotate(Tool.Title, "Read an agent's tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const AgentCreateTool = Tool.make("agent_create", {
+  ...shared,
+  description:
+    "Create an agent: records it, seeds its folder under crew/ in the agents repository, and starts its coordinator chat. Returns the agent and its chat's thread id. Only an agent's coordinator chat may call it.",
+  parameters: AgentCreateToolInput,
+  success: AgentCreateResult,
+})
+  .annotate(Tool.Title, "Create agent")
+  .annotate(Tool.Destructive, false);
+
+const AgentUpdateTool = Tool.make("agent_update", {
+  ...shared,
+  description:
+    "Change an agent's name, icon, color, or role. Omitted fields are unchanged; a new role rewrites the top of its AGENTS.md. Only an agent's coordinator chat may call it.",
+  parameters: AgentUpdateInput,
+  success: AgentProfile,
+})
+  .annotate(Tool.Title, "Update agent")
+  .annotate(Tool.Destructive, true);
+
+export const FirstmateToolkit = Toolkit.make(
+  FirstmateTaskListTool,
+  FirstmateTaskGetTool,
+  FirstmateTaskCreateTool,
+  FirstmateTaskUpdateTool,
+  AgentListTool,
+  AgentTasksTool,
+  AgentCreateTool,
+  AgentUpdateTool,
+);

@@ -5,8 +5,8 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Tracer from "effect/Tracer";
-import type { HttpClient } from "effect/unstable/http";
-import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import type { HttpClient } from "effect/http";
+import { OtlpSerialization, OtlpTracer } from "effect/observability";
 
 export interface RelayClientTracingConfig {
   readonly tracesUrl: string;
@@ -29,6 +29,19 @@ export class RelayClientTracer extends Context.Reference(
   },
 ) {}
 
+/**
+ * The tracer that was active before relay tracing took over, so work nested
+ * inside a relay span can return to it.
+ */
+class LocalTracer extends Context.Reference("@t3tools/shared/relayTracing/LocalTracer", {
+  defaultValue: () => Option.none<Tracer.Tracer>(),
+}) {}
+
+/**
+ * Exports every span `effect` creates through the product tracer. Use it only
+ * around T3 Connect work; wrap local work inside it with
+ * {@link withLocalTracing} so it stays off the product tracer.
+ */
 export const withRelayClientTracing = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E, R> =>
@@ -36,12 +49,44 @@ export const withRelayClientTracing = <A, E, R>(
     Effect.flatMap(
       Option.match({
         onNone: () => effect,
-        onSome: (tracer) => effect.pipe(Effect.provideService(Tracer.Tracer, tracer)),
+        onSome: (tracer) =>
+          Tracer.Tracer.pipe(
+            Effect.flatMap((local) =>
+              effect.pipe(
+                Effect.provideService(Tracer.Tracer, tracer),
+                Effect.provideService(LocalTracer, Option.some(local)),
+              ),
+            ),
+          ),
       }),
     ),
   );
 
-function traceSafeError(value: unknown): Error {
+/**
+ * Runs `effect` on the tracer that was active outside relay tracing. Its spans
+ * stay in the local trace and are never exported, so a relay span can time the
+ * work without shipping what the user's machine did to answer it.
+ */
+export const withLocalTracing = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+  LocalTracer.pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => effect,
+        onSome: (local) => effect.pipe(Effect.provideService(Tracer.Tracer, local)),
+      }),
+    ),
+  );
+
+function cleanTraceStack(error: Error): string {
+  const stack = error.stack ?? `${error.name}: ${error.message}`;
+  const lines = stack.split("\n");
+  const effectFrameIndex = lines.findIndex(
+    (line, index) => index > 0 && /(?:Generator\.next|~effect\/Effect)/.test(line),
+  );
+  return effectFrameIndex < 0 ? stack : lines.slice(0, effectFrameIndex).join("\n");
+}
+
+function traceSafeError(value: unknown, seen = new WeakSet<object>()): Error {
   const message =
     value instanceof Error
       ? value.message
@@ -51,12 +96,19 @@ function traceSafeError(value: unknown): Error {
           typeof value.message === "string"
         ? value.message
         : String(value);
-  const error = new Error(message);
+
+  let cause: Error | undefined;
+  if (typeof value === "object" && value !== null && !seen.has(value)) {
+    seen.add(value);
+    if ("cause" in value && value.cause !== undefined) {
+      cause = traceSafeError(value.cause, seen);
+    }
+  }
+
+  const error = new Error(message, cause ? { cause } : undefined);
   if (value instanceof Error) {
     error.name = value.name;
-    if (value.stack !== undefined) {
-      error.stack = value.stack;
-    }
+    error.stack = cleanTraceStack(value);
   } else if (
     typeof value === "object" &&
     value !== null &&
@@ -64,6 +116,9 @@ function traceSafeError(value: unknown): Error {
     typeof value.name === "string"
   ) {
     error.name = value.name;
+  }
+  if (cause) {
+    error.stack = `${error.stack ?? `${error.name}: ${error.message}`}\nCaused by: ${cause.stack ?? `${cause.name}: ${cause.message}`}`;
   }
   return error;
 }
@@ -105,7 +160,7 @@ function nonInterferingTracer(delegate: Tracer.Tracer): Tracer.Tracer {
   });
 }
 
-export function makeRelayClientTracingLayer(
+export function layer(
   config: RelayClientTracingConfig | null,
   resource: RelayClientTracingResource,
 ): Layer.Layer<never, never, HttpClient.HttpClient> {
@@ -113,7 +168,7 @@ export function makeRelayClientTracingLayer(
     return Layer.succeed(RelayClientTracer, Option.none());
   }
 
-  const tracerLayer = OtlpTracer.layer({
+  const layerTracer = OtlpTracer.layer({
     url: config.tracesUrl,
     headers: {
       Authorization: `Bearer ${config.tracesToken}`,
@@ -123,6 +178,7 @@ export function makeRelayClientTracingLayer(
       serviceName: resource.serviceName,
       serviceVersion: resource.serviceVersion,
       attributes: {
+        "service.namespace": "t3code",
         "service.runtime": resource.runtime,
         "service.component": resource.component ?? "relay-client",
         "t3.client.surface": resource.client,
@@ -132,6 +188,6 @@ export function makeRelayClientTracingLayer(
 
   return Layer.effect(
     RelayClientTracer,
-    Tracer.Tracer.pipe(Effect.map(nonInterferingTracer), Effect.map(Option.some)),
-  ).pipe(Layer.provide(tracerLayer));
+    Tracer.Tracer.pipe(Effect.map(nonInterferingTracer), Effect.asSome),
+  ).pipe(Layer.provide(layerTracer));
 }

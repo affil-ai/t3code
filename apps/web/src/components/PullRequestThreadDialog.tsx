@@ -1,4 +1,12 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type ThreadId,
+} from "@t3tools/contracts";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -7,10 +15,12 @@ import {
   usePreparePullRequestThreadAction,
   usePullRequestResolution,
 } from "~/lib/sourceControlActions";
-import { useVcsStatus } from "~/lib/vcsStatusState";
 import { cn } from "~/lib/utils";
 import { parsePullRequestReference } from "~/pullRequestReference";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
+import { useEnvironmentQuery } from "~/state/query";
+import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
+import { vcsEnvironment } from "~/state/vcs";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -47,25 +57,26 @@ export function PullRequestThreadDialog({
   const [reference, setReference] = useState(initialReference ?? "");
   const [referenceDirty, setReferenceDirty] = useState(false);
   const [preparingMode, setPreparingMode] = useState<"local" | "worktree" | null>(null);
+  const [prepareErrorMessage, setPrepareErrorMessage] = useState<string | null>(null);
   const [debouncedReference, referenceDebouncer] = useDebouncedValue(
     reference,
     { wait: 450 },
     (debouncerState) => ({ isPending: debouncerState.isPending }),
   );
-  const { data: gitStatus } = useVcsStatus({ environmentId, cwd });
+  const { data: gitStatus } = useEnvironmentQuery(
+    cwd === null
+      ? null
+      : vcsEnvironment.status({
+          environmentId,
+          input: { cwd },
+        }),
+  );
   const sourceControlPresentation = useMemo(
     () => getSourceControlPresentation(gitStatus?.sourceControlProvider),
     [gitStatus?.sourceControlProvider],
   );
   const terminology = sourceControlPresentation.terminology;
   const SourceControlIcon = sourceControlPresentation.Icon;
-
-  useEffect(() => {
-    if (!open) return;
-    setReference(initialReference ?? "");
-    setReferenceDirty(false);
-    setPreparingMode(null);
-  }, [initialReference, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -100,6 +111,7 @@ export function PullRequestThreadDialog({
     );
   }, [parsedReference, sourceControlScope]);
   const preparePullRequestThreadAction = usePreparePullRequestThreadAction(sourceControlScope);
+  const canOperateThread = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
 
   const liveResolvedPullRequest =
     parsedReference !== null && parsedReference === parsedDebouncedReference
@@ -129,6 +141,13 @@ export function PullRequestThreadDialog({
 
   const handleConfirm = useCallback(
     async (mode: "local" | "worktree") => {
+      if (!preparePullRequestThreadAction.isAllowed) return;
+      if (
+        mode === "worktree" &&
+        !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
+      ) {
+        return;
+      }
       if (!parsedReference) {
         setReferenceDirty(true);
         return;
@@ -136,29 +155,42 @@ export function PullRequestThreadDialog({
       if (!parsedReference || !resolvedPullRequest || !cwd) {
         return;
       }
+      setPrepareErrorMessage(null);
       setPreparingMode(mode);
-      try {
-        const result = await preparePullRequestThreadAction.run({
-          reference: parsedReference,
-          mode,
-          ...(mode === "worktree" ? { threadId } : {}),
-        });
-        await onPrepared({
-          branch: result.branch,
-          worktreePath: result.worktreePath,
-        });
-        onOpenChange(false);
-      } finally {
-        setPreparingMode(null);
+      const result = await preparePullRequestThreadAction.run({
+        reference: parsedReference,
+        mode,
+        ...(mode === "worktree" ? { threadId } : {}),
+      });
+      setPreparingMode(null);
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) {
+          preparePullRequestThreadAction.resetError();
+        } else {
+          const error = squashAtomCommandFailure(result);
+          setPrepareErrorMessage(
+            error instanceof Error
+              ? error.message
+              : `Failed to prepare ${terminology.singular} thread.`,
+          );
+        }
+        return;
       }
+      await onPrepared({
+        branch: result.value.branch,
+        worktreePath: result.value.worktreePath,
+      });
+      onOpenChange(false);
     },
     [
       cwd,
+      environmentId,
       onOpenChange,
       onPrepared,
       parsedReference,
       preparePullRequestThreadAction,
       resolvedPullRequest,
+      terminology.singular,
       threadId,
     ],
   );
@@ -172,10 +204,9 @@ export function PullRequestThreadDialog({
         : null;
   const errorMessage =
     validationMessage ??
+    prepareErrorMessage ??
     (resolvedPullRequest === null && pullRequestResolution.error
-      ? pullRequestResolution.error instanceof Error
-        ? pullRequestResolution.error.message
-        : `Failed to resolve ${terminology.singular}.`
+      ? pullRequestResolution.error
       : preparePullRequestThreadAction.error instanceof Error
         ? preparePullRequestThreadAction.error.message
         : preparePullRequestThreadAction.error
@@ -193,8 +224,8 @@ export function PullRequestThreadDialog({
     >
       <DialogPopup className="max-w-xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <SourceControlIcon className="size-4" />
+          <DialogTitle className="flex items-center">
+            <SourceControlIcon className="me-2 size-4" />
             Checkout {terminology.singular}
           </DialogTitle>
           <DialogDescription>
@@ -202,7 +233,7 @@ export function PullRequestThreadDialog({
             the draft thread in the main repo or in a dedicated worktree.
           </DialogDescription>
         </DialogHeader>
-        <DialogPanel className="space-y-4">
+        <DialogPanel>
           <label className="grid gap-1.5">
             <span className="text-xs font-medium text-foreground capitalize">
               {terminology.singular}
@@ -219,9 +250,12 @@ export function PullRequestThreadDialog({
                 if (event.key !== "Enter") {
                   return;
                 }
+                if (event.nativeEvent.isComposing || event.keyCode === 229) {
+                  return;
+                }
                 event.preventDefault();
                 if (!isResolving && !preparePullRequestThreadAction.isPending) {
-                  void handleConfirm("local");
+                  void handleConfirm("worktree");
                 }
               }}
             />
@@ -246,7 +280,7 @@ export function PullRequestThreadDialog({
 
           {isResolving ? (
             <div className="flex items-center gap-2 text-muted-foreground text-xs">
-              <Spinner className="size-3.5" />
+              <Spinner size="sm" />
               Resolving {terminology.singular}...
             </div>
           ) : null}
@@ -267,10 +301,9 @@ export function PullRequestThreadDialog({
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => {
-              void handleConfirm("local");
-            }}
+            onClick={() => handleConfirm("local")}
             disabled={
+              !preparePullRequestThreadAction.isAllowed ||
               !cwd ||
               !resolvedPullRequest ||
               isResolving ||
@@ -282,10 +315,10 @@ export function PullRequestThreadDialog({
           <Button
             type="button"
             size="sm"
-            onClick={() => {
-              void handleConfirm("worktree");
-            }}
+            onClick={() => handleConfirm("worktree")}
             disabled={
+              !preparePullRequestThreadAction.isAllowed ||
+              !canOperateThread ||
               !cwd ||
               !resolvedPullRequest ||
               isResolving ||

@@ -1,4 +1,6 @@
-export * from "./layer.ts";
 export * from "./remote.ts";
-export * from "./service.ts";
-export * from "./tokenStore.ts";
+export {
+  type AuthorizedRemoteEnvironment,
+  type AuthorizedRemoteHttpEnvironment,
+} from "./service.ts";
+export * as TokenStore from "./tokenStore.ts";

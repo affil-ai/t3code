@@ -1,75 +1,180 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { writeClipboardText } from "./useCopyToClipboard";
+import { COMPOSER_CONTEXT_CLIPBOARD_MIME } from "@t3tools/shared/composerContextClipboard";
 
-type FakeTextArea = {
-  focus: ReturnType<typeof vi.fn>;
-  remove: ReturnType<typeof vi.fn>;
-  select: ReturnType<typeof vi.fn>;
-  setAttribute: ReturnType<typeof vi.fn>;
-  style: Record<string, string>;
-  value: string;
-};
+import {
+  ClipboardApiUnavailableError,
+  ClipboardWriteError,
+  writeTextToClipboard,
+} from "./useCopyToClipboard";
 
-function installClipboardGlobals(input: {
-  execCommand?: ReturnType<typeof vi.fn>;
-  writeText?: ReturnType<typeof vi.fn>;
-}) {
-  const textArea: FakeTextArea = {
-    focus: vi.fn(),
-    remove: vi.fn(),
-    select: vi.fn(),
-    setAttribute: vi.fn(),
-    style: {},
-    value: "",
-  };
-  const appendChild = vi.fn();
-  const document = {
-    body: {
-      appendChild,
-    },
-    createElement: vi.fn(() => textArea),
-    execCommand: input.execCommand ?? vi.fn(() => true),
-  };
-
-  vi.stubGlobal("window", { document });
-  vi.stubGlobal("navigator", {
-    clipboard: input.writeText ? { writeText: input.writeText } : undefined,
+describe("writeTextToClipboard", () => {
+  it("reserves plain text even when an extra flavor attempts to replace it", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("navigator", { clipboard: { write, writeText: vi.fn() } });
+    vi.stubGlobal(
+      "ClipboardItem",
+      class {
+        constructor(readonly data: Record<string, Blob>) {}
+      },
+    );
+    await expect(
+      writeTextToClipboard("original", "message", {
+        "text/plain": "replacement",
+        "text/html": "<b>original</b>",
+      }),
+    ).resolves.toBe(true);
+    const items = write.mock.calls[0]![0] as Array<{ data: Record<string, Blob> }>;
+    expect(await items[0]!.data["text/plain"]!.text()).toBe("original");
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  return { appendChild, document, textArea };
-}
+  it("keeps caller-built rich HTML when attaching a context fragment", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("navigator", { clipboard: { write, writeText: vi.fn() } });
+    vi.stubGlobal(
+      "ClipboardItem",
+      class {
+        constructor(readonly data: Record<string, Blob>) {}
+      },
+    );
+    const fragment = JSON.stringify({ version: 1, source: {}, records: [] });
+    const rich = "<p><strong>Message</strong></p>";
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+    await expect(
+      writeTextToClipboard("Message", "message", {
+        [COMPOSER_CONTEXT_CLIPBOARD_MIME]: fragment,
+        "text/html": rich,
+      }),
+    ).resolves.toBe(true);
 
-describe("writeClipboardText", () => {
-  it("uses the async Clipboard API when available", async () => {
-    const writeText = vi.fn(async () => undefined);
-    const { document } = installClipboardGlobals({ writeText });
-
-    await writeClipboardText("hello");
-
-    expect(writeText).toHaveBeenCalledWith("hello");
-    expect(document.createElement).not.toHaveBeenCalled();
+    const items = write.mock.calls[0]![0] as Array<{ data: Record<string, Blob> }>;
+    const html = await items[0]!.data["text/html"]!.text();
+    expect(html).toContain(rich);
+    expect(html).toContain("data-t3-context-fragment=");
   });
 
-  it("falls back to execCommand when the async Clipboard API rejects", async () => {
-    const writeText = vi.fn(async () => {
-      throw new Error("NotAllowedError");
+  it("reports unavailable clipboard support with structural context", async () => {
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("navigator", {});
+    vi.stubGlobal("document", undefined);
+
+    const error = await writeTextToClipboard("plan contents", "plan").then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+
+    expect(error).toBeInstanceOf(ClipboardApiUnavailableError);
+    expect(error).toMatchObject({
+      target: "plan",
     });
-    const execCommand = vi.fn(() => true);
-    const { appendChild, document, textArea } = installClipboardGlobals({ execCommand, writeText });
-
-    await writeClipboardText("fallback text");
-
-    expect(writeText).toHaveBeenCalledWith("fallback text");
-    expect(document.createElement).toHaveBeenCalledWith("textarea");
-    expect(textArea.value).toBe("fallback text");
-    expect(appendChild).toHaveBeenCalledWith(textArea);
-    expect(textArea.select).toHaveBeenCalled();
-    expect(execCommand).toHaveBeenCalledWith("copy");
-    expect(textArea.remove).toHaveBeenCalled();
+    expect((error as Error).message).not.toContain("plan contents");
   });
+
+  it.each(["success", "denied", "throws"] as const)(
+    "cleans up the Clipboard API fallback when copying %s",
+    async (result) => {
+      const focus = vi.fn();
+      const restoreFocus = vi.fn();
+      const appendChild = vi.fn();
+      const execCommand = vi.fn(() => {
+        if (result === "throws") throw new Error("copy command failed");
+        return result === "success";
+      });
+      const remove = vi.fn();
+      const select = vi.fn();
+      const setAttribute = vi.fn();
+      const setSelectionRange = vi.fn();
+      const textarea = {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        focus,
+        remove,
+        select,
+        setAttribute,
+        setSelectionRange,
+        style: {},
+        value: "",
+      };
+
+      vi.stubGlobal("window", {});
+      vi.stubGlobal("navigator", {});
+      vi.stubGlobal("document", {
+        activeElement: { focus: restoreFocus },
+        body: { appendChild },
+        createElement: vi.fn(() => textarea),
+        execCommand,
+      });
+
+      const pendingCopy = writeTextToClipboard("remote command", "command");
+      // The fallback must run during the original user gesture, before any await.
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      if (result === "success") {
+        await expect(pendingCopy).resolves.toBe(true);
+      } else {
+        await expect(pendingCopy).rejects.toBeInstanceOf(ClipboardApiUnavailableError);
+      }
+
+      expect(textarea.value).toBe("remote command");
+      expect(textarea.style).toMatchObject({ fontSize: "16px" });
+      expect(appendChild).toHaveBeenCalledWith(textarea);
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(select).toHaveBeenCalledOnce();
+      expect(setSelectionRange).toHaveBeenCalledWith(0, "remote command".length);
+      expect(remove).toHaveBeenCalledOnce();
+      expect(restoreFocus).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("uses the Clipboard API without touching the fallback when it is available", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const execCommand = vi.fn();
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.stubGlobal("document", { execCommand });
+
+    await expect(writeTextToClipboard("remote command", "command")).resolves.toBe(true);
+
+    expect(writeText).toHaveBeenCalledWith("remote command");
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it("preserves the exact clipboard failure without exposing copied contents", async () => {
+    const cause = new Error("browser clipboard failure");
+    const writeText = vi.fn().mockRejectedValue(cause);
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+
+    const error = await writeTextToClipboard("secret clipboard contents", "error-message").then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+    expect(writeText).toHaveBeenCalledWith("secret clipboard contents");
+    expect(error).toBeInstanceOf(ClipboardWriteError);
+    expect(error).toMatchObject({
+      target: "error-message",
+      cause,
+    });
+    expect((error as Error).message).not.toContain("secret clipboard contents");
+  });
+
+  it.each([true, false])(
+    "keeps empty values as a no-op with Clipboard API support: %s",
+    async (available) => {
+      const writeText = vi.fn();
+      vi.stubGlobal("window", {});
+      const execCommand = vi.fn();
+      vi.stubGlobal("navigator", available ? { clipboard: { writeText } } : {});
+      vi.stubGlobal("document", { execCommand });
+
+      await expect(writeTextToClipboard("", "plan")).resolves.toBe(false);
+      expect(writeText).not.toHaveBeenCalled();
+      expect(execCommand).not.toHaveBeenCalled();
+    },
+  );
 });

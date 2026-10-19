@@ -1,5 +1,5 @@
 import { WS_METHODS } from "@t3tools/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -14,7 +14,6 @@ export function createPreviewEnvironmentAtoms<R, E>(
 ) {
   const lifecycleScheduler = createAtomCommandScheduler();
   const statusScheduler = createAtomCommandScheduler();
-  const automationScheduler = createAtomCommandScheduler();
   const lifecycleConcurrency = {
     mode: "serial" as const,
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
@@ -33,10 +32,9 @@ export function createPreviewEnvironmentAtoms<R, E>(
     discoveredServers: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:preview:discovered-servers",
       tag: WS_METHODS.subscribeDiscoveredLocalServers,
-    }),
-    automationRequests: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:preview:automation-requests",
-      tag: WS_METHODS.previewAutomationConnect,
+      // Configured URLs are part of this atom's key. Dispose immediately so
+      // unmounted projects stop contributing probe candidates on the server.
+      idleTtlMs: 0,
     }),
     open: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:open",
@@ -47,6 +45,18 @@ export function createPreviewEnvironmentAtoms<R, E>(
     navigate: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:navigate",
       tag: WS_METHODS.previewNavigate,
+      scheduler: lifecycleScheduler,
+      concurrency: lifecycleConcurrency,
+    }),
+    resize: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:resize",
+      tag: WS_METHODS.previewResize,
+      scheduler: lifecycleScheduler,
+      concurrency: lifecycleConcurrency,
+    }),
+    adjust: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:adjust",
+      tag: WS_METHODS.previewAdjust,
       scheduler: lifecycleScheduler,
       concurrency: lifecycleConcurrency,
     }),
@@ -62,6 +72,15 @@ export function createPreviewEnvironmentAtoms<R, E>(
       scheduler: lifecycleScheduler,
       concurrency: lifecycleConcurrency,
     }),
+    clearProfile: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:clear-profile",
+      tag: WS_METHODS.previewClearProfile,
+    }),
+    reportProfiles: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:report-profiles",
+      tag: WS_METHODS.previewReportProfiles,
+      concurrency: { mode: "latest", key: ({ environmentId }) => environmentId },
+    }),
     reportStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:report-status",
       tag: WS_METHODS.previewReportStatus,
@@ -70,33 +89,6 @@ export function createPreviewEnvironmentAtoms<R, E>(
         mode: "latest",
         key: ({ environmentId, input }) =>
           JSON.stringify([environmentId, input.threadId, input.tabId]),
-      },
-    }),
-    respondToAutomation: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:preview:automation-respond",
-      tag: WS_METHODS.previewAutomationRespond,
-      scheduler: automationScheduler,
-      concurrency: {
-        mode: "singleFlight",
-        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.requestId]),
-      },
-    }),
-    reportAutomationOwner: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:preview:automation-report-owner",
-      tag: WS_METHODS.previewAutomationReportOwner,
-      scheduler: automationScheduler,
-      concurrency: {
-        mode: "serial",
-        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.clientId]),
-      },
-    }),
-    clearAutomationOwner: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:preview:automation-clear-owner",
-      tag: WS_METHODS.previewAutomationClearOwner,
-      scheduler: automationScheduler,
-      concurrency: {
-        mode: "serial",
-        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.clientId]),
       },
     }),
   };

@@ -1,4 +1,5 @@
-import { scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { DraftId } from "./composerDraftStore";
 
@@ -11,6 +12,35 @@ export type ThreadRouteTarget =
       kind: "draft";
       draftId: DraftId;
     };
+
+type DraftThreadRouteState = {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  promotedTo?: ScopedThreadRef | null;
+};
+
+export type ThreadRouteRenderState = "loading" | "ready" | "missing";
+
+export function isThreadRouteSnapshotAuthoritative(
+  status: EnvironmentShellStatus | undefined,
+): boolean {
+  return status === "live";
+}
+
+export function resolveThreadRouteRenderState(input: {
+  bootstrapComplete: boolean;
+  serverThreadExists: boolean;
+  serverThreadDeleted: boolean;
+  draftThreadExists: boolean;
+}): ThreadRouteRenderState {
+  if (input.draftThreadExists || (input.serverThreadExists && !input.serverThreadDeleted)) {
+    return "ready";
+  }
+  if (!input.bootstrapComplete) {
+    return "loading";
+  }
+  return "missing";
+}
 
 export function buildThreadRouteParams(ref: ScopedThreadRef): {
   environmentId: EnvironmentId;
@@ -56,4 +86,21 @@ export function resolveThreadRouteTarget(
     kind: "draft",
     draftId: params.draftId as DraftId,
   };
+}
+
+/**
+ * Resolves the thread represented by either a canonical thread route or a
+ * draft route whose promotion to a server thread has been recorded.
+ */
+export function resolveActiveThreadRouteRef(
+  target: ThreadRouteTarget | null,
+  draftThread: DraftThreadRouteState | null,
+): ScopedThreadRef | null {
+  if (target?.kind === "server") {
+    return target.threadRef;
+  }
+  if (target?.kind !== "draft" || !draftThread?.promotedTo) {
+    return null;
+  }
+  return draftThread.promotedTo;
 }

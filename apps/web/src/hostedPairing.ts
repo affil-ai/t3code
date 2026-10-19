@@ -1,6 +1,6 @@
-import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "./pairingUrl";
+import { DEFAULT_HOSTED_APP_URL } from "@t3tools/shared/connectAuth";
 
-const DEFAULT_HOSTED_APP_URL = "https://app.t3.codes";
+import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "./pairingUrl";
 
 export interface HostedPairingRequest {
   readonly host: string;
@@ -10,6 +10,7 @@ export interface HostedPairingRequest {
 
 export type HostedAppChannel = "latest" | "nightly";
 
+/** The hosted app origin shared links point at. */
 export function configuredHostedAppUrl(): string {
   return import.meta.env.VITE_HOSTED_APP_URL?.trim() || DEFAULT_HOSTED_APP_URL;
 }
@@ -31,7 +32,7 @@ function originFromUrl(value: string): string | null {
   }
 }
 
-export function isHostedStaticApp(url: URL = new URL(window.location.href)): boolean {
+export function isHostedStaticApp(url?: URL): boolean {
   if (configuredBackendUrl()) {
     return false;
   }
@@ -40,8 +41,14 @@ export function isHostedStaticApp(url: URL = new URL(window.location.href)): boo
     return true;
   }
 
+  // No window, or a window without a location (tests, static render), means
+  // no origin to be hosted at.
+  if (url === undefined && (typeof window === "undefined" || window.location === undefined)) {
+    return false;
+  }
+
   const hostedOrigin = originFromUrl(configuredHostedAppUrl());
-  return hostedOrigin !== null && url.origin === hostedOrigin;
+  return hostedOrigin !== null && (url ?? new URL(window.location.href)).origin === hostedOrigin;
 }
 
 export function readHostedPairingRequest(url: URL = new URL(window.location.href)) {

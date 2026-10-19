@@ -1,9 +1,23 @@
 import type { RelayManagedEndpoint } from "@t3tools/contracts/relay";
+import * as Schema from "effect/Schema";
 
 const DNS_LABEL_MAX_LENGTH = 63;
 const MANAGED_ENDPOINT_HASH_LENGTH = 16;
 const MANAGED_ENDPOINT_TUNNEL_PREFIX = "t3coderelay-managedendpoint";
 export const MANAGED_ENDPOINT_ZONE_OWNER_STAGE = "prod";
+
+export class RelayPublicDomainLabelTooLongError extends Schema.TaggedError<RelayPublicDomainLabelTooLongError>()(
+  "RelayPublicDomainLabelTooLongError",
+  {
+    stage: Schema.String,
+    label: Schema.String,
+    maxLength: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `Relay stage '${this.stage}' produces custom domain label '${this.label}' (${this.label.length} characters), exceeding the DNS label limit of ${this.maxLength}.`;
+  }
+}
 
 function normalizeZoneName(zoneName: string): string {
   return zoneName
@@ -42,7 +56,7 @@ function appendDnsSafeSuffix(prefix: string, suffix: string): string {
  * Alchemy's physical-name helper sanitizes resource names after adding the
  * stage. Keep custom domains and runtime-created resources aligned with it.
  */
-export function relayStageSlug(stage: string): string {
+function relayStageSlug(stage: string): string {
   return stage
     .toLowerCase()
     .replaceAll(/[^a-z0-9-]/g, "-")
@@ -62,7 +76,11 @@ export function relayPublicDomainForStage(stage: string, zoneName: string): stri
   const stageSlug = relayStageSlug(stage);
   const relayLabel = stage === "prod" ? "relay" : `relay-${stageSlug}`;
   if (relayLabel.length > DNS_LABEL_MAX_LENGTH) {
-    throw new Error(`Relay stage is too long for a custom domain: ${stage}`);
+    throw new RelayPublicDomainLabelTooLongError({
+      stage,
+      label: relayLabel,
+      maxLength: DNS_LABEL_MAX_LENGTH,
+    });
   }
   return `${relayLabel}.${normalizeZoneName(zoneName)}`;
 }
@@ -99,6 +117,23 @@ export function managedEndpointForHostname(hostname: string): RelayManagedEndpoi
   };
 }
 
+export function managedEndpointTunnelNamePrefix(stage: string): string {
+  return `${MANAGED_ENDPOINT_TUNNEL_PREFIX}-${relayStageSlug(stage)}-`;
+}
+
 export function managedEndpointTunnelName(stage: string, hash: string): string {
-  return `${MANAGED_ENDPOINT_TUNNEL_PREFIX}-${relayStageSlug(stage)}-${stableSuffix(hash)}`;
+  return `${managedEndpointTunnelNamePrefix(stage)}${stableSuffix(hash)}`;
+}
+
+/**
+ * A managed endpoint's public key in webhook URLs: the hash suffix its tunnel
+ * name ends with. The hash covers user and environment, so one key names
+ * exactly one link, unlike the environment id, which any account can claim.
+ */
+export const MANAGED_ENDPOINT_KEY_PATTERN = new RegExp(
+  `^[0-9a-f]{${MANAGED_ENDPOINT_HASH_LENGTH}}$`,
+);
+
+export function managedEndpointTunnelNameForKey(stage: string, endpointKey: string): string {
+  return `${managedEndpointTunnelNamePrefix(stage)}${endpointKey}`;
 }

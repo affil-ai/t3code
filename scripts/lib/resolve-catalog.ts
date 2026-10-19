@@ -1,3 +1,19 @@
+import * as Schema from "effect/Schema";
+
+class CatalogDependencyResolutionError extends Schema.TaggedError<CatalogDependencyResolutionError>()(
+  "CatalogDependencyResolutionError",
+  {
+    workspacePackage: Schema.String,
+    dependencyName: Schema.String,
+    catalogSpec: Schema.String,
+    catalogKey: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Unable to resolve '${this.catalogSpec}' for ${this.workspacePackage} dependency '${this.dependencyName}'. Expected key '${this.catalogKey}' in root workspace catalog.`;
+  }
+}
+
 /**
  * Resolve `catalog:` dependency specs using the workspace catalog.
  *
@@ -7,7 +23,7 @@
 export function resolveCatalogDependencies(
   dependencies: Record<string, string>,
   catalog: Record<string, string>,
-  label: string,
+  workspacePackage: string,
 ): Record<string, string> {
   return Object.fromEntries(
     Object.entries(dependencies).map(([name, spec]) => {
@@ -16,13 +32,21 @@ export function resolveCatalogDependencies(
       }
 
       const catalogKey = spec.slice("catalog:".length).trim();
-      const lookupKey = catalogKey.length > 0 ? catalogKey : name;
+      // Overrides can include a parent selector and a version range. A bare
+      // `catalog:` looks up the final package name, keeping its scope intact.
+      const selector = name.split(">").at(-1) ?? name;
+      const versionIndex = selector.indexOf("@", 1);
+      const packageName = versionIndex === -1 ? selector : selector.slice(0, versionIndex);
+      const lookupKey = catalogKey.length > 0 ? catalogKey : packageName;
       const resolved = catalog[lookupKey];
 
       if (typeof resolved !== "string" || resolved.length === 0) {
-        throw new Error(
-          `Unable to resolve '${spec}' for ${label} dependency '${name}'. Expected key '${lookupKey}' in root workspace catalog.`,
-        );
+        throw new CatalogDependencyResolutionError({
+          workspacePackage,
+          dependencyName: name,
+          catalogSpec: spec,
+          catalogKey: lookupKey,
+        });
       }
 
       return [name, resolved];

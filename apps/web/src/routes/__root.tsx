@@ -1,72 +1,93 @@
+import { PermissionUpdateNotice } from "../components/PermissionUpdateNotice";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
+import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
   Outlet,
-  createRootRouteWithContext,
+  Link,
+  redirect,
+  createRootRoute,
   type ErrorComponentProps,
   useLocation,
   useNavigate,
+  useRouter,
 } from "@tanstack/react-router";
-import { useEffect, useEffectEvent, useRef } from "react";
-import { QueryClient, useQueryClient } from "@tanstack/react-query";
+import { Check, Copy } from "lucide";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 
-import { APP_DISPLAY_NAME } from "../branding";
+import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
+import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
+import { CustomSnoozeDialogHost } from "../components/CustomSnoozeDialog";
+import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
+import { KeybindingsConfigWarning } from "../components/KeybindingsConfigWarning";
+import { FirstRunGate } from "../components/onboarding/FirstRunGate";
+import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
+import { SnapShotCoordinator } from "../components/desktop/SnapShotCoordinator";
+import { DesktopAppActivationCoordinator } from "../components/desktop/DesktopAppActivationCoordinator";
+import { DesktopWebLinkCoordinator } from "../components/desktop/DesktopWebLinkCoordinator";
+import { RunningThreadKeepAlive } from "../components/desktop/RunningThreadKeepAlive";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
-import {
-  SlowRpcAckToastCoordinator,
-  WebSocketConnectionCoordinator,
-  WebSocketConnectionSurface,
-} from "../components/WebSocketConnectionSurface";
+import { DesktopUpdateLaunchNotice } from "../components/sidebar/updateEverythingRun";
+import { NightlyMobileBetaNotice } from "../components/NightlyMobileBeta";
+import { LegacyThreadMigrationToast } from "../components/LegacyThreadMigrationToast";
+import { ThreadNotificationCoordinator } from "../components/ThreadNotificationCoordinator";
+import { ReopenClosedViewShortcut } from "../components/ReopenClosedViewShortcut";
+import { ProjectCloneToastCoordinator } from "../components/ProjectCloneToastCoordinator";
+import { PullRequestGuideRunCoordinator } from "../components/pullRequest/guide/PullRequestGuideRunCoordinator";
+import { SlowRpcRequestToastCoordinator } from "../components/SlowRpcRequestToastCoordinator";
+import { ChatGptWelcomeCoordinator } from "../components/settings/ChatGptWelcomeCoordinator";
+import { ProviderAuthCallbackCoordinator } from "../components/settings/ProviderAuthCallbackCoordinator";
+import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
+import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { useDefaultThemeAdoption } from "../hooks/useDefaultTheme";
+import { useEnvironmentThemeSync } from "../hooks/useEnvironmentTheme";
 import { Button } from "../components/ui/button";
+import { MorphIcon } from "~/components/MorphIcon";
+import { StandalonePage, StandalonePageHeader } from "../components/ui/standalone-page";
 import {
   AnchoredToastProvider,
   stackedThreadToast,
   ToastProvider,
   toastManager,
 } from "../components/ui/toast";
-import { resolveAndPersistPreferredEditor } from "../editorPreferences";
-import { readLocalApi } from "../localApi";
-import { useSettings } from "../hooks/useSettings";
+import { isElectron } from "../env";
+import { cn } from "../lib/utils";
+import { applyAppearanceFontVariables } from "~/appearanceFonts";
+import { applyAppearanceContrast } from "~/appearanceContrast";
+import { useClientSettings } from "../hooks/useSettings";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKeyFromPath,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import {
-  getServerConfigUpdatedNotification,
-  ServerConfigUpdatedNotification,
-  startServerStateSync,
-  useServerConfig,
-  useServerConfigUpdatedSubscription,
-  useServerWelcomeSubscription,
-} from "../rpc/serverState";
-import { useStore } from "../store";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
-import {
-  ensureEnvironmentConnectionBootstrapped,
-  getPrimaryEnvironmentConnection,
-  listSavedEnvironmentRecords,
-  waitForSavedEnvironmentRegistryHydration,
-  startEnvironmentConnectionService,
-  useSavedEnvironmentRegistryStore,
-} from "../environments/runtime";
 import { configureClientTracing } from "../observability/clientTracing";
-import {
-  ensurePrimaryEnvironmentReady,
-  getPrimaryKnownEnvironment,
-  resolveInitialServerAuthGateState,
-  updatePrimaryEnvironmentDescriptor,
-} from "../environments/primary";
+import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
+import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
+import { isLocalEnvironmentDisabled } from "../localEnvironment";
+import { useAtomValue } from "@effect/atom-react";
+import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
+import {
+  primaryServerConfigAtom,
+  primaryServerConfigEventAtom,
+  primaryServerWelcomeAtom,
+} from "../state/server";
+import { readProject, setActiveEnvironmentId, useActiveEnvironmentId } from "../state/entities";
+import {
+  createKeybindingsUpdateToastController,
+  type KeybindingsUpdateToastController,
+} from "../components/KeybindingsUpdateToast.logic";
 
-export const Route = createRootRouteWithContext<{
-  queryClient: QueryClient;
-}>()({
+import { getDesktopSnapShotBridge } from "../lib/desktopSnapShot";
+import { installDesktopPasteAsText } from "../lib/desktopPasteAsText";
+import { shouldResumeSnapShotSetupOnStartup } from "../lib/snapShotSetupResume";
+
+export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
     if (location.pathname === "/pair" && hasHostedPairingRequest(new URL(window.location.href))) {
       return {
@@ -76,8 +97,7 @@ export const Route = createRootRouteWithContext<{
       };
     }
 
-    if (isHostedStaticApp(new URL(window.location.href))) {
-      await waitForSavedEnvironmentRegistryHydration();
+    if (isLocalEnvironmentDisabled() || isHostedStaticApp(new URL(window.location.href))) {
       return {
         authGateState: {
           status: "hosted-static",
@@ -85,25 +105,57 @@ export const Route = createRootRouteWithContext<{
       };
     }
 
-    const [, authGateState] = await Promise.all([
-      ensurePrimaryEnvironmentReady(),
-      resolveInitialServerAuthGateState(),
-    ]);
+    const authGateState = await resolveInitialServerAuthGateState();
+    if (
+      authGateState.status === "authenticated" &&
+      getDesktopSnapShotBridge() &&
+      shouldResumeSnapShotSetupOnStartup() &&
+      location.pathname !== "/settings/snap-shot"
+    ) {
+      throw redirect({ to: "/settings/snap-shot", replace: true });
+    }
     return {
       authGateState,
     };
   },
   component: RootRouteView,
   errorComponent: RootRouteErrorView,
+  notFoundComponent: RootRouteNotFoundView,
   head: () => ({
     meta: [{ name: "title", content: APP_DISPLAY_NAME }],
   }),
 });
 
+function RootRouteNotFoundView() {
+  return (
+    <main className="flex min-h-0 min-w-0 flex-1 items-center justify-center p-6">
+      <div className="flex max-w-sm flex-col items-center gap-4 text-center">
+        <h1 className="text-lg font-medium text-foreground">Page not found</h1>
+        <p className="text-sm text-muted-foreground">
+          This link doesn't point to a page in {APP_DISPLAY_NAME}. Go home to choose a project or
+          start a thread.
+        </p>
+        <Button render={<Link to="/" replace />}>Go home</Button>
+      </div>
+    </main>
+  );
+}
+
 function RootRouteView() {
+  useEffect(() => installDesktopPasteAsText(window.desktopBridge, window), []);
   const pathname = useLocation({ select: (location) => location.pathname });
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
+  const returningFromWelcomeRef = useRef(pathname === "/welcome");
+  const hostedPromptLinkLanding = useHostedPromptLinkLanding(
+    authGateState.status === "hosted-static",
+  );
+
+  useEffect(() => {
+    if (pathname === "/welcome") {
+      returningFromWelcomeRef.current = true;
+    }
+  }, [pathname]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -114,12 +166,56 @@ function RootRouteView() {
     };
   }, [pathname]);
 
-  if (pathname === "/pair") {
-    return <Outlet />;
+  if (pathname === "/pair" || pathname === "/connect" || pathname === "/connect-agent") {
+    return (
+      <>
+        <DocumentTitleSync />
+        <Outlet />
+      </>
+    );
+  }
+
+  // Ahead of first-run onboarding, which would otherwise send a new visitor to the welcome
+  // wizard and lose the link.
+  if (hostedPromptLinkLanding !== null) {
+    return (
+      <>
+        <DocumentTitleSync />
+        {hostedPromptLinkLanding}
+      </>
+    );
+  }
+
+  // Show onboarding over the workspace, keeping automatic thread navigation
+  // and other startup dialogs suspended until setup finishes.
+  if (pathname === "/welcome") {
+    return (
+      <ToastProvider>
+        <AnchoredToastProvider>
+          <DocumentTitleSync />
+          <ContrastAppearanceSync />
+          <EnvironmentThemeSync />
+          <GlassAppearanceSync />
+          <FontAppearanceSync />
+          <ProviderAuthCallbackCoordinator />
+          <CustomSnoozeDialogHost />
+          <CommandPalette>
+            <AppSidebarLayout>
+              <Outlet />
+            </AppSidebarLayout>
+          </CommandPalette>
+        </AnchoredToastProvider>
+      </ToastProvider>
+    );
   }
 
   if (authGateState.status !== "authenticated" && authGateState.status !== "hosted-static") {
-    return <Outlet />;
+    return (
+      <>
+        <DocumentTitleSync />
+        <Outlet />
+      </>
+    );
   }
 
   const appShell = (
@@ -130,95 +226,225 @@ function RootRouteView() {
     </CommandPalette>
   );
 
+  // FirstRunGate holds back everything below it — including EventRouter,
+  // whose welcome payload navigates into a thread — until the first-run
+  // decision is known, so a fresh install renders nothing (not the shell,
+  // not a flash of threads) before landing on the welcome wizard.
   return (
     <ToastProvider>
       <AnchoredToastProvider>
-        {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
-        {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
-        <EnvironmentConnectionManagerBootstrap />
-        <RelayClientInstallDialog />
-        <SshPasswordPromptDialog />
-        <HostedStaticEnvironmentBootstrap />
-        {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
-        {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
-        {primaryEnvironmentAuthenticated ? <WebSocketConnectionCoordinator /> : null}
-        {primaryEnvironmentAuthenticated ? <SlowRpcAckToastCoordinator /> : null}
-        {primaryEnvironmentAuthenticated ? (
-          <WebSocketConnectionSurface>{appShell}</WebSocketConnectionSurface>
-        ) : (
-          appShell
-        )}
+        <DocumentTitleSync />
+        <ContrastAppearanceSync />
+        <EnvironmentThemeSync />
+        <GlassAppearanceSync />
+        <FontAppearanceSync />
+        <ProviderAuthCallbackCoordinator />
+        <ChatGptWelcomeCoordinator />
+        <FirstRunGate
+          enabled={primaryEnvironmentAuthenticated}
+          hostedStatic={authGateState.status === "hosted-static"}
+        >
+          {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
+          {primaryEnvironmentAuthenticated ? <DesktopAppActivationCoordinator /> : null}
+          {primaryEnvironmentAuthenticated ? <DesktopWebLinkCoordinator /> : null}
+          {isElectron ? <RunningThreadKeepAlive /> : null}
+          <RelayClientInstallDialog />
+          <ConnectOnboardingDialog />
+          <SshPasswordPromptDialog />
+          <SnapShotCoordinator />
+          <ThreadNotificationCoordinator />
+          <ReopenClosedViewShortcut />
+          <ConfirmDialogHost />
+          <CustomSnoozeDialogHost />
+          <SlowRpcRequestToastCoordinator />
+          <PermissionUpdateNotice />
+          {primaryEnvironmentAuthenticated ? <LegacyThreadMigrationToast /> : null}
+          <ProjectCloneToastCoordinator />
+          <PullRequestGuideRunCoordinator />
+          <HostedStaticEnvironmentBootstrap />
+          {primaryEnvironmentAuthenticated ? (
+            <EventRouter skipInitialBootstrapNavigation={returningFromWelcomeRef.current} />
+          ) : null}
+          {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+          {isElectron ? <DesktopUpdateLaunchNotice /> : null}
+          {/* Hosted Nightly is "hosted-static", not authenticated, and needs it too. */}
+          <NightlyMobileBetaNotice />
+          {appShell}
+          {/* Above the router: a theme draft is judged by walking the app, so the
+              editor has to survive navigation away from settings. */}
+          <ThemeEditorHost />
+        </FirstRunGate>
       </AnchoredToastProvider>
     </ToastProvider>
   );
 }
 
-function HostedStaticEnvironmentBootstrap() {
-  const savedEnvironmentCount = useSavedEnvironmentRegistryStore(
-    (state) => Object.keys(state.byId).length,
-  );
+/** Follows the palette the primary environment's machine publishes, if any. */
+function EnvironmentThemeSync() {
+  useEnvironmentThemeSync();
+  // Ordered after the palette sync so a first-run client adopting the
+  // environment's own theme finds it already in the library.
+  useDefaultThemeAdoption();
+  return null;
+}
+
+function ContrastAppearanceSync() {
+  const appearanceContrast = useClientSettings((settings) => settings.appearanceContrast);
+  const diffColorScheme = useClientSettings((settings) => settings.diffColorScheme);
 
   useEffect(() => {
-    if (getPrimaryKnownEnvironment()) {
-      return;
-    }
+    document.documentElement.dataset.diffColorScheme = diffColorScheme;
+  }, [diffColorScheme]);
 
-    const currentActiveEnvironmentId = useStore.getState().activeEnvironmentId;
-    if (currentActiveEnvironmentId) {
-      return;
-    }
+  const chatWidth = useClientSettings((settings) => settings.chatWidth);
+  useEffect(() => {
+    document.documentElement.dataset.chatWidth = chatWidth;
+  }, [chatWidth]);
 
-    const firstSavedEnvironment = listSavedEnvironmentRecords()[0];
-    if (!firstSavedEnvironment) {
-      return;
-    }
-
-    useStore.getState().setActiveEnvironmentId(firstSavedEnvironment.environmentId);
-  }, [savedEnvironmentCount]);
+  useEffect(() => {
+    applyAppearanceContrast(document.documentElement, appearanceContrast);
+  }, [appearanceContrast]);
 
   return null;
 }
 
-function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
+function GlassAppearanceSync() {
+  const glassOpacity = useClientSettings((settings) => settings.glassOpacity);
+
+  useEffect(() => {
+    const style = document.documentElement.style;
+    style.setProperty("--glass-opacity", `${glassOpacity}%`);
+    if (glassOpacity === 100) {
+      style.setProperty("--glass-blur", "0px");
+    } else {
+      style.removeProperty("--glass-blur");
+    }
+  }, [glassOpacity]);
+
+  return null;
+}
+
+function FontAppearanceSync() {
+  const fontFamilySans = useClientSettings((settings) => settings.fontFamilySans);
+  const fontFamilyCode = useClientSettings((settings) => settings.fontFamilyCode);
+  const fontFamilyComposer = useClientSettings((settings) => settings.fontFamilyComposer);
+  const fontSizeInterface = useClientSettings((settings) => settings.fontSizeInterface);
+  const fontSizePrompt = useClientSettings((settings) => settings.fontSizePrompt);
+  const fontSizeCode = useClientSettings((settings) => settings.fontSizeCode);
+  const fontSmoothing = useClientSettings((settings) => settings.fontSmoothing);
+
+  useEffect(() => {
+    applyAppearanceFontVariables(document.documentElement, {
+      sans: fontFamilySans,
+      code: fontFamilyCode,
+      composer: fontFamilyComposer,
+      sizeInterface: fontSizeInterface,
+      sizePrompt: fontSizePrompt,
+      sizeCode: fontSizeCode,
+      smoothing: fontSmoothing,
+    });
+  }, [
+    fontFamilyCode,
+    fontFamilyComposer,
+    fontFamilySans,
+    fontSizeCode,
+    fontSizeInterface,
+    fontSizePrompt,
+    fontSmoothing,
+  ]);
+
+  return null;
+}
+
+function DocumentTitleSync() {
+  const primaryServerVersion =
+    useAtomValue(primaryServerConfigAtom)?.environment.serverVersion ?? null;
+  const title = resolveServerBackedAppDisplayName({
+    baseName: APP_BASE_NAME,
+    fallbackDisplayName: APP_DISPLAY_NAME,
+    fallbackStageLabel: APP_STAGE_LABEL,
+    primaryServerVersion,
+  });
+
+  useEffect(() => {
+    document.title = title;
+  }, [title]);
+
+  return null;
+}
+
+function HostedStaticEnvironmentBootstrap() {
+  const { environments } = useEnvironments();
+  const activeEnvironmentId = useActiveEnvironmentId();
+
+  useEffect(() => {
+    if (
+      environments.some(
+        (environment) => environment.entry.target._tag === "PrimaryConnectionTarget",
+      )
+    ) {
+      return;
+    }
+
+    if (activeEnvironmentId) {
+      return;
+    }
+
+    const firstSavedEnvironment = environments[0];
+    if (!firstSavedEnvironment) {
+      return;
+    }
+
+    setActiveEnvironmentId(firstSavedEnvironment.environmentId);
+  }, [activeEnvironmentId, environments]);
+
+  return null;
+}
+
+function RootRouteErrorView({ error }: ErrorComponentProps) {
+  const router = useRouter();
   const message = errorMessage(error);
-  const details = errorDetails(error);
+  // Router pathname rather than window.location: desktop uses hash history, where the window path is always "/".
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const report = useMemo(() => errorReport(error, pathname), [error, pathname]);
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
-      <div className="pointer-events-none absolute inset-0 opacity-80">
-        <div className="absolute inset-x-0 top-0 h-44 bg-[radial-gradient(44rem_16rem_at_top,color-mix(in_srgb,var(--color-red-500)_16%,transparent),transparent)]" />
-        <div className="absolute inset-0 bg-[linear-gradient(145deg,color-mix(in_srgb,var(--background)_90%,var(--color-black))_0%,var(--background)_55%)]" />
+    <StandalonePage tone="error">
+      <StandalonePageHeader
+        eyebrow={APP_DISPLAY_NAME}
+        title="Something went wrong."
+        description={message}
+      />
+
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Button size="sm" onClick={() => void router.invalidate()}>
+          Try again
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+          Reload app
+        </Button>
+        <CopyErrorButton report={report} />
       </div>
 
-      <section className="relative w-full max-w-xl rounded-2xl border border-border/80 bg-card/90 p-6 shadow-2xl shadow-black/20 backdrop-blur-md sm:p-8">
-        <p className="text-[11px] font-semibold tracking-[0.18em] text-muted-foreground uppercase">
-          {APP_DISPLAY_NAME}
-        </p>
-        <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-          Something went wrong.
-        </h1>
-        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{message}</p>
+      <div className="mt-5 overflow-hidden rounded-lg border border-border/70 bg-background/55">
+        <p className="px-3 py-1.5 text-xs font-medium text-muted-foreground">Error report</p>
+        <pre className="max-h-64 overflow-auto border-t border-border/70 bg-background/80 px-3 py-2 text-xs whitespace-pre-wrap text-foreground/85">
+          {report}
+        </pre>
+      </div>
+    </StandalonePage>
+  );
+}
 
-        <div className="mt-5 flex flex-wrap gap-2">
-          <Button size="sm" onClick={() => reset()}>
-            Try again
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
-            Reload app
-          </Button>
-        </div>
+/** Copies the full error report and swaps to a check mark for a moment as confirmation. */
+function CopyErrorButton({ report }: { report: string }) {
+  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "error-report" });
 
-        <details className="group mt-5 overflow-hidden rounded-lg border border-border/70 bg-background/55">
-          <summary className="cursor-pointer list-none px-3 py-2 text-xs font-medium text-muted-foreground">
-            <span className="group-open:hidden">Show error details</span>
-            <span className="hidden group-open:inline">Hide error details</span>
-          </summary>
-          <pre className="max-h-56 overflow-auto border-t border-border/70 bg-background/80 px-3 py-2 text-xs text-foreground/85">
-            {details}
-          </pre>
-        </details>
-      </section>
-    </div>
+  return (
+    <Button size="sm" variant="outline" onClick={() => copyToClipboard(report)}>
+      <MorphIcon className={cn(isCopied && "text-success")} icon={isCopied ? Check : Copy} />
+      {isCopied ? "Copied" : "Copy error"}
+    </Button>
   );
 }
 
@@ -250,16 +476,27 @@ function errorDetails(error: unknown): string {
   }
 }
 
-function ServerStateBootstrap() {
-  useEffect(() => {
-    if (!getPrimaryKnownEnvironment()) {
-      return;
-    }
+const MAX_ERROR_CAUSE_DEPTH = 5;
 
-    return startServerStateSync(getPrimaryEnvironmentConnection().client.server);
-  }, []);
-
-  return null;
+/**
+ * Full error text for bug reports: app build, page path, time, then the stack
+ * and any cause chain. Takes the pathname only so tokens in the query never
+ * land on the clipboard.
+ */
+function errorReport(error: unknown, pathname: string): string {
+  const lines = [
+    `${APP_DISPLAY_NAME} ${APP_VERSION}`,
+    `Path: ${pathname}`,
+    `Time: ${new Date().toISOString()}`,
+    "",
+    errorDetails(error),
+  ];
+  let cause = error instanceof Error ? error.cause : undefined;
+  for (let depth = 0; cause !== undefined && depth < MAX_ERROR_CAUSE_DEPTH; depth += 1) {
+    lines.push("", "Caused by:", errorDetails(cause));
+    cause = cause instanceof Error ? cause.cause : undefined;
+  }
+  return lines.join("\n");
 }
 
 function AuthenticatedTracingBootstrap() {
@@ -270,46 +507,37 @@ function AuthenticatedTracingBootstrap() {
   return null;
 }
 
-function EnvironmentConnectionManagerBootstrap() {
-  const queryClient = useQueryClient();
-
-  useEffect(() => {
-    return startEnvironmentConnectionService(queryClient);
-  }, [queryClient]);
-
-  return null;
-}
-
-function EventRouter() {
-  const setActiveEnvironmentId = useStore((store) => store.setActiveEnvironmentId);
+function EventRouter({
+  skipInitialBootstrapNavigation,
+}: {
+  readonly skipInitialBootstrapNavigation: boolean;
+}) {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
-  const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
+  const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const primaryEnvironment = usePrimaryEnvironment();
+  const serverConfig = useAtomValue(primaryServerConfigAtom);
+  const serverConfigEvent = useAtomValue(primaryServerConfigEventAtom);
+  const serverWelcome = useAtomValue(primaryServerWelcomeAtom);
   const readPathname = useEffectEvent(() => pathname);
   const handledBootstrapThreadIdRef = useRef<string | null>(null);
-  const seenServerConfigUpdateIdRef = useRef(getServerConfigUpdatedNotification()?.id ?? 0);
-  const lastKeybindingsSuccessToastAtRef = useRef(0);
-  const disposedRef = useRef(false);
-  const serverConfig = useServerConfig();
+  const skipInitialBootstrapNavigationRef = useRef(skipInitialBootstrapNavigation);
+  const handledConfigEventRef = useRef(serverConfigEvent);
+  const [keybindingsToastController] = useState<KeybindingsUpdateToastController>(() =>
+    createKeybindingsUpdateToastController({}),
+  );
 
   const handleWelcome = useEffectEvent((payload: ServerLifecycleWelcomePayload | null) => {
     if (!payload) return;
 
-    updatePrimaryEnvironmentDescriptor(payload.environment);
     setActiveEnvironmentId(payload.environment.environmentId);
     void (async () => {
-      await ensureEnvironmentConnectionBootstrapped(payload.environment.environmentId);
-      if (disposedRef.current) {
-        return;
-      }
-
       if (!payload.bootstrapProjectId || !payload.bootstrapThreadId) {
         return;
       }
-      const bootstrapEnvironmentState =
-        useStore.getState().environmentStateById[payload.environment.environmentId];
-      const bootstrapProject =
-        bootstrapEnvironmentState?.projectById[payload.bootstrapProjectId] ?? null;
+      const bootstrapProject = readProject(
+        scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
+      );
       const bootstrapProjectKey =
         (bootstrapProject
           ? deriveLogicalProjectKeyFromSettings(bootstrapProject, projectGroupingSettings)
@@ -323,6 +551,11 @@ function EventRouter() {
       useUiStateStore.getState().setProjectExpanded(bootstrapProjectKey, true);
 
       if (readPathname() !== "/") {
+        return;
+      }
+      if (skipInitialBootstrapNavigationRef.current) {
+        skipInitialBootstrapNavigationRef.current = false;
+        handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
         return;
       }
       if (handledBootstrapThreadIdRef.current === payload.bootstrapThreadId) {
@@ -340,91 +573,56 @@ function EventRouter() {
     })().catch(() => undefined);
   });
 
-  const handleServerConfigUpdated = useEffectEvent(
-    (notification: ServerConfigUpdatedNotification | null) => {
-      if (!notification) return;
+  const handleServerConfigUpdated = useEffectEvent(() => {
+    const decision = keybindingsToastController.handle(serverConfigEvent);
+    if (!decision) {
+      return;
+    }
 
-      const { id, payload, source } = notification;
-      if (id <= seenServerConfigUpdateIdRef.current) {
-        return;
-      }
-      seenServerConfigUpdateIdRef.current = id;
-      if (source !== "keybindingsUpdated") {
-        return;
-      }
+    if (decision._tag === "Success") {
+      toastManager.add({
+        type: "success",
+        title: "Keybindings updated",
+        description: "Keybindings configuration reloaded successfully.",
+      });
+      return;
+    }
 
-      const issue = payload.issues.find((entry) => entry.kind.startsWith("keybindings."));
-      if (!issue) {
-        const now = Date.now();
-        if (now - lastKeybindingsSuccessToastAtRef.current < 2_000) {
-          return;
-        }
-        lastKeybindingsSuccessToastAtRef.current = now;
-        toastManager.add({
-          type: "success",
-          title: "Keybindings updated",
-          description: "Keybindings configuration reloaded successfully.",
-        });
-        return;
-      }
-
-      toastManager.add(
-        stackedThreadToast({
-          type: "warning",
-          title: "Invalid keybindings configuration",
-          description: issue.message,
-          actionVariant: "outline",
-          actionProps: {
-            children: "Open keybindings.json",
-            onClick: () => {
-              const api = readLocalApi();
-              if (!api) {
-                return;
-              }
-
-              void Promise.resolve(serverConfig ?? api.server.getConfig())
-                .then((config) => {
-                  const editor = resolveAndPersistPreferredEditor(config.availableEditors);
-                  if (!editor) {
-                    throw new Error("No available editors found.");
-                  }
-                  return api.shell.openInEditor(config.keybindingsConfigPath, editor);
-                })
-                .catch((error) => {
-                  toastManager.add(
-                    stackedThreadToast({
-                      type: "error",
-                      title: "Unable to open keybindings file",
-                      description:
-                        error instanceof Error ? error.message : "Unknown error opening file.",
-                    }),
-                  );
-                });
-            },
-          },
-        }),
-      );
-    },
-  );
+    toastManager.add(
+      stackedThreadToast({
+        type: "warning",
+        title: "Invalid keybindings configuration",
+        description: (
+          <KeybindingsConfigWarning
+            message={decision.message}
+            environmentId={primaryEnvironment?.environmentId ?? null}
+            configPath={serverConfig?.keybindingsConfigPath ?? null}
+            availableEditors={serverConfig?.availableEditors ?? []}
+          />
+        ),
+      }),
+    );
+  });
 
   useEffect(() => {
     if (!serverConfig) {
       return;
     }
 
-    updatePrimaryEnvironmentDescriptor(serverConfig.environment);
     setActiveEnvironmentId(serverConfig.environment.environmentId);
-  }, [serverConfig, setActiveEnvironmentId]);
+  }, [serverConfig]);
 
   useEffect(() => {
-    disposedRef.current = false;
-    return () => {
-      disposedRef.current = true;
-    };
-  }, []);
+    handleWelcome(serverWelcome);
+  }, [serverWelcome]);
 
-  useServerWelcomeSubscription(handleWelcome);
-  useServerConfigUpdatedSubscription(handleServerConfigUpdated);
+  useEffect(() => {
+    if (serverConfigEvent === null || handledConfigEventRef.current === serverConfigEvent) {
+      return;
+    }
+    handledConfigEventRef.current = serverConfigEvent;
+    handleServerConfigUpdated();
+  }, [serverConfigEvent]);
 
   return null;
 }
