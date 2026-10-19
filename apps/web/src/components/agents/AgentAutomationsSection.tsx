@@ -6,8 +6,8 @@
  * section, Firstmate included, so the sidebar reads the same for each.
  */
 import { type EnvironmentId, type ScheduledTask, type ThreadId } from "@t3tools/contracts";
-import { PlusIcon } from "lucide-react";
-import { useState } from "react";
+import { ChevronRightIcon, PlusIcon } from "lucide-react";
+import { useId, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { useThreadShell } from "~/state/entities";
@@ -43,13 +43,25 @@ export function AgentAutomationsSection({
   );
   const tasks = (tasksQuery.data?.tasks ?? []).filter((task) => task.threadId === threadId);
   const [editing, setEditing] = useState<{ readonly task: ScheduledTask | null } | null>(null);
+  const [expanded, setExpanded] = useState(true);
+  const panelId = useId();
   return (
     <SidebarGroup aria-label="Automations" data-testid="agent-automations-section" className="mb-3">
       <div className="group/section-header mb-1 flex h-6 items-center justify-between pl-2 pr-1.5">
-        <span className="flex items-center gap-1.5 text-xs font-medium text-sidebar-muted-foreground/80">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          onClick={() => setExpanded((value) => !value)}
+          className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left text-xs font-medium text-sidebar-muted-foreground/80 outline-hidden hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
           Automations
           <span className="tabular-nums">{tasks.length}</span>
-        </span>
+          <ChevronRightIcon
+            aria-hidden
+            className={cn("ml-auto size-3.5", expanded && "rotate-90")}
+          />
+        </button>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -66,42 +78,44 @@ export function AgentAutomationsSection({
           <TooltipPopup side="right">New automation</TooltipPopup>
         </Tooltip>
       </div>
-      {tasksQuery.error !== null ? (
-        <p className="px-2 py-1 text-xs text-destructive">Could not load automations.</p>
-      ) : tasks.length === 0 ? (
-        <p className="px-2 py-1 text-sm text-sidebar-muted-foreground/70">No automations</p>
-      ) : (
-        <ul className="flex flex-col">
-          {tasks.map((task) => (
-            <li key={task.id}>
-              <button
-                type="button"
-                onClick={() => setEditing({ task })}
-                className="flex h-9 w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 text-left text-sidebar-foreground/80 outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset"
-              >
-                <span
-                  aria-hidden
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    STATUS_DOT_CLASS[task.lastRunStatus],
-                  )}
-                />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-sm leading-4">{task.title}</span>
-                  <span className="truncate text-2xs text-sidebar-muted-foreground/80">
-                    {scheduleLabel(task.schedule)}
-                    {task.enabled && task.nextRunAt !== null
-                      ? ` · next ${relativeLabel(task.nextRunAt)}`
-                      : task.enabled
-                        ? ""
-                        : " · paused"}
+      <div id={panelId} hidden={!expanded}>
+        {tasksQuery.error !== null ? (
+          <p className="px-2 py-1 text-xs text-destructive">Could not load automations.</p>
+        ) : tasks.length === 0 ? (
+          <p className="px-2 py-1 text-sm text-sidebar-muted-foreground/70">No automations</p>
+        ) : (
+          <ul className="flex flex-col">
+            {tasks.map((task) => (
+              <li key={task.id}>
+                <button
+                  type="button"
+                  onClick={() => setEditing({ task })}
+                  className="flex h-9 w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 text-left text-sidebar-foreground/80 outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset"
+                >
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      STATUS_DOT_CLASS[task.lastRunStatus],
+                    )}
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-sm leading-4">{task.title}</span>
+                    <span className="truncate text-2xs text-sidebar-muted-foreground/80">
+                      {scheduleLabel(task.schedule)}
+                      {task.enabled && task.nextRunAt !== null
+                        ? ` · next ${relativeLabel(task.nextRunAt)}`
+                        : task.enabled
+                          ? ""
+                          : " · paused"}
+                    </span>
                   </span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {editing ? (
         // The editor reads a settings scope; an empty one spans every project.
         <SettingsScopeProvider search={EMPTY_SCOPE_SEARCH} onChange={ignoreScopeChange}>
