@@ -33,7 +33,7 @@ export function xml(value) {
     .replaceAll('"', "&quot;");
 }
 
-export async function watch(version, host, repo) {
+export async function watch(version, host, repo, macOnly = false) {
   const folder = jobPath(version);
   const request = validateRequest(await readJson(join(folder, "request.json")));
   return withLock(join(stateRoot, "handoff.lock"), async () => {
@@ -50,11 +50,13 @@ export async function watch(version, host, repo) {
     while (Date.now() < deadline) {
       try {
         assertIdle(workloadCounts(join(homedir(), ".t3")));
-        remote(
-          ["node", join(repo, "scripts/fork-release/release.mjs"), "check-deploy", version]
-            .map(shellQuote)
-            .join(" "),
-        );
+        if (!macOnly) {
+          remote(
+            ["node", join(repo, "scripts/fork-release/release.mjs"), "check-deploy", version]
+              .map(shellQuote)
+              .join(" "),
+          );
+        }
       } catch {
         await checkpoint("waiting", "Host busy or unreachable; no installation attempted");
         await new Promise((resolve) => setTimeout(resolve, 30_000));
@@ -62,6 +64,12 @@ export async function watch(version, host, repo) {
       }
       // Both qualifications and hashes must pass before either host is activated.
       await releaseGuard(version);
+      if (macOnly) {
+        await checkpoint("activating-mac");
+        await activate(version);
+        await checkpoint("mac-installed", "Mac API verified; Ubuntu was not restarted");
+        return;
+      }
       remote(
         ["node", join(repo, "scripts/fork-release/activate.mjs"), "check", version]
           .map(shellQuote)
@@ -107,7 +115,7 @@ export async function watch(version, host, repo) {
   });
 }
 
-export async function handoff(version, host, repo) {
+export async function handoff(version, host, repo, macOnly = false) {
   if (process.platform !== "darwin") throw Error("Launch the pull-side handoff on Mac");
   sshArgs(host, "");
   if (!repo?.startsWith("/") || repo.includes("\n"))
@@ -126,7 +134,7 @@ export async function handoff(version, host, repo) {
   const args = [
     process.execPath,
     join(sourceRoot, "scripts/fork-release/handoff.mjs"),
-    "watch",
+    macOnly ? "watch-mac" : "watch",
     version,
     host,
     repo,
@@ -154,9 +162,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const [command, version, host, repo] = process.argv.slice(2);
   (command === "start"
     ? handoff(version, host, repo)
-    : command === "watch"
-      ? watch(version, host, repo)
-      : Promise.reject(Error("Usage: handoff.mjs start VERSION SSH_ALIAS REMOTE_CHECKOUT"))
+    : command === "start-mac"
+      ? handoff(version, host, repo, true)
+      : command === "watch-mac"
+        ? watch(version, host, repo, true)
+        : command === "watch"
+          ? watch(version, host, repo)
+          : Promise.reject(Error("Usage: handoff.mjs start VERSION SSH_ALIAS REMOTE_CHECKOUT"))
   )
     .then((value) => {
       if (value) console.log(JSON.stringify(value));

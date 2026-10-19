@@ -94,6 +94,12 @@ Once both qualifications pass, start the detached installer from the Mac:
 node scripts/fork-release/handoff.mjs start VERSION SSH_ALIAS REMOTE_CHECKOUT
 ```
 
+For an explicitly requested Mac-only installation of a qualified client-only
+change, use `start-mac` with the same arguments. Both artifacts must still be
+staged and the Mac compatibility review must pass. It waits for local idle,
+does not restart Ubuntu, and records `mac-installed` instead of paired success.
+Reconcile the Ubuntu rollout separately; never report both hosts installed.
+
 The one-shot launchd job waits up to 24 hours for both hosts to be idle. It does
 not create a recurring schedule. It installs Linux through the native updater
 using a loopback-only artifact mirror. It then installs the Mac bundle through
