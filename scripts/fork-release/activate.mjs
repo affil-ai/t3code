@@ -63,21 +63,48 @@ function schemaFingerprint() {
 }
 
 /** Only schema-neutral updates are automated. Review other changes separately; never restore live data. */
-export async function qualify(version, baselineCommit, reviewedSharedDiff) {
+export function validateCompatibilityReview(review, baselineCommit, commit, diff) {
+  const digest = createHash("sha256").update(diff).digest("hex");
+  if (
+    review?.baselineCommit !== baselineCommit ||
+    review?.commit !== commit ||
+    review?.serverContractsDiffSha256 !== digest ||
+    !review?.migrationEvidence?.trim() ||
+    !review?.protocolEvidence?.trim() ||
+    !review?.rollbackPlan?.trim()
+  )
+    throw Error(`Database/protocol review missing or stale; exact diff SHA-256: ${digest}`);
+  return {
+    baselineCommit,
+    commit,
+    serverContractsDiffSha256: digest,
+    migrationEvidence: review.migrationEvidence,
+    protocolEvidence: review.protocolEvidence,
+    rollbackPlan: review.rollbackPlan,
+  };
+}
+
+export async function qualify(version, baselineCommit, reviewedSharedDiff, reviewPath) {
   const request = validateRequest(await readJson(join(jobPath(version), "request.json")));
   if (!/^[a-f0-9]{40}$/.test(baselineCommit ?? ""))
     throw Error("Full installed baseline source required");
   run("git", ["merge-base", "--is-ancestor", baselineCommit, request.commit]);
   const changes = run("git", [
     "diff",
-    "--name-only",
     baselineCommit,
     request.commit,
     "--",
     "apps/server/src",
     "packages/contracts/src",
   ]);
-  if (changes) throw Error("Server/contracts changed: database and protocol review required");
+  const compatibilityReview = changes
+    ? validateCompatibilityReview(
+        reviewPath ? await readJson(reviewPath) : null,
+        baselineCommit,
+        request.commit,
+        changes,
+      )
+    : null;
   const sharedDiff = run("git", [
     "diff",
     baselineCommit,
@@ -98,7 +125,9 @@ export async function qualify(version, baselineCommit, reviewedSharedDiff) {
     baselineCommit,
     schemaFingerprint: schemaFingerprint(),
     sharedDiffSha256: sharedDiff ? sharedDiffSha256 : null,
+    compatibilityReview,
     rollback:
+      compatibilityReview?.rollbackPlan ??
       "Server/contracts unchanged; shared changes reviewed; preserve data and retain prior runtime",
   };
   if (process.platform === "linux") {
@@ -346,9 +375,9 @@ export async function activate(version) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [command, version, baseline, reviewedSharedDiff] = process.argv.slice(2);
+  const [command, version, baseline, reviewedSharedDiff, reviewPath] = process.argv.slice(2);
   (command === "qualify"
-    ? qualify(version, baseline, reviewedSharedDiff)
+    ? qualify(version, baseline, reviewedSharedDiff, reviewPath)
     : command === "check"
       ? releaseGuard(version).then(({ version, commit }) => ({ version, commit }))
       : command === "install"

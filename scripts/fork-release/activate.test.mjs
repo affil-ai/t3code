@@ -10,9 +10,33 @@ const fs = NodeFSP;
 const { tmpdir } = NodeOS;
 const { join } = NodePath;
 const { createHash } = NodeCrypto;
-import { artifactMirror, assertForwardVersion } from "./activate.mjs";
+import { artifactMirror, assertForwardVersion, validateCompatibilityReview } from "./activate.mjs";
 import { execute, remoteCommand, sshArgs, verifyReceipt } from "./transport.mjs";
 import { xml } from "./handoff.mjs";
+
+test("server changes require evidence bound to both commits and the exact diff", () => {
+  const baseline = "a".repeat(40),
+    commit = "b".repeat(40),
+    diff = "add nullable avatar column";
+  const review = {
+    baselineCommit: baseline,
+    commit,
+    serverContractsDiffSha256: createHash("sha256").update(diff).digest("hex"),
+    migrationEvidence: "Migration replayed twice; existing records preserved.",
+    protocolEvidence: "Optional wire field; legacy payload decoded.",
+    rollbackPlan: "Retain data; old writers preserve the new nullable column.",
+  };
+  assert.deepEqual(validateCompatibilityReview(review, baseline, commit, diff), review);
+  assert.throws(() => validateCompatibilityReview(null, baseline, commit, diff));
+  assert.throws(() => validateCompatibilityReview(review, baseline, "c".repeat(40), diff));
+  assert.throws(() => validateCompatibilityReview(review, commit, commit, diff));
+  assert.throws(() => validateCompatibilityReview(review, baseline, commit, diff + "!"));
+  for (const key of ["migrationEvidence", "protocolEvidence", "rollbackPlan"]) {
+    assert.throws(() =>
+      validateCompatibilityReview({ ...review, [key]: "" }, baseline, commit, diff),
+    );
+  }
+});
 
 test("activation refuses downgrade and another release train", () => {
   assertForwardVersion("0.1.0-stable.fork.59", "0.1.0-stable.fork.62");

@@ -5,6 +5,28 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ensureSchema, taskFromRow, type TaskRow } from "./store.ts";
 
+it.effect("upgrades legacy agents without losing rows and supports old writers after upgrade", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* ensureSchema;
+    yield* sql.unsafe("ALTER TABLE firstmate_agent DROP COLUMN avatar_attachment_id");
+    const before = yield* sql`SELECT * FROM firstmate_agent`;
+    yield* ensureSchema;
+    expect(yield* sql`SELECT agent_id FROM firstmate_agent`).toHaveLength(before.length);
+    for (const row of before) {
+      const [after] = yield* sql`SELECT * FROM firstmate_agent WHERE agent_id = ${row.agent_id}`;
+      expect(after).toEqual({ ...row, avatar_attachment_id: null });
+    }
+    yield* sql`UPDATE firstmate_agent SET avatar_attachment_id = 'avatar-retained' WHERE agent_id = 'firstmate'`;
+    // The previous runtime uses named columns for updates, leaving the new data intact.
+    yield* sql`UPDATE firstmate_agent SET name = 'Chief' WHERE agent_id = 'firstmate'`;
+    yield* ensureSchema;
+    const [after] =
+      yield* sql`SELECT name, avatar_attachment_id FROM firstmate_agent WHERE agent_id = 'firstmate'`;
+    expect(after).toEqual({ name: "Chief", avatar_attachment_id: "avatar-retained" });
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
 it.effect("migrates legacy statuses once and does not reclassify them on restart", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
