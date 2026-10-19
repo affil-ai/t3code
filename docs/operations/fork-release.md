@@ -4,15 +4,39 @@ The fork owns its release tooling under `scripts/fork-release/`. It must not
 depend on a separate machine-configuration repository. Host credentials and
 release checkpoints stay in private local state.
 
-These checks are preparation tools, not a complete build or deployment command.
+The release driver supports private requests, isolated host builds, and a
+Mac-side pull of Ubuntu requests. It does not install either artifact.
 From the repository root:
 
 ```sh
+node scripts/fork-release/release.mjs request <full-canonical-commit> <fork-version>
+node scripts/fork-release/release.mjs build <fork-version>
+node scripts/fork-release/release.mjs queue
+# On the Mac, using an existing SSH alias and the Ubuntu checkout:
+node scripts/fork-release/release.mjs mac-pull <ssh-alias> <absolute-ubuntu-checkout>
 node --test scripts/fork-release/release-check.test.mjs
 node scripts/fork-release/release-check.mjs preflight
 node scripts/fork-release/release-check.mjs cutover-time
 node scripts/fork-release/release-check.mjs verify-artifacts /path/to/manifest.json
 ```
+
+Requests and per-platform build receipts live under
+`~/.local/state/t3-fork-release` (override with `T3_FORK_RELEASE_STATE`).
+A version is permanently bound to its source commit. Repeated builds verify
+the recorded artifact instead of rebuilding. A lock blocks concurrent builds;
+after a crash, inspect its owner before removing that exact stale lock.
+Failed attempts and their private logs remain available for diagnosis.
+
+Linux builds need Node 25.7 or later for the single executable and Cargo for
+the resource monitor. macOS builds need the native build dependencies described
+in `FORK.md`. The driver uses the source's exact pnpm version and builds its own
+resource monitor; it does not reuse unproven installed binaries.
+
+The Mac pull command is one bounded queue pass, not an installed daemon.
+It uses outbound SSH from the Mac; it does not require an inbound Mac port.
+It builds locally and keeps its receipt on the Mac. Artifact exchange, signing
+verification, and coordinated safe activation must still be completed before
+calling this an end-to-end release system.
 
 The migration preflight reads the source and destination GitHub main refs and
 the destination Actions setting. It changes nothing. Disable destination
