@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { validateRequest, saveRequest, withLock, shellQuote } from "./release.mjs";
+import { validateRequest, saveRequest, withLock, shellQuote, workloadCounts } from "./release.mjs";
+import { spawnSync } from "node:child_process";
+import { assertIdle } from "./release-check.mjs";
 
 const request = {
   schema: 1,
@@ -54,6 +56,26 @@ test("single-writer lock refuses concurrent operations and releases on failure",
       /build failed/,
     );
     await withLock(lock, async () => {});
+  } finally {
+    await fs.rm(root, { recursive: true });
+  }
+});
+
+test("workload reads fail closed and do not create a missing live database", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "fork-workload-test-"));
+  try {
+    await fs.mkdir(join(root, "userdata"));
+    const database = join(root, "userdata/statev2.sqlite");
+    assert.throws(() => workloadCounts(root));
+    await assert.rejects(fs.stat(database), { code: "ENOENT" });
+    const created = spawnSync("sqlite3", [
+      database,
+      "create table orchestration_v2_projection_runs(status text); insert into orchestration_v2_projection_runs values('queued');",
+    ]);
+    assert.equal(created.status, 0, "sqlite3 is required for workload verification");
+    const counts = workloadCounts(root);
+    assert.equal(counts.queued, 1);
+    assert.throws(() => assertIdle(counts), /Busy/);
   } finally {
     await fs.rm(root, { recursive: true });
   }

@@ -7,6 +7,12 @@ import * as fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  assertCutoverTime,
+  assertIdle,
+  validateManifest,
+  verifyArtifacts,
+} from "./release-check.mjs";
 
 const repository = "https://github.com/affil-ai/t3code.git";
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -61,7 +67,7 @@ function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: sourceRoot,
     encoding: "utf8",
-    timeout: 30_000,
+    timeout: options.timeout ?? 30_000,
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
   });
@@ -254,6 +260,52 @@ async function build(version) {
   });
 }
 
+async function manifest(version) {
+  const folder = jobPath(version);
+  const requestValue = validateRequest(await readJson(join(folder, "request.json")));
+  const artifacts = [];
+  for (const platform of ["linux-x64", "darwin-arm64"]) {
+    artifacts.push(await readJson(join(folder, `${platform}.json`)));
+  }
+  const result = {
+    schema: 1,
+    repository: requestValue.repository,
+    commit: requestValue.commit,
+    version,
+    artifacts,
+    phase: "staged",
+    createdAt: new Date().toISOString(),
+  };
+  validateManifest(result);
+  await atomicJson(join(folder, "manifest.json"), result);
+  return result;
+}
+
+export function workloadCounts(home) {
+  const sql =
+    "select status,count(*) from orchestration_v2_projection_runs " +
+    "where status in ('running','starting','queued','waiting') group by status;";
+  const output = run("sqlite3", ["-readonly", "-json", `${home}/userdata/statev2.sqlite`, sql]);
+  const counts = { running: 0, starting: 0, queued: 0, waiting: 0 };
+  for (const row of JSON.parse(output || "[]")) counts[row.status] = Number(row["count(*)"]);
+  return counts;
+}
+
+async function checkDeploy(version) {
+  assertCutoverTime();
+  const home = process.env.T3CODE_HOME ?? join(homedir(), ".t3");
+  const folder = jobPath(version);
+  const release = validateRequest(await readJson(join(folder, "request.json")));
+  const value = await readJson(join(folder, "manifest.json"));
+  validateManifest(value);
+  if (value.commit !== release.commit || value.version !== version) {
+    throw new Error("Manifest does not match release request");
+  }
+  await verifyArtifacts(value);
+  assertIdle(workloadCounts(home));
+  return { version, commit: value.commit, checks: "artifacts-and-idle-passed", installed: false };
+}
+
 async function queue() {
   let versions;
   try {
@@ -299,11 +351,13 @@ async function main() {
   let result;
   if (command === "request") result = await request(a, b);
   else if (command === "build") result = await build(a);
+  else if (command === "manifest") result = await manifest(a);
+  else if (command === "check-deploy") result = await checkDeploy(a);
   else if (command === "queue") result = await queue();
   else if (command === "mac-pull") result = await macPull(a, b);
   else
     throw new Error(
-      "Usage: release.mjs request COMMIT VERSION | build VERSION | queue | mac-pull SSH_ALIAS REMOTE_REPO",
+      "Usage: release.mjs request COMMIT VERSION | build VERSION | manifest VERSION | check-deploy VERSION | queue | mac-pull SSH_ALIAS REMOTE_REPO",
     );
   console.log(JSON.stringify(result));
 }

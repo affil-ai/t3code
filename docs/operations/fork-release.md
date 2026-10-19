@@ -38,6 +38,12 @@ It builds locally and keeps its receipt on the Mac. Artifact exchange, signing
 verification, and coordinated safe activation must still be completed before
 calling this an end-to-end release system.
 
+`manifest <fork-version>` combines both local platform receipts.
+`check-deploy <fork-version>` verifies both local artifact files and reads
+the live T3 database read-only. Any running, starting, queued, or waiting run
+blocks it. Neither command installs software. Compatibility, migration
+reversibility, and a fresh activity check are still required at activation.
+
 The migration preflight reads the source and destination GitHub main refs and
 the destination Actions setting. It changes nothing. Disable destination
 Actions before publishing the migrated main: inherited workflows can deploy
