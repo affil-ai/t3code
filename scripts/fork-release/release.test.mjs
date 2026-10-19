@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { validateRequest, saveRequest, withLock, shellQuote, workloadCounts } from "./release.mjs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { assertIdle } from "./release-check.mjs";
 
 const request = {
@@ -26,6 +26,58 @@ test("request rejects traversal, wrong repository, and abbreviated commits", () 
   assert.equal(validateRequest(request), request);
   assert.equal(shellQuote("a'b"), "'a'\\''b'");
 });
+
+test("workload reads wait for a short SQLite writer lock instead of aborting installation", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "fork-sqlite-lock-"));
+  try {
+    await fs.mkdir(join(root, "userdata"));
+    const database = join(root, "userdata/statev2.sqlite");
+    const created = spawnSync("sqlite3", [
+      database,
+      "create table orchestration_v2_projection_runs(status text);",
+    ]);
+    assert.equal(created.status, 0);
+    const holder = spawn("sqlite3", [database], { stdio: ["pipe", "pipe", "pipe"] });
+    const locked = new Promise((resolve) => holder.stdout.once("data", resolve));
+    holder.stdin.end("begin exclusive;\n.print locked\n.shell sleep 1\ncommit;\n");
+    await locked;
+    assert.deepEqual(workloadCounts(root), { running: 0, starting: 0, queued: 0, waiting: 0 });
+  } finally {
+    await fs.rm(root, { recursive: true });
+  }
+});
+
+test(
+  "Mac restart exemption permits only the caller's running turn, never queued or other work",
+  {
+    skip: process.platform !== "darwin",
+  },
+  async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "fork-caller-test-"));
+    const caller = "03f54067-5c5b-4137-9c89-a81864815e2b";
+    try {
+      await fs.mkdir(join(root, "userdata"));
+      const database = join(root, "userdata/statev2.sqlite");
+      assert.equal(
+        spawnSync("sqlite3", [
+          database,
+          `create table orchestration_v2_projection_runs(thread_id text,status text);
+       insert into orchestration_v2_projection_runs values('${caller}','running');
+       insert into orchestration_v2_projection_runs values('other','running');
+       insert into orchestration_v2_projection_runs values('${caller}','queued');`,
+        ]).status,
+        0,
+      );
+      const counts = workloadCounts(root, caller);
+      assert.equal(counts.running, 1);
+      assert.equal(counts.queued, 1);
+      assert.throws(() => assertIdle(counts), /Busy/);
+      assert.throws(() => workloadCounts(root, "' or 1=1"), /explicit/);
+    } finally {
+      await fs.rm(root, { recursive: true });
+    }
+  },
+);
 test("version reservations are idempotent and cannot point to another commit", async () => {
   const root = await fs.mkdtemp(join(tmpdir(), "fork-release-test-"));
   try {

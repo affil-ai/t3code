@@ -162,3 +162,17 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 - Don't verify with browsers or computer use unless the user explicitly agrees or requests it.
 - Security is important, but should not be over-indexed on, especially for dev mode/maintainer-only features.
+
+## Completion standard
+
+- Treat an action request as incomplete until the requested result is observable in
+  the target client, host, or service.
+- Do not stop at a build, queued installer, dry run, checkpoint, or explanation.
+  Continue through installation, restart, and verification when those are part of
+  the request.
+- If a step fails, diagnose and repair it in scope, then retry. Do not report
+  "unfinished" as the final result while a safe repair path remains.
+- If the target is busy, use the supported graceful handoff or restart path. Do
+  not manufacture idleness by cancelling work or killing processes.
+- Before reporting completion, verify the live version, source provenance, health,
+  and the user-visible behavior that motivated the change.

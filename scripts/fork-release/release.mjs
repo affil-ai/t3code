@@ -298,13 +298,40 @@ export async function manifest(version) {
   return result;
 }
 
-export function workloadCounts(home) {
+export function readReleaseDatabase(home, sql) {
+  const result = spawnSync(
+    "sqlite3",
+    ["-readonly", "-cmd", ".timeout 5000", "-json", `${home}/userdata/statev2.sqlite`, sql],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  if (result.error || result.status !== 0) {
+    // Classify stderr without exposing database contents or credential-bearing paths.
+    const detail = result.stderr ?? "";
+    const reason = /locked|busy/i.test(detail)
+      ? "database busy"
+      : /unable to open/i.test(detail)
+        ? "database unavailable"
+        : /no such table/i.test(detail)
+          ? "required table missing"
+          : /readonly/i.test(detail)
+            ? "read-only recovery failed"
+            : (result.error?.code ?? "query failed");
+    throw Error(`Release database check failed: ${reason}; app must remain unchanged`);
+  }
+  return JSON.parse(result.stdout || "[]");
+}
+
+export function workloadCounts(home, restartThread = null) {
+  if (restartThread && (process.platform !== "darwin" || !/^[a-f0-9-]{36}$/.test(restartThread))) {
+    throw Error("Only an explicit local Mac caller may use graceful restart");
+  }
   const sql =
     "select status,count(*) from orchestration_v2_projection_runs " +
-    "where status in ('running','starting','queued','waiting') group by status;";
-  const output = run("sqlite3", ["-readonly", "-json", `${home}/userdata/statev2.sqlite`, sql]);
+    "where status in ('running','starting','queued','waiting') " +
+    (restartThread ? `and not (thread_id='${restartThread}' and status='running') ` : "") +
+    "group by status;";
   const counts = { running: 0, starting: 0, queued: 0, waiting: 0 };
-  for (const row of JSON.parse(output || "[]")) counts[row.status] = Number(row["count(*)"]);
+  for (const row of readReleaseDatabase(home, sql)) counts[row.status] = Number(row["count(*)"]);
   return counts;
 }
 
@@ -319,7 +346,7 @@ export async function checkDeploy(version) {
     throw new Error("Manifest does not match release request");
   }
   await verifyArtifacts(value);
-  assertIdle(workloadCounts(home));
+  assertIdle(workloadCounts(home, process.env.T3_FORK_RELEASE_RESTART_THREAD));
   return { version, commit: value.commit, checks: "artifacts-and-idle-passed", installed: false };
 }
 

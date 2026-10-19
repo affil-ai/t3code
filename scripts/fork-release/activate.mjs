@@ -54,6 +54,8 @@ export async function installedVersion() {
 function schemaFingerprint() {
   const schema = run("sqlite3", [
     "-readonly",
+    "-cmd",
+    ".timeout 5000",
     join(home, "userdata/statev2.sqlite"),
     "select type,name,coalesce(sql,'') from sqlite_schema where name not like 'sqlite_%' order by type,name;",
   ]);
@@ -226,45 +228,60 @@ async function macInstall(version, manifest, log) {
     `${staged}/Contents/Info.plist`,
   ]);
   if (candidate !== version) throw Error("Staged app version mismatch");
-  assertIdle(workloadCounts(home));
-  await command("osascript", ["-e", `tell application "${app}" to quit`]);
-  // Never kill a process. Require both app exit and API shutdown before moving bundles.
-  let stopped = false;
-  for (let attempt = 0; attempt < 90; attempt++) {
-    const running = run("osascript", ["-e", `application "${app}" is running`]);
-    if (running === "false") {
-      try {
-        await fetch("http://127.0.0.1:3773/.well-known/t3/environment", {
-          signal: AbortSignal.timeout(1000),
-        });
-      } catch {
-        stopped = true;
-        break;
-      }
-    }
-    await pause(1000);
-  }
-  if (!stopped) throw Error("App did not quit cleanly; bundle untouched");
-  // A last-moment incoming run must never be silently discarded.
-  assertIdle(workloadCounts(home));
-  const previous = join(stage, "previous.app");
-  await fs.rename(app, previous);
+  await log.write("staged and signed\n");
+  assertIdle(workloadCounts(home, process.env.T3_FORK_RELEASE_RESTART_THREAD));
   try {
-    await fs.rename(staged, app);
+    await command("osascript", ["-e", `tell application "${app}" to quit`]);
+    // Never kill a process. Require both app exit and API shutdown before moving bundles.
+    let stopped = false;
+    for (let attempt = 0; attempt < 90; attempt++) {
+      const running = run("osascript", ["-e", `application "${app}" is running`]);
+      if (running === "false") {
+        try {
+          await fetch("http://127.0.0.1:3773/.well-known/t3/environment", {
+            signal: AbortSignal.timeout(1000),
+          });
+        } catch {
+          stopped = true;
+          break;
+        }
+      }
+      await pause(1000);
+    }
+    if (!stopped) throw Error("App did not quit cleanly; bundle untouched");
+    await log.write("quit cleanly\n");
+    // A last-moment incoming run must never be silently discarded.
+    assertIdle(workloadCounts(home));
+    const previous = join(stage, "previous.app");
+    await fs.rename(app, previous);
+    try {
+      await fs.rename(staged, app);
+    } catch (error) {
+      await fs.rename(previous, app);
+      throw error;
+    }
+    await atomicJson(join(folder, "mac-installed-bundle.json"), {
+      version,
+      commit: manifest.commit,
+      previous,
+    });
+    await log.write("installed\n");
+    await command(
+      "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+      ["-f", app],
+    );
+    await command("open", [app]);
   } catch (error) {
-    await fs.rename(previous, app);
+    // A failed post-quit check must not leave the original app closed.
+    // Launch by path without creating another instance; never roll back live data.
+    await log.write(`activation stopped: ${error.message}\n`);
+    await command("open", [app]).catch(() => {});
+    await command("osascript", [
+      "-e",
+      `tell application "Finder" to open (POSIX file "${app}" as alias)`,
+    ]).catch(() => {});
     throw error;
   }
-  await atomicJson(join(folder, "mac-installed-bundle.json"), {
-    version,
-    commit: manifest.commit,
-    previous,
-  });
-  await command(
-    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-    ["-f", app],
-  );
-  await command("open", [app]);
   // Keep the previous bundle. No automatic rollback against a possibly changed database.
 }
 
@@ -311,6 +328,7 @@ export async function activate(version) {
         }
       }
       if (!healthy) throw Error("Target installed but API health unverified; inspect private log");
+      await log.write("relaunched; target API version and protocol verified\n");
       const result = {
         version,
         commit: manifest.commit,

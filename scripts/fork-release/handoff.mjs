@@ -49,7 +49,12 @@ export async function watch(version, host, repo, macOnly = false) {
     const deadline = Date.now() + 24 * 60 * 60 * 1000;
     while (Date.now() < deadline) {
       try {
-        assertIdle(workloadCounts(join(homedir(), ".t3")));
+        assertIdle(
+          workloadCounts(
+            join(homedir(), ".t3"),
+            macOnly ? process.env.T3_FORK_RELEASE_RESTART_THREAD : null,
+          ),
+        );
         if (!macOnly) {
           remote(
             ["node", join(repo, "scripts/fork-release/release.mjs"), "check-deploy", version]
@@ -122,6 +127,11 @@ export async function handoff(version, host, repo, macOnly = false) {
     throw Error("Absolute Ubuntu checkout required");
   const folder = jobPath(version);
   validateRequest(await readJson(join(folder, "request.json")));
+  const restartThread = macOnly ? process.env.T3_FORK_RELEASE_RESTART_THREAD : null;
+  if (restartThread) {
+    // Explicit opt-in for the invoking Mac chat only. All other work still blocks.
+    assertIdle(workloadCounts(join(homedir(), ".t3"), restartThread));
+  }
   const label = "com.affil.t3-fork-release";
   // Never replace an existing installer. A completed launchd job can be removed explicitly.
   try {
@@ -147,7 +157,9 @@ export async function handoff(version, host, repo, macOnly = false) {
 <key>Label</key><string>${label}</string>
 <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
 <key>EnvironmentVariables</key><dict><key>HOME</key><string>${xml(homedir())}</string>
-<key>PATH</key><string>${xml(process.env.PATH)}</string></dict>
+<key>PATH</key><string>${xml(process.env.PATH)}</string>
+${restartThread ? `<key>T3_FORK_RELEASE_RESTART_THREAD</key><string>${xml(restartThread)}</string>` : ""}
+</dict>
 <key>StandardOutPath</key><string>${xml(join(folder, "handoff.log"))}</string>
 <key>StandardErrorPath</key><string>${xml(join(folder, "handoff.log"))}</string>
 <key>RunAtLoad</key><true/>
