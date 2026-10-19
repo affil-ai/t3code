@@ -2,13 +2,19 @@
  * An agent's open tasks in the sidebar, in the Tasks panel's sections
  * (Ready for deployment first, followed by attention and other lifecycle
  * sections). A task with a worker opens the worker's chat, with a dot for
- * what the worker is doing. A Planning task is a card with its title, intent,
- * and next step. A Backlog task shows the last activity age of its worker
- * instead of its description. Closed tasks stay in the panel.
+ * what the worker is doing. Tasks without a worker open task details and
+ * identify when the coordinator owns the next action. Only Backlog tasks
+ * have a second line, showing worker activity. Closed tasks stay in the panel.
  */
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, FirstmateTask, ThreadId } from "@t3tools/contracts";
+import {
+  firstmateTaskStatus,
+  type EnvironmentId,
+  type FirstmateTask,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { BotIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { useNowMinute } from "~/hooks/useNowMinute";
@@ -18,15 +24,9 @@ import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { type FirstmateColumnId, mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
-import { COLUMN_DOT, COLUMN_LABELS, taskNextStep } from "../firstmate/firstmateTasksShared";
+import { COLUMN_DOT, COLUMN_LABELS } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useSidebar } from "../ui/sidebar";
-
-/** The intent's first line, short enough for a sidebar card. */
-function intentExcerpt(intent: string, limit = 90): string {
-  const line = intent.trim().split("\n")[0] ?? "";
-  return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line;
-}
 
 function PlanningCard({
   environmentId,
@@ -41,8 +41,7 @@ function PlanningCard({
 }) {
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
-  const nextStep = taskNextStep(task);
-  const excerpt = intentExcerpt(task.intent);
+  const backlog = firstmateTaskStatus(task) === "backlog";
   const active =
     task.workerThreadId !== null && activeRouteKey === `${environmentId}:${task.workerThreadId}`;
   const open = () => {
@@ -72,30 +71,39 @@ function PlanningCard({
         aria-label={`Open ${task.title}`}
         data-testid="planning-task-card"
         className={cn(
-          "flex w-full min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-1.5 text-left outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset",
+          "flex w-full min-w-0 cursor-pointer flex-col justify-center gap-0.5 rounded-md px-2 text-left outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset",
+          backlog ? "py-1.5" : "h-8",
           active && "bg-sidebar-row-selected",
         )}
         {...(active ? { "data-active": true } : {})}
       >
-        <span className="flex min-w-0 items-center gap-2">
+        <span className="flex w-full min-w-0 items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-sm text-sidebar-foreground/90">
             {task.title}
           </span>
           {task.workerThreadId !== null ? (
             <WorkerStatusDot environmentId={environmentId} workerThreadId={task.workerThreadId} />
+          ) : !backlog && task.nextActor === "coordinator" ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    role="img"
+                    aria-label="Handled by agent · no worker chat"
+                    className="shrink-0 text-sidebar-muted-foreground"
+                  />
+                }
+              >
+                <BotIcon aria-hidden className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup side="right">Handled by agent · no worker chat</TooltipPopup>
+            </Tooltip>
           ) : null}
         </span>
-        {task.status === "backlog" ? (
+        {backlog ? (
           <span className="truncate text-xs leading-4 text-sidebar-muted-foreground/80">
             <BacklogActivity environmentId={environmentId} workerThreadId={task.workerThreadId} />
           </span>
-        ) : excerpt ? (
-          <span className="line-clamp-2 text-xs leading-4 text-sidebar-muted-foreground/80">
-            {excerpt}
-          </span>
-        ) : null}
-        {task.status !== "backlog" && nextStep !== null ? (
-          <span className="truncate text-2xs text-sidebar-muted-foreground/80">{nextStep}</span>
         ) : null}
       </button>
     </li>
@@ -165,7 +173,6 @@ function TaskRow({
   const { isMobile, setOpenMobile } = useSidebar();
   const threadId = task.workerThreadId ?? coordinatorThreadId;
   const active = task.workerThreadId !== null && activeRouteKey === `${environmentId}:${threadId}`;
-  const nextStep = taskNextStep(task);
   return (
     <li>
       <Tooltip>
@@ -200,7 +207,6 @@ function TaskRow({
         </TooltipTrigger>
         <TooltipPopup side="right" className="max-w-72">
           <span className="block font-medium">{task.title}</span>
-          {nextStep !== null ? <span className="block opacity-80">{nextStep}</span> : null}
           {task.workerThreadId === null ? (
             <span className="block opacity-60">No worker yet</span>
           ) : null}

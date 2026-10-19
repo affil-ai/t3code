@@ -311,6 +311,72 @@ describe("agent switcher navigation", () => {
     expect(backlog.textContent).toContain("3h ago");
   });
 
+  it.each(["planning", "in_progress", "in_review", "ready_for_deployment", "backlog"] as const)(
+    "keeps %s task descriptions and next steps out of the sidebar",
+    async (status) => {
+      const tasks = [null, ThreadId.make("worker-chat")].map((workerThreadId, index) => ({
+        id: `task-${index}`,
+        title: `Task ${index}`,
+        status,
+        state: "open",
+        nextActor: "coordinator",
+        intent: "Original request must stay in details",
+        nextStep: "Next step must stay in details",
+        workerThreadId,
+        updatedAt: "2026-10-18T10:00:00Z",
+      })) as FirstmateTask[];
+      await act(() =>
+        root.render(
+          <SidebarProvider>
+            <AgentTaskTree
+              environmentId={environmentId}
+              coordinatorThreadId={firstmate.coordinatorThreadId!}
+              tasks={tasks}
+              activeRouteKey={null}
+            />
+          </SidebarProvider>,
+        ),
+      );
+      expect(container.textContent).toContain("Task 0");
+      expect(container.textContent).toContain("Task 1");
+      expect(container.textContent).not.toContain("Original request");
+      expect(container.textContent).not.toContain("Next step must");
+      expect(
+        container.querySelectorAll('[aria-label="Handled by agent · no worker chat"]'),
+      ).toHaveLength(status === "backlog" ? 0 : 1);
+    },
+  );
+
+  it.each(["user", "external", "worker"] as const)(
+    "does not label a task as agent-handled when %s acts next",
+    async (nextActor) => {
+      await act(() =>
+        root.render(
+          <SidebarProvider>
+            <AgentTaskTree
+              environmentId={environmentId}
+              coordinatorThreadId={firstmate.coordinatorThreadId!}
+              tasks={[
+                {
+                  id: "task",
+                  title: "Waiting task",
+                  status: "in_progress",
+                  state: "open",
+                  nextActor,
+                  workerThreadId: null,
+                } as FirstmateTask,
+              ]}
+              activeRouteKey={null}
+            />
+          </SidebarProvider>,
+        ),
+      );
+      expect(
+        container.querySelector('[aria-label="Handled by agent · no worker chat"]'),
+      ).toBeNull();
+    },
+  );
+
   it.each(["worker", "coordinator"] as const)(
     "closes the mobile sidebar when a %s task chat is selected",
     async (nextActor) => {
