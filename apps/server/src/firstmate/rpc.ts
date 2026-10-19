@@ -8,6 +8,7 @@ import {
   type AgentUpdateInput,
   type AgentsSubscribeInput,
   type FirstmateGetTaskInput,
+  type FirstmateSetTaskPriorityInput,
   type FirstmateSetAppearanceInput,
   type FirstmateSetCoordinatorInput,
   type FirstmateStartInput,
@@ -18,6 +19,8 @@ import type { FirstmateService } from "./FirstmateService.ts";
 
 /** Firstmate's RPCs act on the reserved agent; the `agents.*` RPCs take an agent id. */
 export const rpcHandlers = (service: FirstmateService["Service"]) => ({
+  [FIRSTMATE_WS_METHODS.firstmateSetTaskPriority]: (input: FirstmateSetTaskPriorityInput) =>
+    service.setTaskPriority(input),
   [FIRSTMATE_WS_METHODS.firstmateSubscribe]: (_input: FirstmateSubscribeInput) =>
     service.subscribe(FIRSTMATE_AGENT_ID),
   [FIRSTMATE_WS_METHODS.firstmateGetTask]: (input: FirstmateGetTaskInput) =>
@@ -40,6 +43,7 @@ export const rpcHandlers = (service: FirstmateService["Service"]) => ({
 
 /** `rpc.aggregate` span labels, spread into the server's RpcInstrumentation table. */
 export const FIRSTMATE_RPC_AGGREGATES = {
+  [FIRSTMATE_WS_METHODS.firstmateSetTaskPriority]: "firstmate",
   [FIRSTMATE_WS_METHODS.firstmateSubscribe]: "firstmate",
   [FIRSTMATE_WS_METHODS.firstmateGetTask]: "firstmate",
   [FIRSTMATE_WS_METHODS.firstmateSetCoordinator]: "firstmate",

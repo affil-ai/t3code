@@ -121,6 +121,8 @@ export function effectiveShortcutsForCommand(
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
     if (!binding) continue;
+    // fork: saved pre-Work thread jumps must not shadow agent navigation.
+    if (context.workMode && binding.command.startsWith("thread.jump.")) continue;
     if (!matchesWhenClause(binding.whenAst, context)) continue;
 
     const conflictKey = shortcutConflictKey(binding.shortcut, platform);
@@ -165,6 +167,8 @@ export function resolveShortcutCommand(
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
     if (!binding) continue;
+    // fork: Work numbers select agents; Code mode keeps saved thread jumps.
+    if (context.workMode && binding.command.startsWith("thread.jump.")) continue;
     if (!matchesWhenClause(binding.whenAst, context)) continue;
     if (!matchesKeybindingShortcut(event, binding.shortcut, platform)) continue;
     return binding.command;

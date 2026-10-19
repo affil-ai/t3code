@@ -26,6 +26,12 @@ function createFirstmateEnvironmentAtoms(runtime: typeof connectionAtomRuntime) 
     key: ({ environmentId }: { readonly environmentId: string }) => environmentId,
   };
   return {
+    setTaskPriority: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:firstmate:set-task-priority",
+      tag: FIRSTMATE_WS_METHODS.firstmateSetTaskPriority,
+      scheduler,
+      concurrency,
+    }),
     live: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:firstmate:live",
       tag: FIRSTMATE_WS_METHODS.firstmateSubscribe,

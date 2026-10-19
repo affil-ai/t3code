@@ -129,6 +129,8 @@ const NEXT_STEP_DESCRIPTION =
 /** Public task model; reactor bookkeeping stays on the server. */
 export const FirstmateTask = Schema.Struct({
   id: FirstmateTaskId,
+  /** Older servers omit it; unmarked tasks are not priority. */
+  priority: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   intent: FirstmateIntent,
   definitionOfDone: TrimmedNonEmptyString,
@@ -283,6 +285,7 @@ export type FirstmateGetTaskResult = typeof FirstmateGetTaskResult.Type;
 
 /** New tasks start open; persistence chooses IDs, timestamps, and the create event. */
 export const FirstmateTaskCreateInput = Schema.Struct({
+  priority: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   intent: FirstmateIntent.annotate({ description: "The user's request in their own words." }),
   definitionOfDone: TrimmedNonEmptyString,
@@ -309,6 +312,7 @@ export type FirstmateTaskCreateInput = typeof FirstmateTaskCreateInput.Type;
 
 /** Omitted fields are unchanged. Explicit null clears nullable fields. */
 export const FirstmateTaskUpdateInput = Schema.Struct({
+  priority: Schema.optional(Schema.Boolean),
   taskId: FirstmateTaskId,
   summary: TrimmedNonEmptyString.annotate({
     description: "Required summary for the append-only update event.",
@@ -351,6 +355,12 @@ export const FirstmateTaskUpdateInput = Schema.Struct({
   ),
 );
 export type FirstmateTaskUpdateInput = typeof FirstmateTaskUpdateInput.Type;
+
+export const FirstmateSetTaskPriorityInput = Schema.Struct({
+  taskId: FirstmateTaskId,
+  priority: Schema.Boolean,
+});
+export type FirstmateSetTaskPriorityInput = typeof FirstmateSetTaskPriorityInput.Type;
 
 export const FirstmateTaskMutationResult = Schema.Struct({
   task: FirstmateTask,
@@ -491,6 +501,7 @@ export class FirstmateError extends Schema.TaggedError<FirstmateError>()("Firstm
 
 /** Separate from upstream WS_METHODS so rpc.ts needs only an import and registration. */
 export const FIRSTMATE_WS_METHODS = {
+  firstmateSetTaskPriority: "firstmate.setTaskPriority",
   firstmateSubscribe: "firstmate.subscribe",
   firstmateGetTask: "firstmate.getTask",
   firstmateSetCoordinator: "firstmate.setCoordinator",
@@ -506,6 +517,7 @@ export const FIRSTMATE_WS_METHODS = {
 
 /** Spread into the server's authorization table without duplicating feature policy. */
 export const FIRSTMATE_RPC_REQUIRED_SCOPES = {
+  [FIRSTMATE_WS_METHODS.firstmateSetTaskPriority]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateSubscribe]: AuthOrchestrationReadScope,
   [FIRSTMATE_WS_METHODS.firstmateGetTask]: AuthOrchestrationReadScope,
   [FIRSTMATE_WS_METHODS.firstmateSetCoordinator]: AuthOrchestrationOperateScope,
@@ -521,6 +533,7 @@ export const FIRSTMATE_RPC_REQUIRED_SCOPES = {
 
 /** Incremental client guards for mutations; the server authorizes every RPC independently. */
 export const FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES = {
+  [FIRSTMATE_WS_METHODS.firstmateSetTaskPriority]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateSetCoordinator]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateStart]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.firstmateSetAppearance]: AuthOrchestrationOperateScope,
@@ -534,6 +547,11 @@ const FirstmateRpcError = Schema.Union([FirstmateError, EnvironmentAuthorization
 
 /** A full snapshot on subscribe, followed by another after each task or config change. */
 export const FirstmateRpcs = [
+  Rpc.make(FIRSTMATE_WS_METHODS.firstmateSetTaskPriority, {
+    payload: FirstmateSetTaskPriorityInput,
+    success: FirstmateTaskMutationResult,
+    error: FirstmateRpcError,
+  }),
   Rpc.make(FIRSTMATE_WS_METHODS.firstmateSubscribe, {
     payload: FirstmateSubscribeInput,
     success: FirstmateSnapshot,

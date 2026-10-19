@@ -52,6 +52,29 @@ const snapshot = Effect.fn("firstmateSnapshotTestHelper")(function* (
 });
 
 describe("FirstmateService", () => {
+  it.effect("persists reversible task priority without changing lifecycle or order", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const { task } = yield* service.create(FM, {
+        title: "Priority task",
+        intent: "Deliver it",
+        definitionOfDone: "Delivered",
+      });
+      expect(task.priority).toBe(false);
+      yield* service.setTaskPriority({ taskId: task.id, priority: true });
+      const marked = yield* service.get(FM, { taskId: task.id });
+      expect(marked.task).toEqual({ ...task, priority: true });
+      expect(marked.events.at(-1)).toMatchObject({ actor: "user", summary: "Marked as priority." });
+      yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Update the note",
+        note: "Still working",
+      });
+      expect((yield* service.get(FM, { taskId: task.id })).task.priority).toBe(true);
+      yield* service.setTaskPriority({ taskId: task.id, priority: false });
+      expect((yield* service.list(FM)).tasks[0]?.priority).toBe(false);
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
   it.effect("persists lifecycle separately from attention and supports backlog promotion", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;

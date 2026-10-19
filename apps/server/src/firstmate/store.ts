@@ -43,6 +43,7 @@ export interface StoredTask extends FirstmateTask {
 }
 
 export interface TaskRow {
+  readonly priority: number;
   readonly task_id: string;
   readonly agent_id: string;
   readonly title: string;
@@ -106,6 +107,7 @@ export function taskFromRow(row: TaskRow): StoredTask {
   });
   return {
     id: FirstmateTaskId.make(row.task_id),
+    priority: row.priority === 1,
     agentId: AgentProfileId.make(row.agent_id),
     title: row.title,
     intent: row.intent,
@@ -192,6 +194,9 @@ export const ensureSchema = Effect.gen(function* () {
   `;
   // Columns added after the first release; SQLite has no ADD COLUMN IF NOT EXISTS.
   const taskColumns = yield* columnsOf("firstmate_task");
+  if (!taskColumns.has("priority")) {
+    yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`);
+  }
   if (!taskColumns.has("last_terminal_notice_run_id")) {
     yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN last_terminal_notice_run_id TEXT`);
   }

@@ -34,6 +34,7 @@ import {
   mapFirstmateBoard,
 } from "./firstmateBoard.logic";
 import { TaskDetail } from "./FirstmateTaskDetail";
+import { TaskPriorityStar } from "./TaskPriority";
 import { CARD_LINK_CLASS, ExternalTaskLink, WorkerThreadLink } from "./FirstmateTaskLinks";
 import {
   COLUMN_DOT,
@@ -77,6 +78,11 @@ function TaskCard({
             closed && "text-muted-foreground",
           )}
         >
+          {task.priority ? (
+            <>
+              <TaskPriorityStar />{" "}
+            </>
+          ) : null}
           {task.title}
         </p>
         {nextStep !== null ? (

@@ -169,6 +169,11 @@ export class FirstmateService extends Context.Service<
       agentId: AgentProfileId,
       input: FirstmateTaskUpdateInput,
     ) => Effect.Effect<FirstmateTaskMutationResult, ContractFirstmateError>;
+    /** Human priority changes preserve lifecycle, worker ownership, and task order. */
+    readonly setTaskPriority: (input: {
+      readonly taskId: FirstmateTask["id"];
+      readonly priority: boolean;
+    }) => Effect.Effect<FirstmateTaskMutationResult, ContractFirstmateError>;
     readonly setCoordinator: (
       agentId: AgentProfileId,
       input: FirstmateSetCoordinatorInput,
@@ -508,6 +513,7 @@ export const layer = Layer.effect(
             );
             const task: StoredTask = {
               id: taskId,
+              priority: input.priority ?? false,
               agentId,
               title: input.title,
               intent: input.intent,
@@ -532,6 +538,7 @@ export const layer = Layer.effect(
             yield* sql`
           INSERT INTO firstmate_task ${sql.insert({
             task_id: task.id,
+            priority: task.priority ? 1 : 0,
             agent_id: task.agentId,
             title: task.title,
             intent: task.intent,
@@ -600,6 +607,7 @@ export const layer = Layer.effect(
             const at = yield* now();
             const next: StoredTask = {
               ...existing,
+              ...(input.priority === undefined ? {} : { priority: input.priority }),
               ...(input.title === undefined ? {} : { title: input.title }),
               ...(input.intent === undefined ? {} : { intent: input.intent }),
               ...(input.definitionOfDone === undefined
@@ -632,6 +640,7 @@ export const layer = Layer.effect(
             };
             yield* sql`
           UPDATE firstmate_task SET
+            priority = ${next.priority ? 1 : 0},
             title = ${next.title}, intent = ${next.intent}, definition_of_done = ${next.definitionOfDone},
             state = ${next.state}, status = ${next.status ?? null}, next_actor = ${next.nextActor}, next_step = ${next.nextStep ?? null}, note = ${next.note}, wake_at = ${next.wakeAt},
             worker_thread_id = ${next.workerThreadId}, links_json = ${encodeLinks(next.links)},
@@ -828,7 +837,33 @@ export const layer = Layer.effect(
         Effect.asVoid,
       );
 
+    const setTaskPriority: FirstmateService["Service"]["setTaskPriority"] = (input) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows =
+              yield* sql<Store.TaskRow>`SELECT * FROM firstmate_task WHERE task_id = ${input.taskId}`;
+            const row = rows[0];
+            if (row === undefined) return yield* error("Task was not found.", input.taskId);
+            const task = Store.taskFromRow(row);
+            if (task.priority === input.priority) return { task: publicTask(task) };
+            yield* sql`UPDATE firstmate_task SET priority = ${input.priority ? 1 : 0} WHERE task_id = ${input.taskId}`;
+            yield* appendEvent(
+              input.taskId,
+              input.priority ? "Marked as priority." : "Removed priority.",
+              "user",
+              yield* now(),
+            );
+            return { task: publicTask({ ...task, priority: input.priority }) };
+          }),
+        )
+        .pipe(
+          Effect.mapError(dbError("Could not change task priority.", input.taskId)),
+          Effect.tap(() => notify),
+        );
+
     return {
+      setTaskPriority,
       list,
       subscribe,
       get,

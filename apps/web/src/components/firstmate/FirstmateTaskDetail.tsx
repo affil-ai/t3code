@@ -13,6 +13,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { firstmateColumnForTask } from "./firstmateBoard.logic";
 import { FirstmateArtifactList } from "./FirstmateTaskArtifacts";
+import { TaskPriorityStar, TaskPriorityToggle } from "./TaskPriority";
 import { ExternalTaskLink, WorkerThreadLink } from "./FirstmateTaskLinks";
 import {
   COLUMN_DOT,
@@ -71,7 +72,15 @@ export function TaskDetail({
             <span aria-hidden>·</span>
             <span>{taskStatusLabel(task)}</span>
           </div>
-          <h3 className="text-base leading-6 font-semibold text-foreground">{task.title}</h3>
+          <h3 className="text-base leading-6 font-semibold text-foreground">
+            {task.priority ? (
+              <>
+                <TaskPriorityStar />{" "}
+              </>
+            ) : null}
+            {task.title}
+          </h3>
+          <TaskPriorityToggle environmentId={environmentId} task={task} />
         </header>
         <DetailSection title="What you asked">
           <DetailText>{task.intent}</DetailText>

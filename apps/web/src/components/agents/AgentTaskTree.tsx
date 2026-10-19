@@ -29,6 +29,7 @@ import { COLUMN_DOT, COLUMN_LABELS } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useSidebar } from "../ui/sidebar";
 import { useWorkSidebarShortcut } from "./WorkSidebarShortcuts";
+import { TaskPriorityStar } from "../firstmate/TaskPriority";
 import { adjacentSidebarTask, OPEN_TASK_COLUMNS, sidebarNavigationTasks } from "./taskNavigation";
 
 function PlanningCard({
@@ -84,6 +85,7 @@ function PlanningCard({
         {...(active ? { "data-active": true } : {})}
       >
         <span className="flex w-full min-w-0 items-center gap-2">
+          {task.priority ? <TaskPriorityStar /> : null}
           <span className="min-w-0 flex-1 truncate text-sm text-sidebar-foreground/90">
             {task.title}
           </span>
@@ -207,6 +209,7 @@ function TaskRow({
             />
           }
         >
+          {task.priority ? <TaskPriorityStar /> : null}
           <span className="min-w-0 flex-1 truncate">{task.title}</span>
           {task.workerThreadId !== null ? (
             <WorkerStatusDot environmentId={environmentId} workerThreadId={task.workerThreadId} />

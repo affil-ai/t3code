@@ -244,6 +244,7 @@ describe("Firstmate RPC contracts", () => {
 
   it("declares read scopes for reads and operate scopes for mutations", () => {
     expect(FIRSTMATE_RPC_REQUIRED_SCOPES).toEqual({
+      "firstmate.setTaskPriority": "orchestration:operate",
       "firstmate.subscribe": "orchestration:read",
       "firstmate.getTask": "orchestration:read",
       "firstmate.setCoordinator": "orchestration:operate",
@@ -257,6 +258,7 @@ describe("Firstmate RPC contracts", () => {
       "agents.start": "orchestration:operate",
     });
     expect(FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES).toEqual({
+      "firstmate.setTaskPriority": "orchestration:operate",
       "firstmate.setCoordinator": "orchestration:operate",
       "firstmate.start": "orchestration:operate",
       "firstmate.setAppearance": "orchestration:operate",

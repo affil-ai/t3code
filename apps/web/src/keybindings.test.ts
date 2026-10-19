@@ -1028,6 +1028,24 @@ describe("resolveChatShortcutCommand", () => {
 });
 
 describe("resolveShortcutCommand", () => {
+  it("keeps saved thread-number bindings from shadowing Work agent shortcuts", () => {
+    // The server prepends new defaults before existing saved rules.
+    const persisted = [
+      ...DEFAULT_RESOLVED_KEYBINDINGS,
+      ...compileResolvedKeybindingsConfig([{ key: "mod+2", command: "thread.jump.2" }]),
+    ];
+    const input = event({ key: "2", metaKey: true });
+    const options = { platform: "MacIntel", context: { workMode: true, isDesktop: true } };
+    assert.strictEqual(resolveShortcutCommand(input, persisted, options), "agent.jump.2");
+    assert.lengthOf(effectiveShortcutsForCommand(persisted, "agent.jump.2", options), 1);
+    assert.strictEqual(
+      resolveShortcutCommand(input, persisted, {
+        ...options,
+        context: { workMode: false, isDesktop: true },
+      }),
+      "thread.jump.2",
+    );
+  });
   it("resolves Work agent and task navigation shortcuts", () => {
     assert.strictEqual(
       resolveShortcutCommand(event({ key: "3", metaKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
