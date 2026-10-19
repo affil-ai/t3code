@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 // Builds never activate a server or quit the desktop app. Activation is separate.
-import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import * as fs from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+/* oxlint-disable t3code/no-global-process-runtime -- standalone host build driver */
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+const { spawnSync } = NodeChildProcess;
+const { createHash, randomUUID } = NodeCrypto;
+const { createReadStream } = NodeFS;
+const fs = NodeFSP;
+const { homedir } = NodeOS;
+const { dirname, join, resolve } = NodePath;
+const { fileURLToPath, pathToFileURL } = NodeURL;
 import {
   assertCutoverTime,
   assertIdle,
@@ -338,7 +346,7 @@ async function queue() {
 async function macPull(host, remoteRepo) {
   if (
     process.platform !== "darwin" ||
-    !/^[a-zA-Z0-9_-]+$/.test(host ?? "") ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(host ?? "") ||
     !remoteRepo?.startsWith("/")
   )
     throw new Error("mac-pull requires a Mac, SSH alias, and absolute remote checkout");
@@ -371,7 +379,19 @@ async function main() {
     if (!["linux-x64", "darwin-arm64"].includes(b)) throw Error("Invalid platform");
     result = await readJson(join(jobPath(a), `${b}.json`));
   } else if (command === "location") result = { path: jobPath(a) };
-  else if (command === "import") {
+  else if (command === "installed") {
+    const { installedVersion } = await import("./activate.mjs");
+    const version = await installedVersion();
+    let receipt = null;
+    try {
+      receipt = await readJson(
+        join(jobPath(version), `${process.platform}-${process.arch}-installed.json`),
+      );
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    result = { version, commit: receipt?.commit ?? null };
+  } else if (command === "import") {
     const { importArtifact } = await import("./transport.mjs");
     result = await importArtifact(a, b);
   } else

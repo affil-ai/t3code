@@ -33,7 +33,7 @@ export function xml(value) {
     .replaceAll('"', "&quot;");
 }
 
-async function watch(version, host, repo) {
+export async function watch(version, host, repo) {
   const folder = jobPath(version);
   const request = validateRequest(await readJson(join(folder, "request.json")));
   return withLock(join(stateRoot, "handoff.lock"), async () => {

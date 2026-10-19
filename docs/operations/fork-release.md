@@ -39,6 +39,27 @@ That identity must already exist in the Mac keychain.
 
 ## Paired release
 
+For Ubuntu-only initiation, install the Mac pull worker once with
+`node scripts/fork-release/worker.mjs install /private/path/config.json`.
+The private config names `host` (an existing outbound SSH alias), `repo`
+(the Ubuntu checkout), `minimumVersion` (excludes obsolete prepared requests),
+and `mac`/`linux` objects containing the verified installed `version` and
+`commit`. A bootstrap `sharedDiff` is optional and must be the reviewed digest
+reported by qualification. After the first release, installed receipts provide
+the baseline; bootstrap commits are never reused for a different version.
+
+The worker is a user LaunchAgent, not GitHub Actions or a T3 schedule. It
+polls Ubuntu requests, waits for the Linux build receipt, builds/signs on Mac,
+exchanges both artifacts, qualifies compatibility, and waits for idle before
+activation. It uses the same single-writer handoff lock. Unknown provenance or
+compatibility failures stop it with `worker-status.json` set to `needs-review`.
+An offline Ubuntu host waits without installing. Keep the Mac awake for builds.
+Do not run the one-shot handoff while this worker is installed.
+
+With the worker installed, future releases need only `request` and `build` on
+Ubuntu. The following manual sequence remains useful for diagnosis or hosts
+without the worker:
+
 Initiate the release on Ubuntu with `request` and `build`. Use the full commit
 from canonical Affil main and a new version. On the Mac, run `mac-pull`, then:
 
