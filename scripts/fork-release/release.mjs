@@ -302,9 +302,15 @@ export function readReleaseDatabase(home, sql) {
   const result = spawnSync(
     "sqlite3",
     ["-readonly", "-cmd", ".timeout 5000", "-json", `${home}/userdata/statev2.sqlite`, sql],
-    { encoding: "utf8", timeout: 10_000 },
+    { encoding: "utf8", timeout: 120_000 },
   );
   if (result.error || result.status !== 0) {
+    NodeFS.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+    NodeFS.writeFileSync(
+      join(stateRoot, "database-check-error.json"),
+      JSON.stringify({ code: result.error?.code, status: result.status, stderr: result.stderr }),
+      { mode: 0o600 },
+    );
     // Classify stderr without exposing database contents or credential-bearing paths.
     const detail = result.stderr ?? "";
     const reason = /locked|busy/i.test(detail)
