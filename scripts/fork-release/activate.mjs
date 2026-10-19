@@ -219,7 +219,7 @@ async function macInstall(version, manifest, log) {
   await command("codesign", ["--verify", "--deep", "--strict", staged]);
   // Require stable Apple Development signing, not an ad-hoc signature.
   // codesign writes details to stderr; use the designated requirement to validate the signer.
-  await command("codesign", ["--verify", "-R", "anchor apple generic", staged]);
+  await command("codesign", ["--verify", "-R", "=anchor apple generic", staged]);
   const candidate = run("/usr/libexec/PlistBuddy", [
     "-c",
     "Print :CFBundleShortVersionString",
@@ -298,6 +298,15 @@ export async function activate(version) {
           healthy = true;
           break;
         } catch {
+          // LaunchServices can return success before opening a replaced bundle.
+          // Retry from Finder without starting a duplicate instance or killing anything.
+          if (process.platform === "darwin" && attempt === 10) {
+            await execute(
+              "osascript",
+              ["-e", `tell application "Finder" to open (POSIX file "${app}" as alias)`],
+              { stdio: ["ignore", log.fd, log.fd] },
+            );
+          }
           await pause(1000);
         }
       }
