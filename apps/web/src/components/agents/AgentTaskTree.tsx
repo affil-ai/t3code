@@ -36,12 +36,7 @@ import { adjacentSidebarTask, OPEN_TASK_COLUMNS, sidebarNavigationTasks } from "
 function TaskAttention({ task }: { readonly task: FirstmateTask }) {
   if (!firstmateNeedsYou(task)) return null;
   return (
-    <span
-      role="img"
-      aria-label="Needs your input"
-      title="Needs your input"
-      className="shrink-0 text-destructive"
-    >
+    <span role="img" aria-label="Needs your input" className="shrink-0 text-destructive">
       <CircleAlertIcon aria-hidden className="size-3.5" />
     </span>
   );
