@@ -15,7 +15,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { BotIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -37,7 +37,9 @@ function TaskAttention({ task }: { readonly task: FirstmateTask }) {
   if (!firstmateNeedsYou(task)) return null;
   return (
     <span role="img" aria-label="Needs your input" className="shrink-0 text-destructive">
-      <TriangleAlertIcon aria-hidden className="size-3.5" />
+      <span aria-hidden className="text-sm font-bold leading-none">
+        !
+      </span>
     </span>
   );
 }
