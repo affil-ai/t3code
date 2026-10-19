@@ -304,11 +304,17 @@ describe("agent switcher navigation", () => {
     expect(sections[0]?.getAttribute("aria-label")).toBe("Ready for deployment");
     const backlog = sections.at(-1)!;
     expect(backlog.getAttribute("aria-label")).toBe("Backlog");
+    const toggle = backlog.querySelector("button")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(backlog.querySelectorAll("[data-task-id]")).toHaveLength(0);
+    await click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(backlog.textContent).toContain("2h ago");
     expect(backlog.textContent).not.toContain("Description should not appear");
     expect(backlog.textContent).not.toContain("Next step should not appear");
-    await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000));
-    expect(backlog.textContent).toContain("3h ago");
+    await click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(backlog.querySelectorAll("[data-task-id]")).toHaveLength(0);
   });
 
   it.each(["planning", "in_progress", "in_review", "ready_for_deployment", "backlog"] as const)(
@@ -337,6 +343,9 @@ describe("agent switcher navigation", () => {
           </SidebarProvider>,
         ),
       );
+      if (status === "backlog") {
+        await click(container.querySelector('section[aria-label="Backlog"] button')!);
+      }
       expect(container.textContent).toContain("Task 0");
       expect(container.textContent).toContain("Task 1");
       expect(container.textContent).not.toContain("Original request");

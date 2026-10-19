@@ -42,6 +42,7 @@ export function AgentSidebarSections({ agent }: { readonly agent: AgentProfile }
           <p className="px-2 py-1 text-sm text-sidebar-muted-foreground/70">Loading tasks…</p>
         ) : (
           <AgentTaskTree
+            key={`${environmentId}:${coordinatorThreadId}`}
             environmentId={environmentId}
             coordinatorThreadId={coordinatorThreadId}
             tasks={snapshot.tasks}

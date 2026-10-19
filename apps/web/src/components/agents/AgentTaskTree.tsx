@@ -14,8 +14,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { BotIcon } from "lucide-react";
-import { useRef } from "react";
+import { BotIcon, ChevronRightIcon } from "lucide-react";
+import { useId, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { useNowMinute } from "~/hooks/useNowMinute";
@@ -241,6 +241,8 @@ export function AgentTaskTree({
   const { isMobile, setOpenMobile } = useSidebar();
   const selected = useRef<{ id: string; routeKey: string } | null>(null);
   const tree = useRef<HTMLDivElement>(null);
+  const [backlogOpen, setBacklogOpen] = useState(false);
+  const backlogPanelId = useId();
   const rememberTask = (task: FirstmateTask) => {
     selected.current = {
       id: task.id,
@@ -249,7 +251,9 @@ export function AgentTaskTree({
   };
   useWorkSidebarShortcut((command) => {
     if (command !== "task.previous" && command !== "task.next") return false;
-    const ordered = sidebarNavigationTasks(tasks);
+    const ordered = sidebarNavigationTasks(
+      backlogOpen ? tasks : tasks.filter((task) => firstmateTaskStatus(task) !== "backlog"),
+    );
     const currentId =
       selected.current?.routeKey === activeRouteKey
         ? selected.current.id
@@ -291,41 +295,68 @@ export function AgentTaskTree({
   }
   return (
     <div ref={tree} className="flex flex-col gap-3">
-      {sections.map((column) => (
-        <section key={column} aria-label={COLUMN_LABELS[column]}>
-          <h3 className="mb-1 flex h-6 items-center gap-1.5 pr-1.5 pl-2 text-xs font-medium text-sidebar-muted-foreground/80">
+      {sections.map((column) => {
+        const heading = (
+          <>
             <span
               aria-hidden
               className={cn("size-1.5 shrink-0 rounded-full", COLUMN_DOT[column])}
             />
             <span className="truncate">{COLUMN_LABELS[column]}</span>
             <span className="tabular-nums">{columns[column].length}</span>
-          </h3>
-          <ul className="flex flex-col">
-            {columns[column].map((task) =>
-              column === "planning" || column === "backlog" || task.workerThreadId === null ? (
-                <PlanningCard
-                  key={task.id}
-                  environmentId={environmentId}
-                  coordinatorThreadId={coordinatorThreadId}
-                  task={task}
-                  activeRouteKey={activeRouteKey}
-                  onOpen={rememberTask}
-                />
+          </>
+        );
+        return (
+          <section key={column} aria-label={COLUMN_LABELS[column]}>
+            <h3 className="mb-1 flex h-6 items-center gap-1.5 pr-1.5 pl-2 text-xs font-medium text-sidebar-muted-foreground/80">
+              {column === "backlog" ? (
+                <button
+                  type="button"
+                  aria-expanded={backlogOpen}
+                  aria-controls={backlogPanelId}
+                  onClick={() => setBacklogOpen((open) => !open)}
+                  className="flex h-full w-full items-center gap-1.5 rounded-sm text-left outline-hidden hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                >
+                  {heading}
+                  <ChevronRightIcon
+                    aria-hidden
+                    className={cn("ml-auto size-3.5", backlogOpen && "rotate-90")}
+                  />
+                </button>
               ) : (
-                <TaskRow
-                  key={task.id}
-                  environmentId={environmentId}
-                  coordinatorThreadId={coordinatorThreadId}
-                  task={task}
-                  activeRouteKey={activeRouteKey}
-                  onOpen={rememberTask}
-                />
-              ),
-            )}
-          </ul>
-        </section>
-      ))}
+                heading
+              )}
+            </h3>
+            <ul
+              id={column === "backlog" ? backlogPanelId : undefined}
+              hidden={column === "backlog" && !backlogOpen}
+              className="flex flex-col"
+            >
+              {(column === "backlog" && !backlogOpen ? [] : columns[column]).map((task) =>
+                column === "planning" || column === "backlog" || task.workerThreadId === null ? (
+                  <PlanningCard
+                    key={task.id}
+                    environmentId={environmentId}
+                    coordinatorThreadId={coordinatorThreadId}
+                    task={task}
+                    activeRouteKey={activeRouteKey}
+                    onOpen={rememberTask}
+                  />
+                ) : (
+                  <TaskRow
+                    key={task.id}
+                    environmentId={environmentId}
+                    coordinatorThreadId={coordinatorThreadId}
+                    task={task}
+                    activeRouteKey={activeRouteKey}
+                    onOpen={rememberTask}
+                  />
+                ),
+              )}
+            </ul>
+          </section>
+        );
+      })}
     </div>
   );
 }
