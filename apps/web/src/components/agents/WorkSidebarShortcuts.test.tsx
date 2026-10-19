@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import {
   DEFAULT_RESOLVED_KEYBINDINGS,
   compileResolvedKeybindingsConfig,
+  mergeWithDefaultKeybindings,
 } from "@t3tools/shared/keybindings";
 import { useWorkModeStore } from "~/workModeStore";
 import { useWorkSidebarShortcut } from "./WorkSidebarShortcuts";
@@ -16,10 +17,19 @@ vi.mock("~/env", async (original) => ({
 vi.mock("~/state/server", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
-    primaryServerKeybindingsAtom: Atom.make([
-      ...DEFAULT_RESOLVED_KEYBINDINGS,
-      ...compileResolvedKeybindingsConfig([{ key: "mod+2", command: "thread.jump.2" }]),
-    ]),
+    primaryServerKeybindingsAtom: Atom.make(
+      mergeWithDefaultKeybindings([
+        ...DEFAULT_RESOLVED_KEYBINDINGS,
+        ...compileResolvedKeybindingsConfig([
+          { key: "mod+2", command: "thread.jump.2" },
+          {
+            key: "mod+arrowdown",
+            command: "task.next",
+            when: "workMode && !editableFocus && !terminalFocus && !previewFocus && !modelPickerOpen",
+          },
+        ]),
+      ]),
+    ),
   };
 });
 
@@ -60,13 +70,21 @@ it("dispatches agent selection with the persisted legacy thread rules", async ()
   expect(select).toHaveBeenCalledWith("agent.jump.2");
   expect(event.defaultPrevented).toBe(true);
 });
-it("dispatches task traversal outside the editor and preserves editing inside it", async () => {
+it("dispatches task traversal after agent selection focuses the editor", async () => {
   await act(() =>
     document.body.dispatchEvent(
       new KeyboardEvent("keydown", { key: "ArrowDown", metaKey: true, bubbles: true }),
     ),
   );
   expect(select).toHaveBeenCalledWith("task.next");
+  select.mockReset();
+  container.querySelector("input")!.focus();
+  await act(() =>
+    container
+      .querySelector("input")!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "2", metaKey: true, bubbles: true })),
+  );
+  expect(select).toHaveBeenCalledWith("agent.jump.2");
   select.mockReset();
   await act(() =>
     container
@@ -75,7 +93,16 @@ it("dispatches task traversal outside the editor and preserves editing inside it
         new KeyboardEvent("keydown", { key: "ArrowDown", metaKey: true, bubbles: true }),
       ),
   );
-  expect(select).not.toHaveBeenCalled();
+  expect(select).toHaveBeenCalledWith("task.next");
+  select.mockReset();
+  await act(() =>
+    container
+      .querySelector("input")!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowUp", metaKey: true, bubbles: true }),
+      ),
+  );
+  expect(select).toHaveBeenCalledWith("task.previous");
 });
 it("does not handle Work shortcuts in Code mode or an open dialog", async () => {
   useWorkModeStore.setState({ mode: "code" });

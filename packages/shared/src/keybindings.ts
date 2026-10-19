@@ -212,12 +212,12 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   {
     key: "mod+arrowup",
     command: "task.previous",
-    when: "workMode && !editableFocus && !terminalFocus && !previewFocus && !modelPickerOpen",
+    when: "workMode && !terminalFocus && !previewFocus && !modelPickerOpen",
   },
   {
     key: "mod+arrowdown",
     command: "task.next",
-    when: "workMode && !editableFocus && !terminalFocus && !previewFocus && !modelPickerOpen",
+    when: "workMode && !terminalFocus && !previewFocus && !modelPickerOpen",
   },
   { key: "t", command: "usage.tokens", when: "usagePageOpen" },
   { key: "l", command: "usage.limits", when: "usagePageOpen" },
@@ -466,6 +466,21 @@ export function compileResolvedKeybindingsConfig(
 
 export const DEFAULT_RESOLVED_KEYBINDINGS = compileResolvedKeybindingsConfig(DEFAULT_KEYBINDINGS);
 
+// fork.58–59 saved these defaults to disk. Upgrade only the exact old rules;
+// opening any chat focuses the composer, so their editable guard blocked navigation.
+const legacyTaskNavigationRules = compileResolvedKeybindingsConfig([
+  {
+    key: "mod+arrowup",
+    command: "task.previous",
+    when: "workMode && !editableFocus && !terminalFocus && !previewFocus && !modelPickerOpen",
+  },
+  {
+    key: "mod+arrowdown",
+    command: "task.next",
+    when: "workMode && !editableFocus && !terminalFocus && !previewFocus && !modelPickerOpen",
+  },
+]);
+
 export function mergeWithDefaultKeybindings(
   custom: ResolvedKeybindingsConfig,
 ): ResolvedKeybindingsConfig {
@@ -477,7 +492,18 @@ export function mergeWithDefaultKeybindings(
   const retainedDefaults = DEFAULT_RESOLVED_KEYBINDINGS.filter(
     (binding) => !overriddenCommands.has(binding.command),
   );
-  const merged = [...retainedDefaults, ...custom];
+  const migratedCustom = custom.map((binding) => {
+    const legacy = legacyTaskNavigationRules.find((rule) => rule.command === binding.command);
+    if (
+      legacy &&
+      JSON.stringify(legacy.shortcut) === JSON.stringify(binding.shortcut) &&
+      JSON.stringify(legacy.whenAst) === JSON.stringify(binding.whenAst)
+    ) {
+      return DEFAULT_RESOLVED_KEYBINDINGS.find((rule) => rule.command === binding.command)!;
+    }
+    return binding;
+  });
+  const merged = [...retainedDefaults, ...migratedCustom];
 
   if (merged.length <= MAX_KEYBINDINGS_COUNT) {
     return merged;

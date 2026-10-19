@@ -7,7 +7,7 @@ also lists the command IDs and defaults available in your version.
 
 In the desktop app's Work mode, `mod+1` through `mod+9` select agents in
 their tab order. Saved thread-number shortcuts remain available in Code mode.
-Use `mod+up` and `mod+down` outside text editors to open the previous or next
+Use `mod+up` and `mod+down`, including while the composer is focused, to open the previous or next
 task. Navigation wraps and skips tasks repeated in “Needs you.”
 Worker tasks open their chat; tasks without a worker open their details.
 Search for “Work” in Keybindings to change these shortcuts.
