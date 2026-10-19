@@ -36,6 +36,10 @@ const layerDependencies = Layer.mergeAll(
     artifactsRoot: "/agents/artifacts",
     rename: () => Effect.void,
     keepImage: ({ taskId, path }) => Effect.succeed(`/kept/${taskId}/${path.split("/").pop()}`),
+    keepAvatar: ({ attachmentId }) =>
+      attachmentId === "invalid"
+        ? Effect.fail(new FirstmateError({ message: "Invalid avatar." }))
+        : Effect.succeed(`saved-${attachmentId}`),
   }),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(ThreadManagement.ThreadManagementService)({}),
@@ -52,6 +56,36 @@ const snapshot = Effect.fn("firstmateSnapshotTestHelper")(function* (
 });
 
 describe("FirstmateService", () => {
+  it.effect("saves, preserves, replaces, and clears avatars without losing icon and color", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      expect((yield* service.listAgents())[0]?.avatarAttachmentId).toBeUndefined();
+      const saved = yield* service.updateAgent({
+        agentId: FM,
+        icon: "dollar-sign",
+        color: "green",
+        avatarAttachmentId: "upload-1",
+      });
+      expect(saved).toMatchObject({
+        icon: "dollar-sign",
+        color: "green",
+        avatarAttachmentId: "saved-upload-1",
+      });
+      expect(
+        (yield* service.updateAgent({ agentId: FM, color: "emerald" })).avatarAttachmentId,
+      ).toBe("saved-upload-1");
+      expect((yield* service.listAgents())[0]?.avatarAttachmentId).toBe("saved-upload-1");
+      expect(
+        (yield* service.updateAgent({ agentId: FM, avatarAttachmentId: "upload-2" }))
+          .avatarAttachmentId,
+      ).toBe("saved-upload-2");
+      yield* service.updateAgent({ agentId: FM, avatarAttachmentId: "invalid" }).pipe(Effect.flip);
+      expect((yield* service.listAgents())[0]?.avatarAttachmentId).toBe("saved-upload-2");
+      const cleared = yield* service.updateAgent({ agentId: FM, avatarAttachmentId: null });
+      expect(cleared.avatarAttachmentId).toBeUndefined();
+      expect(cleared).toMatchObject({ icon: "dollar-sign", color: "emerald" });
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
   it.effect("persists reversible task priority without changing lifecycle or order", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
@@ -768,6 +802,7 @@ describe("FirstmateService", () => {
                 ensured.push(input);
                 return Effect.succeed({ projectId: ProjectId.make(`project:${input.slug}`) });
               },
+              keepAvatar: ({ attachmentId }) => Effect.succeed(`saved-${attachmentId}`),
               rename: () => Effect.void,
               writeRole: () => Effect.void,
               migrateLegacyHome: () => Effect.succeed(null),
@@ -800,6 +835,7 @@ describe("FirstmateService", () => {
         icon: "rocket",
         color: "rose",
         modelSelection,
+        avatarAttachmentId: "upload",
       });
       expect(first.agent).toMatchObject({
         slug: "growth-lead",
@@ -807,6 +843,7 @@ describe("FirstmateService", () => {
         coordinatorThreadId: "chat:1",
         homeProjectId: "project:growth-lead",
         modelSelection,
+        avatarAttachmentId: "saved-upload",
       });
       expect(ensured).toEqual([
         { slug: "growth-lead", name: "Growth Lead!", role: "You grow the business." },

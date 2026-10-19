@@ -763,6 +763,10 @@ export const layer = Layer.effect(
           `agent:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
         );
         const at = yield* now();
+        const avatarAttachmentId =
+          input.avatarAttachmentId === undefined
+            ? null
+            : yield* home.keepAvatar({ agentId, attachmentId: input.avatarAttachmentId });
         yield* sql`
           INSERT INTO firstmate_agent ${sql.insert({
             agent_id: agentId,
@@ -770,6 +774,7 @@ export const layer = Layer.effect(
             name: input.name,
             icon: input.icon,
             color: input.color,
+            avatar_attachment_id: avatarAttachmentId,
             role: input.role,
             coordinator_thread_id: null,
             home_project_id: null,
@@ -789,10 +794,22 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         const input = yield* decodeUpdateAgentInput(raw);
         const agent = yield* requireAgent(input.agentId);
+        const avatarAttachmentId =
+          input.avatarAttachmentId === undefined
+            ? (agent.avatarAttachmentId ?? null)
+            : input.avatarAttachmentId === null ||
+                input.avatarAttachmentId === agent.avatarAttachmentId
+              ? input.avatarAttachmentId
+              : yield* home.keepAvatar({
+                  agentId: agent.id,
+                  attachmentId: input.avatarAttachmentId,
+                });
         yield* sql`
           UPDATE firstmate_agent SET
             name = ${input.name ?? agent.name}, icon = ${input.icon ?? agent.icon},
-            color = ${input.color ?? agent.color}, role = ${input.role ?? agent.role}
+            color = ${input.color ?? agent.color},
+            avatar_attachment_id = ${avatarAttachmentId},
+            role = ${input.role ?? agent.role}
           WHERE agent_id = ${agent.id}
         `;
         yield* mirrorFirstmateConfig(agent.id);
@@ -807,6 +824,7 @@ export const layer = Layer.effect(
           });
         return yield* requireAgent(agent.id);
       }).pipe(Effect.mapError(dbError("Could not update the agent.")));
+
     const archiveAgent: FirstmateService["Service"]["archiveAgent"] = (input) =>
       Effect.gen(function* () {
         if (input.agentId === FIRSTMATE_AGENT_ID)

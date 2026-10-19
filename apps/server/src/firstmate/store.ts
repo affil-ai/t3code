@@ -73,6 +73,7 @@ export interface AgentRow {
   readonly name: string;
   readonly icon: string;
   readonly color: string;
+  readonly avatar_attachment_id: string | null;
   readonly role: string;
   readonly coordinator_thread_id: string | null;
   readonly home_project_id: string | null;
@@ -151,6 +152,7 @@ export function agentFromRow(row: AgentRow): AgentProfile {
     name: row.name,
     icon: row.icon,
     color: row.color as ProjectIconColor,
+    ...(row.avatar_attachment_id === null ? {} : { avatarAttachmentId: row.avatar_attachment_id }),
     role: row.role,
     coordinatorThreadId:
       row.coordinator_thread_id === null ? null : ThreadId.make(row.coordinator_thread_id),
@@ -273,6 +275,7 @@ export const ensureSchema = Effect.gen(function* () {
       name TEXT NOT NULL,
       icon TEXT NOT NULL,
       color TEXT NOT NULL,
+      avatar_attachment_id TEXT,
       role TEXT NOT NULL,
       coordinator_thread_id TEXT,
       home_project_id TEXT,
@@ -290,4 +293,8 @@ export const ensureSchema = Effect.gen(function* () {
       coordinator_thread_id, home_project_id, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL
     FROM firstmate_config WHERE config_id = 1
   `;
+  const agentColumns = yield* columnsOf("firstmate_agent");
+  if (!agentColumns.has("avatar_attachment_id")) {
+    yield* sql.unsafe(`ALTER TABLE firstmate_agent ADD COLUMN avatar_attachment_id TEXT`);
+  }
 });

@@ -21,6 +21,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as FirstmateHome from "./FirstmateHome.ts";
+import { createPendingAttachmentId, resolveAttachmentPathById } from "../attachmentStore.ts";
 import { agentHomeFiles, SHARED_HOME_FILES } from "./homeFiles.ts";
 
 const layerEnrichment = ProjectEnrichmentService.layer.pipe(
@@ -60,7 +61,10 @@ const withHome = <A, E>(
   }) => Effect.Effect<
     A,
     E,
-    FirstmateHome.FirstmateHome | ProjectService.ProjectService | NodeServices.NodeServices
+    | FirstmateHome.FirstmateHome
+    | ProjectService.ProjectService
+    | NodeServices.NodeServices
+    | ServerConfig.ServerConfig
   >,
   env: Record<string, string> = {},
 ) =>
@@ -102,6 +106,54 @@ const gitOutput = (cwd: string, args: ReadonlyArray<string>) =>
   );
 
 const firstmate = { slug: "firstmate", name: "Firstmate", role: "" };
+
+it.effect("keeps uploaded avatars beyond pending-upload expiry and rejects non-images", () =>
+  withHome(() =>
+    Effect.gen(function* () {
+      const home = yield* FirstmateHome.FirstmateHome;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRzQAAAAASUVORK5CYII=",
+        "base64",
+      );
+      const pending = createPendingAttachmentId();
+      yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fs.writeFile(path.join(config.attachmentsDir, `${pending}.png`), png);
+      const saved = yield* home.keepAvatar({ agentId: "agent:money", attachmentId: pending });
+      assert.notStrictEqual(saved, pending);
+      assert.isTrue(saved.startsWith("avatar-agent-money-"));
+      const stored = resolveAttachmentPathById({
+        attachmentsDir: config.attachmentsDir,
+        attachmentId: saved,
+      });
+      assert.isNotNull(stored);
+      assert.deepEqual(yield* fs.readFile(stored!), new Uint8Array(png));
+      assert.isTrue(yield* fs.exists(stored!));
+      // Existing retained ids cannot be claimed as a new upload.
+      yield* home.keepAvatar({ agentId: "agent:other", attachmentId: saved }).pipe(Effect.flip);
+      for (const [extension, bytes] of [
+        [".png", "not an image"],
+        [".svg", "<svg />"],
+      ] as const) {
+        const invalid = createPendingAttachmentId();
+        yield* fs.writeFileString(
+          path.join(config.attachmentsDir, `${invalid}${extension}`),
+          bytes,
+        );
+        const failure = yield* home
+          .keepAvatar({ agentId: "agent:money", attachmentId: invalid })
+          .pipe(Effect.flip);
+        assert.strictEqual(failure._tag, "FirstmateError");
+      }
+      const missing = yield* home
+        .keepAvatar({ agentId: "agent:money", attachmentId: "../outside.png" })
+        .pipe(Effect.flip);
+      assert.strictEqual(missing._tag, "FirstmateError");
+    }),
+  ),
+);
 
 it.effect(
   "seeds ~/agents as one committed repository with the agent's folder, and registers it as a project",

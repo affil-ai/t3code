@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   workerShell: null as { updatedAt: string } | null,
   researchTasks: [] as Array<{ state: string; nextActor: string; workerThreadId: string | null }>,
+  extraAgents: [] as AgentProfile[],
   firstmateAppearance: { name: "Firstmate", icon: "compass" } as {
     name: string;
     icon: string;
@@ -60,7 +61,7 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 vi.mock("~/hooks/useMediaQuery", () => ({ useIsMobile: () => mocks.mobile }));
 vi.mock("~/state/agents", () => ({
-  useAgentsHome: () => ({ environmentId, agents }),
+  useAgentsHome: () => ({ environmentId, agents: [...agents, ...mocks.extraAgents] }),
   useAgentByThreadKey: () => new Map(),
   useAgentTasks: (environment: EnvironmentId | null) => ({
     data: environment === null ? null : { tasks: mocks.researchTasks },
@@ -116,6 +117,7 @@ beforeEach(() => {
   mocks.mobile = true;
   mocks.navigate.mockReset();
   mocks.workerShell = null;
+  mocks.extraAgents = [];
   mocks.firstmateAppearance = { name: "Firstmate", icon: "compass" };
   useSelectedAgentStore.setState({
     selectedAgentId: null,
@@ -166,6 +168,44 @@ async function pointer(element: Element, type: string, pointerType: string) {
 }
 
 describe("agent switcher navigation", () => {
+  it("keeps names at four agents and switches to an accessible grid at five", async () => {
+    mocks.extraAgents = [
+      { ...research, id: "money", name: "Money Maker", icon: "dollar-sign" },
+      { ...research, id: "writer", name: "Writer" },
+    ] as AgentProfile[];
+    await renderSwitcher();
+    expect(container.querySelector('[data-testid="agent-tabs"]')?.getAttribute("data-layout")).toBe(
+      "rows",
+    );
+    expect(container.querySelector('[aria-label="Switch to Money Maker"]')?.textContent).toBe(
+      "Money Maker",
+    );
+    mocks.extraAgents.push({ ...research, id: "builder", name: "Builder" } as AgentProfile);
+    mocks.researchTasks = [{ state: "open", nextActor: "user", workerThreadId: null }];
+    try {
+      await renderSwitcher();
+      expect(
+        container.querySelector('[data-testid="agent-tabs"]')?.getAttribute("data-layout"),
+      ).toBe("grid");
+      const money = container.querySelector('[aria-label="Switch to Money Maker, 1 need you"]')!;
+      expect(money.textContent).toBe("1");
+      expect(money.getAttribute("title")).toBeNull();
+      expect(money.querySelector("svg.lucide-dollar-sign")).not.toBeNull();
+      await click(money);
+      expect(useSelectedAgentStore.getState().selectedAgentId).toBe("money");
+      expect(
+        container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("aria-label"),
+      ).toBe("Switch to Money Maker, 1 need you");
+      expect(container.querySelector("output")?.textContent).toBe("false");
+      mocks.extraAgents.pop();
+      await renderSwitcher();
+      expect(
+        container.querySelector('[data-testid="agent-tabs"]')?.getAttribute("data-layout"),
+      ).toBe("rows");
+    } finally {
+      mocks.researchTasks = [];
+    }
+  });
   it("renders scrollable agent tabs above the existing selector and switches immediately", async () => {
     await renderSwitcher();
 

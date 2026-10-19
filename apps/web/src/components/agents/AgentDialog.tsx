@@ -33,6 +33,7 @@ import { Spinner } from "../ui/spinner";
 import { Textarea } from "../ui/textarea";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { AgentAvatar } from "./AgentAvatar";
+import { AgentAvatarUpload } from "./AgentAvatarUpload";
 import { useSelectedAgentStore } from "~/selectedAgentStore";
 import { useAgentCommands } from "./agentCommands";
 import { useSidebar } from "../ui/sidebar";
@@ -77,6 +78,8 @@ function AgentForm({
   const [role, setRole] = useState(agent?.role ?? "");
   const [icon, setIcon] = useState<FirstmateIconKey>(resolveFirstmateIconKey(agent?.icon ?? "bot"));
   const [color, setColor] = useState<ProjectIconColor>(agent?.color ?? AGENT_DEFAULT_COLOR);
+  const [avatarAttachmentId, setAvatarAttachmentId] = useState(agent?.avatarAttachmentId ?? null);
+  const [uploading, setUploading] = useState(false);
   const modelSelection = useFirstmateModelSelection(environmentId);
   const { pending, create, update, run } = useAgentCommands();
   const trimmedName = name.trim();
@@ -88,10 +91,11 @@ function AgentForm({
     trimmedName === agent.name &&
     trimmedRole === agent.role &&
     icon === resolveFirstmateIconKey(agent.icon) &&
-    color === agent.color;
+    color === agent.color &&
+    avatarAttachmentId === (agent.avatarAttachmentId ?? null);
 
   const submit = () => {
-    if (!valid || pending !== null) return;
+    if (!valid || pending !== null || uploading) return;
     if (creating) {
       if (modelSelection === null) return;
       void run(
@@ -99,7 +103,14 @@ function AgentForm({
         () =>
           create({
             environmentId,
-            input: { name: trimmedName, role: trimmedRole, icon, color, modelSelection },
+            input: {
+              name: trimmedName,
+              role: trimmedRole,
+              icon,
+              color,
+              modelSelection,
+              ...(avatarAttachmentId === null ? {} : { avatarAttachmentId }),
+            },
           }),
         "Could not create the agent",
       ).then((created) => {
@@ -130,6 +141,9 @@ function AgentForm({
             ...(trimmedRole === agent.role ? {} : { role: trimmedRole }),
             ...(icon === agent.icon ? {} : { icon }),
             ...(color === agent.color ? {} : { color }),
+            ...(avatarAttachmentId === (agent.avatarAttachmentId ?? null)
+              ? {}
+              : { avatarAttachmentId }),
           },
         }),
       "Could not save the agent",
@@ -161,6 +175,8 @@ function AgentForm({
               <AgentAvatar
                 icon={icon}
                 color={color}
+                environmentId={environmentId}
+                avatarAttachmentId={avatarAttachmentId ?? undefined}
                 className="size-12 rounded-2xl"
                 iconClassName="size-6"
               />
@@ -178,6 +194,13 @@ function AgentForm({
                 />
               </div>
             </div>
+            <AgentAvatarUpload
+              environmentId={environmentId}
+              value={avatarAttachmentId}
+              disabled={pending !== null}
+              onChange={setAvatarAttachmentId}
+              onPendingChange={setUploading}
+            />
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${id}-role`}>Role</Label>
               <Textarea
@@ -204,7 +227,7 @@ function AgentForm({
                 {FIRSTMATE_ICON_KEYS.map((key) => {
                   const { label, Icon } = FIRSTMATE_ICONS[key];
                   return (
-                    <Toggle key={key} value={key} aria-label={label}>
+                    <Toggle key={key} value={key} aria-label={label} title={label}>
                       <Icon />
                     </Toggle>
                   );
@@ -239,7 +262,9 @@ function AgentForm({
           </Button>
           <Button
             type="submit"
-            disabled={!valid || pending !== null || (creating && modelSelection === null)}
+            disabled={
+              !valid || pending !== null || uploading || (creating && modelSelection === null)
+            }
           >
             {pending !== null ? <Spinner className="size-3.5" /> : null}
             {creating ? "Create and start" : "Save"}

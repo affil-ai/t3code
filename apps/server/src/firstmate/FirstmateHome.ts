@@ -13,7 +13,13 @@
  *
  * @module FirstmateHome
  */
-import { CommandId, FirstmateError, ProjectId } from "@t3tools/contracts";
+import {
+  CommandId,
+  FirstmateError,
+  ProjectId,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+} from "@t3tools/contracts";
+import { readImageDimensions } from "@t3tools/shared/imageDimensions";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
@@ -28,6 +34,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerConfig from "../config.ts";
+import { planAttachmentClaim } from "../attachmentStore.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
   agentHomeFiles,
@@ -86,6 +94,11 @@ export class FirstmateHome extends Context.Service<
       readonly taskId: string;
       readonly path: string;
     }) => Effect.Effect<string, FirstmateError>;
+    /** Copies an uploaded image into a durable, agent-owned attachment. */
+    readonly keepAvatar: (input: {
+      readonly agentId: string;
+      readonly attachmentId: string;
+    }) => Effect.Effect<string, FirstmateError>;
     /**
      * Moves a pre-agents `~/firstmate` into `crew/firstmate`, keeping its
      * Git history as the repository's, and repoints Firstmate's project.
@@ -137,6 +150,7 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const projects = yield* ProjectService.ProjectService;
   const crypto = yield* Crypto.Crypto;
+  const config = yield* ServerConfig.ServerConfig;
   const repoRoot = yield* resolveRepoRoot();
   const legacyRoot = yield* resolveLegacyRoot();
   const agentFolder = (slug: string) => path.join(repoRoot, CREW_FOLDER, slug);
@@ -548,12 +562,56 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  const keepAvatar: FirstmateHome["Service"]["keepAvatar"] = (input) =>
+    Effect.gen(function* () {
+      const claim = planAttachmentClaim({
+        attachmentsDir: config.attachmentsDir,
+        threadId: `avatar-${input.agentId}`,
+        attachmentId: input.attachmentId,
+      });
+      if (
+        !claim.ok ||
+        ![".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(
+          path.extname(claim.currentPath).toLowerCase(),
+        )
+      ) {
+        return yield* new FirstmateError({
+          message: "Choose an uploaded PNG, JPEG, GIF, or WebP image.",
+        });
+      }
+      const stat = yield* fileSystem.stat(claim.currentPath);
+      if (
+        stat.type !== "File" ||
+        stat.size <= 0n ||
+        stat.size > BigInt(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)
+      ) {
+        return yield* new FirstmateError({
+          message: "The avatar must be an image of at most 10 MB.",
+        });
+      }
+      // Use the stored bytes, not client MIME metadata, before retaining an upload.
+      if (readImageDimensions(yield* fileSystem.readFile(claim.currentPath)) === null) {
+        return yield* new FirstmateError({
+          message: "The avatar upload is not a supported image.",
+        });
+      }
+      yield* fileSystem.copyFile(claim.currentPath, claim.finalPath);
+      return claim.finalId;
+    }).pipe(
+      Effect.mapError((cause) =>
+        isFirstmateError(cause)
+          ? cause
+          : new FirstmateError({ message: "Could not store the agent avatar.", cause }),
+      ),
+    );
+
   return FirstmateHome.of({
     artifactsRoot: path.join(repoRoot, ARTIFACTS_FOLDER),
     ensure,
     rename,
     writeRole,
     keepImage,
+    keepAvatar,
     migrateLegacyHome,
     migrateAgentsFolder,
   });

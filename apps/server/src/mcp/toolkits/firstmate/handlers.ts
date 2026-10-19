@@ -79,6 +79,9 @@ const make = Effect.gen(function* () {
           role: input.role,
           icon: input.icon ?? AGENT_DEFAULT_ICON,
           color: input.color ?? AGENT_DEFAULT_COLOR,
+          ...(input.avatarAttachmentId === undefined
+            ? {}
+            : { avatarAttachmentId: input.avatarAttachmentId }),
           modelSelection,
         });
       }),

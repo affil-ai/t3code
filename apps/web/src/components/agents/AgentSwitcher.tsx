@@ -25,7 +25,12 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { restrictToFirstScrollableAncestor, restrictToHorizontalAxis } from "@dnd-kit/modifiers";
-import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  rectSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
@@ -61,6 +66,7 @@ import {
 import { SidebarMenu, SidebarMenuItem, useSidebar } from "../ui/sidebar";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { Spinner } from "../ui/spinner";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AgentAvatar } from "./AgentAvatar";
 import { useAgentCommands } from "./agentCommands";
 import { AgentDialog } from "./AgentDialog";
@@ -165,6 +171,8 @@ function AgentTab({
   current,
   suppressClickRef,
   onSelect,
+  compact,
+  environmentId,
 }: {
   readonly agent: AgentProfile;
   readonly name: string;
@@ -172,12 +180,15 @@ function AgentTab({
   readonly current: boolean;
   readonly suppressClickRef: { current: boolean };
   readonly onSelect: (agent: AgentProfile) => void;
+  readonly compact: boolean;
+  readonly environmentId: EnvironmentId;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: agent.id,
   });
   const needsYou = useNeedsYouCount(agent);
-  return (
+  const label = needsYou > 0 ? `${name} · ${needsYou} need you` : name;
+  const tab = (
     <button
       ref={setNodeRef}
       type="button"
@@ -193,7 +204,11 @@ function AgentTab({
       data-dragging={isDragging || undefined}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
-        "group/agent-tab relative flex min-w-0 shrink-0 cursor-pointer touch-pan-x items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
+        "group/agent-tab relative flex min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg text-left text-sm outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset active:bg-sidebar-row-active",
+        compact
+          ? "size-11 justify-center touch-pan-y hover:bg-sidebar-row-hover"
+          : "touch-pan-x px-2 py-1.5",
+        compact && current && "bg-sidebar-row-selected",
         isDragging && "relative z-10 cursor-grabbing bg-sidebar-row-hover shadow-sm",
       )}
       onClick={() => {
@@ -204,20 +219,24 @@ function AgentTab({
       <AgentAvatar
         icon={icon}
         color={agent.color ?? AGENT_DEFAULT_COLOR}
-        className="size-6 rounded-md"
-        iconClassName="size-3.5"
+        environmentId={environmentId}
+        avatarAttachmentId={agent.avatarAttachmentId}
+        className={compact ? "size-8 rounded-lg" : "size-6 rounded-md"}
+        iconClassName={compact ? "size-4" : "size-3.5"}
       />
       {/* The current agent reads at full strength; the others are muted, with no background. */}
-      <span
-        className={cn(
-          "min-w-0 max-w-28 truncate transition-colors",
-          current
-            ? "text-sidebar-foreground"
-            : "text-sidebar-muted-foreground group-hover/agent-tab:text-sidebar-foreground",
-        )}
-      >
-        {name}
-      </span>
+      {compact ? null : (
+        <span
+          className={cn(
+            "min-w-0 max-w-28 truncate transition-colors",
+            current
+              ? "text-sidebar-foreground"
+              : "text-sidebar-muted-foreground group-hover/agent-tab:text-sidebar-foreground",
+          )}
+        >
+          {name}
+        </span>
+      )}
       {needsYou > 0 ? (
         // Corner count of tasks waiting on the user, like an app icon badge.
         <span
@@ -231,6 +250,12 @@ function AgentTab({
         </span>
       ) : null}
     </button>
+  );
+  return (
+    <Tooltip>
+      <TooltipTrigger render={tab} />
+      <TooltipPopup side="top">{label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -272,6 +297,7 @@ export function AgentSwitcher() {
     () => orderAgents(agentsHome?.agents ?? [], agentOrder),
     [agentsHome, agentOrder],
   );
+  const compact = orderedAgents.length > 4;
   const tabSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
@@ -361,7 +387,11 @@ export function AgentSwitcher() {
         <DndContext
           sensors={tabSensors}
           collisionDetection={closestCenter}
-          modifiers={[restrictToHorizontalAxis, restrictToFirstScrollableAncestor]}
+          modifiers={
+            compact
+              ? [restrictToFirstScrollableAncestor]
+              : [restrictToHorizontalAxis, restrictToFirstScrollableAncestor]
+          }
           onDragStart={() => {
             suppressTabClickRef.current = true;
           }}
@@ -372,11 +402,17 @@ export function AgentSwitcher() {
         >
           <SortableContext
             items={orderedAgents.map((candidate) => candidate.id)}
-            strategy={horizontalListSortingStrategy}
+            strategy={compact ? rectSortingStrategy : horizontalListSortingStrategy}
           >
             <div
               // Top and right padding keep the corner badges inside the scroller, which clips.
-              className="flex min-w-0 gap-1.5 overflow-x-auto overscroll-x-contain pt-1.5 pr-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className={cn(
+                "min-w-0 gap-1.5 pt-1.5 pr-1.5",
+                compact
+                  ? "grid grid-cols-[repeat(auto-fill,2.75rem)]"
+                  : "flex overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+              )}
+              data-layout={compact ? "grid" : "rows"}
               role="tablist"
               aria-label="Agents"
               data-testid="agent-tabs"
@@ -387,6 +423,8 @@ export function AgentSwitcher() {
                   <AgentTab
                     key={candidate.id}
                     agent={candidate}
+                    environmentId={environmentId}
+                    compact={compact}
                     name={
                       candidateFirstmate
                         ? (firstmateHome?.snapshot.name ?? candidate.name)
@@ -411,6 +449,8 @@ export function AgentSwitcher() {
         className="mb-0"
         icon={icon}
         color={agent.color ?? AGENT_DEFAULT_COLOR}
+        environmentId={environmentId}
+        avatarAttachmentId={agent.avatarAttachmentId}
         name={name}
         subtitle={
           <AgentRowSubtitle
@@ -486,6 +526,8 @@ export function AgentSwitcher() {
                       <AgentAvatar
                         icon={candidateIcon}
                         color={candidate.color ?? AGENT_DEFAULT_COLOR}
+                        environmentId={environmentId}
+                        avatarAttachmentId={candidate.avatarAttachmentId}
                         className="size-7 rounded-lg"
                         iconClassName="size-4"
                       />
@@ -529,6 +571,7 @@ export function AgentSwitcher() {
           environmentId={firstmateHome.environmentId}
           name={firstmateHome.snapshot.name}
           icon={firstmateHome.snapshot.icon}
+          agent={orderedAgents.find((candidate) => candidate.id === FIRSTMATE_AGENT_ID)}
           open={appearanceOpen}
           onOpenChange={setAppearanceOpen}
         />

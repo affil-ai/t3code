@@ -76,6 +76,8 @@ export function AgentSidebarRow({
   link,
   onContextMenu,
   className,
+  environmentId,
+  avatarAttachmentId,
 }: {
   readonly icon: string;
   readonly color: ProjectIconColor;
@@ -92,6 +94,8 @@ export function AgentSidebarRow({
   readonly link: ReactElement<{ className?: string; children?: ReactNode }>;
   readonly onContextMenu?: (event: MouseEvent) => void;
   readonly className?: string;
+  readonly environmentId?: EnvironmentId | undefined;
+  readonly avatarAttachmentId?: string | undefined;
 }) {
   return (
     <SidebarMenuItem className={cn("mb-1", className)} onContextMenu={onContextMenu}>
@@ -99,7 +103,12 @@ export function AgentSidebarRow({
         className: cn(AGENT_ROW_CLASS, active && "bg-sidebar-row-selected"),
         children: (
           <>
-            <AgentAvatar icon={icon} color={color} />
+            <AgentAvatar
+              icon={icon}
+              color={color}
+              environmentId={environmentId}
+              avatarAttachmentId={avatarAttachmentId}
+            />
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
               <span
                 className={cn(

@@ -2,7 +2,12 @@
  * Renames Firstmate and picks its icon. Both are stored on the server, so
  * every client sees them, and the coordinator chat takes the new name.
  */
-import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  AGENT_DEFAULT_COLOR,
+  FIRSTMATE_AGENT_ID,
+  type AgentProfile,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { useId, useState } from "react";
 
 import { Button } from "../ui/button";
@@ -19,7 +24,9 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Spinner } from "../ui/spinner";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
-import { useFirstmateCommands } from "./firstmateCommands";
+import { useAgentCommands } from "../agents/agentCommands";
+import { AgentAvatar } from "../agents/AgentAvatar";
+import { AgentAvatarUpload } from "../agents/AgentAvatarUpload";
 import {
   FIRSTMATE_ICON_KEYS,
   FIRSTMATE_ICONS,
@@ -35,12 +42,14 @@ export function FirstmateAppearanceDialog({
   icon,
   open,
   onOpenChange,
+  agent,
 }: {
   readonly environmentId: EnvironmentId;
   readonly name: string;
   readonly icon: string;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
+  readonly agent?: AgentProfile | undefined;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -49,6 +58,7 @@ export function FirstmateAppearanceDialog({
           environmentId={environmentId}
           initialName={name}
           initialIcon={resolveFirstmateIconKey(icon)}
+          agent={agent}
           onDone={() => onOpenChange(false)}
         />
       ) : null}
@@ -61,32 +71,50 @@ function AppearanceForm({
   initialName,
   initialIcon,
   onDone,
+  agent,
 }: {
   readonly environmentId: EnvironmentId;
   readonly initialName: string;
   readonly initialIcon: FirstmateIconKey;
   readonly onDone: () => void;
+  readonly agent?: AgentProfile | undefined;
 }) {
   const id = useId();
   const [name, setName] = useState(initialName);
   const [icon, setIcon] = useState<FirstmateIconKey>(initialIcon);
-  const { pending, setAppearance, run } = useFirstmateCommands();
+  const [avatarAttachmentId, setAvatarAttachmentId] = useState(agent?.avatarAttachmentId ?? null);
+  const [uploading, setUploading] = useState(false);
+  const { pending, update, run } = useAgentCommands();
   const trimmed = name.trim();
-  const unchanged = trimmed === initialName && icon === initialIcon;
+  const unchanged =
+    trimmed === initialName &&
+    icon === initialIcon &&
+    avatarAttachmentId === (agent?.avatarAttachmentId ?? null);
   return (
     <DialogPopup className="sm:max-w-sm">
       <form
         className="flex min-h-0 flex-col"
         onSubmit={(event) => {
           event.preventDefault();
-          if (trimmed.length === 0 || pending !== null) return;
+          if (trimmed.length === 0 || pending !== null || uploading) return;
           if (unchanged) {
             onDone();
             return;
           }
           void run(
-            "setAppearance",
-            () => setAppearance({ environmentId, input: { name: trimmed, icon } }),
+            "update",
+            () =>
+              update({
+                environmentId,
+                input: {
+                  agentId: FIRSTMATE_AGENT_ID,
+                  name: trimmed,
+                  icon,
+                  ...(avatarAttachmentId === (agent?.avatarAttachmentId ?? null)
+                    ? {}
+                    : { avatarAttachmentId }),
+                },
+              }),
             "Could not save the name and icon",
           ).then((snapshot) => {
             if (snapshot !== null) onDone();
@@ -101,6 +129,21 @@ function AppearanceForm({
         </DialogHeader>
         <DialogPanel>
           <div className="flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <AgentAvatar
+                icon={icon}
+                color={agent?.color ?? AGENT_DEFAULT_COLOR}
+                environmentId={environmentId}
+                avatarAttachmentId={avatarAttachmentId ?? undefined}
+              />
+              <AgentAvatarUpload
+                environmentId={environmentId}
+                value={avatarAttachmentId}
+                disabled={pending !== null}
+                onChange={setAvatarAttachmentId}
+                onPendingChange={setUploading}
+              />
+            </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${id}-name`}>Name</Label>
               <Input
@@ -141,8 +184,8 @@ function AppearanceForm({
           <Button type="button" variant="ghost" onClick={onDone}>
             Cancel
           </Button>
-          <Button type="submit" disabled={trimmed.length === 0 || pending !== null}>
-            {pending === "setAppearance" ? <Spinner className="size-3.5" /> : null}
+          <Button type="submit" disabled={trimmed.length === 0 || pending !== null || uploading}>
+            {pending === "update" ? <Spinner className="size-3.5" /> : null}
             Save
           </Button>
         </DialogFooter>

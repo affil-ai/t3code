@@ -225,6 +225,8 @@ export const AgentProfile = Schema.Struct({
   name: FirstmateName,
   icon: FirstmateIcon,
   color: ProjectIconColor,
+  /** A signed asset can render an image avatar; older agents omit this field. */
+  avatarAttachmentId: Schema.optional(TrimmedNonEmptyString),
   role: Schema.String,
   coordinatorThreadId: Schema.NullOr(ThreadId),
   homeProjectId: Schema.NullOr(ProjectId),
@@ -419,6 +421,7 @@ export const AgentCreateInput = Schema.Struct({
   role: AgentRole,
   icon: FirstmateIcon,
   color: ProjectIconColor,
+  avatarAttachmentId: Schema.optional(TrimmedNonEmptyString),
   modelSelection: ModelSelection,
 });
 export type AgentCreateInput = typeof AgentCreateInput.Type;
@@ -435,6 +438,7 @@ export const AgentUpdateInput = Schema.Struct({
   name: Schema.optional(FirstmateName),
   icon: Schema.optional(FirstmateIcon),
   color: Schema.optional(ProjectIconColor),
+  avatarAttachmentId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   role: Schema.optional(AgentRole),
 });
 export type AgentUpdateInput = typeof AgentUpdateInput.Type;
@@ -463,9 +467,12 @@ export const AgentCreateToolInput = Schema.Struct({
   }),
   icon: Schema.optional(FirstmateIcon).annotate({
     description:
-      "One of compass, ship-wheel, anchor, sparkles, bot, rocket, star, zap, brain, heart, flag, crown. Defaults to bot.",
+      "Icon key such as bot, dollar-sign, wallet, chart-no-axes-combined, code, search, or compass. Defaults to bot.",
   }),
   color: Schema.optional(ProjectIconColor),
+  avatarAttachmentId: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "Pending image attachment ID from an upload. Omit to use icon and color.",
+  }),
   modelSelection: Schema.optional(ModelSelection).annotate({
     description:
       "The new agent's model, as orchestrator_capabilities lists it. Omit to use the calling agent's model.",

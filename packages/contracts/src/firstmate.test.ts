@@ -20,6 +20,8 @@ import {
   FirstmateTaskId,
   FirstmateTaskListInput,
   FirstmateTaskUpdateInput,
+  AgentProfile,
+  AgentUpdateInput,
 } from "./firstmate.ts";
 import { WsRpcGroup } from "./rpc.ts";
 
@@ -56,6 +58,33 @@ const decodeStartInput = Schema.decodeUnknownSync(FirstmateStartInput);
 const decodeStart = Schema.decodeUnknownSync(FirstmateStartResult);
 
 describe("Firstmate task contracts", () => {
+  it("decodes legacy agents and preserves explicit avatar removal versus an omitted edit", () => {
+    const legacy = {
+      id: "agent:money",
+      slug: "money",
+      name: "Money Maker",
+      icon: "dollar-sign",
+      color: "green",
+      role: "Track spending.",
+      coordinatorThreadId: null,
+      homeProjectId: null,
+      modelSelection: null,
+      createdAt: "2026-10-19T10:00:00.000Z",
+      archivedAt: null,
+    };
+    const decodeAgent = Schema.decodeUnknownSync(AgentProfile);
+    expect(decodeAgent(legacy)).toEqual(legacy);
+    expect(decodeAgent({ ...legacy, avatarAttachmentId: "avatar-1" }).avatarAttachmentId).toBe(
+      "avatar-1",
+    );
+    const decodeAgentUpdate = Schema.decodeUnknownSync(AgentUpdateInput);
+    expect(decodeAgentUpdate({ agentId: legacy.id, icon: "wallet" })).not.toHaveProperty(
+      "avatarAttachmentId",
+    );
+    expect(decodeAgentUpdate({ agentId: legacy.id, avatarAttachmentId: null })).toMatchObject({
+      avatarAttachmentId: null,
+    });
+  });
   it("uses a non-blank branded task ID", () => {
     expect(decodeId("  firstmate-task:1  ")).toBe("firstmate-task:1");
     expect(() => decodeId(" \n ")).toThrow();
