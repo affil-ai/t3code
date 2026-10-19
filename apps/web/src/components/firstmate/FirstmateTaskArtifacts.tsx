@@ -140,9 +140,15 @@ function useImageViewer() {
 export function FirstmateArtifactList({ environmentId, threadId, artifacts }: ArtifactsProps) {
   const viewer = useImageViewer();
   return (
-    <div className="space-y-3">
+    <div className="space-y-1.5">
       {artifacts.map((artifact) => (
-        <div key={`${artifact.label}:${artifact.url}`} className="space-y-1">
+        <div
+          key={`${artifact.label}:${artifact.url}`}
+          className={cn(
+            "space-y-1",
+            artifact.kind !== "image" && "rounded-md border border-border/70 px-2.5 py-2",
+          )}
+        >
           {artifact.kind === "image" ? (
             <>
               <p className="text-sm font-medium text-foreground">{artifact.label}</p>
@@ -157,7 +163,7 @@ export function FirstmateArtifactList({ environmentId, threadId, artifacts }: Ar
             <ArtifactLink environmentId={environmentId} artifact={artifact} />
           )}
           {artifact.caption?.trim() ? (
-            <p className="text-xs text-muted-foreground">{artifact.caption}</p>
+            <p className="text-xs leading-4 text-muted-foreground">{artifact.caption}</p>
           ) : null}
         </div>
       ))}

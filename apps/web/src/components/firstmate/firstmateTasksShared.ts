@@ -94,3 +94,34 @@ export function taskNextStep(task: FirstmateTask): string | null {
   const step = task.nextStep?.trim();
   return step ? step : null;
 }
+
+const LIST_MARKER = /^\s*(?:[-*•]|\d+[.)])\s+/;
+
+/**
+ * A task's done-when text as separate criteria, so the detail can show them
+ * as a list. Bullet or numbered lines are used as written; otherwise a prose
+ * paragraph splits at sentence ends. Text with one sentence stays whole.
+ */
+export function doneCriteria(text: string): ReadonlyArray<string> {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.some((line) => LIST_MARKER.test(line))) {
+    return lines.map((line) => line.replace(LIST_MARKER, ""));
+  }
+  return lines
+    .flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z])/))
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 0);
+}
+
+/**
+ * History worth reading in the detail, newest first. Next-step events are
+ * left out: the current one is already shown above the history.
+ */
+export function readableTaskEvents(
+  events: ReadonlyArray<FirstmateTaskEvent>,
+): ReadonlyArray<FirstmateTaskEvent> {
+  return events.filter((event) => !/^next step:/i.test(event.summary.trim())).toReversed();
+}

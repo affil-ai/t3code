@@ -32,10 +32,13 @@ export function TaskPriorityToggle({
   if (task.priority === undefined) return null;
   return (
     <Button
-      size="sm"
+      size="icon-xs"
       variant="ghost"
+      className="shrink-0"
       disabled={!permitted || pending}
       aria-pressed={task.priority}
+      aria-label={task.priority ? "Remove priority" : "Mark as priority"}
+      title={task.priority ? "Remove priority" : "Mark as priority"}
       onClick={() => {
         setPending(true);
         void setPriority({
@@ -44,8 +47,11 @@ export function TaskPriorityToggle({
         }).finally(() => setPending(false));
       }}
     >
-      {task.priority ? <TaskPriorityStar /> : <StarIcon aria-hidden />}
-      {task.priority ? "Remove priority" : "Mark as priority"}
+      {task.priority ? (
+        <StarIcon aria-hidden className="fill-warning text-warning" />
+      ) : (
+        <StarIcon aria-hidden className="text-muted-foreground" />
+      )}
     </Button>
   );
 }
