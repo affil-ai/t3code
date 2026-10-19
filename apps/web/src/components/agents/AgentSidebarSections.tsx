@@ -7,7 +7,7 @@
 import { type AgentProfile, FIRSTMATE_AGENT_ID } from "@t3tools/contracts";
 import { useParams } from "@tanstack/react-router";
 
-import { useAgentTasks } from "~/state/agents";
+import { useAgentsHome, useAgentTasks } from "~/state/agents";
 import { useFirstmateHome } from "~/state/firstmate";
 import { resolveThreadRouteRef } from "~/threadRoutes";
 import { SidebarGroup } from "../ui/sidebar";
@@ -23,16 +23,17 @@ export function AgentSidebarSections({ agent }: { readonly agent: AgentProfile }
     },
   });
   const firstmate = agent.id === FIRSTMATE_AGENT_ID;
+  const agentsHome = useAgentsHome();
   const firstmateHome = useFirstmateHome();
   const agentQuery = useAgentTasks(
-    firstmate || firstmateHome === null ? null : firstmateHome.environmentId,
+    firstmate ? null : (agentsHome?.environmentId ?? null),
     firstmate ? null : agent.id,
   );
-  if (firstmateHome === null) return null;
-  const { environmentId } = firstmateHome;
-  const snapshot = firstmate ? firstmateHome.snapshot : agentQuery.data;
+  const environmentId = firstmate ? firstmateHome?.environmentId : agentsHome?.environmentId;
+  if (environmentId === undefined) return null;
+  const snapshot = firstmate ? (firstmateHome?.snapshot ?? null) : agentQuery.data;
   const coordinatorThreadId = firstmate
-    ? firstmateHome.snapshot.coordinatorThreadId
+    ? (firstmateHome?.snapshot.coordinatorThreadId ?? null)
     : agent.coordinatorThreadId;
   if (coordinatorThreadId === null) return null;
   return (

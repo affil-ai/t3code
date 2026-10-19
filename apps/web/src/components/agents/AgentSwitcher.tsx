@@ -83,9 +83,10 @@ export function useSelectedAgent(): AgentProfile | null {
 /** Tasks waiting on the user, from whichever stream holds the agent's board. */
 function useNeedsYouCount(agent: AgentProfile): number {
   const firstmate = agent.id === FIRSTMATE_AGENT_ID;
+  const agentsHome = useAgentsHome();
   const home = useFirstmateHome();
   const query = useAgentTasks(
-    firstmate ? null : (home?.environmentId ?? null),
+    firstmate ? null : (agentsHome?.environmentId ?? null),
     firstmate ? null : agent.id,
   );
   const tasks = firstmate ? (home?.snapshot.tasks ?? []) : (query.data?.tasks ?? []);

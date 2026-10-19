@@ -81,11 +81,15 @@ export interface AgentsHome {
  * slow fork server is not skipped for a later one; null means none has it.
  */
 const agentsHomeAtom = Atom.make((get): AgentsHome | null => {
-  for (const [environmentId, presentation] of get(environmentPresentations.presentationsAtom)) {
-    if (presentation.connection.phase !== "connected" || presentation.serverConfig === null) {
-      continue;
-    }
-    const result = get(agentsEnvironment.live({ environmentId, input: {} }));
+  // Start all connected hosts together. Config/provider discovery is unrelated,
+  // and an unsupported host must not delay opening the next host's stream.
+  const candidates = [...get(environmentPresentations.presentationsAtom)]
+    .filter(([, presentation]) => presentation.connection.phase === "connected")
+    .map(([environmentId]) => ({
+      environmentId,
+      result: get(agentsEnvironment.live({ environmentId, input: {} })),
+    }));
+  for (const { environmentId, result } of candidates) {
     if (AsyncResult.isSuccess(result)) return { environmentId, agents: result.value.agents };
     if (AsyncResult.isFailure(result)) continue;
     return null;

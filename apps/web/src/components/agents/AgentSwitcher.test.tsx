@@ -62,7 +62,9 @@ vi.mock("~/hooks/useMediaQuery", () => ({ useIsMobile: () => mocks.mobile }));
 vi.mock("~/state/agents", () => ({
   useAgentsHome: () => ({ environmentId, agents }),
   useAgentByThreadKey: () => new Map(),
-  useAgentTasks: () => ({ data: { tasks: mocks.researchTasks } }),
+  useAgentTasks: (environment: EnvironmentId | null) => ({
+    data: environment === null ? null : { tasks: mocks.researchTasks },
+  }),
 }));
 vi.mock("~/state/firstmate", () => ({
   useFirstmateHome: () =>
@@ -200,6 +202,17 @@ describe("agent switcher navigation", () => {
       expect(tabs[1]?.querySelector('[data-testid="agent-tab-needs-you"]')?.textContent).toBe("2");
       expect(tabs[0]?.getAttribute("aria-label")).toBe("Switch to Firstmate");
       expect(tabs[0]?.querySelector('[data-testid="agent-tab-needs-you"]')).toBeNull();
+    } finally {
+      mocks.researchTasks = [];
+    }
+  });
+
+  it("loads custom-agent attention without waiting for Firstmate's board", async () => {
+    mocks.firstmateAppearance = null;
+    mocks.researchTasks = [{ state: "open", nextActor: "user", workerThreadId: "w1" }];
+    try {
+      await renderSwitcher();
+      expect(container.querySelector('[data-testid="agent-tab-needs-you"]')?.textContent).toBe("1");
     } finally {
       mocks.researchTasks = [];
     }

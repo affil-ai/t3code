@@ -92,11 +92,15 @@ export interface FirstmateHome {
  * Firstmate fail the subscription and are passed over; null means none has it.
  */
 const firstmateHomeAtom = Atom.make((get): FirstmateHome | null => {
-  for (const [environmentId, presentation] of get(environmentPresentations.presentationsAtom)) {
-    if (presentation.connection.phase !== "connected" || presentation.serverConfig === null) {
-      continue;
-    }
-    const result = get(firstmateEnvironment.live({ environmentId, input: {} }));
+  // Open board streams in parallel, without waiting for provider/config discovery.
+  // Selection still respects catalog order, including a pending earlier host.
+  const candidates = [...get(environmentPresentations.presentationsAtom)]
+    .filter(([, presentation]) => presentation.connection.phase === "connected")
+    .map(([environmentId]) => ({
+      environmentId,
+      result: get(firstmateEnvironment.live({ environmentId, input: {} })),
+    }));
+  for (const { environmentId, result } of candidates) {
     if (AsyncResult.isSuccess(result)) return { environmentId, snapshot: result.value };
     if (AsyncResult.isFailure(result)) continue;
     return null;
