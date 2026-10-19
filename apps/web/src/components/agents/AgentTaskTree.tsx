@@ -1,7 +1,8 @@
 /**
  * An agent's open tasks in the sidebar, in the Tasks panel's sections
- * (Ready for deployment first, followed by attention and other lifecycle
- * sections). A task with a worker opens the worker's chat, with a dot for
+ * (Ready for deployment first, followed by other lifecycle sections).
+ * Attention is marked on the row, not in a duplicate section.
+ * A task with a worker opens the worker's chat, with a dot for
  * what the worker is doing. Tasks without a worker open task details and
  * identify when the coordinator owns the next action. Only Backlog tasks
  * have a second line, showing worker activity. Closed tasks stay in the panel.
@@ -14,7 +15,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { BotIcon, ChevronRightIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon, CircleAlertIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -23,7 +24,7 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
-import { mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
+import { firstmateNeedsYou, mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { COLUMN_DOT, COLUMN_LABELS } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -31,6 +32,20 @@ import { useSidebar } from "../ui/sidebar";
 import { useWorkSidebarShortcut } from "./WorkSidebarShortcuts";
 import { TaskPriorityStar } from "../firstmate/TaskPriority";
 import { adjacentSidebarTask, OPEN_TASK_COLUMNS, sidebarNavigationTasks } from "./taskNavigation";
+
+function TaskAttention({ task }: { readonly task: FirstmateTask }) {
+  if (!firstmateNeedsYou(task)) return null;
+  return (
+    <span
+      role="img"
+      aria-label="Needs your input"
+      title="Needs your input"
+      className="shrink-0 text-destructive"
+    >
+      <CircleAlertIcon aria-hidden className="size-3.5" />
+    </span>
+  );
+}
 
 function PlanningCard({
   environmentId,
@@ -85,6 +100,7 @@ function PlanningCard({
         {...(active ? { "data-active": true } : {})}
       >
         <span className="flex w-full min-w-0 items-center gap-2">
+          <TaskAttention task={task} />
           {task.priority ? <TaskPriorityStar /> : null}
           <span className="min-w-0 flex-1 truncate text-sm text-sidebar-foreground/90">
             {task.title}
@@ -209,6 +225,7 @@ function TaskRow({
             />
           }
         >
+          <TaskAttention task={task} />
           {task.priority ? <TaskPriorityStar /> : null}
           <span className="min-w-0 flex-1 truncate">{task.title}</span>
           {task.workerThreadId !== null ? (

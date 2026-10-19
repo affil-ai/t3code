@@ -36,7 +36,7 @@ export function firstmateColumnForTask(task: FirstmateTask): FirstmateColumnId {
 }
 
 /** Needs you is an attention view, independent from lifecycle status. */
-function firstmateNeedsYou(task: FirstmateTask): boolean {
+export function firstmateNeedsYou(task: FirstmateTask): boolean {
   return (
     task.nextActor === "user" &&
     firstmateColumnForTask(task) !== "done" &&

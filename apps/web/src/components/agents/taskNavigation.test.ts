@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { FirstmateTaskId, ThreadId, type FirstmateTask } from "@t3tools/contracts";
 
-import { adjacentSidebarTask, sidebarNavigationTasks } from "./taskNavigation";
+import { adjacentSidebarTask, OPEN_TASK_COLUMNS, sidebarNavigationTasks } from "./taskNavigation";
 
 const task = (id: string, nextActor: "user" | "worker" = "worker"): FirstmateTask => ({
   id: FirstmateTaskId.make(id),
@@ -24,10 +24,13 @@ const task = (id: string, nextActor: "user" | "worker" = "worker"): FirstmateTas
 });
 
 describe("task sidebar navigation", () => {
-  it("deduplicates tasks that appear in Needs you and their lifecycle section", () => {
+  it("keeps attention tasks only in their lifecycle section and navigation order", () => {
     const first = task("first", "user");
     const second = task("second");
+    expect(OPEN_TASK_COLUMNS).not.toContain("needs-you");
     expect(sidebarNavigationTasks([first, second])).toEqual([first, second]);
+    const review = { ...task("review", "user"), status: "in_review" as const };
+    expect(sidebarNavigationTasks([review, second])).toEqual([second, review]);
   });
 
   it("wraps at both ends", () => {

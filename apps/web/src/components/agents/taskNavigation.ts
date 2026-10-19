@@ -1,9 +1,8 @@
 import type { FirstmateTask } from "@t3tools/contracts";
 import { mapFirstmateBoard, type FirstmateColumnId } from "../firstmate/firstmateBoard.logic";
 
-export const OPEN_TASK_COLUMNS: Exclude<FirstmateColumnId, "done">[] = [
+export const OPEN_TASK_COLUMNS: Exclude<FirstmateColumnId, "done" | "needs-you">[] = [
   "ready",
-  "needs-you",
   "planning",
   "in-progress",
   "in-review",
