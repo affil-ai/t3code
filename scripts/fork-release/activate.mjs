@@ -61,7 +61,7 @@ function schemaFingerprint() {
 }
 
 /** Only schema-neutral updates are automated. Review other changes separately; never restore live data. */
-export async function qualify(version, baselineCommit) {
+export async function qualify(version, baselineCommit, reviewedSharedDiff) {
   const request = validateRequest(await readJson(join(jobPath(version), "request.json")));
   if (!/^[a-f0-9]{40}$/.test(baselineCommit ?? ""))
     throw Error("Full installed baseline source required");
@@ -74,9 +74,19 @@ export async function qualify(version, baselineCommit) {
     "--",
     "apps/server/src",
     "packages/contracts/src",
-    "packages/shared/src",
   ]);
   if (changes) throw Error("Server/contracts changed: database and protocol review required");
+  const sharedDiff = run("git", [
+    "diff",
+    baselineCommit,
+    request.commit,
+    "--",
+    "packages/shared/src",
+  ]);
+  const sharedDiffSha256 = createHash("sha256").update(sharedDiff).digest("hex");
+  if (sharedDiff && reviewedSharedDiff !== sharedDiffSha256) {
+    throw Error(`Review the shared-source diff, then pass its exact digest: ${sharedDiffSha256}`);
+  }
   const current = await installedVersion();
   assertForwardVersion(current, version);
   const qualification = {
@@ -85,7 +95,9 @@ export async function qualify(version, baselineCommit) {
     previousVersion: current,
     baselineCommit,
     schemaFingerprint: schemaFingerprint(),
-    rollback: "No server, contracts, or shared source changes; preserve data, retain prior runtime",
+    sharedDiffSha256: sharedDiff ? sharedDiffSha256 : null,
+    rollback:
+      "Server/contracts unchanged; shared changes reviewed; preserve data and retain prior runtime",
   };
   if (process.platform === "linux") {
     qualification.officeRelease = await fs.realpath("/opt/office-t3-worker-current");
@@ -305,9 +317,9 @@ export async function activate(version) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [command, version, baseline] = process.argv.slice(2);
+  const [command, version, baseline, reviewedSharedDiff] = process.argv.slice(2);
   (command === "qualify"
-    ? qualify(version, baseline)
+    ? qualify(version, baseline, reviewedSharedDiff)
     : command === "check"
       ? releaseGuard(version).then(({ version, commit }) => ({ version, commit }))
       : command === "install"

@@ -57,10 +57,13 @@ each host run:
 node scripts/fork-release/activate.mjs qualify VERSION INSTALLED_SOURCE_SHA
 ```
 
-Qualification accepts only updates with unchanged server, contracts, and shared
-source. It records the current installed version and database schema fingerprint.
-Changes to those sources require a separate database and protocol review; this
-tool does not override that gate. Do not guess the installed source commit.
+Qualification requires unchanged server and contracts source. It records the
+current installed version and database schema fingerprint. Changes to those
+sources require a separate database and protocol review; this tool does not
+override that gate. If shared source changed, inspect its full diff and pass
+the reported SHA-256 as the fourth argument only after confirming it does not
+change database or protocol compatibility. The receipt records that reviewed
+diff. Do not guess the installed source commit.
 Linux qualification also tests the deployed Office worker's version predicate
 and the live orchestration protocol. The Office worker remains in Nextcard.
 
