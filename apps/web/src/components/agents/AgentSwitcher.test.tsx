@@ -80,7 +80,9 @@ vi.mock("~/state/entities", () => ({ useThreadShell: () => mocks.workerShell }))
 vi.mock("../Sidebar.logic", () => ({ resolveThreadStatusPill: () => null }));
 vi.mock("../firstmate/firstmateModel", () => ({ useFirstmateModelSelection: () => null }));
 vi.mock("./agentCommands", () => ({ useAgentCommands: () => ({ pending: null }) }));
-vi.mock("./AgentDialog", () => ({ AgentDialog: () => null }));
+vi.mock("./AgentDialog", () => ({
+  AgentDialog: () => <div role="dialog" aria-label="Create agent" />,
+}));
 vi.mock("../firstmate/FirstmateAppearanceDialog", () => ({
   FirstmateAppearanceDialog: () => null,
 }));
@@ -191,6 +193,8 @@ describe("agent switcher navigation", () => {
       expect(money.textContent).toBe("1");
       expect(money.getAttribute("title")).toBeNull();
       expect(money.querySelector("svg.lucide-dollar-sign")).not.toBeNull();
+      await click(container.querySelector('[data-testid="agent-tabs"] [aria-label="New agent"]')!);
+      expect(container.querySelector('[role="dialog"][aria-label="Create agent"]')).not.toBeNull();
       await click(money);
       expect(useSelectedAgentStore.getState().selectedAgentId).toBe("money");
       expect(

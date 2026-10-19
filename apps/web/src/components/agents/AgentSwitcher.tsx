@@ -441,6 +441,16 @@ export function AgentSwitcher() {
                   />
                 );
               })}
+              <div className="flex items-center justify-center">
+                <Button
+                  variant="ghost-muted"
+                  size="icon-xl"
+                  aria-label="New agent"
+                  onClick={() => setDialog({ agent: null })}
+                >
+                  <PlusIcon />
+                </Button>
+              </div>
             </div>
           </SortableContext>
         </DndContext>
