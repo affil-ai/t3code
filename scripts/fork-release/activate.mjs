@@ -182,7 +182,9 @@ async function discovery(version) {
   });
   if (!response.ok) throw Error("Environment discovery unavailable");
   const data = await response.json();
-  if (!JSON.stringify(data).includes(version)) throw Error("API has not loaded the target version");
+  if (data.serverVersion !== version || data.orchestrationProtocolVersion !== 2) {
+    throw Error("API has not loaded the target version and protocol");
+  }
 }
 
 async function linuxInstall(version, manifest, log) {
