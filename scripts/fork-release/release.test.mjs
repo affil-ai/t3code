@@ -145,8 +145,11 @@ test("stopped database check reads queued work without creating WAL and rejects 
       ]).status,
       0,
     );
+    const before = await fs.readFile(database);
+    const walBefore = await fs.readFile(`${database}-wal`).catch(() => null);
     assert.equal(workloadCounts(root, null, true).queued, 1);
-    await assert.rejects(fs.stat(`${database}-wal`), { code: "ENOENT" });
+    assert.deepEqual(await fs.readFile(database), before);
+    assert.deepEqual(await fs.readFile(`${database}-wal`).catch(() => null), walBefore);
     await fs.writeFile(`${database}-wal`, "uncheckpointed");
     assert.throws(() => workloadCounts(root, null, true), /WAL state/);
   } finally {

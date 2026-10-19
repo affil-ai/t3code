@@ -303,20 +303,10 @@ export function readReleaseDatabase(home, sql, stopped = false) {
   // Only the installer, after confirming both app and API have exited, uses this.
   // Never ignore a WAL: it can contain committed work not in the main file yet.
   const assertNoWal = () => {
-    if (NodeFS.existsSync(`${database}-wal`) || NodeFS.existsSync(`${database}-shm`)) {
+    if (NodeFS.existsSync(`${database}-wal`) && NodeFS.statSync(`${database}-wal`).size > 0) {
       throw Error("Stopped database still has WAL state; refuse immutable read");
     }
   };
-  if (stopped && (NodeFS.existsSync(`${database}-wal`) || NodeFS.existsSync(`${database}-shm`))) {
-    const checkpoint = spawnSync(
-      "sqlite3",
-      ["-cmd", ".timeout 5000", database, "pragma wal_checkpoint(truncate);"],
-      { encoding: "utf8", timeout: 30_000 },
-    );
-    if (checkpoint.error || checkpoint.status !== 0) {
-      throw Error("Stopped database WAL checkpoint failed; refuse installation");
-    }
-  }
   if (stopped) assertNoWal();
   const before = stopped ? NodeFS.statSync(database) : null;
   const target = stopped ? `${pathToFileURL(database).href}?mode=ro&immutable=1` : database;
