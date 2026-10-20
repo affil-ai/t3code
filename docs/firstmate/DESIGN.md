@@ -136,8 +136,11 @@ These live in `apps/server/src/mcp/toolkits/firstmate/`. Follow the
 Mutations from any other thread return a clear error.
 
 The agent tools let one agent watch and shape the others, for example a chief
-agent that monitors the rest. Each is open to any agent's coordinator chat and
-refused to workers and other threads.
+agent that monitors the rest. Coordinator chats retain cross-agent access.
+Approved external MCP clients can discover agents and read explicitly targeted
+boards and tasks without impersonating a coordinator. Workers and ordinary
+thread credentials cannot use these cross-agent tools. Agent creation and
+profile updates remain coordinator-only.
 
 | Tool           | Purpose                                                                                                                        |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -222,14 +225,21 @@ write skills on request.
   copied once into the agent table as `firstmate`; Firstmate's settings are
   mirrored back into `firstmate_config` afterwards so an older build can
   still read them.
-- **Service.** Every task operation takes an `agentId`. Another agent's task
-  is "not found", so no agent reads or changes another's board. Firstmate's
+- **Service.** Every task operation takes an `agentId`. A task owned by a
+  different `agentId` is "not found". Cross-agent readers must name the owner.
+  Firstmate's
   RPCs call with `FIRSTMATE_AGENT_ID`. `agentForThread` finds the agent a
   calling thread acts for: its own coordinator chat, or a worker on one of
   its tasks.
 - **MCP.** The `firstmate_task_*` tools resolve the agent from the calling
   thread. A coordinator may read and change its board; a worker may read its
-  agent's board; any other thread is refused.
+  agent's board; any other thread is refused. External clients use explicit
+  `agentId` targets for crew reads. Agent automation ownership follows the
+  existing UI rule, a schedule bound to that agent's coordinator thread.
+  Reads omit webhook endpoints because their tokens can start work. Automation
+  edits and deletes require write approval covering the saved schedule modes
+  and the coordinator's current modes, with an atomic bound-thread check at
+  persistence to reject concurrent rebinding.
 - **Reactor.** One sweep groups open tasks by agent and sends each agent's
   wakes to its own chat, folding into that chat's queued wake as before.
 - **RPCs.** `agents.subscribe` streams the unarchived agents;

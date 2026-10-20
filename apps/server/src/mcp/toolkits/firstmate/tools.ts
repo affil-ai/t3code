@@ -1,8 +1,18 @@
 import {
   AgentCreateResult,
   AgentCreateToolInput,
+  AgentListToolInput,
   AgentListToolResult,
   AgentProfile,
+  AgentAutomationDeleteToolInput,
+  AgentAutomationDeleteToolResult,
+  AgentAutomationGetToolInput,
+  AgentAutomationMutationResult,
+  AgentAutomationsToolInput,
+  AgentAutomationsToolResult,
+  AgentAutomationUpdateToolInput,
+  AgentTaskGetToolInput,
+  AgentTasksToolResult,
   AgentTasksToolInput,
   AgentUpdateInput,
   FirstmateError,
@@ -22,11 +32,13 @@ import * as Toolkit from "effect/ai/Toolkit";
 import * as FirstmateService from "../../../firstmate/FirstmateService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as AgentMcpService from "../../AgentMcpService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   FirstmateService.FirstmateService,
   ThreadManagementService.ThreadManagementService,
+  AgentMcpService.AgentMcpService,
 ];
 
 export const FirstmateToolError = Schema.Union([FirstmateError, OrchestratorMcpFailure]);
@@ -82,8 +94,8 @@ const FirstmateTaskUpdateTool = Tool.make("firstmate_task_update", {
 const AgentListTool = Tool.make("agent_list", {
   ...shared,
   description:
-    "List the user's agents: each one's id, name, role, and coordinator chat. Only an agent's coordinator chat may call it.",
-  // No `parameters`: Tool.make defaults to Tool.EmptyParams, which MCP accepts as an empty object.
+    "Discover this environment's unarchived crew, including each agent's id, name, role, home project, model, and coordinator chat. Available to approved external MCP clients, including read-only clients, and agent coordinator chats. Filter by name and paginate with cursor/limit. No coordinator is impersonated.",
+  parameters: AgentListToolInput,
   success: AgentListToolResult,
 })
   .annotate(Tool.Title, "List agents")
@@ -93,11 +105,64 @@ const AgentListTool = Tool.make("agent_list", {
 const AgentTasksTool = Tool.make("agent_tasks", {
   ...shared,
   description:
-    "Read another agent's task board, read-only. Omit state to list every task that is not done or dropped. Only an agent's coordinator chat may call it.",
+    "Read an explicitly targeted agent's task board, read-only. External MCP clients must pass agentId; coordinator chats may read another agent's board. Omit state to list every task that is not done or dropped. Results include lifecycle state, priority, next actor, next action, and a cursor for pagination.",
   parameters: AgentTasksToolInput,
-  success: FirstmateTaskListResult,
+  success: AgentTasksToolResult,
 })
   .annotate(Tool.Title, "Read an agent's tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const AgentTaskGetTool = Tool.make("agent_task_get", {
+  ...shared,
+  description:
+    "Read one explicitly targeted agent task and its append-only event log. External MCP clients must pass both agentId and taskId; a task from another agent is not visible.",
+  parameters: AgentTaskGetToolInput,
+  success: FirstmateTaskGetResult,
+})
+  .annotate(Tool.Title, "Read an agent task")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const AgentAutomationsTool = Tool.make("agent_automations", {
+  ...shared,
+  description:
+    "List recurring automations explicitly targeted to an agent. External MCP clients must pass agentId. Only schedules bound to that agent's coordinator chat are returned, with enabled state, trigger, next run, recent run status/error/count, and cursor pagination. Webhook URLs and secrets are never returned.",
+  parameters: AgentAutomationsToolInput,
+  success: AgentAutomationsToolResult,
+})
+  .annotate(Tool.Title, "List agent automations")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+const AgentAutomationUpdateTool = Tool.make("agent_automation_update", {
+  ...shared,
+  description:
+    "Update an automation explicitly targeted to an agent. Requires write approval covering both the automation's saved modes and its coordinator's current modes. Read-only clients are denied. The automation must be bound to that agent's coordinator chat; this tool cannot rebind it. Omit fields to preserve them; enabled=false pauses future triggers without canceling work already dispatched.",
+  parameters: AgentAutomationUpdateToolInput,
+  success: AgentAutomationMutationResult,
+})
+  .annotate(Tool.Title, "Update an agent automation")
+  .annotate(Tool.Destructive, true);
+
+const AgentAutomationDeleteTool = Tool.make("agent_automation_delete", {
+  ...shared,
+  description:
+    "Permanently delete an automation explicitly targeted to an agent. Requires write approval covering the automation's and coordinator's modes. Read-only clients are denied. The automation must be bound to that agent's coordinator chat. Does not cancel work already dispatched.",
+  parameters: AgentAutomationDeleteToolInput,
+  success: AgentAutomationDeleteToolResult,
+})
+  .annotate(Tool.Title, "Delete an agent automation")
+  .annotate(Tool.Destructive, true);
+
+const AgentAutomationGetTool = Tool.make("agent_automation_get", {
+  ...shared,
+  description:
+    "Read one automation by agentId and scheduledTaskId, including its prompt, trigger, enabled state, next run, and last scheduler dispatch result. Only schedules bound to that agent's coordinator chat qualify. Webhook URLs and secrets are never returned. A successful dispatch does not mean the agent's turn completed.",
+  parameters: AgentAutomationGetToolInput,
+  success: AgentAutomationMutationResult,
+})
+  .annotate(Tool.Title, "Read an agent automation")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 
@@ -128,6 +193,11 @@ export const FirstmateToolkit = Toolkit.make(
   FirstmateTaskUpdateTool,
   AgentListTool,
   AgentTasksTool,
+  AgentTaskGetTool,
+  AgentAutomationsTool,
+  AgentAutomationGetTool,
+  AgentAutomationUpdateTool,
+  AgentAutomationDeleteTool,
   AgentCreateTool,
   AgentUpdateTool,
 );

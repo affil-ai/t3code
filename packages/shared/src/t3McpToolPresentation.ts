@@ -15,6 +15,19 @@ export type T3McpToolSummaryAction =
   | "schedule-list"
   | "schedule-update"
   | "schedule-delete"
+  | "agent-list"
+  | "agent-task-list"
+  | "agent-task-read"
+  | "agent-automation-list"
+  | "agent-automation-read"
+  | "agent-automation-update"
+  | "agent-automation-delete"
+  | "firstmate-task-list"
+  | "firstmate-task-read"
+  | "firstmate-task-create"
+  | "firstmate-task-update"
+  | "agent-create"
+  | "agent-update"
   | "thread-create"
   | "thread-list"
   | "thread-read"
@@ -136,6 +149,40 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "schedule-create",
   ),
   list_scheduled_tasks: tool(["List", "Listing", "Listed", "scheduled tasks"], "schedule-list"),
+  agent_list: tool(["List", "Listing", "Listed", "crew agents"], "agent-list"),
+  agent_tasks: tool(["Read", "Reading", "Read", "an agent's tasks"], "agent-task-list"),
+  agent_task_get: tool(["Read", "Reading", "Read", "an agent task"], "agent-task-read"),
+  agent_automations: tool(
+    ["List", "Listing", "Listed", "agent automations"],
+    "agent-automation-list",
+  ),
+  agent_automation_get: tool(
+    ["Read", "Reading", "Read", "an agent automation"],
+    "agent-automation-read",
+  ),
+  agent_automation_update: tool(
+    ["Update", "Updating", "Updated", "an agent automation"],
+    "agent-automation-update",
+  ),
+  agent_automation_delete: tool(
+    ["Delete", "Deleting", "Deleted", "an agent automation"],
+    "agent-automation-delete",
+  ),
+  firstmate_task_list: tool(
+    ["List", "Listing", "Listed", "Firstmate tasks"],
+    "firstmate-task-list",
+  ),
+  firstmate_task_get: tool(["Read", "Reading", "Read", "a Firstmate task"], "firstmate-task-read"),
+  firstmate_task_create: tool(
+    ["Create", "Creating", "Created", "a Firstmate task"],
+    "firstmate-task-create",
+  ),
+  firstmate_task_update: tool(
+    ["Update", "Updating", "Updated", "a Firstmate task"],
+    "firstmate-task-update",
+  ),
+  agent_create: tool(["Create", "Creating", "Created", "an agent"], "agent-create"),
+  agent_update: tool(["Update", "Updating", "Updated", "an agent"], "agent-update"),
   update_scheduled_task: tool(
     ["Update", "Updating", "Updated", "a scheduled task"],
     "schedule-update",

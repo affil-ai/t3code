@@ -222,15 +222,17 @@ export class ScheduledTaskService extends Context.Service<
     readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
     /** Emits the full task list on subscribe and again after every change (CRUD, run transitions, reschedules). */
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
+    /** expectedThreadId guards agent-targeted edits against concurrent rebinding. */
     readonly upsert: (
-      input: ScheduledTaskUpsertInput,
+      input: ScheduledTaskUpsertInput & { readonly expectedThreadId?: ThreadId },
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     /** Partial update flipping only the enabled flag; never touches other fields. */
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
+    /** expectedThreadId guards agent-targeted deletes against concurrent rebinding. */
     readonly delete: (
-      input: ScheduledTaskDeleteInput,
+      input: ScheduledTaskDeleteInput & { readonly expectedThreadId?: ThreadId },
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
     readonly runNow: (
       input: ScheduledTaskRunNowInput,
@@ -527,6 +529,7 @@ export const layer = Layer.effect(
         /** False when the save carried no new secret, so a concurrent change survives. */
         readonly secretChanged: boolean;
       },
+      expectedThreadId?: ThreadId,
     ) =>
       sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
@@ -603,6 +606,8 @@ export const layer = Layer.effect(
             WHEN ${webhook.secretChanged ? 1 : 0} = 1 THEN excluded.webhook_secret
             ELSE scheduled_tasks.webhook_secret
           END
+        WHERE ${expectedThreadId ?? null} IS NULL
+           OR scheduled_tasks.thread_id = ${expectedThreadId ?? null}
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
@@ -615,12 +620,21 @@ export const layer = Layer.effect(
         ),
       );
 
-    const deleteRow = (id: ScheduledTaskId) =>
+    const deleteRow = (id: ScheduledTaskId, expectedThreadId?: ThreadId) =>
       sql
         .withTransaction(
-          sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
-            Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
-          ),
+          Effect.gen(function* () {
+            const removed = yield* sql<{ task_id: string }>`
+              DELETE FROM scheduled_tasks
+              WHERE task_id = ${id}
+                AND (${expectedThreadId ?? null} IS NULL OR thread_id = ${expectedThreadId ?? null})
+              RETURNING task_id
+            `;
+            if (expectedThreadId !== undefined && removed.length === 0) {
+              return yield* taskError("Schedule task not found.", { taskId: id });
+            }
+            yield* sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`;
+          }),
         )
         .pipe(
           Effect.mapError((cause) =>
@@ -1020,6 +1034,12 @@ export const layer = Layer.effect(
         // keep their run history, and so real load failures propagate instead
         // of silently resetting an existing row.
         const existingTask = yield* findTask(id);
+        if (
+          input.expectedThreadId !== undefined &&
+          existingTask?.threadId !== input.expectedThreadId
+        ) {
+          return yield* taskError("Schedule task not found.", { taskId: id });
+        }
         // Keep the existing next_run_at when the schedule itself is untouched:
         // editing a title or prompt must not postpone (or resurrect) a due
         // run — only schedule/enabled changes restart the clock.
@@ -1104,7 +1124,12 @@ export const layer = Layer.effect(
           lastRunError: existingTask?.lastRunError ?? null,
           runCount: existingTask?.runCount ?? 0,
         };
-        yield* saveTask(task, input.requireExisting === true, webhook);
+        yield* saveTask(
+          task,
+          input.requireExisting === true || input.expectedThreadId !== undefined,
+          webhook,
+          input.expectedThreadId,
+        );
         yield* notifyChanged;
         return { task: (yield* findTask(id)) ?? task };
       });
@@ -1139,7 +1164,7 @@ export const layer = Layer.effect(
       });
 
     const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
-      deleteRow(input.id).pipe(
+      deleteRow(input.id, input.expectedThreadId).pipe(
         Effect.andThen(
           Effect.all([
             Ref.update(webhookRateWindows, (windows) => {
