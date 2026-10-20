@@ -601,13 +601,16 @@ function AdaptiveWorkspaceLayoutContent(
   const selectAndroidWorkspace = useAndroidWorkspaceSelection();
   const handleSelectThread = useCallback(
     (thread: EnvironmentThreadShell) => {
+      // Selecting a different agent/task is a workspace navigation action, not
+      // an inspector action. Keep the next thread focused on its chat until
+      // the user explicitly opens Files or Git.
+      setFileInspectorPreferredVisible(false);
       const params = {
         environmentId: String(thread.environmentId),
         threadId: String(thread.id),
       };
       if (Platform.OS === "android") {
         // Selecting a sidebar row enters its base chat, including from that chat's nested screens.
-        setFileInspectorPreferredVisible(false);
         selectAndroidWorkspace({ name: "Thread", params });
         return;
       }
@@ -622,7 +625,6 @@ function AdaptiveWorkspaceLayoutContent(
         params,
       });
       if (overlayState !== null) {
-        setFileInspectorPreferredVisible(false);
         navigation.dispatch(CommonActions.reset(overlayState));
         return;
       }
@@ -631,12 +633,10 @@ function AdaptiveWorkspaceLayoutContent(
         if (nextThreadKey === selectedThreadKey) {
           return;
         }
-        setFileInspectorPreferredVisible(false);
         navigation.navigate("Thread", params);
         return;
       }
       if (navigationAction === "replace") {
-        setFileInspectorPreferredVisible(false);
         navigation.dispatch(StackActions.replace("Thread", params));
         return;
       }

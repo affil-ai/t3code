@@ -42,7 +42,7 @@ export function useThreadTurnSubagents(target: AgentsTarget | null): ThreadTurnS
 }
 
 export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
-  const { layout } = useAdaptiveWorkspaceLayout();
+  const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
   const target = route.params;
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -53,6 +53,12 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
 
   const openChildThread = (childThreadId: ThreadId) => {
     void Haptics.selectionAsync();
+    // Agent rows replace the workspace thread directly instead of going
+    // through the sidebar's selection handler. Match that path by closing a
+    // visible inspector before showing the child thread.
+    if (panes.auxiliaryPaneVisible) {
+      toggleAuxiliaryPane();
+    }
     // Replace rather than push: the sheet is a leaf, and the child thread
     // belongs in the workspace stack where Home's back button expects it.
     navigation.dispatch(
