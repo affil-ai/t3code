@@ -21,6 +21,7 @@ import {
   validateManifest,
   verifyArtifacts,
 } from "./release-check.mjs";
+import { classifyWorkload, workloadSql } from "./workload.mjs";
 
 const repository = "https://github.com/affil-ai/t3code.git";
 export const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -361,15 +362,13 @@ export function workloadCounts(home, restartThread = null, stopped = false) {
   if (restartThread && (process.platform !== "darwin" || !/^[a-f0-9-]{36}$/.test(restartThread))) {
     throw Error("Only an explicit local Mac caller may use graceful restart");
   }
-  const sql =
-    "select status,count(*) from orchestration_v2_projection_runs " +
-    "where status in ('running','starting','queued','waiting') " +
-    (restartThread ? `and not (thread_id='${restartThread}' and status='running') ` : "") +
-    "group by status;";
-  const counts = { running: 0, starting: 0, queued: 0, waiting: 0 };
-  for (const row of readReleaseDatabase(home, sql, stopped))
-    counts[row.status] = Number(row["count(*)"]);
-  return counts;
+  const sql = restartThread
+    ? workloadSql.replace(
+        " GROUP BY",
+        ` WHERE NOT (thread_id='${restartThread}' AND status='running') GROUP BY`,
+      )
+    : workloadSql;
+  return classifyWorkload(readReleaseDatabase(home, sql, stopped));
 }
 
 export async function checkDeploy(version) {

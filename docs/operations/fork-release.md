@@ -175,8 +175,13 @@ the release complete.
 
 `manifest <fork-version>` combines both local platform receipts.
 `check-deploy <fork-version>` verifies both local artifact files and reads
-the live T3 database read-only. Any running, starting, queued, or waiting run
-blocks it. Neither command installs software. Compatibility, migration
+the live T3 database read-only. Running, starting, preparing, waiting, and unheld
+queued runs block it. Only queued rows with an explicit JSON boolean
+`queueHeld: true` are counted separately as `heldQueued`; those preserved requests
+do not block idle. Missing hold flags mean unheld. Invalid JSON, unknown statuses,
+inconsistent status fields, and malformed hold flags fail closed. No queue row,
+message, or hold flag is changed. A stale running row still blocks.
+Neither command installs software. Compatibility, migration
 reversibility, and a fresh activity check are still required at activation.
 
 The migration preflight reads the source and destination GitHub main refs and

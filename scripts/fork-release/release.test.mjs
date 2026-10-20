@@ -1,11 +1,18 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+/* oxlint-disable t3code/no-global-process-runtime -- standalone host release tests */
+import * as NodeTest from "node:test";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
 import { validateRequest, saveRequest, withLock, shellQuote, workloadCounts } from "./release.mjs";
-import { spawn, spawnSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import { assertIdle } from "./release-check.mjs";
+const { test } = NodeTest;
+const assert = NodeAssert;
+const fs = NodeFSP;
+const { join } = NodePath;
+const { tmpdir } = NodeOS;
+const { spawn, spawnSync } = NodeChildProcess;
 
 const request = {
   schema: 1,
@@ -34,14 +41,20 @@ test("workload reads wait for a short SQLite writer lock instead of aborting ins
     const database = join(root, "userdata/statev2.sqlite");
     const created = spawnSync("sqlite3", [
       database,
-      "create table orchestration_v2_projection_runs(status text);",
+      "create table orchestration_v2_projection_runs(status text,payload_json text);",
     ]);
     assert.equal(created.status, 0);
     const holder = spawn("sqlite3", [database], { stdio: ["pipe", "pipe", "pipe"] });
     const locked = new Promise((resolve) => holder.stdout.once("data", resolve));
     holder.stdin.end("begin exclusive;\n.print locked\n.shell sleep 1\ncommit;\n");
     await locked;
-    assert.deepEqual(workloadCounts(root), { running: 0, starting: 0, queued: 0, waiting: 0 });
+    assert.deepEqual(workloadCounts(root), {
+      running: 0,
+      starting: 0,
+      queued: 0,
+      waiting: 0,
+      heldQueued: 0,
+    });
   } finally {
     await fs.rm(root, { recursive: true });
   }
@@ -61,10 +74,10 @@ test(
       assert.equal(
         spawnSync("sqlite3", [
           database,
-          `create table orchestration_v2_projection_runs(thread_id text,status text);
-       insert into orchestration_v2_projection_runs values('${caller}','running');
-       insert into orchestration_v2_projection_runs values('other','running');
-       insert into orchestration_v2_projection_runs values('${caller}','queued');`,
+          `create table orchestration_v2_projection_runs(thread_id text,status text,payload_json text);
+       insert into orchestration_v2_projection_runs values('${caller}','running','{"status":"running"}');
+       insert into orchestration_v2_projection_runs values('other','running','{"status":"running"}');
+       insert into orchestration_v2_projection_runs values('${caller}','queued','{"status":"queued"}');`,
         ]).status,
         0,
       );
@@ -122,7 +135,7 @@ test("workload reads fail closed and do not create a missing live database", asy
     await assert.rejects(fs.stat(database), { code: "ENOENT" });
     const created = spawnSync("sqlite3", [
       database,
-      "create table orchestration_v2_projection_runs(status text); insert into orchestration_v2_projection_runs values('queued');",
+      `create table orchestration_v2_projection_runs(status text,payload_json text); insert into orchestration_v2_projection_runs values('queued','{"status":"queued"}');`,
     ]);
     assert.equal(created.status, 0, "sqlite3 is required for workload verification");
     const counts = workloadCounts(root);
@@ -141,7 +154,7 @@ test("stopped database check reads queued work without creating WAL and rejects 
     assert.equal(
       spawnSync("sqlite3", [
         database,
-        "pragma journal_mode=wal; create table orchestration_v2_projection_runs(status text); insert into orchestration_v2_projection_runs values('queued');",
+        `pragma journal_mode=wal; create table orchestration_v2_projection_runs(status text,payload_json text); insert into orchestration_v2_projection_runs values('queued','{"status":"queued"}');`,
       ]).status,
       0,
     );
