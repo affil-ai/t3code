@@ -33,6 +33,59 @@ export function xml(value) {
     .replaceAll('"', "&quot;");
 }
 
+// Recover a Mac-only release without reinstalling the Mac or interrupting Ubuntu turns.
+export async function watchLinux(version) {
+  if (process.platform !== "linux") throw Error("Ubuntu handoff must run on Linux");
+  const folder = jobPath(version);
+  const request = validateRequest(await readJson(join(folder, "request.json")));
+  return withLock(join(stateRoot, "handoff.lock"), async () => {
+    await verifyArtifacts(await readJson(join(folder, "manifest.json")));
+    const deadline = Date.now() + 24 * 60 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const counts = workloadCounts(join(homedir(), ".t3"));
+      try {
+        assertIdle(counts);
+      } catch {
+        await atomicJson(join(folder, "handoff-linux.json"), {
+          ...request,
+          phase: "waiting",
+          counts,
+          at: new Date().toISOString(),
+        });
+        await new Promise((resolve) => setTimeout(resolve, 30_000));
+        continue;
+      }
+      await activate(version); // Rechecks idle, provenance, schema, and Office, then publishes web.
+      await atomicJson(join(folder, "handoff-linux.json"), {
+        ...request,
+        phase: "ubuntu-and-web-origin-installed",
+        browserVerification: "pending",
+        at: new Date().toISOString(),
+      });
+      return;
+    }
+    throw Error("Ubuntu remained busy for 24 hours; no work was cancelled");
+  });
+}
+
+export async function startLinux(version) {
+  if (process.platform !== "linux") throw Error("Start Ubuntu handoff on Linux");
+  validateRequest(await readJson(join(jobPath(version), "request.json")));
+  // A fixed unit name prevents duplicate detached installers. No timer or recurring schedule.
+  run("systemd-run", [
+    "--user",
+    "--unit=t3-fork-release",
+    "--collect",
+    "--property=Type=exec",
+    "--property=UMask=0077",
+    process.execPath,
+    join(sourceRoot, "scripts/fork-release/handoff.mjs"),
+    "watch-linux",
+    version,
+  ]);
+  return { version, phase: "waiting-for-idle", unit: "t3-fork-release.service" };
+}
+
 export async function watch(version, host, repo, macOnly = false) {
   const folder = jobPath(version);
   const request = validateRequest(await readJson(join(folder, "request.json")));
@@ -172,15 +225,19 @@ ${restartThread ? `<key>T3_FORK_RELEASE_RESTART_THREAD</key><string>${xml(restar
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [command, version, host, repo] = process.argv.slice(2);
-  (command === "start"
-    ? handoff(version, host, repo)
-    : command === "start-mac"
-      ? handoff(version, host, repo, true)
-      : command === "watch-mac"
-        ? watch(version, host, repo, true)
-        : command === "watch"
-          ? watch(version, host, repo)
-          : Promise.reject(Error("Usage: handoff.mjs start VERSION SSH_ALIAS REMOTE_CHECKOUT"))
+  (command === "start-linux"
+    ? startLinux(version)
+    : command === "watch-linux"
+      ? watchLinux(version)
+      : command === "start"
+        ? handoff(version, host, repo)
+        : command === "start-mac"
+          ? handoff(version, host, repo, true)
+          : command === "watch-mac"
+            ? watch(version, host, repo, true)
+            : command === "watch"
+              ? watch(version, host, repo)
+              : Promise.reject(Error("Usage: handoff.mjs start VERSION SSH_ALIAS REMOTE_CHECKOUT"))
   )
     .then((value) => {
       if (value) console.log(JSON.stringify(value));

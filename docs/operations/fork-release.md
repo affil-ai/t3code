@@ -68,6 +68,15 @@ The public-web files have their own single-writer lock. Publication checks
 checksums and backend compatibility before the atomic symlink change. Old hashed
 assets remain available for already-open clients; no service restart is needed.
 
+To finish Ubuntu and public web after an earlier Mac-only install, stage and
+qualify the matching Ubuntu release, then run
+`node scripts/fork-release/handoff.mjs start-linux VERSION` on Ubuntu.
+This starts one detached user service (`t3-fork-release.service`), not a timer.
+It waits at most 24 hours for idle, rechecks all activation guards, installs
+Ubuntu, and publishes web. It never reinstalls the Mac or cancels work.
+Inspect `handoff-linux.json`, `handoff-error.json`, and the platform install
+log. A second installer is rejected by the fixed service name and shared lock.
+
 `web-published.json` records the previous and new directories and source SHA.
 This proves origin publication, not public browser acceptance. Verify the live
 domain in an authenticated browser, read `/fork-release.json`, and check the

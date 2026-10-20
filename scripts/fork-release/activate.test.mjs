@@ -12,7 +12,12 @@ const { join } = NodePath;
 const { createHash } = NodeCrypto;
 import { artifactMirror, assertForwardVersion, validateCompatibilityReview } from "./activate.mjs";
 import { execute, remoteCommand, sshArgs, verifyReceipt } from "./transport.mjs";
-import { xml } from "./handoff.mjs";
+import { xml, startLinux, watchLinux } from "./handoff.mjs";
+
+test("Ubuntu-only handoff rejects invalid release targets before spawning", async () => {
+  await assert.rejects(startLinux("../escape"));
+  await assert.rejects(watchLinux("../escape"));
+});
 
 test("server changes require evidence bound to both commits and the exact diff", () => {
   const baseline = "a".repeat(40),
