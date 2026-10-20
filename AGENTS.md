@@ -1,5 +1,23 @@
 # T3 Code
 
+## Affil fork context
+
+This is the Affil T3 Work fork. Before changing fork behavior, read
+`CONTEXT.md` and `FORK.md`. Before release work, also read
+`docs/operations/fork-release.md` and load
+`.agents/skills/affil-release/SKILL.md`.
+
+The Affil release path is host-local and paired:
+
+```text
+Ubuntu request/build → Mac pull/build/sign → exchange → qualify → activate
+```
+
+Do not substitute upstream GitHub Actions `preview`, `nightly`, or `stable`
+channels for this workflow. GitHub Actions are not the fork release mechanism.
+Do not move Office worker source into this repository; it remains in
+`affil-ai/nextcard`.
+
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity) and serves web, desktop, and mobile clients.
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
