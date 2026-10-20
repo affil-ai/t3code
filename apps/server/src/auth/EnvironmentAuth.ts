@@ -7,6 +7,7 @@ import {
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   AuthStandardClientScopes,
+  RuntimeMode,
   type AuthAccessTokenResult,
   type AuthBrowserSessionResult,
   type AuthClientMetadata,
@@ -525,6 +526,7 @@ export class EnvironmentAuth extends Context.Service<
       readonly subject?: string;
       readonly scopes?: ReadonlyArray<AuthEnvironmentScope>;
       readonly label?: string;
+      readonly runtimeModeCeiling?: RuntimeMode;
     }) => Effect.Effect<IssuedBearerSession, ServerAuthInternalError>;
     readonly listSessions: () => Effect.Effect<
       ReadonlyArray<AuthClientSession>,
@@ -1115,6 +1117,7 @@ export const make = Effect.gen(function* () {
           deviceType: "bot",
         },
         ...(input?.ttl ? { ttl: input.ttl } : {}),
+        ...(input?.runtimeModeCeiling ? { runtimeModeCeiling: input.runtimeModeCeiling } : {}),
       })
       .pipe(
         Effect.map(

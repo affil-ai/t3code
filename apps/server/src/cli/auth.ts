@@ -1,7 +1,9 @@
 import {
   AuthAdministrativeScopes,
+  AuthOrchestrationOperateScope,
   AuthSessionId,
   AuthStandardClientScopes,
+  RuntimeMode,
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -9,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
+import * as CliError from "effect/cli/CliError";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 
@@ -69,6 +72,13 @@ const labelFlag = Flag.String("label").pipe(
 
 const subjectFlag = Flag.String("subject").pipe(
   Flag.withDescription("Optional session subject."),
+  Flag.optional,
+);
+
+const runtimeModeCeilingFlag = Flag.Literals("runtime-mode-ceiling", RuntimeMode.literals).pipe(
+  Flag.withDescription(
+    "Maximum runtime mode for MCP clients. Requires the orchestration:operate scope.",
+  ),
   Flag.optional,
 );
 
@@ -167,6 +177,7 @@ const sessionIssueCommand = Command.make("issue", {
   ttl: ttlFlag,
   label: labelFlag,
   subject: subjectFlag,
+  runtimeModeCeiling: runtimeModeCeilingFlag,
   tokenOnly: tokenOnlyFlag,
   json: jsonFlag,
 }).pipe(
@@ -176,11 +187,24 @@ const sessionIssueCommand = Command.make("issue", {
       flags,
       (environmentAuth) =>
         Effect.gen(function* () {
+          if (
+            Option.isSome(flags.runtimeModeCeiling) &&
+            !flags.scopes.includes(AuthOrchestrationOperateScope)
+          ) {
+            return yield* new CliError.UserError({
+              cause: "runtime-mode-ceiling requires orchestration:operate",
+              userMessage:
+                "The --runtime-mode-ceiling flag requires the orchestration:operate scope.",
+            });
+          }
           const issued = yield* environmentAuth.issueSession({
             scopes: flags.scopes,
             ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
             ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
             ...(Option.isSome(flags.subject) ? { subject: flags.subject.value } : {}),
+            ...(Option.isSome(flags.runtimeModeCeiling)
+              ? { runtimeModeCeiling: flags.runtimeModeCeiling.value }
+              : {}),
           });
           yield* Console.log(
             formatIssuedSession(issued, {
