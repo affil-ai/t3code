@@ -27,6 +27,7 @@ import {
 } from "./release.mjs";
 import { assertIdle } from "./release-check.mjs";
 import { execute } from "./transport.mjs";
+import { publishWeb, verifyWeb } from "./web.mjs";
 
 const home = process.env.T3CODE_HOME ?? join(homedir(), ".t3");
 const app = "/Applications/T3 Work.app";
@@ -160,6 +161,10 @@ export async function releaseGuard(version) {
   await checkDeploy(version);
   const folder = jobPath(version);
   const manifest = await readJson(join(folder, "manifest.json"));
+  if (process.platform === "linux") {
+    // A paired release cannot restart Ubuntu while its public web payload is absent.
+    await verifyWeb(join(folder, "web"), manifest);
+  }
   const qualification = await readJson(join(folder, `${platform}-qualification.json`));
   if (
     qualification.commit !== manifest.commit ||
@@ -324,6 +329,7 @@ export async function activate(version) {
       const prior = await readJson(receipt);
       if (prior.commit !== manifest.commit) throw Error("Installed provenance mismatch");
       await discovery(version);
+      if (process.platform === "linux") await publishWeb(version);
       return prior;
     }
     const log = await fs.open(join(folder, `${platform}-install.log`), "a", 0o600);
@@ -367,6 +373,7 @@ export async function activate(version) {
         verifiedAt: new Date().toISOString(),
       };
       await atomicJson(receipt, result);
+      if (process.platform === "linux") await publishWeb(version);
       return result;
     } finally {
       await log.close();

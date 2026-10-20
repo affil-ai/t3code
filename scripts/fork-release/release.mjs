@@ -143,6 +143,10 @@ export async function build(version) {
         (await digest(previous.path)) !== previous.sha256
       )
         throw new Error("Staged artifact mismatch");
+      if (platform === "linux-x64") {
+        const { buildWeb } = await import("./web.mjs");
+        await buildWeb(version);
+      }
       return previous;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -258,6 +262,10 @@ export async function build(version) {
         execute("codesign", ["--verify", "--deep", "--strict", app]);
         artifact = join(attempt, `T3-Work-${version}-arm64.zip`);
         execute("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app, artifact]);
+      }
+      if (platform === "linux-x64") {
+        const { stageWeb } = await import("./web.mjs");
+        await stageWeb(checkout, value, env, log);
       }
       const result = {
         platform,

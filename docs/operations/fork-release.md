@@ -39,6 +39,46 @@ That identity must already exist in the Mac keychain.
 
 ## Paired release
 
+### Public web is a required Ubuntu release target
+
+`https://t3.olumbe.com` is **not** the upstream Vercel app. The existing
+`t3-work-web.service` serves `~/.local/share/t3-work-web/current` behind
+Cloudflare Access and forwards backend traffic to Ubuntu's browser proxy.
+Do not change its authentication, credentials, tunnel, or service configuration.
+
+Linux `release.mjs build` now stages a production web payload from the same
+isolated commit, with production branding, no source maps, and no baked-in
+backend origin. `web/fork-release.json` records the source SHA, release version,
+and every asset checksum. Linux activation refuses to proceed without this
+payload. After the server is installed and healthy, activation publishes the
+web files through `web.mjs`. Mac-only activation does **not** publish the web.
+
+For existing artifacts made before this integration, run on Ubuntu:
+
+```sh
+node scripts/fork-release/web.mjs build VERSION
+node scripts/fork-release/web.mjs publish VERSION
+```
+
+Build is preparation only. Publish requires a matching Ubuntu installed receipt,
+live version, and protocol. If Ubuntu is older and busy, stage the files and
+report the pending server activation. Do not bypass the idle or compatibility
+gates, and do not call a Mac-only release a completed release of all targets.
+The public-web files have their own single-writer lock. Publication checks
+checksums and backend compatibility before the atomic symlink change. Old hashed
+assets remain available for already-open clients; no service restart is needed.
+
+`web-published.json` records the previous and new directories and source SHA.
+This proves origin publication, not public browser acceptance. Verify the live
+domain in an authenticated browser, read `/fork-release.json`, and check the
+grid and New agent button. If Access requires sign-in, report that exact
+blocker; never create temporary tokens or weaken Access for verification.
+Report Mac installed, Ubuntu installed, and public-web verified separately.
+
+Keep requests, receipts, web metadata, current assets, and the previous known-good
+artifacts. Delete only disposable build checkouts after preserving their logs.
+Never remove an artifact referenced by a retained manifest.
+
 For Ubuntu-only initiation, install the Mac pull worker once with
 `node scripts/fork-release/worker.mjs install /private/path/config.json`.
 The private config names `host` (an existing outbound SSH alias), `repo`
