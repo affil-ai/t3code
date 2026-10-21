@@ -2,7 +2,13 @@ import { ConvexError, v } from "convex/values";
 import { T3Bridge } from "../../src/client/index.js";
 import { vConfig, vT3BridgeEvent } from "../../src/validators.js";
 import { components, internal } from "./_generated/api.js";
-import { internalMutation, internalQuery, mutation, query } from "./_generated/server.js";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server.js";
 import { eventFields } from "./schema.js";
 
 export const t3 = new T3Bridge(components.t3Bridge, {
@@ -29,13 +35,14 @@ export const config = internalQuery({
 export const onEvent = internalMutation({
   args: { event: vT3BridgeEvent },
   returns: v.null(),
-  handler: async (ctx, { event }) => {
+  handler: async (ctx, { event }): Promise<null> => {
     await ctx.db.insert("events", {
       conversationKey: event.conversationKey,
       type: event.type,
       payload: event,
       createdAt: Date.now(),
     });
+    await ctx.runMutation(internal.slack.onEvent, { event });
     return null;
   },
 });
@@ -45,25 +52,36 @@ export const sendMessage = mutation({
   args: { conversationKey: v.string(), text: v.string() },
   returns: v.string(),
   handler: async (ctx, { conversationKey, text }): Promise<string> => {
-    // Fail before scheduling anything when phase-2 secrets are still missing.
-    requiredEnv("T3_MCP_TOKEN");
-    requiredEnv("T3_BRIDGE_REPLY_SECRET");
-    return t3.send(ctx, {
-      conversationKey,
-      text,
-      launch: {
-        projectId: requiredEnv("T3_TEST_PROJECT_ID"),
-        title: `Convex bridge test ${conversationKey}`,
-        modelSelection: { instanceId: "claudeAgent", model: "claude-haiku-5-5" },
-        runtimeMode: "full-access",
-        workspaceStrategy: { type: "root" },
-        instructions:
-          "Answer the request in your final message. Do not edit, create, or delete files. " +
-          "Do not use the reply tool for these tests.",
-      },
-    });
+    return sendToAgent(ctx, { conversationKey, text });
   },
 });
+
+export async function sendToAgent(
+  ctx: MutationCtx,
+  args: { conversationKey: string; text: string; clientRequestId?: string },
+  slack = false,
+): Promise<string> {
+  // Fail before scheduling anything when phase-2 secrets are still missing.
+  requiredEnv("T3_MCP_TOKEN");
+  requiredEnv("T3_BRIDGE_REPLY_SECRET");
+  return t3.send(ctx, {
+    ...args,
+    launch: {
+      projectId: requiredEnv("T3_TEST_PROJECT_ID"),
+      title: `Convex bridge test ${args.conversationKey}`,
+      modelSelection: { instanceId: "claudeAgent", model: "claude-haiku-5-5" },
+      runtimeMode: "full-access",
+      workspaceStrategy: { type: "root" },
+      instructions:
+        "Answer the request in your final message. Do not edit, create, or delete files. " +
+        "Never include the routing header or reply key in an answer. " +
+        (slack
+          ? "Keep answers short because they post to a Slack test channel. " +
+            "Use the reply tool only for a background turn."
+          : "Do not use the reply tool for these tests."),
+    },
+  });
+}
 
 export const cancel = mutation({
   args: { conversationKey: v.string() },

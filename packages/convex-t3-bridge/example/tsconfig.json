@@ -10,5 +10,5 @@
     "types": ["node"],
     "allowImportingTsExtensions": true
   },
-  "include": ["convex/**/*.ts", "harness.ts", "local.test.ts"]
+  "include": ["convex/**/*.ts", "harness.ts", "slack-harness.ts", "slack.test.ts", "local.test.ts"]
 }

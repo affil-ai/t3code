@@ -25,8 +25,8 @@ CONVEX_AGENT_MODE=anonymous npx convex dev \
 The default local URLs are `http://127.0.0.1:3210` for the Convex API and
 `http://127.0.0.1:3211` for HTTP actions. The CLI stores anonymous deployment
 state in `example/.convex/local/default/`. No login or cloud project is needed.
-The component registers its own five-second sweep cron, so the host does not
-need a `crons.ts`.
+The component registers its own five-second sweep cron. The example's host
+cron polls Slack every three seconds when Slack credentials are configured.
 
 Stop that first `npx convex dev` once the functions are pushed. The CLI's
 local backend listens on `0.0.0.0` and uses a fixed, publicly known instance
@@ -56,9 +56,10 @@ npx convex dev --once --env-file ~/t3-bridge-example.env   # push after code cha
 ```
 
 Pass `--env-file ~/t3-bridge-example.env` to every `npx convex` command below.
-Stop the backend with `systemctl --user stop convex-t3-bridge-backend`. After
-changing function signatures, run `npx convex codegen`, format the changed
-generated files with the repository formatter, and run both typechecks.
+Do not stop or restart a backend that another test session uses. After
+changing function signatures, push with `npx convex dev --once --env-file
+~/t3-bridge-example.env`, format the changed generated files with the
+repository formatter, and run both typechecks.
 
 Set the non-secret values on the deployment:
 
@@ -118,3 +119,56 @@ so inspect them before retrying. The instructions forbid file edits.
 
 The route test posts directly to the local HTTP endpoint. It does not require
 adding an MCP server to T3 or making the local endpoint reachable from T3.
+
+## Run the Slack check
+
+Use the existing `dev-affil` bot in the Affil.ai workspace. Do not change its
+Events API request URL or enable Socket Mode. This example uses outbound Web
+API calls only. The bot needs `channels:history`, `chat:write`, and
+`reactions:write`, and must be a member of `#testing`.
+
+The coordinator sets these variables on the local Convex deployment:
+
+- `SLACK_BOT_TOKEN`, the existing bot token.
+- `SLACK_TEST_CHANNEL_ID`, `C0AJ5HR70PR`.
+- `SLACK_TRIGGER_PREFIX`, optional. The default is `t3bridge:`.
+
+Keep the T3 variables from phase 2 configured. Without `SLACK_BOT_TOKEN` or
+`SLACK_TEST_CHANNEL_ID`, the poller returns without a Slack call or log. Its
+first configured poll records the current time without reading history.
+Wait at least six seconds after configuration before posting a trigger.
+Messages that precede that first poll are not replayed.
+
+Inject the same Slack variables into the harness process through your
+authorized secret source, then run:
+
+```sh
+cd /home/vivek-affil/build/t3work-convex-t3-bridge/packages/convex-t3-bridge/example
+pnpm harness:slack
+```
+
+The harness refuses a channel other than `C0AJ5HR70PR`, checks that the channel
+matches `SLACK_TEST_CHANNEL_ID`, and rejects a different command-line channel.
+It posts one top-level trigger and one prefixed follow-up in that thread.
+Each answer has a five-minute deadline. It prints `PASS` or `FAIL` for the
+threaded answer, the trigger's `eyes` reaction, and the follow-up answer.
+Neither credentials nor random answer tokens appear in its output.
+
+The adapter also creates a status message for activity, updates it at most
+once every three seconds, and changes it to `Done` after posting the final
+answer. Follow-ups reuse that status message.
+Only prefixed top-level messages and prefixed replies in threads started by
+this example launch turns. Bot-authored triggers count too. Background turns
+post only explicit `reply` events.
+
+The poller remembers every thread it starts and continues to read its replies.
+Slack rate limits can delay polling or output beyond three seconds. HTTP
+429 responses defer retries by `Retry-After`. Other Slack errors produce a
+sanitized warning and do not fail the bridge callback. Do not run the harness
+until the coordinator approves messages in the shared channel.
+
+Run the fake-Slack tests from the package directory:
+
+```sh
+pnpm test:run
+```

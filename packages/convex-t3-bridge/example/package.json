@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "convex dev",
     "harness": "node harness.ts",
+    "harness:slack": "node slack-harness.ts",
     "test:local": "node --test local.test.ts",
     "typecheck": "tsc --noEmit"
   },
