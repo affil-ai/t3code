@@ -9,12 +9,18 @@ import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command, CliError } from "effect/cli";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { cli } from "../binCli.ts";
+import * as ServerConfig from "../config.ts";
 import {
   SERVICE_LAUNCHER_CONTEXT_ENV,
   SERVICE_LAUNCHER_PROTOCOL,
@@ -30,6 +36,8 @@ import {
   resolveDirectPairingBaseUrl,
   resolveTailscaleLocalTarget,
 } from "./pair.ts";
+import { authCommand } from "./auth.ts";
+import { resolveCliAuthConfig } from "./config.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
 
@@ -93,6 +101,12 @@ describe("pair tailscale local target", () => {
 });
 
 const runCli = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "0.0.0" })(args);
+const runAuthCli = (args: ReadonlyArray<string>) =>
+  Command.runWith(authCommand, { version: "0.0.0" })(args);
+
+const decodeIssuedSession = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ token: Schema.String, expiresAt: Schema.String })),
+);
 
 const provideCliTestLayers = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.provide(effect, Layer.mergeAll(layerCliRuntime, TestConsole.layer));
@@ -397,6 +411,75 @@ describe("auth scope options", () => {
       }
       assert.equal(scopeError.option, "scope");
       assert.equal(scopeError.value, "admin");
+    }),
+  );
+
+  it.effect.each([
+    { ceilingArgs: ["--runtime-mode-ceiling", "full-access"], access: "full-access" },
+    { ceilingArgs: [], access: "approval-required" },
+  ])("issues a long-lived MCP session with $access access", ({ ceilingArgs, access }) =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-auth-long-ttl-"));
+      const issuedAt = yield* DateTime.now;
+      const output = yield* captureStdout(
+        runAuthCli([
+          "session",
+          "issue",
+          "--base-dir",
+          baseDir,
+          "--json",
+          "--subject",
+          "mcp-client",
+          "--scope",
+          "orchestration:read",
+          "--scope",
+          "orchestration:operate",
+          ...ceilingArgs,
+          "--ttl",
+          "3650d",
+        ]),
+      );
+      const issued = yield* decodeIssuedSession(output);
+      expect(issued.expiresAt).toBe(DateTime.formatIso(DateTime.add(issuedAt, { days: 3650 })));
+      const config = yield* resolveCliAuthConfig({ baseDir: Option.some(baseDir) }, Option.none());
+      const authenticated = yield* EnvironmentAuth.EnvironmentAuth.pipe(
+        Effect.flatMap((auth) =>
+          auth.authenticateMcpClient(
+            HttpServerRequest.fromWeb(
+              new Request("http://localhost/mcp", {
+                headers: { authorization: `Bearer ${issued.token}` },
+              }),
+            ),
+          ),
+        ),
+        Effect.provide(
+          EnvironmentAuth.layerRuntime.pipe(Layer.provide(ServerConfig.layer(config))),
+        ),
+      );
+      expect(authenticated.access).toBe(access);
+    }).pipe(Effect.provide(layerCliRuntime)),
+  );
+
+  it.effect("rejects a runtime mode ceiling without orchestration operate access", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-auth-ceiling-"));
+      const error = yield* provideCliTestLayers(
+        runAuthCli([
+          "session",
+          "issue",
+          "--base-dir",
+          baseDir,
+          "--scope",
+          "orchestration:read",
+          "--runtime-mode-ceiling",
+          "full-access",
+        ]).pipe(Effect.flip),
+      );
+      assert.include(String(error), "requires the orchestration:operate scope");
+      const output = yield* captureStdout(
+        runAuthCli(["session", "list", "--base-dir", baseDir, "--json"]),
+      );
+      assert.deepEqual(JSON.parse(output), []);
     }),
   );
 });

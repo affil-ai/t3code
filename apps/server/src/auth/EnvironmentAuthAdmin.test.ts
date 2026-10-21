@@ -1,8 +1,13 @@
-import { AuthAdministrativeScopes } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  AuthAdministrativeScopes,
+} from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -91,6 +96,34 @@ it.layer(NodeServices.layer)("EnvironmentAuth administrative operations", (it) =
       expect("token" in (listedBeforeRevoke[0] ?? {})).toBe(false);
       expect(revoked).toBe(true);
       expect(listedAfterRevoke).toHaveLength(0);
+    }).pipe(Effect.provide(layerEnvironmentAuth())),
+  );
+
+  it.effect("uses an issued MCP session runtime ceiling when authenticating", () =>
+    Effect.gen(function* () {
+      const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const scopes = [AuthOrchestrationReadScope, AuthOrchestrationOperateScope] as const;
+      const capped = yield* environmentAuth.issueSession({
+        subject: "mcp-client",
+        scopes,
+        runtimeModeCeiling: "full-access",
+      });
+      const uncapped = yield* environmentAuth.issueSession({
+        subject: "mcp-client",
+        scopes,
+      });
+
+      const authenticate = (token: string) =>
+        environmentAuth.authenticateMcpClient(
+          HttpServerRequest.fromWeb(
+            new Request("http://localhost/mcp", {
+              headers: { authorization: `Bearer ${token}` },
+            }),
+          ),
+        );
+
+      expect((yield* authenticate(capped.token)).access).toBe("full-access");
+      expect((yield* authenticate(uncapped.token)).access).toBe("approval-required");
     }).pipe(Effect.provide(layerEnvironmentAuth())),
   );
 
