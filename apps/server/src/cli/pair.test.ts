@@ -36,6 +36,7 @@ import {
   resolveDirectPairingBaseUrl,
   resolveTailscaleLocalTarget,
 } from "./pair.ts";
+import { authCommand } from "./auth.ts";
 import { resolveCliAuthConfig } from "./config.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -100,6 +101,8 @@ describe("pair tailscale local target", () => {
 });
 
 const runCli = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "0.0.0" })(args);
+const runAuthCli = (args: ReadonlyArray<string>) =>
+  Command.runWith(authCommand, { version: "0.0.0" })(args);
 
 const decodeIssuedSession = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Struct({ token: Schema.String, expiresAt: Schema.String })),
@@ -419,8 +422,7 @@ describe("auth scope options", () => {
       const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-auth-long-ttl-"));
       const issuedAt = yield* DateTime.now;
       const output = yield* captureStdout(
-        runCli([
-          "auth",
+        runAuthCli([
           "session",
           "issue",
           "--base-dir",
@@ -462,8 +464,7 @@ describe("auth scope options", () => {
     Effect.gen(function* () {
       const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-auth-ceiling-"));
       const error = yield* provideCliTestLayers(
-        runCli([
-          "auth",
+        runAuthCli([
           "session",
           "issue",
           "--base-dir",
@@ -476,7 +477,7 @@ describe("auth scope options", () => {
       );
       assert.include(String(error), "requires the orchestration:operate scope");
       const output = yield* captureStdout(
-        runCli(["auth", "session", "list", "--base-dir", baseDir, "--json"]),
+        runAuthCli(["session", "list", "--base-dir", baseDir, "--json"]),
       );
       assert.deepEqual(JSON.parse(output), []);
     }),
