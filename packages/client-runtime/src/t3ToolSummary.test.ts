@@ -106,6 +106,26 @@ describe("summarizeT3ToolCalls", () => {
     ).toBe("Requested 1 context merge");
   });
 
+  it("summarizes crew and coordinator task tools", () => {
+    expect(summarizeT3ToolCalls("agent-list", [completed({}, { agents: [] })]).label).toBe(
+      "Listed crew agents 1 time",
+    );
+    expect(
+      summarizeT3ToolCalls("agent-task-read", [completed({ taskId: "task-1" }, { id: "task-1" })])
+        .label,
+    ).toBe("Read 1 agent task");
+    expect(
+      summarizeT3ToolCalls("agent-automation-update", [
+        completed({ scheduledTaskId: "schedule-1" }, { scheduledTaskId: "schedule-1" }),
+      ]).label,
+    ).toBe("Updated 1 agent automation");
+    expect(
+      summarizeT3ToolCalls("firstmate-task-update", [
+        completed({ taskId: "task-1" }, { taskId: "task-1" }),
+      ]).label,
+    ).toBe("Updated 1 Firstmate task");
+  });
+
   it.each([
     "WorktreeMcpFailure",
     "DeviceOperationError",
