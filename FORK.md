@@ -5,6 +5,23 @@ and still work against an unmodified T3 server of the same version.
 **Firstmate** changes the server, so it needs this fork's server.
 Against a stock server, Firstmate is hidden.
 
+Read [`CONTEXT.md`](CONTEXT.md) for the fork's canonical source, release
+language, and ownership boundaries.
+
+## Affil ownership boundaries
+
+- The canonical fork is `affil-ai/t3code`.
+- Keep `upstream` pointed at `pingdotgg/t3code`.
+- Fork releases use the repository-owned host-local workflow. They do not use
+  GitHub Actions release channels.
+- Ubuntu is the Linux build and web-publication host.
+- The Mac is the macOS build, signing, and app-installation host.
+- `t3.olumbe.com` is the private web target for the paired release.
+- Firstmate server and client code must be released from this fork together.
+- Office worker source remains in `affil-ai/nextcard`.
+- Do not copy the machine repository, credentials, SSH keys, Cloudflare
+  configuration, or private runtime state into this repository.
+
 ## Fork changes and merge rules
 
 | Area                                      | Server change | Location                                               |

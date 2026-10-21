@@ -1,5 +1,9 @@
 # Release Checklist
 
+> **Affil fork:** this page describes upstream distribution, not Affil
+> deployment. Use [fork-release.md](fork-release.md) and the repository's
+> `affil-release` skill. Do not dispatch GitHub Actions for an Affil release.
+
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
 This document covers the unified release workflow for stable and nightly desktop releases.

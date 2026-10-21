@@ -1,5 +1,9 @@
 # Fork release checks
 
+This is the canonical Affil T3 Work release procedure. It is separate from
+the upstream GitHub Actions release workflow. Do not use upstream
+`preview`, `nightly`, or `stable` workflow channels for an Affil release.
+
 The fork owns its release tooling under `scripts/fork-release/`. It must not
 depend on a separate machine-configuration repository. Host credentials and
 release checkpoints stay in private local state.
@@ -36,6 +40,22 @@ The Mac pull command is one bounded queue pass, not an installed daemon.
 It uses outbound SSH from the Mac; it does not require an inbound Mac port.
 Mac builds are signed with the local Apple Development identity before hashing.
 That identity must already exist in the Mac keychain.
+
+## Release state model
+
+Use these states in release reports:
+
+1. **Prepared**: one fork version is bound to one source commit.
+2. **Built**: host artifacts and the matching web payload exist.
+3. **Exchanged**: paired artifacts are present and checksums match.
+4. **Qualified**: installed source, protocol, schema, and Office compatibility
+   pass for the exact release.
+5. **Activated**: the target host installed the release.
+6. **Published**: the matching web payload was atomically published.
+7. **Verified**: receipts, live API metadata, and browser checks pass.
+
+A build receipt is not an install receipt. An install receipt is not web
+verification. Report Mac, Ubuntu, and public web targets separately.
 
 ## Paired release
 
@@ -230,3 +250,16 @@ The Office worker remains in Nextcard. Inspect its deployed compatibility
 checks and test its protocol before updating the shared T3 server. Leave a
 compatible worker unchanged. A local checkout's version pin is not evidence
 of deployed worker behavior.
+
+## Cleanup
+
+After activation and live verification, remove only verified disposable build
+material. Keep requests, manifests, checksums, qualification records,
+installation receipts, publication receipts, private logs, the current
+artifact, the immediate previous known-good artifact, and staged artifacts
+awaiting activation.
+
+Never delete a release directory or its request metadata. Never delete a path
+referenced by a retained manifest, active installer, or worker. Remove only
+temporary source checkouts, dependency directories, unpacked staging copies,
+and failed temporary build paths. Check free space again after cleanup.
