@@ -52,5 +52,10 @@ it.effect("migrates legacy statuses once and does not reclassify them on restart
     yield* ensureSchema;
     const [after] = yield* sql<TaskRow>`SELECT * FROM firstmate_task WHERE task_id = 'plan'`;
     expect(taskFromRow(after!).status).toBe("planning");
+    // A saved monitoring status is never reclassified from its legacy state.
+    yield* sql`UPDATE firstmate_task SET status = 'monitoring' WHERE task_id = 'work'`;
+    yield* ensureSchema;
+    const [monitoring] = yield* sql<TaskRow>`SELECT * FROM firstmate_task WHERE task_id = 'work'`;
+    expect(taskFromRow(monitoring!).status).toBe("monitoring");
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );

@@ -1,6 +1,6 @@
 /**
  * An agent's open tasks in the sidebar, in the Tasks panel's sections
- * (Ready for deployment first, followed by other lifecycle sections).
+ * (`FIRSTMATE_SECTION_ORDER`, without Done).
  * Attention is marked on the row, not in a duplicate section.
  * A task with a worker opens the worker's chat, with a dot for
  * what the worker is doing. Tasks without a worker open task details and

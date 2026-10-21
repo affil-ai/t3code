@@ -1,13 +1,11 @@
 import type { FirstmateTask } from "@t3tools/contracts";
-import { mapFirstmateBoard, type FirstmateColumnId } from "../firstmate/firstmateBoard.logic";
+import { FIRSTMATE_SECTION_ORDER, mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
 
-export const OPEN_TASK_COLUMNS: Exclude<FirstmateColumnId, "done" | "needs-you">[] = [
-  "ready",
-  "planning",
-  "in-progress",
-  "in-review",
-  "backlog",
-];
+/** The sidebar's sections: the shared order without Done. */
+export const OPEN_TASK_COLUMNS = FIRSTMATE_SECTION_ORDER.filter(
+  (column): column is Exclude<(typeof FIRSTMATE_SECTION_ORDER)[number], "done"> =>
+    column !== "done",
+);
 
 export function sidebarNavigationTasks(tasks: readonly FirstmateTask[]): FirstmateTask[] {
   const columns = mapFirstmateBoard(tasks);

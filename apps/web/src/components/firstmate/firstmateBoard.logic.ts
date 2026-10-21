@@ -5,11 +5,26 @@ export const FIRSTMATE_COLUMN_IDS = [
   "backlog",
   "planning",
   "ready",
+  "monitoring",
   "in-progress",
   "in-review",
   "done",
 ] as const;
 export type FirstmateColumnId = (typeof FIRSTMATE_COLUMN_IDS)[number];
+
+/**
+ * Lifecycle sections in display order, shared by the sidebar and the Tasks
+ * panel so the two cannot drift. The sidebar leaves out Done.
+ */
+export const FIRSTMATE_SECTION_ORDER = [
+  "monitoring",
+  "ready",
+  "planning",
+  "in-progress",
+  "in-review",
+  "backlog",
+  "done",
+] as const satisfies readonly Exclude<FirstmateColumnId, "needs-you">[];
 
 export type FirstmateBoardColumns = Readonly<Record<FirstmateColumnId, readonly FirstmateTask[]>>;
 
@@ -25,6 +40,8 @@ export function firstmateColumnForTask(task: FirstmateTask): FirstmateColumnId {
       return "planning";
     case "ready_for_deployment":
       return "ready";
+    case "monitoring":
+      return "monitoring";
     case "in_review":
       return "in-review";
     case "done":
@@ -68,6 +85,7 @@ export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoa
     backlog: [],
     planning: [],
     ready: [],
+    monitoring: [],
     "in-progress": [],
     "in-review": [],
     "needs-you": [],

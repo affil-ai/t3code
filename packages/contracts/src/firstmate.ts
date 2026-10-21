@@ -40,6 +40,9 @@ export type FirstmateTaskEventId = typeof FirstmateTaskEventId.Type;
  *
  * `ready` means reviewed with checks green, waiting only on the user to merge
  * or deploy. The board shows it as "Ready for deployment".
+ *
+ * A `monitoring` task is live in production with post-release checks still
+ * open. Its legacy state is `open`: the work is active, not waiting on a merge.
  */
 export const FirstmateTaskState = Schema.Literals(["open", "waiting", "ready", "done", "dropped"]);
 export type FirstmateTaskState = typeof FirstmateTaskState.Type;
@@ -51,6 +54,7 @@ export const FirstmateTaskStatus = Schema.Literals([
   "in_progress",
   "in_review",
   "ready_for_deployment",
+  "monitoring",
   "done",
   "canceled",
 ]);
@@ -300,8 +304,18 @@ export const FirstmateTaskCreateInput = Schema.Struct({
   intent: FirstmateIntent.annotate({ description: "The user's request in their own words." }),
   definitionOfDone: TrimmedNonEmptyString,
   status: Schema.optional(
-    Schema.Literals(["backlog", "planning", "in_progress", "in_review", "ready_for_deployment"]),
-  ).annotate({ description: "Lifecycle status. Backlog is parked; do not start workers for it." }),
+    Schema.Literals([
+      "backlog",
+      "planning",
+      "in_progress",
+      "in_review",
+      "ready_for_deployment",
+      "monitoring",
+    ]),
+  ).annotate({
+    description:
+      "Lifecycle status. Backlog is parked; do not start workers for it. Monitoring means live in production with post-release checks open.",
+  }),
   nextActor: Schema.optional(FirstmateNextActor).annotate({
     description: "Who acts next. Omit for coordinator.",
   }),

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   FIRSTMATE_COLUMN_IDS,
+  FIRSTMATE_SECTION_ORDER,
   countFirstmateNeedsYou,
   countFirstmateOpenTasks,
   firstmateColumnForTask,
@@ -50,6 +51,7 @@ describe("firstmateColumnForTask", () => {
     ["in_progress", "in-progress"],
     ["in_review", "in-review"],
     ["ready_for_deployment", "ready"],
+    ["monitoring", "monitoring"],
     ["done", "done"],
     ["canceled", "done"],
   ] as const)("keeps %s in %s for every next actor", (status, column) => {
@@ -136,6 +138,16 @@ describe("mapFirstmateBoard", () => {
     expect(columns.backlog.map((t) => t.id)).toEqual(["backlog"]);
     expect(countFirstmateOpenTasks([review, backlog, done])).toBe(2);
   });
+  it("groups monitoring tasks as open work outside Needs you unless the user acts next", () => {
+    const watch = { ...task("watch", "open", "worker"), status: "monitoring" as const };
+    const ask = { ...task("ask", "open", "user"), status: "monitoring" as const };
+    const columns = mapFirstmateBoard([watch, ask]);
+    expect(columns.monitoring.map((t) => t.id).toSorted()).toEqual(["ask", "watch"]);
+    expect(columns["needs-you"].map((t) => t.id)).toEqual(["ask"]);
+    expect(columns.ready).toHaveLength(0);
+    expect(countFirstmateOpenTasks([watch, ask])).toBe(2);
+  });
+
   it("places every task in exactly one column", () => {
     const tasks = STATES.flatMap((state) =>
       ACTORS.map((actor) => task(`${state}-${actor}`, state, actor)),
@@ -219,5 +231,22 @@ describe("isSlackUrl", () => {
     expect(isSlackUrl("https://app.slack.com/client/T1/C2")).toBe(true);
     expect(isSlackUrl("https://example.com/slack.com")).toBe(false);
     expect(isSlackUrl("not a url")).toBe(false);
+  });
+});
+
+describe("FIRSTMATE_SECTION_ORDER", () => {
+  it("lists every lifecycle column once, in Vivek's order", () => {
+    expect(FIRSTMATE_SECTION_ORDER).toEqual([
+      "monitoring",
+      "ready",
+      "planning",
+      "in-progress",
+      "in-review",
+      "backlog",
+      "done",
+    ]);
+    expect(FIRSTMATE_SECTION_ORDER.toSorted()).toEqual(
+      FIRSTMATE_COLUMN_IDS.filter((column) => column !== "needs-you").toSorted(),
+    );
   });
 });
