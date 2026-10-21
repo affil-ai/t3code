@@ -1,0 +1,54 @@
+{
+  "name": "@t3work/convex-t3-bridge",
+  "version": "0.1.0",
+  "description": "A Convex component connecting app conversations to T3 Code agents.",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "src/component",
+    "src/test.ts",
+    "src/validators.ts"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./convex.config": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./test": {
+      "types": "./dist/test.d.ts",
+      "default": "./src/test.ts"
+    },
+    "./_generated/component.js": {
+      "types": "./dist/component/_generated/component.d.ts"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:run": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "convex": "^1.47.0",
+    "convex-test": "^0.0.63",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "^4.1.0"
+  },
+  "peerDependencies": {
+    "convex": "^1.47.0"
+  }
+}

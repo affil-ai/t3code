@@ -99,6 +99,16 @@
       // These workspace packages are private to this monorepo.
       "includeEntryExports": true,
     },
+    "packages/convex-t3-bridge": {
+      // Published entrypoints are consumed outside this monorepo.
+      "includeEntryExports": false,
+      "entry": [
+        "src/client/index.ts!",
+        "src/test.ts!",
+        "src/component/convex.config.ts!",
+        "src/component/crons.ts!",
+      ],
+    },
     "packages/effect-acp": {
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],

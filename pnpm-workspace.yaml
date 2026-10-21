@@ -191,6 +191,7 @@ minimumReleaseAgeExclude:
   - "@opencode/protocol@2.0.28"
   - "@opencode/schema@2.0.28"
   - "@muse-code/sdk@1.4.6"
+  - convex-test@0.0.63
 
 overrides:
   # Keep jsdom's optional peer consistent so Vite+ has one test-runner instance.
