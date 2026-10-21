@@ -1,5 +1,5 @@
 import * as NodeURL from "node:url";
-import { slackCall, SlackError, type slackMessage } from "./convex/slackApi.js";
+import { slackCall, SlackError, type slackMessage } from "./convex/slackApi.ts";
 import type { z } from "zod";
 
 const TIMEOUT_MS = 5 * 60_000;

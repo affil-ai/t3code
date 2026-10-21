@@ -17,12 +17,14 @@ const responseSchema = z.object({
   response_metadata: z.object({ next_cursor: z.string().optional() }).optional(),
 });
 
+// No parameter properties: slack-harness.ts imports this file under Node's type stripping.
 export class SlackError extends Error {
-  constructor(
-    readonly code: string,
-    readonly retryAfterMs = 0,
-  ) {
+  readonly code: string;
+  readonly retryAfterMs: number;
+  constructor(code: string, retryAfterMs = 0) {
     super(code);
+    this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -35,11 +37,9 @@ export async function slackCall(
 ) {
   const response = await fetch(`https://slack.com/api/${method}`, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify(args),
+    // Form encoding: read methods such as conversations.replies ignore JSON bodies.
+    headers: { authorization: `Bearer ${token}` },
+    body: new URLSearchParams(Object.entries(args).map(([key, value]) => [key, String(value)])),
     redirect: "error",
     signal: AbortSignal.timeout(timeoutMs),
   });

@@ -51,7 +51,10 @@ beforeEach(() => {
     vi.fn<typeof fetch>(async (url, init) => {
       const method = new URL(String(url)).pathname.split("/").at(-1) ?? "";
       expect(String(url)).toBe(`https://slack.com/api/${method}`);
-      const args = requestArgs.parse(JSON.parse(String(init?.body)));
+      // Real Slack read methods ignore JSON bodies, so only form encoding is accepted here.
+      if (!(init?.body instanceof URLSearchParams))
+        return Response.json({ ok: false, error: "invalid_arguments" });
+      const args = requestArgs.parse(Object.fromEntries(init.body));
       calls.push({ method, args });
       return respond(method);
     }),
