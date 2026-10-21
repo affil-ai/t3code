@@ -1,56 +1,57 @@
-import { anyApi, type ApiFromModules, type FilterApi, type FunctionReference } from "convex/server";
+/* eslint-disable */
+/**
+ * Generated `api` utility.
+ *
+ * THIS CODE IS AUTOMATICALLY GENERATED.
+ *
+ * To regenerate, run `npx convex dev`.
+ * @module
+ */
+
 import type * as actions from "../actions.js";
 import type * as bridge from "../bridge.js";
+import type * as crons from "../crons.js";
+import type * as events from "../events.js";
+import type * as handles from "../handles.js";
+import type * as replyKey from "../replyKey.js";
+import type * as t3Mcp from "../t3Mcp.js";
 import type * as watcher from "../watcher.js";
 
-type FullApi = ApiFromModules<{
+import type { ApiFromModules, FilterApi, FunctionReference } from "convex/server";
+import { anyApi, componentsGeneric } from "convex/server";
+
+const fullApi: ApiFromModules<{
   actions: typeof actions;
   bridge: typeof bridge;
+  crons: typeof crons;
+  events: typeof events;
+  handles: typeof handles;
+  replyKey: typeof replyKey;
+  t3Mcp: typeof t3Mcp;
   watcher: typeof watcher;
-}>;
-export const api: FilterApi<
-  FullApi,
-  FunctionReference<"query" | "mutation" | "action", "public">
-> = {
-  actions: { importThread: anyApi.actions.importThread, sweep: anyApi.actions.sweep },
-  bridge: {
-    send: anyApi.bridge.send,
-    cancel: anyApi.bridge.cancel,
-    rotateReplyKey: anyApi.bridge.rotateReplyKey,
-    getConversation: anyApi.bridge.getConversation,
-    beginImport: anyApi.bridge.beginImport,
-    authorizeReply: anyApi.bridge.authorizeReply,
-    recordReply: anyApi.bridge.recordReply,
-  },
-};
+}> = anyApi as any;
+
+/**
+ * A utility for referencing Convex functions in your app's public API.
+ *
+ * Usage:
+ * ```js
+ * const myFunctionReference = api.myModule.myFunction;
+ * ```
+ */
+export const api: FilterApi<typeof fullApi, FunctionReference<any, "public">> = anyApi as any;
+
+/**
+ * A utility for referencing Convex functions in your app's internal API.
+ *
+ * Usage:
+ * ```js
+ * const myFunctionReference = internal.myModule.myFunction;
+ * ```
+ */
 export const internal: FilterApi<
-  FullApi,
-  FunctionReference<"query" | "mutation" | "action", "internal">
-> = {
-  actions: {
-    deliver: anyApi.actions.deliver,
-    watch: anyApi.actions.watch,
-    interrupt: anyApi.actions.interrupt,
-  },
-  bridge: {
-    skipCanceled: anyApi.bridge.skipCanceled,
-    finishImport: anyApi.bridge.finishImport,
-    abortImport: anyApi.bridge.abortImport,
-    claimDelivery: anyApi.bridge.claimDelivery,
-    deliveryGuard: anyApi.bridge.deliveryGuard,
-    acceptDelivery: anyApi.bridge.acceptDelivery,
-    deferDelivery: anyApi.bridge.deferDelivery,
-    deliveryFailed: anyApi.bridge.deliveryFailed,
-  },
-  watcher: {
-    acquire: anyApi.watcher.acquire,
-    renew: anyApi.watcher.renew,
-    applyBatch: anyApi.watcher.applyBatch,
-    failure: anyApi.watcher.failure,
-    sweepPage: anyApi.watcher.sweepPage,
-    dueOutbox: anyApi.watcher.dueOutbox,
-    claimCancel: anyApi.watcher.claimCancel,
-    cancelDone: anyApi.watcher.cancelDone,
-    dueCancels: anyApi.watcher.dueCancels,
-  },
-};
+  typeof fullApi,
+  FunctionReference<any, "internal">
+> = anyApi as any;
+
+export const components = componentsGeneric() as unknown as {};

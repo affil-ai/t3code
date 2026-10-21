@@ -56,7 +56,6 @@ export default defineSchema({
   conversations: defineTable(conversationFields)
     .index("by_key", ["conversationKey"])
     .index("by_thread", ["threadId"])
-    .index("by_sweep", ["conversationKey"])
     .index("by_cancel", ["cancelPending", "cancelNextAt"]),
   outbox: defineTable(outboxFields)
     .index("by_conversation_status", ["conversationId", "status"])

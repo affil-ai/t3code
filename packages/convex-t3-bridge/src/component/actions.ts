@@ -1,5 +1,3 @@
-"use node";
-
 import { ConvexError, v } from "convex/values";
 import { api, internal } from "./_generated/api.js";
 import { action, internalAction, type ActionCtx } from "./_generated/server.js";

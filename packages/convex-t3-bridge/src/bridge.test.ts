@@ -1,4 +1,5 @@
 import { defineSchema, defineTable, httpRouter, makeFunctionReference } from "convex/server";
+import type { GenericDatabaseReader, GenericDataModel } from "convex/server";
 import { v } from "convex/values";
 import { defineTestApp } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -85,7 +86,7 @@ const { api: host, createTest } = app.defineModules({
         ),
       },
       returns: v.string(),
-      handler: async (ctx, args): Promise<Id<"outbox">> =>
+      handler: async (ctx, args): Promise<string> =>
         bridge.send(ctx, {
           conversationKey: args.conversationKey ?? "conversation.1",
           text: args.text ?? "hello",
@@ -228,7 +229,9 @@ function sent(runId = "run-2") {
 }
 async function seed(t: Test, attachments = false) {
   const id = await t.mutation(host.host.send, { attachments: attachments ? [file()] : undefined });
-  const claim = await t.mutation(component.bridge.claimDelivery, { outboxId: id });
+  const claim = await t.mutation(component.bridge.claimDelivery, {
+    outboxId: await outboxId(t, id),
+  });
   if (!claim) throw new Error("Missing delivery claim");
   await t.mutation(component.bridge.deferDelivery, {
     outboxId: claim.row._id,
@@ -236,6 +239,16 @@ async function seed(t: Test, attachments = false) {
     delay: 0,
   });
   return { outboxId: claim.row._id, conversationId: claim.conversation._id };
+}
+// Generated component APIs serialize IDs as strings. Normalize before calling
+// the private, component-local functions exercised directly by these tests.
+async function outboxId(t: Test, value: string): Promise<Id<"outbox">> {
+  return t.run(async (ctx) => {
+    const db: GenericDatabaseReader<GenericDataModel> = ctx.db;
+    const id = db.normalizeId("outbox", value);
+    if (!id) throw new Error("Invalid component outbox ID");
+    return id;
+  });
 }
 function file() {
   return {
@@ -295,7 +308,7 @@ describe("component delivery and watcher", () => {
     const next = await t.mutation(host.host.send, { clientRequestId: "second" });
     const repeated = await t.mutation(host.host.send, { clientRequestId: "second" });
     expect(repeated).toBe(next);
-    await t.action(component.actions.deliver, { outboxId: next });
+    await t.action(component.actions.deliver, { outboxId: await outboxId(t, next) });
     expect(calls.map((call) => call.name)).toEqual([
       "t3_thread_list",
       "t3_thread_launch",
@@ -381,7 +394,7 @@ describe("component delivery and watcher", () => {
     };
     await t.action(component.actions.deliver, { outboxId: fixture.outboxId });
     const successor = await t.mutation(host.host.send, {});
-    await t.action(component.actions.deliver, { outboxId: successor });
+    await t.action(component.actions.deliver, { outboxId: await outboxId(t, successor) });
     expect(calls.some((call) => call.name === "t3_attachment_prepare_upload")).toBe(false);
     ready = true;
     vi.setSystemTime(Date.now() + 3_000);
@@ -544,7 +557,7 @@ describe("component delivery and watcher", () => {
       throw new Error(name);
     };
     const next = await t.mutation(host.host.send, {});
-    await t.action(component.actions.deliver, { outboxId: next });
+    await t.action(component.actions.deliver, { outboxId: await outboxId(t, next) });
     expect(
       await t.mutation(component.watcher.acquire, { conversationId: fixture.conversationId }),
     ).not.toBeNull();

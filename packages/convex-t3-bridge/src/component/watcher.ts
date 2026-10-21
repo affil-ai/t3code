@@ -167,7 +167,7 @@ export const sweepPage = internalQuery({
   handler: async (ctx, args) => {
     return await ctx.db
       .query("conversations")
-      .withIndex("by_sweep", (q) => {
+      .withIndex("by_key", (q) => {
         return args.after === undefined ? q : q.gt("conversationKey", args.after);
       })
       .take(100);
