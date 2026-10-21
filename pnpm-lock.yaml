@@ -1157,8 +1157,8 @@ importers:
         specifier: ^1.47.0
         version: 1.47.0(@clerk/react@6.16.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6)
       convex-test:
-        specifier: ^0.0.63
-        version: 0.0.63(convex@1.47.0(@clerk/react@6.16.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))
+        specifier: 0.0.62
+        version: 0.0.62(convex@1.47.0(@clerk/react@6.16.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -7955,8 +7955,8 @@ packages:
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
 
-  convex-test@0.0.63:
-    resolution: {integrity: sha512-iIinwgbmJmjAQFBo9DxikBDf0hfps8qAtVF34/t/pNExWQWhtWuQwNTZlfXl+6+DgEJJgoe0/vpdgSu0UEnCsA==}
+  convex-test@0.0.62:
+    resolution: {integrity: sha512-gvFps/A1JhOlFToZKjStSX8lWQS8oPF4oKm6U5D/ZdmOtfC7bKqw5Ce5ccAf45jvxPKPcFiyWt8JrueE+byB2g==}
     peerDependencies:
       convex: ^1.43.0
 
@@ -18764,7 +18764,7 @@ snapshots:
 
   convert-source-map@2.0.0: {}
 
-  convex-test@0.0.63(convex@1.47.0(@clerk/react@6.16.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6)):
+  convex-test@0.0.62(convex@1.47.0(@clerk/react@6.16.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6)):
     dependencies:
       convex: 1.47.0(@clerk/react@6.16.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6)
 

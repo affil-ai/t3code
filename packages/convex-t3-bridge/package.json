@@ -43,7 +43,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "convex": "^1.47.0",
-    "convex-test": "^0.0.63",
+    "convex-test": "0.0.62",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "^4.1.0"
