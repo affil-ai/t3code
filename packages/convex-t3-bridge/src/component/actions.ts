@@ -8,6 +8,9 @@ import { T3McpClient, T3McpError, fullItems, isActive, type UploadedAttachment }
 import type { FunctionReturnType } from "convex/server";
 import type { Doc } from "./_generated/dataModel.js";
 
+// t3_thread_read rejects a runLimit above 50 as invalid params.
+const T3_MAX_RUN_LIMIT = 50;
+
 type Delivery = NonNullable<FunctionReturnType<typeof internal.bridge.claimDelivery>>;
 
 export const deliver = internalAction({
@@ -161,7 +164,7 @@ export const watch = internalAction({
         threadId,
         afterPosition: claimed.conversation.position,
         limit: 100,
-        runLimit: 100,
+        runLimit: T3_MAX_RUN_LIMIT,
         maxCharsPerItem: 2_000,
       });
       // Renew between text continuation requests so a slow read keeps one reader.
@@ -216,7 +219,7 @@ export const importThread = action({
           threadId: args.threadId,
           afterPosition: position,
           limit: 100,
-          runLimit: 100,
+          runLimit: T3_MAX_RUN_LIMIT,
         });
         const next = page.nextPosition ?? page.items.at(-1)?.position ?? position;
         if (page.hasMore && next <= position)
@@ -373,7 +376,7 @@ function formatMessage(input: Delivery, key: string) {
     .join("\n\n");
 }
 async function firstRunStarted(client: T3McpClient, threadId: string, runId: string) {
-  const page = await client.readThread({ threadId, limit: 1, runLimit: 100 });
+  const page = await client.readThread({ threadId, limit: 1, runLimit: T3_MAX_RUN_LIMIT });
   const run = page.recentRuns.find((item) => item.runId === runId);
   if (!run) return false;
   if (["failed", "interrupted", "cancelled", "rolled_back"].includes(run.status)) {

@@ -28,30 +28,43 @@ state in `example/.convex/local/default/`. No login or cloud project is needed.
 The component registers its own five-second sweep cron, so the host does not
 need a `crons.ts`.
 
-After the first successful `npx convex dev`, a transient user service can
-keep the deployment running:
+Stop that first `npx convex dev` once the functions are pushed. The CLI's
+local backend listens on `0.0.0.0` and uses a fixed, publicly known instance
+secret, so anyone who can reach port 3210 can derive the admin key. Once the
+deployment holds a T3 token, that means anyone on the network could launch
+agents. Keep it running by starting the same backend binary bound to
+`127.0.0.1` with the state the CLI created:
 
 ```sh
-systemd-run --user --unit=convex-t3-bridge-example --collect \
-  --working-directory="$PWD" --setenv=CONVEX_AGENT_MODE=anonymous \
-  /usr/local/bin/npx convex dev \
-  --local-cloud-port 3210 --local-site-port 3211 \
-  --typecheck enable --codegen disable
+STATE="$PWD/.convex/local/default"
+BIN=$(ls -d ~/.cache/convex/binaries/*/convex-local-backend | tail -1)
+SECRET=$(python3 -I -c "import json,sys;print(json.load(open(sys.argv[1]))['instanceSecret'])" "$STATE/config.json")
+systemd-run --user --unit=convex-t3-bridge-backend --collect \
+  "$BIN" --interface 127.0.0.1 --port 3210 --site-proxy-port 3211 \
+  --instance-name anonymous-agent --instance-secret "$SECRET" \
+  --local-storage "$STATE/convex_local_storage" --disable-beacon \
+  "$STATE/convex_local_backend.sqlite3"
 ```
 
-Do not start a second copy while this unit is running. Stop it with
-`systemctl --user stop convex-t3-bridge-example`. Read its logs with
-`journalctl --user -u convex-t3-bridge-example`.
-Code generation is disabled in the steady-state service so it does not
-rewrite the component's committed generated files while you work. After
+Check `ss -H -ltn | grep 321` shows `127.0.0.1` only. Point the CLI at it as a
+self-hosted deployment by writing a mode-600 env file outside the repository:
+
+```sh
+umask 077
+python3 -I -c "import json,sys;c=json.load(open(sys.argv[1]));print('CONVEX_SELF_HOSTED_URL=http://127.0.0.1:3210\nCONVEX_SELF_HOSTED_ADMIN_KEY='+c['adminKey'])" "$STATE/config.json" > ~/t3-bridge-example.env
+npx convex dev --once --env-file ~/t3-bridge-example.env   # push after code changes
+```
+
+Pass `--env-file ~/t3-bridge-example.env` to every `npx convex` command below.
+Stop the backend with `systemctl --user stop convex-t3-bridge-backend`. After
 changing function signatures, run `npx convex codegen`, format the changed
 generated files with the repository formatter, and run both typechecks.
 
 Set the non-secret values on the deployment:
 
 ```sh
-CONVEX_AGENT_MODE=anonymous npx convex env set T3_MCP_URL https://t3.olumbe.com/mcp
-CONVEX_AGENT_MODE=anonymous npx convex env set T3_TEST_PROJECT_ID mcp:15b62d36-b4f8-4a8f-b9dd-f1dd63e4afb7
+npx convex env set --env-file ~/t3-bridge-example.env T3_MCP_URL https://t3.olumbe.com/mcp
+npx convex env set --env-file ~/t3-bridge-example.env T3_TEST_PROJECT_ID mcp:15b62d36-b4f8-4a8f-b9dd-f1dd63e4afb7
 ```
 
 That project ID was verified through `t3_project_list` on October 21, 2026.
@@ -72,8 +85,6 @@ check that the reply route refuses requests without a valid bearer token.
 They do not send messages to T3.
 
 Run `pnpm run typecheck` from the parent package to check the component source.
-Convex 1.47's local backend binds `0.0.0.0` by default. The commands above do
-not publish a tunnel or configure host firewall access.
 
 ## Run the live harness in phase 2
 

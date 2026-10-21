@@ -163,6 +163,14 @@ beforeEach(() => {
         .parse(request.params);
       const call = { name: params.name, args: params.arguments };
       calls.push(call);
+      // Real T3 rejects these as invalid params (-32602), which the watcher treats as permanent.
+      const { limit, runLimit } = call.args;
+      if (
+        call.name === "t3_thread_read" &&
+        ((typeof limit === "number" && limit > 100) ||
+          (typeof runLimit === "number" && runLimit > 50))
+      )
+        return Response.json({ error: { code: -32602, message: "Invalid params" } });
       const value = await tools(call.name, call.args);
       return Response.json({ result: { structuredContent: value } });
     }),
