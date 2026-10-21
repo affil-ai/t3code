@@ -109,6 +109,10 @@
         "src/component/crons.ts!",
       ],
     },
+    "packages/convex-t3-bridge/example": {
+      "entry": ["harness.ts", "local.test.ts", "convex/**/*.ts"],
+      "includeEntryExports": false,
+    },
     "packages/effect-acp": {
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],

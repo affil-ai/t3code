@@ -3,6 +3,7 @@ packages:
   - infra/*
   - oxlint-plugin-t3code
   - packages/*
+  - packages/convex-t3-bridge/example
   - scripts
 
 # Successor to onlyBuiltDependencies/ignoredBuiltDependencies (pnpm 11).

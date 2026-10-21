@@ -162,5 +162,5 @@ pnpm test        # component unit tests (convex-test)
 pnpm build       # emits dist/ for publishing
 ```
 
-`example/` is a small app that drives the component from a harness script and
-from a Slack test channel. See `example/README.md`.
+`example/` is a local app that drives the component from a Node.js harness.
+See `example/README.md`.

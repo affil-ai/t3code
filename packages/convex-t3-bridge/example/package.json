@@ -1,0 +1,19 @@
+{
+  "name": "@t3work/convex-t3-bridge-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "convex dev",
+    "harness": "node harness.ts",
+    "test:local": "node --test local.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "convex": "^1.47.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}
