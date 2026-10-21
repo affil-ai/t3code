@@ -213,6 +213,69 @@ export function summarizeT3ToolCalls(
     case "schedule-run":
       label = phrase("Requested", "request", quantity(selected.length, "scheduled task run"));
       break;
+    case "agent-list":
+      label = phrase("Listed", "list", `crew agents ${times}`);
+      break;
+    case "agent-task-list":
+      label = phrase("Listed", "list", `agent tasks ${times}`);
+      break;
+    case "agent-task-read":
+      label = phrase("Read", "read", quantity(countEntities(entityIds("taskId")), "agent task"));
+      break;
+    case "agent-automation-list":
+      label = phrase("Listed", "list", `agent automations ${times}`);
+      break;
+    case "agent-automation-read":
+      label = phrase(
+        "Read",
+        "read",
+        quantity(countEntities(entityIds("scheduledTaskId")), "agent automation"),
+      );
+      break;
+    case "agent-automation-update":
+      label = phrase(
+        "Updated",
+        "update",
+        quantity(countEntities(entityIds("scheduledTaskId")), "agent automation"),
+      );
+      break;
+    case "agent-automation-delete":
+      label = phrase(
+        "Requested deletion of",
+        "delete",
+        quantity(countEntities(entityIds("scheduledTaskId")), "agent automation"),
+      );
+      break;
+    case "firstmate-task-list":
+      label = phrase("Listed", "list", `Firstmate tasks ${times}`);
+      break;
+    case "firstmate-task-read":
+      label = phrase(
+        "Read",
+        "read",
+        quantity(countEntities(entityIds("taskId")), "Firstmate task"),
+      );
+      break;
+    case "firstmate-task-create":
+      label = phrase(
+        "Created",
+        "create",
+        quantity(countEntities(entityIds("taskId")), "Firstmate task"),
+      );
+      break;
+    case "firstmate-task-update":
+      label = phrase(
+        "Updated",
+        "update",
+        quantity(countEntities(entityIds("taskId")), "Firstmate task"),
+      );
+      break;
+    case "agent-create":
+      label = phrase("Created", "create", quantity(countEntities(entityIds("agentId")), "agent"));
+      break;
+    case "agent-update":
+      label = phrase("Updated", "update", quantity(countEntities(entityIds("agentId")), "agent"));
+      break;
     case "thread-configuration":
       label = phrase("Checked", "check", `thread configuration ${times}`);
       break;

@@ -88,6 +88,25 @@ Any agent that supports remote MCP servers over HTTP with OAuth can connect. Giv
 it the MCP URL and choose OAuth, and the agent finds the sign-in settings itself.
 Agents without OAuth support cannot connect.
 
+## Crew and automations
+
+An approved external client can inspect the crew without coordinator impersonation.
+Read-only access includes:
+
+- `agent_list`, with name filtering and cursor pagination
+- `agent_tasks`, with an explicit `agentId`, lifecycle and attention filters, and cursor pagination
+- `agent_task_get`, with an explicit `agentId` and `taskId`
+- `agent_automations` and `agent_automation_get`, with coordinator-bound schedule ownership and recent run details
+
+These tools never return webhook URLs or signing secrets. A schedule counts as an
+agent automation only when it is bound to that agent's coordinator chat. An agent
+without a coordinator has no automations to list.
+
+`agent_automation_update` and `agent_automation_delete` require write access.
+Your approval must cover both the automation's saved permission modes and its
+coordinator's current modes. They check coordinator ownership before changing a
+schedule. Existing task creation and task updates remain coordinator-only.
+
 ## Remove an agent
 
 Approved agents appear under **Settings → Connections** like other clients.

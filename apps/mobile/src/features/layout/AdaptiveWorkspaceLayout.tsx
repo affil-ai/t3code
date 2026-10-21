@@ -95,6 +95,7 @@ interface AdaptiveWorkspaceContextValue {
   readonly registerWorkspaceInspector: (render: () => ReactNode) => () => void;
   readonly setPrimarySidebarSearchQuery: (query: string) => void;
   readonly showAuxiliaryPane: (role: WorkspaceAuxiliaryPaneRole) => void;
+  readonly hideAuxiliaryPane: () => void;
   readonly toggleAuxiliaryPane: () => void;
   readonly togglePrimarySidebar: () => void;
   readonly setAuxiliaryPaneWidth: (width: number) => void;
@@ -121,6 +122,7 @@ const AdaptiveWorkspaceContext = createContext<AdaptiveWorkspaceContextValue>({
   registerWorkspaceInspector: () => () => undefined,
   setPrimarySidebarSearchQuery: () => undefined,
   showAuxiliaryPane: () => undefined,
+  hideAuxiliaryPane: () => undefined,
   toggleAuxiliaryPane: () => undefined,
   togglePrimarySidebar: () => undefined,
   setAuxiliaryPaneWidth: () => undefined,
@@ -263,11 +265,11 @@ function AdaptiveWorkspaceLayoutContent(
   const activeRoleOwner = useRef<symbol | null>(null);
   const [primarySidebarPreferredVisible, setPrimarySidebarPreferredVisible] = useState(true);
   const showPrimarySidebar = pathname === "/" || primarySidebarPreferredVisible;
-  const [supplementaryPanePreferredVisible, setSupplementaryPanePreferredVisible] = useState(true);
+  const [supplementaryPanePreferredVisible, setSupplementaryPanePreferredVisible] = useState(false);
   const [supplementaryPanePreferredWidth, setSupplementaryPanePreferredWidth] = useState<
     number | null
   >(null);
-  const [fileInspectorPreferredVisible, setFileInspectorPreferredVisible] = useState(true);
+  const [fileInspectorPreferredVisible, setFileInspectorPreferredVisible] = useState(false);
   const [fileInspectorPreferredWidth, setFileInspectorPreferredWidth] = useState<number | null>(
     null,
   );
@@ -420,6 +422,10 @@ function AdaptiveWorkspaceLayoutContent(
     }
     setFocusedAuxiliaryPaneRole("supplementary");
     setSupplementaryPanePreferredVisible(true);
+  }, []);
+  const hideAuxiliaryPane = useCallback(() => {
+    setFileInspectorPreferredVisible(false);
+    setSupplementaryPanePreferredVisible(false);
   }, []);
   const handleOpenFilesCommand = useCallback(() => {
     const activeThread = parseActiveThreadPath(pathname);
@@ -601,13 +607,16 @@ function AdaptiveWorkspaceLayoutContent(
   const selectAndroidWorkspace = useAndroidWorkspaceSelection();
   const handleSelectThread = useCallback(
     (thread: EnvironmentThreadShell) => {
+      // Selecting a different agent/task is a workspace navigation action, not
+      // an inspector action. Keep the next thread focused on its chat until
+      // the user explicitly opens Files or Git.
+      hideAuxiliaryPane();
       const params = {
         environmentId: String(thread.environmentId),
         threadId: String(thread.id),
       };
       if (Platform.OS === "android") {
         // Selecting a sidebar row enters its base chat, including from that chat's nested screens.
-        setFileInspectorPreferredVisible(false);
         selectAndroidWorkspace({ name: "Thread", params });
         return;
       }
@@ -622,7 +631,6 @@ function AdaptiveWorkspaceLayoutContent(
         params,
       });
       if (overlayState !== null) {
-        setFileInspectorPreferredVisible(false);
         navigation.dispatch(CommonActions.reset(overlayState));
         return;
       }
@@ -631,18 +639,17 @@ function AdaptiveWorkspaceLayoutContent(
         if (nextThreadKey === selectedThreadKey) {
           return;
         }
-        setFileInspectorPreferredVisible(false);
         navigation.navigate("Thread", params);
         return;
       }
       if (navigationAction === "replace") {
-        setFileInspectorPreferredVisible(false);
         navigation.dispatch(StackActions.replace("Thread", params));
         return;
       }
       navigation.navigate("Thread", params);
     },
     [
+      hideAuxiliaryPane,
       layout.usesSplitView,
       pathname,
       navigation,
@@ -661,6 +668,7 @@ function AdaptiveWorkspaceLayoutContent(
       selectThread: handleSelectThread,
       activateAuxiliaryPaneRole,
       registerWorkspaceInspector,
+      hideAuxiliaryPane,
       setPrimarySidebarSearchQuery,
       showAuxiliaryPane,
       toggleAuxiliaryPane,
@@ -671,6 +679,7 @@ function AdaptiveWorkspaceLayoutContent(
       activateAuxiliaryPaneRole,
       fileInspector,
       handleSelectThread,
+      hideAuxiliaryPane,
       layout,
       panes,
       primarySidebarSearchQuery,

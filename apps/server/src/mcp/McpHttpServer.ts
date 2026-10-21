@@ -24,6 +24,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import * as AgentMcpService from "./AgentMcpService.ts";
 import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
 import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
@@ -817,6 +818,11 @@ export const layerOrchestratorToolkit = toolkitRegistration(
 
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
+export const layerFirstmateToolkit = toolkitRegistration(
+  FirstmateToolkit,
+  FirstmateHandlers.layer,
+).pipe(Layer.provide(AgentMcpService.layer));
+
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,
   WorktreeHandlers.layer,
@@ -877,7 +883,7 @@ export const layer = Layer.mergeAll(
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,
   layerPullRequestsToolkit,
-  toolkitRegistration(FirstmateToolkit, FirstmateHandlers.layer), // fork: firstmate
+  layerFirstmateToolkit, // fork: firstmate
   layerDeviceToolkit,
   layerHtmlToolkit,
 ).pipe(Layer.provideMerge(layerMcpTransport));

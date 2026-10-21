@@ -9,11 +9,19 @@ import {
 import {
   ForwardCompatibleArray,
   IsoDateTime,
+  NonNegativeInt,
+  PositiveInt,
   ProjectId,
   RunId,
+  ScheduledTaskId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import {
+  ScheduledTaskRunStatus,
+  ScheduledTaskSchedule,
+  ScheduledTaskUpsertSchedule,
+} from "./scheduledTask.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProjectIconColor } from "./project.ts";
 
@@ -445,8 +453,21 @@ export type AgentUpdateInput = typeof AgentUpdateInput.Type;
 
 // --- agent MCP tools -------------------------------------------------------
 
+export const AgentListToolInput = Schema.Struct({
+  nameContains: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+  cursor: Schema.optional(NonNegativeInt).annotate({
+    description: "Live offset from nextCursor; omit for the first page.",
+  }),
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))).annotate({
+    description: "Page size, 1 to 100. Defaults to 50.",
+  }),
+});
+export type AgentListToolInput = typeof AgentListToolInput.Type;
+
 export const AgentListToolResult = Schema.Struct({
   agents: ForwardCompatibleArray(AgentProfile),
+  nextCursor: Schema.NullOr(NonNegativeInt),
+  total: NonNegativeInt,
 });
 export type AgentListToolResult = typeof AgentListToolResult.Type;
 
@@ -456,8 +477,102 @@ export const AgentTasksToolInput = Schema.Struct({
   state: Schema.optional(FirstmateTaskState).annotate({
     description: "Filter by state. Omit to list every task that is not done or dropped.",
   }),
+  priority: Schema.optional(Schema.Boolean),
+  nextActor: Schema.optional(FirstmateNextActor),
+  cursor: Schema.optional(NonNegativeInt).annotate({
+    description: "Live offset from nextCursor; omit for the first page.",
+  }),
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))).annotate({
+    description: "Page size, 1 to 100. Defaults to 50.",
+  }),
 });
 export type AgentTasksToolInput = typeof AgentTasksToolInput.Type;
+
+export const AgentTasksToolResult = Schema.Struct({
+  agentId: AgentProfileId,
+  tasks: ForwardCompatibleArray(FirstmateTask),
+  nextCursor: Schema.NullOr(NonNegativeInt),
+  total: NonNegativeInt,
+});
+export type AgentTasksToolResult = typeof AgentTasksToolResult.Type;
+
+export const AgentTaskGetToolInput = Schema.Struct({
+  agentId: AgentProfileId,
+  taskId: FirstmateTaskId,
+});
+export type AgentTaskGetToolInput = typeof AgentTaskGetToolInput.Type;
+
+/** Public schedule details for one agent; webhook secrets and URLs are never exposed. */
+export const AgentAutomation = Schema.Struct({
+  scheduledTaskId: ScheduledTaskId,
+  title: Schema.String,
+  prompt: Schema.String,
+  enabled: Schema.Boolean,
+  projectId: ProjectId,
+  boundThreadId: Schema.NullOr(ThreadId),
+  schedule: ScheduledTaskSchedule,
+  nextRunAt: Schema.NullOr(IsoDateTime),
+  lastRunAt: Schema.NullOr(IsoDateTime),
+  lastRunStatus: ScheduledTaskRunStatus,
+  lastRunError: Schema.NullOr(Schema.String),
+  runCount: NonNegativeInt,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type AgentAutomation = typeof AgentAutomation.Type;
+
+export const AgentAutomationsToolInput = Schema.Struct({
+  agentId: AgentProfileId,
+  enabled: Schema.optional(Schema.Boolean),
+  scheduleType: Schema.optional(Schema.Literals(["interval", "fixed_time", "webhook"])),
+  cursor: Schema.optional(NonNegativeInt).annotate({
+    description: "Live offset from nextCursor; omit for the first page.",
+  }),
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))).annotate({
+    description: "Page size, 1 to 100. Defaults to 50.",
+  }),
+});
+export type AgentAutomationsToolInput = typeof AgentAutomationsToolInput.Type;
+
+export const AgentAutomationsToolResult = Schema.Struct({
+  agentId: AgentProfileId,
+  automations: Schema.Array(AgentAutomation),
+  nextCursor: Schema.NullOr(NonNegativeInt),
+  total: NonNegativeInt,
+});
+export type AgentAutomationsToolResult = typeof AgentAutomationsToolResult.Type;
+
+export const AgentAutomationGetToolInput = Schema.Struct({
+  agentId: AgentProfileId,
+  scheduledTaskId: ScheduledTaskId,
+});
+export type AgentAutomationGetToolInput = typeof AgentAutomationGetToolInput.Type;
+
+export const AgentAutomationUpdateToolInput = Schema.Struct({
+  agentId: AgentProfileId,
+  scheduledTaskId: ScheduledTaskId,
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(512))),
+  prompt: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120_000))),
+  schedule: Schema.optional(ScheduledTaskUpsertSchedule),
+  enabled: Schema.optional(Schema.Boolean),
+});
+export type AgentAutomationUpdateToolInput = typeof AgentAutomationUpdateToolInput.Type;
+
+export const AgentAutomationMutationResult = Schema.Struct({
+  agentId: AgentProfileId,
+  automation: AgentAutomation,
+});
+export type AgentAutomationMutationResult = typeof AgentAutomationMutationResult.Type;
+
+export const AgentAutomationDeleteToolInput = AgentAutomationGetToolInput;
+export type AgentAutomationDeleteToolInput = typeof AgentAutomationDeleteToolInput.Type;
+
+export const AgentAutomationDeleteToolResult = Schema.Struct({
+  agentId: AgentProfileId,
+  scheduledTaskId: ScheduledTaskId,
+  deleted: Schema.Boolean,
+});
+export type AgentAutomationDeleteToolResult = typeof AgentAutomationDeleteToolResult.Type;
 
 /** Icon and color default to the agent defaults; the model defaults to the calling agent's. */
 export const AgentCreateToolInput = Schema.Struct({

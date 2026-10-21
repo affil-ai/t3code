@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as FirstmateService from "../../../firstmate/FirstmateService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as AgentMcpService from "../../AgentMcpService.ts";
 import { FirstmateToolkit } from "./tools.ts";
 
 const notAnAgent =
@@ -19,6 +20,7 @@ const modelRequired =
 
 const make = Effect.gen(function* () {
   const firstmate = yield* FirstmateService.FirstmateService;
+  const agents = yield* AgentMcpService.AgentMcpService;
 
   /** The agent the calling thread acts for: its coordinator, or a worker on one of its tasks. */
   const callingAgent = Effect.gen(function* () {
@@ -55,14 +57,40 @@ const make = Effect.gen(function* () {
   );
 
   return {
-    agent_list: McpToolAccess.reads(() =>
-      requireAgentCoordinator.pipe(
-        Effect.andThen(firstmate.listAgents()),
-        Effect.map((agents) => ({ agents })),
+    agent_list: McpToolAccess.reads((input) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) => agents.list(scope, input)),
       ),
     ),
-    agent_tasks: McpToolAccess.reads(({ agentId, ...filters }) =>
-      requireAgentCoordinator.pipe(Effect.andThen(firstmate.list(agentId, filters))),
+    agent_tasks: McpToolAccess.reads((input) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) => agents.tasks(scope, input)),
+      ),
+    ),
+    agent_task_get: McpToolAccess.reads((input) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) => agents.task(scope, input)),
+      ),
+    ),
+    agent_automations: McpToolAccess.reads((input) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) => agents.automations(scope, input)),
+      ),
+    ),
+    agent_automation_get: McpToolAccess.reads((input) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) => agents.getAutomation(scope, input)),
+      ),
+    ),
+    agent_automation_update: McpToolAccess.writes((input) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) => agents.updateAutomation(scope, input)),
+      ),
+    ),
+    agent_automation_delete: McpToolAccess.writes((input) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) => agents.deleteAutomation(scope, input)),
+      ),
     ),
     agent_create: McpToolAccess.writes((input) =>
       Effect.gen(function* () {
