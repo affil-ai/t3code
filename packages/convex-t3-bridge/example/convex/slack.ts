@@ -21,6 +21,7 @@ const messageValidator = v.object({
   ts: v.string(),
   text: v.optional(v.string()),
   threadTs: v.optional(v.string()),
+  user: v.optional(v.string()),
 });
 const leaseArgs = { channel: v.string(), lease: v.number() };
 const threadValidator = v.object({
@@ -112,6 +113,14 @@ export const ingest = internalMutation({
     const oldest = thread?.lastTs ?? poller.lastTs;
     const prefix = process.env.SLACK_TRIGGER_PREFIX ?? "t3bridge:";
     if (!prefix) throw new Error("SLACK_TRIGGER_PREFIX must not be empty");
+    // Triggers launch full-access agents on the T3 host, so only listed Slack
+    // users (e.g. the bot itself and the developer) may start or continue one.
+    const allowed = new Set(
+      (process.env.SLACK_ALLOWED_USER_IDS ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean),
+    );
     const messages = [...args.messages].sort((a, b) => Number(a.ts) - Number(b.ts));
     for (const message of messages) {
       if (Number(message.ts) <= Number(oldest) || Number(message.ts) > Number(args.throughTs))
@@ -123,6 +132,7 @@ export const ingest = internalMutation({
       )
         continue;
       if (!message.text?.startsWith(prefix)) continue;
+      if (!message.user || !allowed.has(message.user)) continue;
       const text = message.text.slice(prefix.length).trim();
       if (!text) continue;
       const duplicate = await ctx.db
@@ -220,6 +230,7 @@ export const poll = internalAction({
             ts: message.ts,
             text: message.text,
             threadTs: message.thread_ts,
+            user: message.user,
           })),
         });
       };

@@ -30,6 +30,7 @@ beforeEach(() => {
   vi.stubEnv("SLACK_BOT_TOKEN", "fake-slack-token");
   vi.stubEnv("SLACK_TEST_CHANNEL_ID", channel);
   vi.stubEnv("SLACK_TRIGGER_PREFIX", "t3bridge:");
+  vi.stubEnv("SLACK_ALLOWED_USER_IDS", "UBOT, UDEV");
   vi.stubEnv("T3_MCP_TOKEN", "fake-t3-token");
   vi.stubEnv("T3_BRIDGE_REPLY_SECRET", "fake-secret");
   vi.stubEnv("T3_TEST_PROJECT_ID", "project");
@@ -95,7 +96,7 @@ async function event(t: Test, payload: T3BridgeEvent) {
 describe("Slack polling", () => {
   it("starts at now without a Slack call and never replays earlier messages", async () => {
     const t = createTest();
-    history = [{ ts: "999.999999", text: "t3bridge: old" }];
+    history = [{ ts: "999.999999", text: "t3bridge: old", user: "UBOT" }];
     await poll(t);
     expect(calls).toEqual([]);
     vi.setSystemTime(1_003_000);
@@ -108,21 +109,33 @@ describe("Slack polling", () => {
     expect(await threads(t)).toEqual([]);
   });
 
-  it("accepts bot triggers, filters prefixes and replies, dedupes repeated pages, and maps thread follow-ups", async () => {
+  it("accepts allowlisted triggers, ignores other users, filters prefixes and replies, dedupes repeated pages, and maps thread follow-ups", async () => {
     const t = createTest();
     await poll(t);
     vi.setSystemTime(1_003_000);
     history = [
-      { ts: "1001.000001", text: "t3bridge: first", bot_id: "bot" },
-      { ts: "1001.000001", text: "t3bridge: first", bot_id: "bot" },
+      { ts: "1001.000001", text: "t3bridge: first", user: "UBOT", bot_id: "bot" },
+      { ts: "1001.000001", text: "t3bridge: first", user: "UBOT", bot_id: "bot" },
       { ts: "1001.000002", text: "not a trigger" },
       { ts: "1001.000003", text: "prefix t3bridge: not a trigger" },
-      { ts: "1001.000004", thread_ts: "1001.000001", text: "t3bridge: reply in history" },
-      { ts: "1001.000005", text: "t3bridge:   " },
+      {
+        ts: "1001.000004",
+        thread_ts: "1001.000001",
+        text: "t3bridge: reply in history",
+        user: "UBOT",
+      },
+      { ts: "1001.000005", text: "t3bridge:   ", user: "UBOT" },
+      { ts: "1001.000006", text: "t3bridge: run something", user: "USTRANGER" },
     ];
     replies = [
-      { ts: "1001.000001", text: "t3bridge: first" },
-      { ts: "1002.000001", thread_ts: "1001.000001", text: "t3bridge: follow-up", bot_id: "bot" },
+      { ts: "1001.000001", text: "t3bridge: first", user: "UBOT" },
+      {
+        ts: "1002.000001",
+        thread_ts: "1001.000001",
+        text: "t3bridge: follow-up",
+        user: "UBOT",
+        bot_id: "bot",
+      },
       { ts: "1002.000002", thread_ts: "1001.000001", text: "ordinary reply" },
       { ts: "1002.000003", thread_ts: "another-thread", text: "t3bridge: wrong thread" },
     ];
@@ -184,7 +197,7 @@ describe("Slack polling", () => {
         channel,
         lease: 1,
         throughTs: "1003.000000",
-        messages: [{ ts: "1001.000001", text: "t3bridge: stale" }],
+        messages: [{ ts: "1001.000001", text: "t3bridge: stale", user: "UBOT" }],
       }),
     ).toBe(false);
     expect(await messages(t)).toEqual([]);

@@ -4,6 +4,7 @@ export const slackMessage = z.object({
   ts: z.string(),
   text: z.string().optional(),
   thread_ts: z.string().optional(),
+  user: z.string().optional(),
   bot_id: z.string().optional(),
   reactions: z.array(z.object({ name: z.string(), count: z.number() })).optional(),
 });

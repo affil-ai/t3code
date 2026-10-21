@@ -132,6 +132,11 @@ The coordinator sets these variables on the local Convex deployment:
 - `SLACK_BOT_TOKEN`, the existing bot token.
 - `SLACK_TEST_CHANNEL_ID`, `C0AJ5HR70PR`.
 - `SLACK_TRIGGER_PREFIX`, optional. The default is `t3bridge:`.
+- `SLACK_ALLOWED_USER_IDS`, a comma-separated list of Slack user IDs that may
+  trigger or continue a turn. Include the bot's own user ID so the harness can
+  post triggers. Triggers launch full-access agents on the T3 host, so a
+  prefixed message from anyone else is ignored, and so is every trigger when
+  the list is unset.
 
 Keep the T3 variables from phase 2 configured. Without `SLACK_BOT_TOKEN` or
 `SLACK_TEST_CHANNEL_ID`, the poller returns without a Slack call or log. Its
