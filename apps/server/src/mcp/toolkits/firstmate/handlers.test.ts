@@ -231,6 +231,34 @@ describe("Firstmate toolkit handlers", () => {
     ),
   );
 
+  it.effect("accepts monitoring on the create, update, and list tools", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const created = yield* harness.call(
+          "firstmate_task_create",
+          { ...createParams, status: "monitoring" },
+          COORDINATOR,
+        );
+        expect(created.result).toMatchObject({ task: { status: "monitoring", state: "open" } });
+        const { task: other } = yield* harness.service.create(FM, createParams);
+        const listed = yield* harness.call(
+          "firstmate_task_list",
+          { status: "monitoring" },
+          COORDINATOR,
+        );
+        expect(listed.result).toMatchObject({ tasks: [{ status: "monitoring" }] });
+        expect((listed.result as { tasks: unknown[] }).tasks).toHaveLength(1);
+        const updated = yield* harness.call(
+          "firstmate_task_update",
+          { taskId: other.id, summary: "Deployed.", status: "monitoring" },
+          COORDINATOR,
+        );
+        expect(updated.result).toMatchObject({ task: { status: "monitoring" } });
+      }),
+    ),
+  );
+
   it.effect("lets a worker on one of the agent's tasks read the board, and refuses strangers", () =>
     Effect.scoped(
       Effect.gen(function* () {

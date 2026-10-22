@@ -50,23 +50,23 @@ This is a fork-only feature. Keep it modular so upstream merges stay easy.
 
 `firstmate_task`:
 
-| Field                                | Meaning                                                                                                              |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `id`                                 | Branded `FirstmateTaskId`                                                                                            |
-| `title`                              | Short label                                                                                                          |
-| `intent`                             | The user's request in their own words                                                                                |
-| `definitionOfDone`                   | What closes the task                                                                                                 |
-| `status`                             | Explicit lifecycle: `backlog`, `planning`, `in_progress`, `in_review`, `ready_for_deployment`, `done`, `canceled`    |
-| `state`                              | Legacy operational value, maintained from status by the service; old callers may still write it                      |
-| `nextActor`                          | `coordinator`, `worker`, `user`, or `external`                                                                       |
-| `note`                               | One-line current status                                                                                              |
-| `wakeAt`                             | ISO time or null                                                                                                     |
-| `workerThreadId`                     | Null, or one worker thread. A task has at most one live worker; replacing it overwrites the field and logs an event. |
-| `links`                              | Array of `{label, url}`, such as PRs and reports                                                                     |
-| `closeEvidence`                      | Required when the state becomes `done` or `dropped`                                                                  |
-| `createdAt`, `updatedAt`, `closedAt` | Timestamps                                                                                                           |
-| `lastReportedRunId`                  | Internal; dedupes worker wakes                                                                                       |
-| `orphanNotifiedAt`                   | Internal; dedupes orphan wakes                                                                                       |
+| Field                                | Meaning                                                                                                                                                          |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                 | Branded `FirstmateTaskId`                                                                                                                                        |
+| `title`                              | Short label                                                                                                                                                      |
+| `intent`                             | The user's request in their own words                                                                                                                            |
+| `definitionOfDone`                   | What closes the task                                                                                                                                             |
+| `status`                             | Explicit lifecycle: `backlog`, `planning`, `in_progress`, `in_review`, `ready_for_deployment`, `monitoring` (live, post-release checks open), `done`, `canceled` |
+| `state`                              | Legacy operational value, maintained from status by the service; old callers may still write it                                                                  |
+| `nextActor`                          | `coordinator`, `worker`, `user`, or `external`                                                                                                                   |
+| `note`                               | One-line current status                                                                                                                                          |
+| `wakeAt`                             | ISO time or null                                                                                                                                                 |
+| `workerThreadId`                     | Null, or one worker thread. A task has at most one live worker; replacing it overwrites the field and logs an event.                                             |
+| `links`                              | Array of `{label, url}`, such as PRs and reports                                                                                                                 |
+| `closeEvidence`                      | Required when the state becomes `done` or `dropped`                                                                                                              |
+| `createdAt`, `updatedAt`, `closedAt` | Timestamps                                                                                                                                                       |
+| `lastReportedRunId`                  | Internal; dedupes worker wakes                                                                                                                                   |
+| `orphanNotifiedAt`                   | Internal; dedupes orphan wakes                                                                                                                                   |
 
 `firstmate_task_event` is append-only. Each row has an id, a task id, a time,
 an actor (`coordinator`, `user`, or `system`), and a summary. Every create and

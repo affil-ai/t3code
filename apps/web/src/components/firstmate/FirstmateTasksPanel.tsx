@@ -1,7 +1,8 @@
 /**
  * An agent's Tasks panel, a right-panel surface beside its coordinator chat.
- * Tasks stack in an attention section (Needs you), explicit lifecycle
- * sections, and a folded Done section, newest activity first. It is read-only:
+ * Tasks stack in an attention section (Needs you), then the lifecycle sections
+ * in the sidebar's order (`FIRSTMATE_SECTION_ORDER`), with Backlog and Done
+ * folded, newest activity first. It is read-only:
  * the user changes tasks by talking to the chat. A card drills into the task's intent, definition of
  * done, evidence, links, and event log, with a back button to the list.
  */
@@ -28,6 +29,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Spinner } from "../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
+  FIRSTMATE_SECTION_ORDER,
   type FirstmateColumnId,
   firstmateColumnForTask,
   firstmateTaskActivityAt,
@@ -287,27 +289,25 @@ function TaskSections({
           onOpen={onOpen}
         />
         <p className="px-1.5 text-xs text-muted-foreground">All work · grouped by status</p>
-        <FoldedSection
-          column="backlog"
-          environmentId={environmentId}
-          tasks={columns.backlog}
-          onOpen={onOpen}
-        />
-        {(["planning", "in-progress", "in-review", "ready"] as const).map((column) => (
-          <ActiveSection
-            key={column}
-            column={column}
-            environmentId={environmentId}
-            tasks={columns[column]}
-            onOpen={onOpen}
-          />
-        ))}
-        <FoldedSection
-          column="done"
-          environmentId={environmentId}
-          tasks={columns.done}
-          onOpen={onOpen}
-        />
+        {FIRSTMATE_SECTION_ORDER.map((column) =>
+          column === "backlog" || column === "done" ? (
+            <FoldedSection
+              key={column}
+              column={column}
+              environmentId={environmentId}
+              tasks={columns[column]}
+              onOpen={onOpen}
+            />
+          ) : (
+            <ActiveSection
+              key={column}
+              column={column}
+              environmentId={environmentId}
+              tasks={columns[column]}
+              onOpen={onOpen}
+            />
+          ),
+        )}
         {/* Automations are triggers, not board work: rule them off. */}
         <div role="separator" className="-mx-2 my-1 border-t border-border" />
         <ScheduledSection environmentId={environmentId} threadId={threadId} />

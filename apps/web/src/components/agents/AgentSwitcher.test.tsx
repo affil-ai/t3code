@@ -331,20 +331,22 @@ describe("agent switcher navigation", () => {
     expect(document.querySelector('[role="menu"]')).toBeNull();
   });
 
-  it("puts deployment first and backlog last, with worker age instead of descriptions", async () => {
+  it("puts monitoring and deployment first and backlog last, with worker age instead of descriptions", async () => {
     vi.setSystemTime(new Date("2026-10-18T12:00:00Z"));
     mocks.workerShell = { updatedAt: "2026-10-18T10:00:00Z" };
-    const tasks = ["backlog", "in_progress", "ready_for_deployment"].map((status) => ({
-      id: status,
-      title: status,
-      status,
-      state: "open",
-      nextActor: "user",
-      intent: "Description should not appear",
-      nextStep: "Next step should not appear",
-      updatedAt: "2026-10-18T11:59:00Z",
-      workerThreadId: ThreadId.make("worker-chat"),
-    })) as FirstmateTask[];
+    const tasks = ["backlog", "in_progress", "ready_for_deployment", "monitoring"].map(
+      (status) => ({
+        id: status,
+        title: status,
+        status,
+        state: "open",
+        nextActor: "user",
+        intent: "Description should not appear",
+        nextStep: "Next step should not appear",
+        updatedAt: "2026-10-18T11:59:00Z",
+        workerThreadId: ThreadId.make("worker-chat"),
+      }),
+    ) as FirstmateTask[];
     await act(() =>
       root.render(
         <SidebarProvider>
@@ -358,7 +360,12 @@ describe("agent switcher navigation", () => {
       ),
     );
     const sections = [...container.querySelectorAll("section")];
-    expect(sections[0]?.getAttribute("aria-label")).toBe("Ready for deployment");
+    expect(sections.map((section) => section.getAttribute("aria-label"))).toEqual([
+      "Monitoring",
+      "Ready for deployment",
+      "In progress",
+      "Backlog",
+    ]);
     const backlog = sections.at(-1)!;
     expect(backlog.getAttribute("aria-label")).toBe("Backlog");
     const toggle = backlog.querySelector("button")!;
@@ -374,44 +381,48 @@ describe("agent switcher navigation", () => {
     expect(backlog.querySelectorAll("[data-task-id]")).toHaveLength(0);
   });
 
-  it.each(["planning", "in_progress", "in_review", "ready_for_deployment", "backlog"] as const)(
-    "keeps %s task descriptions and next steps out of the sidebar",
-    async (status) => {
-      const tasks = [null, ThreadId.make("worker-chat")].map((workerThreadId, index) => ({
-        id: `task-${index}`,
-        title: `Task ${index}`,
-        status,
-        state: "open",
-        nextActor: "coordinator",
-        intent: "Original request must stay in details",
-        nextStep: "Next step must stay in details",
-        workerThreadId,
-        updatedAt: "2026-10-18T10:00:00Z",
-      })) as FirstmateTask[];
-      await act(() =>
-        root.render(
-          <SidebarProvider>
-            <AgentTaskTree
-              environmentId={environmentId}
-              coordinatorThreadId={firstmate.coordinatorThreadId!}
-              tasks={tasks}
-              activeRouteKey={null}
-            />
-          </SidebarProvider>,
-        ),
-      );
-      if (status === "backlog") {
-        await click(container.querySelector('section[aria-label="Backlog"] button')!);
-      }
-      expect(container.textContent).toContain("Task 0");
-      expect(container.textContent).toContain("Task 1");
-      expect(container.textContent).not.toContain("Original request");
-      expect(container.textContent).not.toContain("Next step must");
-      expect(
-        container.querySelectorAll('[aria-label="Handled by agent · no worker chat"]'),
-      ).toHaveLength(status === "backlog" ? 0 : 1);
-    },
-  );
+  it.each([
+    "planning",
+    "in_progress",
+    "in_review",
+    "ready_for_deployment",
+    "monitoring",
+    "backlog",
+  ] as const)("keeps %s task descriptions and next steps out of the sidebar", async (status) => {
+    const tasks = [null, ThreadId.make("worker-chat")].map((workerThreadId, index) => ({
+      id: `task-${index}`,
+      title: `Task ${index}`,
+      status,
+      state: "open",
+      nextActor: "coordinator",
+      intent: "Original request must stay in details",
+      nextStep: "Next step must stay in details",
+      workerThreadId,
+      updatedAt: "2026-10-18T10:00:00Z",
+    })) as FirstmateTask[];
+    await act(() =>
+      root.render(
+        <SidebarProvider>
+          <AgentTaskTree
+            environmentId={environmentId}
+            coordinatorThreadId={firstmate.coordinatorThreadId!}
+            tasks={tasks}
+            activeRouteKey={null}
+          />
+        </SidebarProvider>,
+      ),
+    );
+    if (status === "backlog") {
+      await click(container.querySelector('section[aria-label="Backlog"] button')!);
+    }
+    expect(container.textContent).toContain("Task 0");
+    expect(container.textContent).toContain("Task 1");
+    expect(container.textContent).not.toContain("Original request");
+    expect(container.textContent).not.toContain("Next step must");
+    expect(
+      container.querySelectorAll('[aria-label="Handled by agent · no worker chat"]'),
+    ).toHaveLength(status === "backlog" ? 0 : 1);
+  });
 
   it.each(["user", "external", "worker"] as const)(
     "does not label a task as agent-handled when %s acts next",

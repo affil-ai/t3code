@@ -191,6 +191,63 @@ describe("FirstmateService", () => {
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
+  it.effect("keeps a live task with open post-release checks active in monitoring", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const { task } = yield* service.create(FM, {
+        title: "Shipped",
+        intent: "Watch the release",
+        definitionOfDone: "No new errors for a day",
+        status: "ready_for_deployment",
+      });
+      const live = yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Merged and deployed",
+        status: "monitoring",
+        nextActor: "worker",
+      });
+      expect(live.task).toMatchObject({ status: "monitoring", state: "open", closedAt: null });
+      expect((yield* service.list(FM)).tasks.map((t) => t.id)).toEqual([task.id]);
+      expect((yield* service.list(FM, { status: "monitoring" })).tasks).toHaveLength(1);
+      // A legacy caller writing the same state leaves the status alone.
+      yield* service.update(FM, { taskId: task.id, summary: "Still open", state: "open" });
+      expect((yield* service.get(FM, { taskId: task.id })).task.status).toBe("monitoring");
+      const regressed = yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Error spike, fixing",
+        status: "in_progress",
+      });
+      expect(regressed.task.status).toBe("in_progress");
+      yield* service.update(FM, { taskId: task.id, summary: "Fix live", status: "monitoring" });
+      expect(
+        yield* service
+          .update(FM, { taskId: task.id, summary: "No evidence", status: "done" })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "FirstmateError" });
+      const done = yield* service.update(FM, {
+        taskId: task.id,
+        summary: "Checks clean",
+        status: "done",
+        closeEvidence: "24h error watch clean",
+      });
+      expect(done.task).toMatchObject({ status: "done", state: "done" });
+      const { task: other } = yield* service.create(FM, {
+        title: "Backfill",
+        intent: "Run the backfill",
+        definitionOfDone: "Backfill verified",
+        status: "monitoring",
+      });
+      expect(other).toMatchObject({ status: "monitoring", state: "open" });
+      const canceled = yield* service.update(FM, {
+        taskId: other.id,
+        summary: "Not needed",
+        status: "canceled",
+        closeEvidence: "Backfill made unnecessary by the fix",
+      });
+      expect(canceled.task).toMatchObject({ status: "canceled", state: "dropped" });
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
   it.effect("starts unconfigured, sets and clears the coordinator", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;

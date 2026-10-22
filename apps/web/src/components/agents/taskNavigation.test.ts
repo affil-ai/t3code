@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { FirstmateTaskId, ThreadId, type FirstmateTask } from "@t3tools/contracts";
 
+import { FIRSTMATE_SECTION_ORDER } from "../firstmate/firstmateBoard.logic";
 import { adjacentSidebarTask, OPEN_TASK_COLUMNS, sidebarNavigationTasks } from "./taskNavigation";
 
 const task = (id: string, nextActor: "user" | "worker" = "worker"): FirstmateTask => ({
@@ -31,6 +32,14 @@ describe("task sidebar navigation", () => {
     expect(sidebarNavigationTasks([first, second])).toEqual([first, second]);
     const review = { ...task("review", "user"), status: "in_review" as const };
     expect(sidebarNavigationTasks([review, second])).toEqual([second, review]);
+  });
+
+  it("uses the Tasks panel's section order without Done", () => {
+    expect(OPEN_TASK_COLUMNS).toEqual(FIRSTMATE_SECTION_ORDER.filter((c) => c !== "done"));
+    const monitoring = { ...task("monitoring"), status: "monitoring" as const };
+    const ready = { ...task("ready"), status: "ready_for_deployment" as const };
+    const work = task("work");
+    expect(sidebarNavigationTasks([work, ready, monitoring])).toEqual([monitoring, ready, work]);
   });
 
   it("wraps at both ends", () => {

@@ -1052,6 +1052,21 @@ describe("FirstmateReactor", () => {
     ),
   );
 
+  it.effect("wakes for a monitoring task's scheduled check, unlike a parked task", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.service.setCoordinator(FM, { threadId: coordinatorId });
+        const task = yield* createTask(harness.service, { status: "monitoring", wakeAt: epoch });
+        yield* harness.reactor.sweep();
+        yield* harness.reactor.sweep();
+        const sends = yield* Ref.get(harness.sends);
+        expect(sends).toHaveLength(1);
+        expect(sends[0]!.text).toContain(task.id);
+      }),
+    ),
+  );
+
   it.effect("rejects parking an active worker and removes a parked task's held wake", () =>
     Effect.scoped(
       Effect.gen(function* () {
