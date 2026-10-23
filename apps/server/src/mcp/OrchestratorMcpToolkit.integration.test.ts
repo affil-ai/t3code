@@ -76,6 +76,8 @@ import {
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as SecretCommands from "../secrets/SecretCommands.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
@@ -694,6 +696,7 @@ describe("orchestrator MCP toolkit", () => {
             McpHttpServer.layerThreadToolkit,
           ).pipe(
             Layer.provideMerge(McpServer.McpServer.layer),
+            Layer.provide(SecretCommands.layer.pipe(Layer.provide(ProcessRunner.layer))),
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),
             Layer.provide(layerProviderRegistry),
@@ -1683,17 +1686,122 @@ describe("orchestrator MCP toolkit", () => {
               ),
             ).toHaveLength(1);
 
-            // The ref is the secret for exactly one consumer.
+            // The ref works for this thread as often as it needs, and a
+            // command run with it never shows the agent the value.
             expect(
-              yield* secretRequests.consume({
+              yield* secretRequests.use({
                 ref: secretResult.secretRef as never,
-                projectId,
+                threadId: parentThreadId,
               }),
             ).toBe("github-webhook-secret");
-            const reused = yield* secretRequests
-              .consume({ ref: secretResult.secretRef as never, projectId })
-              .pipe(Effect.flip);
-            expect(reused.message).toContain("already used");
+            const ranWithSecret = yield* invoke("run_with_secret", {
+              secrets: [{ secretRef: secretResult.secretRef, name: "WEBHOOK_SECRET" }],
+              command: [
+                `printf '%s\n' "$WEBHOOK_SECRET"`,
+                `printf '%s' "$WEBHOOK_SECRET" | base64`,
+                `printf '%s' "$WEBHOOK_SECRET" > webhook-secret.txt`,
+                `printf 'stored %s bytes' "$(wc -c < webhook-secret.txt | tr -d ' ')" >&2`,
+              ].join("\n"),
+            });
+            expect(ranWithSecret.isError).toBe(false);
+            expect(ranWithSecret.structuredContent).toMatchObject({
+              exitCode: 0,
+              timedOut: false,
+              stdout: "[REDACTED]\n[REDACTED]\n",
+              stderr: `stored ${"github-webhook-secret".length} bytes`,
+              redactions: 2,
+            });
+            // The command wrote the value where it was told to.
+            expect(
+              yield* FileSystem.FileSystem.pipe(
+                Effect.flatMap((fileSystem) =>
+                  fileSystem.readFileString(`${cwd}/webhook-secret.txt`),
+                ),
+                Effect.provide(NodeServices.layer),
+              ),
+            ).toBe("github-webhook-secret");
+
+            // One card can ask for several values; each field gets its own ref.
+            const loginFiber = yield* invoke("request_secret", {
+              label: "Registry login",
+              reason: "Logs the deploy script in to the package registry.",
+              fields: [
+                { name: "username", label: "Username" },
+                { name: "password", label: "Password", placeholder: "Paste the password" },
+              ],
+              clientRequestId: "registry-login",
+            }).pipe(Effect.forkChild);
+            const loginCard = yield* Effect.gen(function* () {
+              while (true) {
+                const projection = yield* orchestrator.getThreadProjection(parentThreadId);
+                const found = projection.turnItems.find(
+                  (item) =>
+                    item.type === "secret_request" &&
+                    item.label === "Registry login" &&
+                    item.secretStatus === "pending",
+                );
+                if (found?.type === "secret_request") return found;
+                yield* Effect.sleep("5 millis");
+              }
+            });
+            expect(loginCard.fields).toEqual([
+              { name: "username", label: "Username" },
+              { name: "password", label: "Password", placeholder: "Paste the password" },
+            ]);
+            yield* secretRequests.answer({
+              threadId: parentThreadId,
+              turnItemId: loginCard.id,
+              answer: {
+                type: "save",
+                fields: { username: "deploy-bot", password: "s3cr3t pass/word+" },
+              },
+            });
+            const loginCall = yield* Fiber.join(loginFiber);
+            expect(loginCall.isError).toBe(false);
+            const login = loginCall.structuredContent as {
+              status: string;
+              secretRefs: Record<string, string>;
+            };
+            expect(login.status).toBe("saved");
+            expect(Object.keys(login.secretRefs).toSorted()).toEqual(["password", "username"]);
+            const loginRun = yield* invoke("run_with_secret", {
+              secrets: [
+                { secretRef: login.secretRefs.username, name: "REGISTRY_USER" },
+                {
+                  secretRef: login.secretRefs.password,
+                  as: "file",
+                  name: "REGISTRY_PASSWORD_FILE",
+                },
+              ],
+              command: `printf '%s:%s' "$REGISTRY_USER" "$(cat "$REGISTRY_PASSWORD_FILE")" | base64; printf '%s' "$(cat "$REGISTRY_PASSWORD_FILE")" | ${JSON.stringify(process.execPath)} -e 'process.stdin.on("data", (d) => process.stdout.write(encodeURIComponent(String(d))))'`,
+            });
+            expect(loginRun.isError).toBe(false);
+            const loginOutput = loginRun.structuredContent as { stdout: string; exitCode: number };
+            expect(loginOutput.exitCode).toBe(0);
+            expect(loginOutput.stdout).toContain("[REDACTED]");
+            const stdinRun = yield* invoke("run_with_secret", {
+              secrets: [{ secretRef: login.secretRefs.password, as: "stdin" }],
+              command: `v=$(cat); printf '%s' "\${#v}"`,
+            });
+            expect(stdinRun.structuredContent).toMatchObject({
+              stdout: String("s3cr3t pass/word+".length),
+            });
+
+            // No value, raw or encoded, reached the agent or anything the
+            // thread persisted.
+            const leaks = (text: string) =>
+              ["github-webhook-secret", "deploy-bot", "s3cr3t pass/word+"].some(
+                (value) =>
+                  text.includes(value) ||
+                  text.includes(Buffer.from(value).toString("base64").slice(0, 16)) ||
+                  text.includes(encodeURIComponent(value)),
+              );
+            for (const call of [ranWithSecret, loginCall, loginRun, stdinRun]) {
+              expect(leaks(JSON.stringify(call))).toBe(false);
+            }
+            expect(
+              leaks(JSON.stringify(yield* orchestrator.getThreadProjection(parentThreadId))),
+            ).toBe(false);
 
             const delegatedCall = yield* invoke("delegate_task", {
               task: delegatedPrompt,
@@ -1750,6 +1858,11 @@ describe("orchestrator MCP toolkit", () => {
               status: "completed",
               result: delegatedResult,
             });
+            // A subagent cannot use the refs its parent thread asked for.
+            const refused = yield* secretRequests
+              .use({ ref: secretResult.secretRef as never, threadId: delegated.childThreadId })
+              .pipe(Effect.flip);
+            expect(refused.reason).toBe("ref_unavailable");
             const child = yield* orchestrator.getThreadProjection(delegated.childThreadId);
             expect(child.thread.lineage).toEqual({
               parentThreadId,
@@ -3916,6 +4029,7 @@ describe("orchestrator MCP toolkit", () => {
         ]);
         const layerTest = layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(Layer.mock(SecretCommands.SecretCommands)({})),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(

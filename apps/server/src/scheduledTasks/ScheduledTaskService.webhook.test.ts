@@ -3,7 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import { ScheduledTaskUpsertInput, SecretRequestError } from "@t3tools/contracts";
+import { ScheduledTaskUpsertInput, SecretRequestError, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -40,6 +40,8 @@ const webhookTaskInput = (overrides: Record<string, unknown> = {}) =>
     interactionMode: "default",
     ...overrides,
   });
+
+const askingThreadId = ThreadId.make("thread-asked");
 
 const pullRequestBody = new TextEncoder().encode(
   JSON.stringify({ pull_request: { url: "https://github.com/org/repo/pull/45" } }),
@@ -88,9 +90,8 @@ const withService = <A, E>(
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
       Layer.mock(SecretRequests.SecretRequests)({
-        consume: ({ ref }) => {
-          const value = secretsByRef.get(ref);
-          secretsByRef.delete(ref);
+        use: ({ ref, threadId }) => {
+          const value = threadId === askingThreadId ? secretsByRef.get(ref) : undefined;
           return value === undefined
             ? Effect.fail(new SecretRequestError({ reason: "ref_unavailable" }))
             : Effect.succeed(value);
@@ -725,7 +726,7 @@ it.effect("deleting a task removes its delivery log", () =>
 const githubSignature = (secret: string) =>
   `sha256=${NodeCrypto.createHmac("sha256", secret).update(pullRequestBody).digest("hex")}`;
 
-it.effect("a signature can take the user's secret by ref, which works only once", () =>
+it.effect("a signature can take the user's secret by ref, only from the thread that asked", () =>
   withService(({ service, launches, secretsByRef }) =>
     Effect.gen(function* () {
       secretsByRef.set("secret-ref:00000000000000000000000000000001", "github-secret");
@@ -733,11 +734,12 @@ it.effect("a signature can take the user's secret by ref, which works only once"
         type: "webhook",
         signature: { header: "x-hub-signature-256", encoding: "hex", prefix: "sha256=", secretRef },
       });
-      const { task } = yield* service.upsert(
-        yield* webhookTaskInput({
+      const { task } = yield* service.upsert({
+        ...(yield* webhookTaskInput({
           schedule: githubSchedule("secret-ref:00000000000000000000000000000001"),
-        }),
-      );
+        })),
+        secretRefThreadId: askingThreadId,
+      });
       assert.isTrue(task.webhook!.hasSecret);
       const signed = yield* service.triggerWebhook(
         requestFor(task, {
@@ -750,21 +752,24 @@ it.effect("a signature can take the user's secret by ref, which works only once"
       assert.equal(signed._tag, "accepted");
       yield* Queue.take(launches);
 
-      // The ref was consumed by that save.
-      const reused = yield* service
-        .upsert(
-          yield* webhookTaskInput({
-            id: "scheduled-task:other",
-            schedule: githubSchedule("secret-ref:00000000000000000000000000000001"),
-          }),
-        )
-        .pipe(Effect.flip);
-      assert.include(reused.message, "already used");
+      // Another thread, or a save with no asking thread, cannot use it.
+      for (const secretRefThreadId of [ThreadId.make("thread-other"), undefined]) {
+        const elsewhere = yield* service
+          .upsert({
+            ...(yield* webhookTaskInput({
+              id: "scheduled-task:other",
+              schedule: githubSchedule("secret-ref:00000000000000000000000000000001"),
+            })),
+            ...(secretRefThreadId === undefined ? {} : { secretRefThreadId }),
+          })
+          .pipe(Effect.flip);
+        assert.include(elsewhere.message, "another thread");
+      }
     }),
   ),
 );
 
-it.effect("a retried save with an already used secretRef keeps the stored secret", () =>
+it.effect("a retried save whose secretRef expired keeps the stored secret", () =>
   withService(({ service, launches, secretsByRef }) =>
     Effect.gen(function* () {
       secretsByRef.set("secret-ref:00000000000000000000000000000002", "github-secret");
@@ -781,11 +786,13 @@ it.effect("a retried save with an already used secretRef keeps the stored secret
           },
         },
       });
-      const first = yield* service.upsert(yield* save);
-      // The agent never saw the first result, so it sends the same call again,
-      // this time with a plain secret alongside the used ref.
-      const retried = yield* service.upsert(
-        yield* webhookTaskInput({
+      const first = yield* service.upsert({ ...(yield* save), secretRefThreadId: askingThreadId });
+      secretsByRef.delete("secret-ref:00000000000000000000000000000002");
+      // The agent never saw the first result, so it sends the same call again
+      // after the ref expired, this time with a plain secret alongside it.
+      const retried = yield* service.upsert({
+        secretRefThreadId: askingThreadId,
+        ...(yield* webhookTaskInput({
           id: undefined,
           commandId: "command:mcp:schedule-task:release-hook",
           schedule: {
@@ -798,8 +805,8 @@ it.effect("a retried save with an already used secretRef keeps the stored secret
               secret: "made-up-secret",
             },
           },
-        }),
-      );
+        })),
+      });
       assert.equal(retried.task.id, first.task.id);
       const signed = yield* service.triggerWebhook(
         requestFor(retried.task, {

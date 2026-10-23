@@ -24,6 +24,8 @@ export interface ProcessRunInput {
   readonly timeout?: Duration.Input | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
   readonly stdin?: string | undefined;
+  /** A child that exits or closes stdin before reading all of `stdin` is not an error. */
+  readonly stdinMayBeUnread?: boolean | undefined;
   /** Receives every stdout chunk, including bytes beyond the buffered output limit. */
   readonly onStdoutChunk?: ((chunk: Uint8Array) => void) | undefined;
   readonly maxOutputBytes?: number | undefined;
@@ -330,6 +332,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
                 cause,
               }),
           ),
+          input.stdinMayBeUnread ? Effect.ignore : (effect) => effect,
         );
 
   const [stdout, stderr] = yield* Effect.all(

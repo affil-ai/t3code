@@ -1,9 +1,9 @@
 import {
-  SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   SECRET_REQUEST_PRIVACY_NOTE,
   secretRequestAnswerInput,
   secretRequestDisplay,
   secretRequestFailureMessage,
+  secretRequestInputs,
   type SecretRequestItem,
 } from "@t3tools/client-runtime/secret-request";
 import {
@@ -21,9 +21,9 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { RequestActionButton } from "./RequestActionButton";
 
 /**
- * Feed card for a secret an agent asked the user for. The typed value lives
- * only in this component's state and the RPC payload: it is never logged,
- * alerted, or persisted, and the field clears once the answer is sent.
+ * Feed card for a secret an agent asked the user for. The typed values live
+ * only in this component's state and the RPC payload: they are never logged,
+ * alerted, or persisted, and the fields clear once the answer is sent.
  */
 const LOCK_SYMBOL: AppSymbolName = { ios: "lock", android: "lock" };
 const PRIVATE_SYMBOL: AppSymbolName = { ios: "checkmark.shield", android: "lock" };
@@ -67,20 +67,24 @@ function PendingSecretRequestForm(props: {
   readonly iconColor: ColorValue;
 }) {
   const { item } = props;
+  const inputs = secretRequestInputs(item);
+  const single = item.fields === undefined;
   const answer = useAtomCommand(serverEnvironment.answerSecretRequest, {
     label: "answer secret request",
     // The failure cause holds the request; keep it out of the console.
     reportFailure: false,
     reportDefect: false,
   });
-  const [secret, setSecret] = useState("");
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Submit then a tap can both run before a re-render; this guard is synchronous.
   const inFlight = useRef(false);
 
   const send = async (
-    reply: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" },
+    reply:
+      | { readonly type: "save"; readonly values: Readonly<Record<string, string>> }
+      | { readonly type: "decline" },
   ) => {
     const input = secretRequestAnswerInput(item, reply);
     if (input === null || inFlight.current) return;
@@ -93,7 +97,7 @@ function PendingSecretRequestForm(props: {
     });
     if (result._tag === "Success") {
       // The card switches to its answered row once the item updates.
-      setSecret("");
+      setValues({});
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
@@ -111,22 +115,31 @@ function PendingSecretRequestForm(props: {
           <Text className="font-sans text-sm leading-5 text-foreground-muted">{item.reason}</Text>
         ) : null}
       </View>
-      <TextInput
-        accessibilityLabel={item.label}
-        placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-        value={secret}
-        onChangeText={setSecret}
-        editable={!submitting}
-        secureTextEntry
-        autoCorrect={false}
-        autoCapitalize="none"
-        autoComplete="off"
-        textContentType="none"
-        importantForAutofill="no"
-        spellCheck={false}
-        returnKeyType="done"
-        onSubmitEditing={() => void send({ type: "save", secret })}
-      />
+      {inputs.map((input, index) => (
+        <View key={input.key} className="gap-1.5">
+          {single ? null : (
+            <Text className="font-sans text-xs text-foreground-muted">{input.label}</Text>
+          )}
+          <TextInput
+            accessibilityLabel={single ? item.label : input.label}
+            placeholder={input.placeholder}
+            value={values[input.key] ?? ""}
+            onChangeText={(value) => setValues((current) => ({ ...current, [input.key]: value }))}
+            editable={!submitting}
+            secureTextEntry
+            autoCorrect={false}
+            autoCapitalize="none"
+            autoComplete="off"
+            textContentType="none"
+            importantForAutofill="no"
+            spellCheck={false}
+            returnKeyType={index === inputs.length - 1 ? "done" : "next"}
+            onSubmitEditing={() => {
+              if (index === inputs.length - 1) void send({ type: "save", values });
+            }}
+          />
+        </View>
+      ))}
       {error !== null ? (
         <Text
           accessibilityRole="alert"
@@ -138,8 +151,8 @@ function PendingSecretRequestForm(props: {
       ) : null}
       <RequestActionButton
         label="Save securely"
-        disabled={submitting || secret.trim().length === 0}
-        onPress={() => void send({ type: "save", secret })}
+        disabled={submitting || secretRequestAnswerInput(item, { type: "save", values }) === null}
+        onPress={() => void send({ type: "save", values })}
       />
       <View className="flex-row items-center justify-between gap-2">
         <View className="flex-1 flex-row items-center gap-1.5">

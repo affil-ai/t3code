@@ -75,6 +75,7 @@ import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
+import * as SecretCommands from "./secrets/SecretCommands.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -731,6 +732,7 @@ const layerMakeRoutes = Layer.mergeAll(
   McpHttpServer.layer.pipe(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+    Layer.provide(SecretCommands.layer.pipe(Layer.provide(ProcessRunner.layer))),
   ),
 ).pipe(
   // Guides read through the same pull request service as every other surface.

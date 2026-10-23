@@ -28,8 +28,8 @@ it.effect("rejects stale agent-owner writes, including a rebind between load and
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
       Layer.mock(SecretRequests.SecretRequests)({
-        // Consuming a synthetic secret pauses the save after its initial row read.
-        consume: () =>
+        // Using a synthetic secret pauses the save after its initial row read.
+        use: () =>
           sql`
           UPDATE scheduled_tasks SET thread_id = ${newOwner}
           WHERE task_id = 'scheduled-task:owner-race'
@@ -65,6 +65,7 @@ it.effect("rejects stale agent-owner writes, including a rebind between load and
           ...edit,
           requireExisting: true,
           expectedThreadId: originalOwner,
+          secretRefThreadId: originalOwner,
         })
         .pipe(Effect.flip);
       expect(raced.message).toBe("Schedule task not found.");

@@ -23,6 +23,11 @@ import {
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import {
+  SECRET_REQUEST_MAX_FIELDS,
+  SecretRequestField,
+  SecretRequestFieldName,
+} from "./secretRequest.ts";
 import { ThreadLinkedPullRequest } from "./threadPullRequest.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
@@ -622,6 +627,19 @@ export const OrchestratorMcpRequestSecretInput = Schema.Struct({
   placeholder: Schema.optional(TrimmedNonEmptyString).annotate({
     description: "Hint inside the input, e.g. 'Paste your GitHub token'.",
   }),
+  fields: Schema.optional(
+    Schema.Array(SecretRequestField).check(
+      Schema.isMinLength(2),
+      Schema.isMaxLength(SECRET_REQUEST_MAX_FIELDS),
+      Schema.makeFilter(
+        (fields) => new Set(fields.map((field) => field.name)).size === fields.length,
+        { expected: "fields with distinct names" },
+      ),
+    ),
+  ).annotate({
+    description:
+      "Ask for several values in one card, e.g. [{name:'username',label:'Username'},{name:'password',label:'Password'}]. The result's secretRefs has one ref per field name. Omit for a single value.",
+  }),
   timeoutMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 60 * 60 * 1_000 })),
   ).annotate({ description: "How long to wait for the user. Default 10 minutes." }),
@@ -637,7 +655,16 @@ export const OrchestratorMcpRequestSecretResult = Schema.Union([
     status: Schema.Literal("saved").annotate({ description: "secretRef holds the value." }),
     secretRef: SecretRef.annotate({
       description:
-        "Pass it to a tool that accepts a secretRef; it works once, and you never see the value.",
+        "Pass it to run_with_secret or another tool that accepts a secretRef. You never see the value. It works from this thread only, as often as needed, for 15 minutes.",
+    }),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("saved").annotate({
+      description: "secretRefs holds one ref per requested field.",
+    }),
+    secretRefs: Schema.Record(SecretRequestFieldName, SecretRef).annotate({
+      description:
+        "One secretRef per field name. Each works like a single secretRef: this thread only, for 15 minutes.",
     }),
   }),
   Schema.Struct({
@@ -648,6 +675,60 @@ export const OrchestratorMcpRequestSecretResult = Schema.Union([
   }),
 ]);
 export type OrchestratorMcpRequestSecretResult = typeof OrchestratorMcpRequestSecretResult.Type;
+
+export const RUN_WITH_SECRET_DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000;
+export const RUN_WITH_SECRET_MAX_TIMEOUT_MS = 10 * 60 * 1_000;
+
+/** Where a command receives one secret. */
+export const OrchestratorMcpSecretDelivery = Schema.Struct({
+  secretRef: SecretRef,
+  as: Schema.optional(Schema.Literals(["env", "file", "stdin"])).annotate({
+    description:
+      "env (default): $name holds the value. file: the value is written to a private 0600 file that is deleted when the command ends, and $name holds its path. stdin: the value is the command's standard input, without a trailing newline; at most one secret.",
+  }),
+  name: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/)),
+  ).annotate({
+    description: "Environment variable name, e.g. GITHUB_TOKEN. Required for env and file.",
+  }),
+});
+export type OrchestratorMcpSecretDelivery = typeof OrchestratorMcpSecretDelivery.Type;
+
+export const OrchestratorMcpRunWithSecretInput = Schema.Struct({
+  secrets: Schema.Array(OrchestratorMcpSecretDelivery).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(16),
+  ),
+  command: TrimmedNonEmptyString.check(Schema.isMaxLength(32_768)).annotate({
+    description:
+      'Shell command: bash -c on macOS and Linux, PowerShell on Windows. Refer to secrets by their variables, e.g. curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com. Never echo, print, or log them.',
+  }),
+  cwd: Schema.optional(TrimmedNonEmptyString).annotate({
+    description:
+      "Working directory, absolute or relative to this thread's workspace. Defaults to the workspace.",
+  }),
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: RUN_WITH_SECRET_MAX_TIMEOUT_MS })),
+  ).annotate({ description: "Default 2 minutes, at most 10. The command is killed when it ends." }),
+});
+export type OrchestratorMcpRunWithSecretInput = typeof OrchestratorMcpRunWithSecretInput.Type;
+
+export const OrchestratorMcpRunWithSecretResult = Schema.Struct({
+  exitCode: Schema.NullOr(Schema.Int).annotate({
+    description: "null when the command timed out or was killed by a signal.",
+  }),
+  timedOut: Schema.Boolean,
+  stdout: Schema.String,
+  stderr: Schema.String,
+  outputTruncated: Schema.Boolean.annotate({
+    description: "Output was cut to fit. Redirect large output to a file and read that instead.",
+  }),
+  redactions: NonNegativeInt.annotate({
+    description:
+      "How many times a secret, or an encoding of one, was replaced with [REDACTED] in stdout and stderr.",
+  }),
+});
+export type OrchestratorMcpRunWithSecretResult = typeof OrchestratorMcpRunWithSecretResult.Type;
 
 export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({
   scheduledTaskId: ScheduledTaskId,

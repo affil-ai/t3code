@@ -42,6 +42,7 @@ import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
+import * as SecretCommands from "../../secrets/SecretCommands.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../../serverSettings.ts";
@@ -597,6 +598,86 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
         Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
         Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
         Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(Layer.mock(SecretCommands.SecretCommands)({})),
+      ),
+    ),
+  ),
+);
+
+const secretCommandRuns: Array<string> = [];
+let secretCommandCallerModes: Parameters<typeof McpToolAccessTestkit.liveThreadShell>[1] = {};
+
+it.effect("runs commands with secrets only for a live full-access thread", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const runWith = (
+      callScope: McpInvocationContext.McpInvocationScope,
+      modes: typeof secretCommandCallerModes,
+    ) => {
+      secretCommandCallerModes = modes;
+      return server
+        .callTool({
+          name: "run_with_secret",
+          arguments: {
+            secrets: [{ secretRef: `secret-ref:${"0".repeat(32)}`, name: "TOKEN" }],
+            command: "true",
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, callScope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    };
+    for (const [modes, code] of [
+      [{ runtimeMode: "auto" }, "capability_denied"],
+      [{ runtimeMode: "approval-required" }, "capability_denied"],
+      [{ interactionMode: "plan" }, "capability_denied"],
+      [{ activeRunId: null }, "parent_not_active"],
+    ] as const) {
+      expect(declaredFailure(yield* runWith(scope, modes)), JSON.stringify(modes)).toMatchObject({
+        code,
+      });
+    }
+    expect(declaredFailure(yield* runWith(clientScope("full-access"), {}))).toMatchObject({
+      code: "thread_credential_required",
+    });
+    expect(secretCommandRuns).toEqual([]);
+    const allowed = yield* runWith(scope, {});
+    expect(allowed.isError).toBe(false);
+    expect(secretCommandRuns).toEqual([threadId]);
+  }).pipe(
+    Effect.provide(
+      layerOrchestratorToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) =>
+              Effect.sync(() => McpToolAccessTestkit.liveThreadShell(id, secretCommandCallerModes)),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+        Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+        Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+        Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(
+          Layer.mock(SecretCommands.SecretCommands)({
+            run: (input) =>
+              Effect.sync(() => {
+                secretCommandRuns.push(input.threadId);
+                return {
+                  exitCode: 0,
+                  timedOut: false,
+                  stdout: "",
+                  stderr: "",
+                  outputTruncated: false,
+                  redactions: 0,
+                };
+              }),
+          }),
+        ),
       ),
     ),
   ),
@@ -650,6 +731,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
         ),
         Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
         Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(Layer.mock(SecretCommands.SecretCommands)({})),
       ),
     ),
   ),
@@ -734,6 +816,7 @@ it.effect.each(["t3_thread_interrupt", "t3_workflow_stop"])(
           Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+          Layer.provide(Layer.mock(SecretCommands.SecretCommands)({})),
         ),
       ),
     ),
@@ -826,6 +909,7 @@ it.effect("discovers workflow stop targets and requires orchestration capability
         Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
         Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
         Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(Layer.mock(SecretCommands.SecretCommands)({})),
       ),
     ),
   );

@@ -9,6 +9,8 @@ import {
   OrchestratorMcpDeleteScheduledTaskResult,
   OrchestratorMcpRequestSecretInput,
   OrchestratorMcpRequestSecretResult,
+  OrchestratorMcpRunWithSecretInput,
+  OrchestratorMcpRunWithSecretResult,
   OrchestratorMcpFailure,
   OrchestratorMcpListScheduledTasksInput,
   OrchestratorMcpListScheduledTasksResult,
@@ -38,6 +40,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
+import * as SecretCommands from "../../../secrets/SecretCommands.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -167,7 +170,7 @@ const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
 
 const RequestSecretTool = Tool.make("request_secret", {
   description:
-    "Ask the user for a secret (a token, API key, signing secret, password) through a private card in this thread, and wait for them to answer. The value is kept by the app and NEVER returned to you or shown in the transcript. When saved, the result carries a secretRef: pass it to a tool that accepts one (e.g. schedule_task's signature.secretRef). It works once. Never ask for secrets in chat, and never invent one.",
+    "Ask the user for a secret (a token, API key, signing secret, password) through a private card in this thread, and wait for them to answer. The value is kept by the app and NEVER returned to you or shown in the transcript. When saved, the result carries a secretRef (or secretRefs, one per field, when you ask for several values with fields). Use it with run_with_secret to run any command with the value (curl, a CLI login, infisical secrets set, a 0600 file), or pass it to a tool that accepts one (e.g. schedule_task's signature.secretRef). A ref works from this thread only, as often as needed, for 15 minutes. Never ask for secrets in chat, never ask the user to run a script to enter one, and never invent one.",
   parameters: OrchestratorMcpRequestSecretInput,
   success: OrchestratorMcpRequestSecretResult,
   failure: OrchestratorMcpFailure,
@@ -176,6 +179,23 @@ const RequestSecretTool = Tool.make("request_secret", {
 })
   .annotate(Tool.Title, "Request a secret from the user")
   .annotate(Tool.Destructive, false);
+
+const RunWithSecretTool = Tool.make("run_with_secret", {
+  description:
+    'Run a shell command on this host with secrets the user entered through request_secret, without you ever seeing them. Each entry of secrets maps a secretRef to an environment variable (default), a private 0600 file whose path is in the variable, or stdin. Runs in this thread\'s workspace unless cwd is set, and returns exitCode, stdout and stderr with every secret value, and its base64, URL and hex encodings, replaced by [REDACTED]. Use it to call an API (curl -H "Authorization: Bearer $TOKEN"), set a secret in a store (printf %s "$VALUE" | infisical secrets set ...), log a CLI in, or write a config file. Refer to secrets only through their variables, never print them, and never put a secret\'s value in the command itself. Needs a full-access thread.',
+  parameters: OrchestratorMcpRunWithSecretInput,
+  success: OrchestratorMcpRunWithSecretResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    SecretCommands.SecretCommands,
+  ],
+})
+  .annotate(Tool.Title, "Run a command with a secret")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true);
 
 export const CreateThreadsTool = Tool.make("create_threads", {
   description:
@@ -283,6 +303,7 @@ export const OrchestratorToolkit = Toolkit.make(
   UpdateScheduledTaskTool,
   DeleteScheduledTaskTool,
   RequestSecretTool,
+  RunWithSecretTool,
   CreateThreadsTool,
   ThreadListTool,
   ThreadReadTool,

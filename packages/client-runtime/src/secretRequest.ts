@@ -60,20 +60,61 @@ export function secretRequestDisplay(
   }
 }
 
+/** One input on a card: the card's own for a single value, else one per field. */
+export interface SecretRequestInput {
+  readonly key: string;
+  readonly label: string;
+  readonly placeholder: string;
+}
+
+/** The inputs a pending card shows, in order. */
+export function secretRequestInputs(
+  item: Pick<SecretRequestItem, "label" | "placeholder" | "fields">,
+): ReadonlyArray<SecretRequestInput> {
+  if (item.fields === undefined) {
+    return [
+      {
+        key: "",
+        label: item.label,
+        placeholder: item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER,
+      },
+    ];
+  }
+  return item.fields.map((field) => ({
+    key: field.name,
+    label: field.label,
+    placeholder: field.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER,
+  }));
+}
+
 /**
- * Builds the RPC payload for an answer. A save with a blank value returns null,
- * since the server rejects it; callers keep Save disabled instead.
+ * Builds the RPC payload for an answer from the typed values, keyed by input.
+ * A save with any blank value returns null, since the server rejects it;
+ * callers keep Save disabled instead.
  */
 export function secretRequestAnswerInput(
-  item: Pick<SecretRequestItem, "id" | "threadId">,
-  answer: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" },
+  item: Pick<SecretRequestItem, "id" | "threadId" | "label" | "placeholder" | "fields">,
+  answer:
+    | { readonly type: "save"; readonly values: Readonly<Record<string, string>> }
+    | { readonly type: "decline" },
 ): SecretRequestAnswerInput | null {
   if (answer.type === "decline") {
     return { threadId: item.threadId, turnItemId: item.id, answer: { type: "decline" } };
   }
-  const secret = answer.secret.trim();
-  if (secret.length === 0) return null;
-  return { threadId: item.threadId, turnItemId: item.id, answer: { type: "save", secret } };
+  const values: Record<string, string> = {};
+  for (const input of secretRequestInputs(item)) {
+    const value = (answer.values[input.key] ?? "").trim();
+    if (value.length === 0) return null;
+    values[input.key] = value;
+  }
+  return {
+    threadId: item.threadId,
+    turnItemId: item.id,
+    answer:
+      item.fields === undefined
+        ? { type: "save", secret: values[""]! }
+        : { type: "save", fields: values },
+  };
 }
 
 /** Failures whose message is written for the user and never echoes the request payload. */

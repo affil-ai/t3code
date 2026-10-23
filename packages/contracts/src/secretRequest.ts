@@ -2,15 +2,36 @@ import * as Schema from "effect/Schema";
 
 import { ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
 
+/** How a card names one of several values, and how the agent's refs are keyed. */
+export const SecretRequestFieldName = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^[A-Za-z][A-Za-z0-9_]{0,31}$/),
+);
+export type SecretRequestFieldName = typeof SecretRequestFieldName.Type;
+
+/** One input on a card that asks for several values at once, e.g. a login and a password. */
+export const SecretRequestField = Schema.Struct({
+  name: SecretRequestFieldName,
+  label: TrimmedNonEmptyString,
+  placeholder: Schema.optional(TrimmedNonEmptyString),
+});
+export type SecretRequestField = typeof SecretRequestField.Type;
+
+export const SECRET_REQUEST_MAX_FIELDS = 8;
+
 /**
  * The user's answer to an agent's request for a secret. A saved value is kept
- * by the server under a one-use SecretRef; the thread learns only the status.
+ * by the server under a SecretRef bound to the asking thread; the thread
+ * learns only the status. A card with fields is saved with one value per field.
  */
 export const SecretRequestAnswerInput = Schema.Struct({
   threadId: ThreadId,
   turnItemId: TurnItemId,
   answer: Schema.Union([
     Schema.Struct({ type: Schema.Literal("save"), secret: TrimmedNonEmptyString }),
+    Schema.Struct({
+      type: Schema.Literal("save"),
+      fields: Schema.Record(SecretRequestFieldName, TrimmedNonEmptyString),
+    }),
     Schema.Struct({ type: Schema.Literal("decline") }),
   ]),
 });
@@ -21,14 +42,14 @@ const SECRET_REQUEST_FAILURE_MESSAGES = {
   not_found: "This secret request no longer exists.",
   already_answered: "This secret request was already answered.",
   agent_stopped: "The agent that asked has stopped, so this secret can't be used.",
+  fields_mismatch: "Fill in every field on this request.",
   store_failed: "Could not store the secret.",
   record_failed: "Saved the secret, but could not update the request.",
   invalid_ref: "That secretRef is not valid.",
   read_failed: "Could not read the secret.",
   ref_unavailable:
-    "That secretRef was already used or does not exist. Ask the user again with request_secret.",
+    "That secretRef does not exist or belongs to another thread. Ask the user with request_secret from this thread.",
   ref_expired: "That secretRef expired. Ask the user again with request_secret.",
-  consume_failed: "Could not use that secretRef. Try again.",
 } as const;
 
 export const SecretRequestFailureReason = Schema.Literals(
