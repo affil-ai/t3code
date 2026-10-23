@@ -1,0 +1,163 @@
+# Self-hosted Vexa Lite v0.12.28 with CPU Whisper, plus the standup bot's own
+# Postgres. Translated from Vexa's deploy/lite/Makefile `up LOCAL_STT=1` at
+# commit f1a62fbbdfd2c98cb162582d82c31fe8102acc89. Only loopback ports are
+# published. Audio recording is off, and the post_start hook below turns off
+# Vexa's raw captured-signal tapes, which are on by default.
+#
+#   VEXA_ADMIN_TOKEN=... VEXA_INTERNAL_API_SECRET=... VEXA_STT_TOKEN=... \
+#     STANDUP_POSTGRES_PASSWORD=... docker compose -f apps/standup-bot/docker-compose.yml up -d
+name: standup-bot
+
+x-vexa-storage: &vexa-storage
+  image: versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
+  environment:
+    ROOT_ACCESS_KEY: vexa-access-key
+    ROOT_SECRET_KEY: vexa-secret-key
+    ADMIN_ACCESS_KEY: vexa-access-key
+    ADMIN_SECRET_KEY: vexa-secret-key
+
+services:
+  vexa-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    command: ["-c", "idle_in_transaction_session_timeout=60000"]
+    environment:
+      POSTGRES_DB: vexa
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - vexa-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "vexa"]
+      interval: 5s
+      retries: 24
+
+  vexa-storage:
+    <<: *vexa-storage
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mkdir -p /srv/vexa-storage/data /srv/vexa-storage/iam && exec versitygw --port :9000 --health /health --iam-dir /srv/vexa-storage/iam --quiet posix /srv/vexa-storage/data
+    volumes:
+      - vexa-storagedata:/srv/vexa-storage
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9000/health"]
+      interval: 2s
+      retries: 30
+
+  vexa-storage-bucket:
+    <<: *vexa-storage
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    # A restart finds the bucket already present; recording is off, so the
+    # bucket is not on the transcript path either way.
+    command:
+      - versitygw admin --endpoint-url http://vexa-storage:9000 create-bucket --bucket vexa --owner vexa-access-key || true
+    depends_on:
+      vexa-storage:
+        condition: service_healthy
+
+  vexa-whisper:
+    # faster-whisper-server latest-cpu, the image Vexa Lite's LOCAL_STT uses.
+    image: fedirz/faster-whisper-server@sha256:760e5e43d427dc6cfbbc4731934b908b7de9c7e6d5309c6a1f0c8c923a5b6030
+    restart: unless-stopped
+    environment:
+      WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small.en}
+      WHISPER__INFERENCE_DEVICE: cpu
+      WHISPER__TTL: "-1"
+
+  # faster-whisper-server has no authentication. Vexa only probes and trusts an
+  # STT endpoint configured with both a URL and a token, so this proxy requires
+  # the token on every request.
+  vexa-stt:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    restart: unless-stopped
+    environment:
+      STT_TOKEN: ${VEXA_STT_TOKEN:?set VEXA_STT_TOKEN}
+    configs:
+      - source: stt-proxy
+        target: /etc/nginx/templates/default.conf.template
+    depends_on:
+      vexa-whisper:
+        condition: service_started
+
+  vexa:
+    image: vexaai/vexa-lite:v0.12.28@sha256:9eebb534fdab4079baf11af678968ac8d9679e20ce48db206bcf5a62b85eb538
+    restart: unless-stopped
+    shm_size: 2g
+    depends_on:
+      vexa-postgres:
+        condition: service_healthy
+      vexa-storage-bucket:
+        condition: service_completed_successfully
+      vexa-stt:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8056:8056"
+    environment:
+      DB_HOST: vexa-postgres
+      DB_PORT: "5432"
+      DB_NAME: vexa
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      ADMIN_API_TOKEN: ${VEXA_ADMIN_TOKEN:?set VEXA_ADMIN_TOKEN}
+      ADMIN_TOKEN: ${VEXA_ADMIN_TOKEN:?set VEXA_ADMIN_TOKEN}
+      # Set explicitly so the post_start hook can reach admin-api's internal tier.
+      INTERNAL_API_SECRET: ${VEXA_INTERNAL_API_SECRET:?set VEXA_INTERNAL_API_SECRET}
+      TRANSCRIPTION_SERVICE_URL: http://vexa-stt:8000
+      TRANSCRIPTION_SERVICE_TOKEN: ${VEXA_STT_TOKEN:?set VEXA_STT_TOKEN}
+      MINIO_ENDPOINT: vexa-storage:9000
+      MINIO_ACCESS_KEY: vexa-access-key
+      MINIO_SECRET_KEY: vexa-secret-key
+      MINIO_BUCKET: vexa
+      MINIO_SECURE: "false"
+      VEXA_PUBLIC_API_URL: http://localhost:8056
+      DEFAULT_BOT_NAME: Standup Transcription Bot
+      RECORDING_ENABLED: "false"
+      VEXA_LOBBY_BUDGET_S: "600"
+    post_start:
+      # Vexa tapes each bot's raw audio frames to storage unless the platform
+      # diagnostics setting says otherwise. admin-api listens only inside the
+      # container, so the setting is written from here on every start.
+      - command:
+          - /bin/sh
+          - -c
+          - >-
+            for i in $$(seq 1 90); do curl -sf -o /dev/null http://127.0.0.1:8001/health && break; sleep 2; done;
+            curl -sf -X PUT http://127.0.0.1:8001/internal/settings/diagnostics
+            -H "X-Internal-Secret: $$INTERNAL_API_SECRET" -H "Content-Type: application/json"
+            -d '{"capture_signal":"false"}'
+
+  standup-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: standup
+      POSTGRES_USER: standup
+      POSTGRES_PASSWORD: ${STANDUP_POSTGRES_PASSWORD:?set STANDUP_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5442:5432"
+    volumes:
+      - standup-pgdata:/var/lib/postgresql/data
+
+configs:
+  stt-proxy:
+    # nginx substitutes only defined environment variables, so $$http_* stays
+    # an nginx variable.
+    content: |
+      server {
+        listen 8000;
+        client_max_body_size 50m;
+        location / {
+          if ($$http_authorization != "Bearer $${STT_TOKEN}") { return 401; }
+          proxy_pass http://vexa-whisper:8000;
+          proxy_read_timeout 300s;
+        }
+      }
+
+volumes:
+  vexa-pgdata:
+  vexa-storagedata:
+  standup-pgdata:
