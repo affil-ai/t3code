@@ -5,12 +5,22 @@ import {
   secretRequestAnswerInput,
   secretRequestDisplay,
   secretRequestFailureMessage,
+  secretRequestInputs,
   type SecretRequestItem,
 } from "./secretRequest.ts";
 
 const item = {
   id: TurnItemId.make("turn-item:secret-request:1"),
   threadId: ThreadId.make("thread-1"),
+  label: "GitHub webhook secret",
+};
+const loginItem = {
+  ...item,
+  label: "Registry login",
+  fields: [
+    { name: "username", label: "Username" },
+    { name: "password", label: "Password", placeholder: "Paste the password" },
+  ],
 };
 
 describe("secretRequestDisplay", () => {
@@ -46,10 +56,22 @@ describe("secretRequestDisplay", () => {
   });
 });
 
+describe("secretRequestInputs", () => {
+  it("shows one input for a single value and one per field otherwise", () => {
+    expect(secretRequestInputs(item)).toEqual([
+      { key: "", label: "GitHub webhook secret", placeholder: "Paste the secret" },
+    ]);
+    expect(secretRequestInputs(loginItem)).toEqual([
+      { key: "username", label: "Username", placeholder: "Paste the secret" },
+      { key: "password", label: "Password", placeholder: "Paste the password" },
+    ]);
+  });
+});
+
 describe("secretRequestAnswerInput", () => {
   it("refuses a blank save and trims the value the server will store", () => {
-    expect(secretRequestAnswerInput(item, { type: "save", secret: "   " })).toBeNull();
-    expect(secretRequestAnswerInput(item, { type: "save", secret: " whsec_1 " })).toEqual({
+    expect(secretRequestAnswerInput(item, { type: "save", values: { "": "   " } })).toBeNull();
+    expect(secretRequestAnswerInput(item, { type: "save", values: { "": " whsec_1 " } })).toEqual({
       threadId: item.threadId,
       turnItemId: item.id,
       answer: { type: "save", secret: "whsec_1" },
@@ -58,6 +80,22 @@ describe("secretRequestAnswerInput", () => {
       threadId: item.threadId,
       turnItemId: item.id,
       answer: { type: "decline" },
+    });
+  });
+
+  it("saves a card with fields only once every field is filled", () => {
+    expect(
+      secretRequestAnswerInput(loginItem, { type: "save", values: { username: "bot" } }),
+    ).toBeNull();
+    expect(
+      secretRequestAnswerInput(loginItem, {
+        type: "save",
+        values: { username: " bot ", password: "hunter2", extra: "ignored" },
+      }),
+    ).toEqual({
+      threadId: item.threadId,
+      turnItemId: item.id,
+      answer: { type: "save", fields: { username: "bot", password: "hunter2" } },
     });
   });
 });

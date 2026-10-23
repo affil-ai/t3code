@@ -4,6 +4,7 @@ import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
   type OrchestrationV2ServerCommand,
+  type SecretRequestField,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -40,6 +41,8 @@ const withService = <A, E>(
     readonly closedFirst?: boolean;
     /** How many record dispatches fail before one succeeds. */
     readonly failedRecords?: number;
+    /** The card asks for several named values. */
+    readonly fields?: ReadonlyArray<SecretRequestField>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -105,6 +108,7 @@ const withService = <A, E>(
                 type: "secret_request",
                 label: "GitHub token",
                 reason: "Used as GH_TOKEN.",
+                ...(options.fields === undefined ? {} : { fields: options.fields }),
                 secretStatus,
               },
             ],
@@ -139,32 +143,50 @@ const valuesOf = (stored: Map<string, Uint8Array>) =>
     .filter(([name]) => name !== "secret-request-salt")
     .map(([, bytes]) => new TextDecoder().decode(bytes));
 
-it.effect("a saved answer becomes a one-use ref, and the thread only learns it was saved", () =>
-  withService(({ service, stored, dispatched }) =>
+it.effect(
+  "a saved answer becomes a ref its thread can reuse, and the thread only learns it was saved",
+  () =>
+    withService(({ service, dispatched }) =>
+      Effect.gen(function* () {
+        yield* service.answer({
+          threadId,
+          turnItemId,
+          answer: { type: "save", secret: "ghp_secret" },
+        });
+        assert.equal(dispatched.length, 1);
+        assert.include(dispatched[0] as object, {
+          type: "secret_request.record",
+          secretStatus: "saved",
+        });
+        assert.notInclude(Object.values(dispatched[0] as object).map(String), "ghp_secret");
+
+        const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
+        assert.equal(yield* service.use({ ref, threadId }), "ghp_secret");
+        assert.equal(yield* service.use({ ref, threadId }), "ghp_secret");
+      }),
+    ),
+);
+
+it.effect("a ref expires 15 minutes after it was saved, and its value is deleted", () =>
+  withService(({ service, stored }) =>
     Effect.gen(function* () {
       yield* service.answer({
         threadId,
         turnItemId,
         answer: { type: "save", secret: "ghp_secret" },
       });
-      assert.equal(dispatched.length, 1);
-      assert.include(dispatched[0] as object, {
-        type: "secret_request.record",
-        secretStatus: "saved",
-      });
-      assert.notInclude(Object.values(dispatched[0] as object).map(String), "ghp_secret");
-
       const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
-      assert.equal(yield* service.consume({ ref, projectId }), "ghp_secret");
-      // Used once: the value is gone from the store and the ref fails.
+      yield* TestClock.adjust("15 minutes");
+      assert.equal(yield* service.use({ ref, threadId }), "ghp_secret");
+      yield* TestClock.adjust("1 millis");
+      const expired = yield* service.use({ ref, threadId }).pipe(Effect.flip);
+      assert.equal(expired.reason, "ref_expired");
       assert.isFalse(valuesOf(stored).some((value) => value.includes("ghp_secret")));
-      const again = yield* service.consume({ ref, projectId }).pipe(Effect.flip);
-      assert.include(again.message, "already used");
     }),
   ),
 );
 
-it.effect("two concurrent uses of one ref hand the value out once", () =>
+it.effect("a ref only works in the thread that asked for it", () =>
   withService(({ service }) =>
     Effect.gen(function* () {
       yield* service.answer({
@@ -173,14 +195,62 @@ it.effect("two concurrent uses of one ref hand the value out once", () =>
         answer: { type: "save", secret: "ghp_secret" },
       });
       const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
-      const results = yield* Effect.all(
-        [service.consume({ ref, projectId }), service.consume({ ref, projectId })].map(
-          Effect.result,
-        ),
-        { concurrency: "unbounded" },
-      );
-      assert.deepEqual(results.map((result) => result._tag).toSorted(), ["Failure", "Success"]);
+      // A subagent or any other thread, even in the same project.
+      const elsewhere = yield* service
+        .use({ ref, threadId: ThreadId.make("thread:delegated-task:child") })
+        .pipe(Effect.flip);
+      assert.equal(elsewhere.reason, "ref_unavailable");
+      assert.include(elsewhere.message, "another thread");
+      // A refused attempt does not burn the ref.
+      assert.equal(yield* service.use({ ref, threadId }), "ghp_secret");
     }),
+  ),
+);
+
+it.effect("a card with fields saves one ref per field", () =>
+  withService(
+    ({ service, dispatched }) =>
+      Effect.gen(function* () {
+        // The answer must fill exactly the card's fields.
+        for (const answer of [
+          { type: "save", secret: "alice" },
+          { type: "save", fields: { username: "alice" } },
+          { type: "save", fields: { username: "alice", password: "hunter2", otp: "1" } },
+          { type: "save", fields: { username: "alice", pin: "hunter2" } },
+        ] as const) {
+          const mismatch = yield* service
+            .answer({ threadId, turnItemId, answer })
+            .pipe(Effect.flip);
+          assert.equal(mismatch.reason, "fields_mismatch");
+        }
+        assert.equal(dispatched.length, 0);
+        yield* service.answer({
+          threadId,
+          turnItemId,
+          answer: { type: "save", fields: { username: "alice", password: "hunter2" } },
+        });
+        assert.deepEqual((dispatched[0] as { fields?: unknown }).fields, [
+          { name: "username", label: "Username" },
+          { name: "password", label: "Password" },
+        ]);
+        const username = Option.getOrThrow(
+          yield* service.savedRef({ threadId, turnItemId, field: "username" }),
+        );
+        const password = Option.getOrThrow(
+          yield* service.savedRef({ threadId, turnItemId, field: "password" }),
+        );
+        assert.notEqual(username, password);
+        assert.equal(yield* service.use({ ref: username, threadId }), "alice");
+        assert.equal(yield* service.use({ ref: password, threadId }), "hunter2");
+        // A card with fields has no ref of its own.
+        assert.isTrue(Option.isNone(yield* service.savedRef({ threadId, turnItemId })));
+      }),
+    {
+      fields: [
+        { name: "username", label: "Username" },
+        { name: "password", label: "Password" },
+      ],
+    },
   ),
 );
 
@@ -212,7 +282,7 @@ it.effect("a save whose record failed can be saved again", () =>
           answer: { type: "save", secret: "ghp_secret" },
         });
         const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
-        assert.equal(yield* service.consume({ ref, projectId }), "ghp_secret");
+        assert.equal(yield* service.use({ ref, threadId }), "ghp_secret");
       }),
     { failedRecords: 1 },
   ),
@@ -236,24 +306,25 @@ it.effect("a save whose record and cleanup both failed is finished by saving aga
   ),
 );
 
-it.effect("a ref only works in the project it was entered for", () =>
-  withService(({ service }) =>
-    Effect.gen(function* () {
-      yield* service.answer({
-        threadId,
-        turnItemId,
-        answer: { type: "save", secret: "ghp_secret" },
-      });
-      const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
-      const elsewhere = yield* service
-        .consume({ ref, projectId: ProjectId.make("project-other") })
-        .pipe(Effect.flip);
-      assert.include(elsewhere.message, "does not exist");
-      // A failed attempt from another project does not burn the ref.
-      assert.equal(yield* service.consume({ ref, projectId }), "ghp_secret");
-    }),
-  ),
-);
+it.effect("a failed save never deletes a value an earlier answer stored", () => {
+  const options = { failedRecords: 2, removeFails: true };
+  return withService(
+    ({ service, stored }) =>
+      Effect.gen(function* () {
+        // The first answer's value stays: its record and its cleanup both failed.
+        yield* service
+          .answer({ threadId, turnItemId, answer: { type: "save", secret: "first" } })
+          .pipe(Effect.flip);
+        options.removeFails = false;
+        // A second answer finds that value, and its own record fails too.
+        yield* service
+          .answer({ threadId, turnItemId, answer: { type: "save", secret: "second" } })
+          .pipe(Effect.flip);
+        assert.deepInclude(valuesOf(stored).join(), "first");
+      }),
+    options,
+  );
+});
 
 it.effect("declining stores nothing, and a request is answered once", () =>
   withService(({ service, stored, dispatched }) =>
@@ -285,8 +356,7 @@ it.effect("traces and counts a saved answer without ever recording the value", (
       Effect.map((snapshots) => {
         const found = snapshots.find(
           (snapshot) =>
-            snapshot.id === "t3_secret_refs_consumed_total" &&
-            snapshot.attributes?.result === "used",
+            snapshot.id === "t3_secret_refs_used_total" && snapshot.attributes?.result === "used",
         );
         return found?.type === "Counter" ? Number(found.state.count) : 0;
       }),
@@ -300,7 +370,7 @@ it.effect("traces and counts a saved answer without ever recording the value", (
           answer: { type: "save", secret: "ghp_secret" },
         });
         const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
-        yield* service.consume({ ref, projectId });
+        yield* service.use({ ref, threadId });
       }),
     ).pipe(Effect.withTracer(tracer));
     assert.equal((yield* counted) - before, 1);
@@ -309,7 +379,7 @@ it.effect("traces and counts a saved answer without ever recording the value", (
       ...Array.from(span.attributes.values(), String),
     ]);
     assert.include(recorded, "SecretRequests.answer");
-    assert.include(recorded, "SecretRequests.consume");
+    assert.include(recorded, "SecretRequests.use");
     assert.isFalse(recorded.some((value) => value.includes("ghp_secret")));
   }),
 );
@@ -331,7 +401,7 @@ it.effect("works in threads with long ids, such as a delegated subagent's", () =
         const ref = Option.getOrThrow(
           yield* service.savedRef({ threadId: delegatedThreadId, turnItemId }),
         );
-        assert.equal(yield* service.consume({ ref, projectId }), "ghp_secret");
+        assert.equal(yield* service.use({ ref, threadId: delegatedThreadId }), "ghp_secret");
       }),
     { threadId: delegatedThreadId },
   );
@@ -357,13 +427,13 @@ it.effect("drops values nobody used once they expire, and keeps the rest", () =>
     const store = yield* ServerSecretStore.ServerSecretStore;
     const encode = (savedAt: number) =>
       new TextEncoder().encode(
-        `{"projectId":"project-1","value":"ghp_secret","savedAt":${savedAt}}`,
+        `{"threadId":"thread-orchestrator","value":"ghp_secret","savedAt":${savedAt}}`,
       );
     yield* TestClock.adjust("2 days");
     const now = yield* Clock.currentTimeMillis;
     const stale = `secret-request-${"a".repeat(32)}`;
     const fresh = `secret-request-${"b".repeat(32)}`;
-    yield* store.set(stale, encode(now - 25 * 60 * 60 * 1000));
+    yield* store.set(stale, encode(now - SecretRequests.SECRET_REF_TTL_MS - 1));
     yield* store.set(fresh, encode(now));
     yield* store.set("unrelated", new Uint8Array([1]));
 
@@ -392,22 +462,5 @@ it.effect("drops values nobody used once they expire, and keeps the rest", () =>
         Layer.provideMerge(NodeServices.layer),
       ),
     ),
-  ),
-);
-
-it.effect("a used value that cannot be deleted is not handed out", () =>
-  withService(
-    ({ service }) =>
-      Effect.gen(function* () {
-        yield* service.answer({
-          threadId,
-          turnItemId,
-          answer: { type: "save", secret: "ghp_secret" },
-        });
-        const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
-        const failed = yield* service.consume({ ref, projectId }).pipe(Effect.flip);
-        assert.include(failed.message, "Could not use");
-      }),
-    { removeFails: true },
   ),
 );

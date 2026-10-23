@@ -5,6 +5,7 @@ import {
   ScheduledTask,
   ScheduledTaskError,
   ScheduledTaskId,
+  SecretRequestError,
   ThreadId,
   ScheduledTaskWebhookDeliveryId,
   type ScheduledTaskDeleteInput,
@@ -223,8 +224,15 @@ export class ScheduledTaskService extends Context.Service<
     /** Emits the full task list on subscribe and again after every change (CRUD, run transitions, reschedules). */
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     /** expectedThreadId guards agent-targeted edits against concurrent rebinding. */
+    /**
+     * secretRefThreadId is the thread saving the task; a signature secretRef
+     * resolves only for the thread that asked the user for it.
+     */
     readonly upsert: (
-      input: ScheduledTaskUpsertInput & { readonly expectedThreadId?: ThreadId },
+      input: ScheduledTaskUpsertInput & {
+        readonly expectedThreadId?: ThreadId;
+        readonly secretRefThreadId?: ThreadId;
+      },
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     /** Partial update flipping only the enabled flag; never touches other fields. */
     readonly setEnabled: (
@@ -1066,22 +1074,28 @@ export const layer = Layer.effect(
                 const token = existing?.token ?? (yield* newWebhookToken);
                 const signature =
                   input.schedule.type === "webhook" ? input.schedule.signature : null;
-                // A secretRef is a value the user entered for an agent; this
-                // save consumes it, so it cannot be used again. A replay of a
-                // save that already used it keeps the secret that save stored.
+                // A secretRef is a value the user entered for an agent, usable
+                // only by the thread that asked for it. A replay of a save that
+                // already used it keeps the secret that save stored, even after
+                // the ref expired.
                 const replay = input.commandId !== undefined && existing?.secret != null;
                 const fromRef =
                   signature?.secretRef === undefined
                     ? undefined
-                    : yield* secretRequests
-                        .consume({ ref: signature.secretRef, projectId: input.projectId })
-                        .pipe(
-                          Effect.catch((error) =>
-                            replay
-                              ? Effect.succeed(undefined)
-                              : Effect.fail(taskError(error.message, { taskId: id })),
-                          ),
-                        );
+                    : yield* (
+                        input.secretRefThreadId === undefined
+                          ? Effect.fail(new SecretRequestError({ reason: "ref_unavailable" }))
+                          : secretRequests.use({
+                              ref: signature.secretRef,
+                              threadId: input.secretRefThreadId,
+                            })
+                      ).pipe(
+                        Effect.catch((error) =>
+                          replay
+                            ? Effect.succeed(undefined)
+                            : Effect.fail(taskError(error.message, { taskId: id })),
+                        ),
+                      );
                 // A ref, when given, is the only source: a plain secret sent
                 // alongside it must not replace what a replayed save stored.
                 const provided = signature?.secretRef === undefined ? signature?.secret : fromRef;

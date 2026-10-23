@@ -1,4 +1,5 @@
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { SecretRequestField } from "./secretRequest.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -1457,6 +1458,8 @@ const OrchestrationV2SecretRequestFields = {
   label: TrimmedNonEmptyString,
   reason: Schema.String,
   placeholder: Schema.optional(Schema.String),
+  /** Several named values in one card; absent for a card with a single field. */
+  fields: Schema.optional(Schema.Array(SecretRequestField)),
   secretStatus: OrchestrationV2SecretRequestStatus,
 } as const;
 
@@ -3278,6 +3281,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     label: TrimmedNonEmptyString,
     reason: Schema.String,
     placeholder: Schema.optional(Schema.String),
+    fields: Schema.optional(Schema.Array(SecretRequestField)),
     secretStatus: OrchestrationV2SecretRequestStatus,
   }),
 ]);

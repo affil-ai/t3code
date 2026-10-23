@@ -153,6 +153,23 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
     ),
   );
 
+const hostCommandsRequireFullAccess =
+  "This tool runs a command on the host outside the agent's own sandbox and approvals, so it needs a live full-access/default calling thread.";
+
+/**
+ * Runs a command on the host as the calling T3 thread. That bypasses the
+ * provider's own sandbox and approval prompts, so only a thread already
+ * trusted with full access may.
+ */
+export const runsCommandsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+  declare((params: P) =>
+    requireThreadCaller.pipe(
+      Effect.flatMap(() => writingCaller),
+      Effect.tap((caller) => assertFullAccess(caller, hostCommandsRequireFullAccess)),
+      Effect.flatMap(() => handle(params)),
+    ),
+  );
+
 /** Changes something that belongs to no thread, such as a pending upload or a scheduled task. */
 export const writes = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => orchestratingCaller.pipe(Effect.flatMap(() => handle(params))));

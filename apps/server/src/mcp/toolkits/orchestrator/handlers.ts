@@ -7,6 +7,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
+import * as SecretCommands from "../../../secrets/SecretCommands.ts";
 
 const handlers = {
   orchestrator_capabilities: McpToolAccess.reads(() =>
@@ -93,6 +94,14 @@ const handlers = {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.requestSecret(scope, input);
+    }),
+  ),
+  run_with_secret: McpToolAccess.runsCommandsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const commands = yield* SecretCommands.SecretCommands;
+      // runsCommandsAsCaller admits only thread callers.
+      return yield* commands.run({ ...input, threadId: scope.thread!.threadId });
     }),
   ),
   create_threads: McpToolAccess.actsAsCaller((input) =>

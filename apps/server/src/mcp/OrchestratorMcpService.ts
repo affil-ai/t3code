@@ -23,6 +23,7 @@ import {
   type OrchestratorMcpDeleteScheduledTaskInput,
   type OrchestratorMcpRequestSecretInput,
   type OrchestratorMcpRequestSecretResult,
+  type SecretRef,
   type OrchestratorMcpDeleteScheduledTaskResult,
   type OrchestratorMcpListScheduledTasksResult,
   type OrchestratorMcpRuntimeMode,
@@ -1688,7 +1689,11 @@ const make = Effect.gen(function* () {
               }),
         };
         const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+          .upsert({
+            ...upsertInput,
+            // A signature secretRef resolves only for the thread that asked for it.
+            ...(parent === undefined ? {} : { secretRefThreadId: parent.thread.id }),
+          })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not schedule task: ${error.message}`),
@@ -1759,7 +1764,11 @@ const make = Effect.gen(function* () {
           creationSource: existing.creationSource,
         };
         const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+          .upsert({
+            ...upsertInput,
+            // A signature secretRef resolves only for the thread that asked for it.
+            ...(parent === undefined ? {} : { secretRefThreadId: parent.thread.id }),
+          })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
@@ -1821,6 +1830,7 @@ const make = Effect.gen(function* () {
               label: input.label,
               reason: input.reason,
               ...(input.placeholder === undefined ? {} : { placeholder: input.placeholder }),
+              ...(input.fields === undefined ? {} : { fields: input.fields }),
               secretStatus,
             })
             .pipe(
@@ -1903,16 +1913,28 @@ const make = Effect.gen(function* () {
         yield* Effect.annotateCurrentSpan({ "secret_request.status": status });
         yield* Metrics.increment(Metrics.secretRequestsTotal, { status });
         if (status !== "saved") return { status };
-        // Saved means the value was stored before the card said so; a missing
-        // value is a storage fault, not an answer the agent can act on.
-        const secretRef = yield* secretRequests.savedRef({ threadId: threadId, turnItemId });
-        if (Option.isNone(secretRef)) {
-          return yield* failure(
-            "orchestration_error",
-            "The user saved the secret, but it could not be read. Ask again with a new clientRequestId.",
-          );
+        // Saved means the values were stored before the card said so; a
+        // missing value is a storage fault, not an answer the agent can act on.
+        const unreadable = failure(
+          "orchestration_error",
+          "The user saved the secret, but it could not be read. Ask again with a new clientRequestId.",
+        );
+        if (input.fields === undefined) {
+          const secretRef = yield* secretRequests.savedRef({ threadId, turnItemId });
+          if (Option.isNone(secretRef)) return yield* unreadable;
+          return { status, secretRef: secretRef.value };
         }
-        return { status, secretRef: secretRef.value };
+        const secretRefs: Record<string, SecretRef> = {};
+        for (const field of input.fields) {
+          const secretRef = yield* secretRequests.savedRef({
+            threadId,
+            turnItemId,
+            field: field.name,
+          });
+          if (Option.isNone(secretRef)) return yield* unreadable;
+          secretRefs[field.name] = secretRef.value;
+        }
+        return { status, secretRefs };
       }).pipe(Effect.withSpan("OrchestratorMcpService.requestSecret")),
 
     capabilities: (scope) =>

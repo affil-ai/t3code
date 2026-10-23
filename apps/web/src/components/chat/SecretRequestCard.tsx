@@ -1,9 +1,9 @@
 import {
-  SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   SECRET_REQUEST_PRIVACY_NOTE,
   secretRequestAnswerInput,
   secretRequestDisplay,
   secretRequestFailureMessage,
+  secretRequestInputs,
   type SecretRequestItem,
 } from "@t3tools/client-runtime/secret-request";
 import {
@@ -21,9 +21,9 @@ import { Input } from "../ui/input";
 import { WorkLogRow } from "./WorkLog";
 
 /**
- * Inline card for a secret an agent asked the user for. The typed value lives
- * only in this component's state and the RPC payload: it is never logged,
- * toasted, or persisted, and the field clears once the answer is sent.
+ * Inline card for a secret an agent asked the user for. The typed values live
+ * only in this component's state and the RPC payload: they are never logged,
+ * toasted, or persisted, and the fields clear once the answer is sent.
  */
 export function SecretRequestCard(props: {
   readonly environmentId: EnvironmentId;
@@ -59,6 +59,9 @@ function PendingSecretRequestForm(props: {
   readonly item: SecretRequestItem;
 }) {
   const { item } = props;
+  const inputs = secretRequestInputs(item);
+  // A card with fields titles itself; a single field is labelled by the card's title.
+  const single = item.fields === undefined;
   const inputId = useId();
   const errorId = useId();
   const privacyId = useId();
@@ -68,14 +71,16 @@ function PendingSecretRequestForm(props: {
     reportFailure: false,
     reportDefect: false,
   });
-  const [secret, setSecret] = useState("");
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Enter then a click can both run before a re-render; this guard is synchronous.
   const inFlight = useRef(false);
 
   const send = async (
-    reply: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" },
+    reply:
+      | { readonly type: "save"; readonly values: Readonly<Record<string, string>> }
+      | { readonly type: "decline" },
   ) => {
     const input = secretRequestAnswerInput(item, reply);
     if (input === null || inFlight.current) return;
@@ -88,7 +93,7 @@ function PendingSecretRequestForm(props: {
     });
     if (result._tag === "Success") {
       // The card switches to its answered row once the item updates.
-      setSecret("");
+      setValues({});
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
@@ -98,7 +103,7 @@ function PendingSecretRequestForm(props: {
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    void send({ type: "save", secret });
+    void send({ type: "save", values });
   };
 
   // Same hierarchy as a chat card: what is asked, why, the field, then the
@@ -114,43 +119,66 @@ function PendingSecretRequestForm(props: {
       onPointerDown={(event) => {
         if (!(event.target instanceof HTMLElement)) return;
         if (event.target.closest("input, button, a")) return;
-        document.getElementById(inputId)?.focus();
+        document.getElementById(`${inputId}-0`)?.focus();
       }}
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <label htmlFor={inputId} className="text-sm font-medium text-foreground">
-          {item.label}
-        </label>
+        {single ? (
+          <label htmlFor={`${inputId}-0`} className="text-sm font-medium text-foreground">
+            {item.label}
+          </label>
+        ) : (
+          <p className="text-sm font-medium text-foreground">{item.label}</p>
+        )}
         {item.reason.trim() ? <p className="text-sm text-muted-foreground">{item.reason}</p> : null}
       </div>
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <Input
-            id={inputId}
-            // Masked text rather than a password field: browsers offer to
-            // save any submitted password, and this is not a login.
-            type="text"
-            className="[-webkit-text-security:disc]"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            // Password managers otherwise offer to save or fill this field.
-            data-1p-ignore
-            data-lpignore="true"
-            data-bwignore
-            placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-            value={secret}
-            disabled={submitting}
-            aria-invalid={error !== null || undefined}
-            aria-describedby={error !== null ? `${privacyId} ${errorId}` : privacyId}
-            onChange={(event) => setSecret(event.currentTarget.value)}
-          />
+      {inputs.map((input, index) => (
+        <div key={input.key} className="flex min-w-0 flex-col gap-1.5">
+          {single ? null : (
+            <label htmlFor={`${inputId}-${index}`} className="text-xs text-muted-foreground">
+              {input.label}
+            </label>
+          )}
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <Input
+                id={`${inputId}-${index}`}
+                // Masked text rather than a password field: browsers offer to
+                // save any submitted password, and this is not a login.
+                type="text"
+                className="[-webkit-text-security:disc]"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                // Password managers otherwise offer to save or fill this field.
+                data-1p-ignore
+                data-lpignore="true"
+                data-bwignore
+                placeholder={input.placeholder}
+                value={values[input.key] ?? ""}
+                disabled={submitting}
+                aria-invalid={error !== null || undefined}
+                aria-describedby={error !== null ? `${privacyId} ${errorId}` : privacyId}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setValues((current) => ({ ...current, [input.key]: value }));
+                }}
+              />
+            </div>
+            {index === inputs.length - 1 ? (
+              <Button
+                type="submit"
+                disabled={
+                  submitting || secretRequestAnswerInput(item, { type: "save", values }) === null
+                }
+              >
+                Save securely
+              </Button>
+            ) : null}
+          </div>
         </div>
-        <Button type="submit" disabled={submitting || secret.trim().length === 0}>
-          Save securely
-        </Button>
-      </div>
+      ))}
       {error !== null ? (
         <p id={errorId} role="alert" className="text-xs text-destructive">
           {error}
