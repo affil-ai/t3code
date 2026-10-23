@@ -45,6 +45,55 @@ describe("makeSecretRedactor", () => {
     },
   );
 
+  describe("forms other tools write", () => {
+    const tricky = "Pa$$!'()*<&>é w/😀";
+    const trickyBytes = Buffer.from(tricky);
+    const strict = makeSecretRedactor([tricky]);
+    const unreserved = (keep: RegExp, lower = false) =>
+      Array.from(trickyBytes, (byte) => {
+        const char = String.fromCharCode(byte);
+        if (byte < 0x80 && keep.test(char)) return char;
+        const hex = byte.toString(16).padStart(2, "0");
+        return `%${lower ? hex : hex.toUpperCase()}`;
+      }).join("");
+    const goJson = JSON.stringify(tricky)
+      .slice(1, -1)
+      .replace(/[^\p{ASCII}]|[<>&]/gu, (char) =>
+        Array.from(
+          { length: char.length },
+          (_, index) => `\\u${char.charCodeAt(index).toString(16).padStart(4, "0")}`,
+        ).join(""),
+      );
+    const wrappedBase64 = (
+      Buffer.from(tricky.repeat(4))
+        .toString("base64")
+        .match(/.{1,64}/g) ?? []
+    ).join("\n");
+
+    it.each([
+      ["curl --data-urlencode / quote_plus", unreserved(/[A-Za-z0-9\-._~]/)],
+      ["Python quote", unreserved(/[A-Za-z0-9\-._~/]/)],
+      ["lowercase escapes", unreserved(/[A-Za-z0-9\-._~]/, true)],
+      ["Go HTML-safe JSON", goJson],
+      [
+        "Python ASCII JSON",
+        goJson.replace(/\\u00(3c|3e|26)/g, (_, hex) =>
+          String.fromCharCode(Number.parseInt(hex, 16)),
+        ),
+      ],
+      ["JSON with escaped slashes", JSON.stringify(tricky).slice(1, -1).replace(/\//g, "\\/")],
+    ])("scrubs %s", (_, form) => {
+      const result = strict.redact(`x=${form};`);
+      expect(result.text).toBe(`x=${REDACTED};`);
+    });
+
+    it("scrubs base64 that an encoder wrapped across lines", () => {
+      const long = makeSecretRedactor([tricky.repeat(4)]);
+      const result = long.redact(`-----BEGIN-----\n${wrappedBase64}\n-----END-----`);
+      expect(result.text).toBe(`-----BEGIN-----\n${REDACTED}\n-----END-----`);
+    });
+  });
+
   it("counts every occurrence across lines and leaves other output alone", () => {
     const result = redact(`${secret}\nok\n${secret}${secret}`);
     expect(result).toEqual({ text: `${REDACTED}\nok\n${REDACTED}${REDACTED}`, count: 3 });

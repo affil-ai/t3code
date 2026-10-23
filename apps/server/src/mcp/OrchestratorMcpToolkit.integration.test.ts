@@ -76,6 +76,7 @@ import {
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as SecretCommands from "../secrets/SecretCommands.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -696,7 +697,14 @@ describe("orchestrator MCP toolkit", () => {
             McpHttpServer.layerThreadToolkit,
           ).pipe(
             Layer.provideMerge(McpServer.McpServer.layer),
-            Layer.provide(SecretCommands.layer.pipe(Layer.provide(ProcessRunner.layer))),
+            Layer.provide(
+              SecretCommands.layer.pipe(
+                Layer.provide(ProcessRunner.layer),
+                Layer.provide(
+                  ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-secret-commands-" }),
+                ),
+              ),
+            ),
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),
             Layer.provide(layerProviderRegistry),

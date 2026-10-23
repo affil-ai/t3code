@@ -30,8 +30,20 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerConfig from "../config.ts";
 import { makeSecretRedactor } from "./redactSecrets.ts";
 import * as SecretRequests from "./SecretRequests.ts";
+
+/** Inherited variables a command must not get, as for the integrated terminal. */
+const ENV_BLOCKLIST = new Set(["PORT", "ELECTRON_RENDERER_PORT", "ELECTRON_RUN_AS_NODE"]);
+/**
+ * Delivery names that would let a secret change how the shell or a loader
+ * runs, e.g. a file in BASH_ENV is run as code.
+ */
+const RESERVED_NAME =
+  /^(PATH|HOME|SHELL|IFS|ENV|BASH_ENV|BASH_FUNC_.*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|CDPATH|GLOBIGNORE|NODE_OPTIONS|PYTHONSTARTUP|PYTHONPATH|LD_.*|DYLD_.*)$/i;
+/** How long a command that ignores the stop signal gets before it is killed. */
+const FORCE_KILL_AFTER = Duration.seconds(5);
 
 /** Kept from each stream before redaction; the rest is drained and dropped. */
 const MAX_CAPTURED_BYTES = 1024 * 1024;
@@ -70,6 +82,15 @@ const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const config = yield* ServerConfig.ServerConfig;
+
+  // Private files live under the T3 home, not the shared temp directory, so a
+  // run a crash interrupted leaves nothing behind past the next start.
+  const runsDirectory = path.join(config.stateDir, "secret-runs");
+  yield* fileSystem.remove(runsDirectory, { recursive: true, force: true }).pipe(Effect.orDie);
+  yield* fileSystem
+    .makeDirectory(runsDirectory, { recursive: true, mode: 0o700 })
+    .pipe(Effect.andThen(fileSystem.chmod(runsDirectory, 0o700)), Effect.orDie);
 
   /** The thread's worktree, else its project's root. */
   const workspaceOf = (threadId: ThreadId) =>
@@ -114,6 +135,12 @@ const make = Effect.gen(function* () {
             `A secret delivered as ${delivery.as} needs a name for its environment variable.`,
           );
         }
+        if (RESERVED_NAME.test(delivery.name)) {
+          return yield* failure(
+            "invalid_request",
+            `${delivery.name} changes how commands run; choose another name.`,
+          );
+        }
         if (names.has(delivery.name)) {
           return yield* failure("invalid_request", `${delivery.name} is used twice.`);
         }
@@ -139,12 +166,14 @@ const make = Effect.gen(function* () {
       // A private directory per run, removed with everything in it when the
       // command ends, however it ends.
       const directory = needsFiles
-        ? yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-secret-" }).pipe(
-            Effect.tap((created) => fileSystem.chmod(created, 0o700)),
-            Effect.mapError(() =>
-              failure("orchestration_error", "Could not create a private directory."),
-            ),
-          )
+        ? yield* fileSystem
+            .makeTempDirectoryScoped({ directory: runsDirectory, prefix: "run-" })
+            .pipe(
+              Effect.tap((created) => fileSystem.chmod(created, 0o700)),
+              Effect.mapError(() =>
+                failure("orchestration_error", "Could not create a private directory."),
+              ),
+            )
         : undefined;
       for (const [index, delivery] of deliveries.entries()) {
         const value = values[index]!;
@@ -171,7 +200,14 @@ const make = Effect.gen(function* () {
         .run({
           ...shell,
           cwd,
-          env,
+          env: {
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(([name]) => !ENV_BLOCKLIST.has(name)),
+            ),
+            ...env,
+          },
+          extendEnv: false,
+          forceKillAfter: FORCE_KILL_AFTER,
           // Always written, even empty, so a command reading stdin sees its end.
           stdin,
           stdinMayBeUnread: true,

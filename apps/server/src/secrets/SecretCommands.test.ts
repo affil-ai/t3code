@@ -8,6 +8,7 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Tracer from "effect/Tracer";
 
+import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -31,6 +32,7 @@ const withService = <A, E>(
     readonly commands: SecretCommands.SecretCommands["Service"];
     readonly workspace: string;
   }) => Effect.Effect<A, E, FileSystem.FileSystem>,
+  options: { readonly stateDir?: string } = {},
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -40,6 +42,15 @@ const withService = <A, E>(
       Layer.provide(
         Layer.mergeAll(
           ProcessRunner.layer,
+          Layer.effect(
+            ServerConfig.ServerConfig,
+            Effect.map(ServerConfig.ServerConfig, (config) => ({
+              ...config,
+              stateDir: options.stateDir ?? `${workspace}/.state`,
+            })),
+          ).pipe(
+            Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-secret-cmd-cfg-" })),
+          ),
           Layer.mock(SecretRequests.SecretRequests)({
             use: (input) => {
               const value = input.threadId === threadId ? values.get(input.ref) : undefined;
@@ -278,4 +289,74 @@ it.live("keeps values out of logs and traces", () =>
     assert.include(recorded, "SecretCommands.run");
     assert.isFalse(recorded.some((entry) => entry.includes(token)));
   }),
+);
+
+it.live("kills a command that ignores the stop signal", () =>
+  withService(({ commands }) =>
+    Effect.gen(function* () {
+      const started = Date.now();
+      const result = yield* commands.run({
+        threadId,
+        secrets: [{ secretRef: tokenRef, name: "TOKEN" }],
+        command: "trap '' TERM; while true; do sleep 0.1; done",
+        timeoutMs: 1_000,
+      });
+      assert.deepInclude(result, { exitCode: null, timedOut: true });
+      assert.isBelow(Date.now() - started, 15_000);
+    }),
+  ),
+);
+
+it.live("does not hand the command the server's Electron and port settings", () =>
+  withService(({ commands }) =>
+    Effect.gen(function* () {
+      process.env.ELECTRON_RUN_AS_NODE = "1";
+      const result = yield* commands
+        .run({
+          threadId,
+          secrets: [{ secretRef: tokenRef, name: "TOKEN" }],
+          command: 'printf "[%s]" "${ELECTRON_RUN_AS_NODE:-unset}"',
+        })
+        .pipe(Effect.ensuring(Effect.sync(() => delete process.env.ELECTRON_RUN_AS_NODE)));
+      assert.equal(result.stdout, "[unset]");
+    }),
+  ),
+);
+
+it.live("refuses names that change how the shell or loaders run", () =>
+  withService(({ commands }) =>
+    Effect.gen(function* () {
+      for (const name of [
+        "BASH_ENV",
+        "LD_PRELOAD",
+        "PATH",
+        "NODE_OPTIONS",
+        "DYLD_INSERT_LIBRARIES",
+      ]) {
+        const refused = yield* commands
+          .run({
+            threadId,
+            secrets: [{ secretRef: tokenRef, as: "file", name }],
+            command: "true",
+          })
+          .pipe(Effect.flip);
+        assert.include(refused.message, "changes how commands run");
+      }
+    }),
+  ),
+);
+
+it.live("clears private files a crashed run left behind when it starts", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const stateDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-secret-state-" });
+    yield* fileSystem.makeDirectory(`${stateDir}/secret-runs/run-crashed`, { recursive: true });
+    yield* fileSystem.writeFileString(`${stateDir}/secret-runs/run-crashed/TOKEN`, token);
+    yield* withService(() => Effect.void, { stateDir });
+    assert.isFalse(yield* fileSystem.exists(`${stateDir}/secret-runs/run-crashed`));
+    assert.equal(
+      ((yield* fileSystem.stat(`${stateDir}/secret-runs`)).mode & 0o777).toString(8),
+      "700",
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -306,6 +306,26 @@ it.effect("a save whose record and cleanup both failed is finished by saving aga
   ),
 );
 
+it.effect("a failed save never deletes a value an earlier answer stored", () => {
+  const options = { failedRecords: 2, removeFails: true };
+  return withService(
+    ({ service, stored }) =>
+      Effect.gen(function* () {
+        // The first answer's value stays: its record and its cleanup both failed.
+        yield* service
+          .answer({ threadId, turnItemId, answer: { type: "save", secret: "first" } })
+          .pipe(Effect.flip);
+        options.removeFails = false;
+        // A second answer finds that value, and its own record fails too.
+        yield* service
+          .answer({ threadId, turnItemId, answer: { type: "save", secret: "second" } })
+          .pipe(Effect.flip);
+        assert.deepInclude(valuesOf(stored).join(), "first");
+      }),
+    options,
+  );
+});
+
 it.effect("declining stores nothing, and a request is answered once", () =>
   withService(({ service, stored, dispatched }) =>
     Effect.gen(function* () {

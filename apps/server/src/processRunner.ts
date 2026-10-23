@@ -23,6 +23,10 @@ export interface ProcessRunInput {
   readonly spawnCwd?: string | undefined;
   readonly timeout?: Duration.Input | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
+  /** Whether `env` adds to the server's environment (the default) or replaces it. */
+  readonly extendEnv?: boolean | undefined;
+  /** After a stop signal, how long before the process group is killed outright. */
+  readonly forceKillAfter?: Duration.Input | undefined;
   readonly stdin?: string | undefined;
   /** A child that exits or closes stdin before reading all of `stdin` is not an error. */
   readonly stdinMayBeUnread?: boolean | undefined;
@@ -279,7 +283,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
   const outputMode = input.outputMode ?? "error";
   const truncatedMarker = input.truncatedMarker ?? "";
   const env = input.env;
-  const extendEnv = env !== undefined;
+  const extendEnv = input.extendEnv ?? env !== undefined;
   const spawnCommand = yield* resolveSpawnCommand(
     input.command,
     input.args,
@@ -297,6 +301,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
             }
           : {}),
         shell: spawnCommand.shell,
+        ...(input.forceKillAfter === undefined ? {} : { forceKillAfter: input.forceKillAfter }),
       }),
     )
     .pipe(

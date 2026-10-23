@@ -159,6 +159,12 @@ const make = Effect.gen(function* () {
         storeName(refFor(salt, input.threadId, item.id, field)),
       );
       const removeAll = Effect.forEach(names, removeLogged, { discard: true });
+      // A failed save removes only what it stored itself: a value that was
+      // already there belongs to an answer that may have recorded the card.
+      const created: Array<string> = [];
+      const removeCreated = Effect.suspend(() =>
+        Effect.forEach(created, removeLogged, { discard: true }),
+      );
       // Store first: the card only says saved once the values are kept. Create,
       // not set: a second answer racing this one must not replace a value.
       // A value already there on a card still pending is an earlier save whose
@@ -170,7 +176,9 @@ const make = Effect.gen(function* () {
           encodeStored({ threadId: input.threadId, value, savedAt }).pipe(
             Effect.orDie,
             Effect.flatMap((encoded) =>
-              store.create(names[index]!, new TextEncoder().encode(encoded)),
+              store
+                .create(names[index]!, new TextEncoder().encode(encoded))
+                .pipe(Effect.tap(() => Effect.sync(() => created.push(names[index]!)))),
             ),
             Effect.catchIf(ServerSecretStore.isSecretAlreadyExistsError, () => Effect.void),
             Effect.mapError(
@@ -178,7 +186,7 @@ const make = Effect.gen(function* () {
             ),
           ),
         { discard: true },
-      ).pipe(Effect.tapError(() => removeAll));
+      ).pipe(Effect.tapError(() => removeCreated));
       const secretStatus = input.answer.type === "save" ? "saved" : "declined";
       yield* threadManagement
         .dispatch({
@@ -198,7 +206,7 @@ const make = Effect.gen(function* () {
           Effect.mapError((cause) => new SecretRequestError({ reason: "record_failed", cause })),
           // The card still says pending, so the user can save again; the values
           // stored above would make that retry look already answered.
-          Effect.tapError(() => removeAll),
+          Effect.tapError(() => removeCreated),
         );
       if (input.answer.type !== "save") return;
       // A request is answered once: if the agent's wait closed the card between

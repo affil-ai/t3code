@@ -18,6 +18,9 @@ export type SecretRequestField = typeof SecretRequestField.Type;
 
 export const SECRET_REQUEST_MAX_FIELDS = 8;
 
+/** A secret's value as the user enters it; generous for keys and certificates. */
+const SecretValue = TrimmedNonEmptyString.check(Schema.isMaxLength(64 * 1024));
+
 /**
  * The user's answer to an agent's request for a secret. A saved value is kept
  * by the server under a SecretRef bound to the asking thread; the thread
@@ -27,10 +30,10 @@ export const SecretRequestAnswerInput = Schema.Struct({
   threadId: ThreadId,
   turnItemId: TurnItemId,
   answer: Schema.Union([
-    Schema.Struct({ type: Schema.Literal("save"), secret: TrimmedNonEmptyString }),
+    Schema.Struct({ type: Schema.Literal("save"), secret: SecretValue }),
     Schema.Struct({
       type: Schema.Literal("save"),
-      fields: Schema.Record(SecretRequestFieldName, TrimmedNonEmptyString),
+      fields: Schema.Record(SecretRequestFieldName, SecretValue),
     }),
     Schema.Struct({ type: Schema.Literal("decline") }),
   ]),
