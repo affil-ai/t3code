@@ -37,6 +37,7 @@ import {
 } from "./firstmateBoard.logic";
 import { TaskDetail } from "./FirstmateTaskDetail";
 import { TaskPriorityStar } from "./TaskPriority";
+import { TaskProgressLine } from "./FirstmateTaskProgress";
 import { CARD_LINK_CLASS, ExternalTaskLink, WorkerThreadLink } from "./FirstmateTaskLinks";
 import {
   COLUMN_DOT,
@@ -87,6 +88,7 @@ function TaskCard({
           ) : null}
           {task.title}
         </p>
+        <TaskProgressLine task={task} className="mt-0.5" />
         {nextStep !== null ? (
           <Tooltip>
             {/* Above the card's button so the full text shows; a click still opens the task. */}

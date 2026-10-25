@@ -22,6 +22,7 @@ import {
   FirstmateTaskListInput,
   FirstmateTaskListResult,
   FirstmateTaskMutationResult,
+  FirstmateTaskReportProgressInput,
   FirstmateTaskUpdateInput,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
@@ -53,7 +54,7 @@ const shared = {
 const FirstmateTaskListTool = Tool.make("firstmate_task_list", {
   ...shared,
   description:
-    "List the tasks on your board. Filter by status (including backlog or monitoring) or legacy state. Omit both to list every task that is not done or dropped, which includes monitoring tasks. Backlog is intentionally parked: do not start workers or schedule wakes for it.",
+    "List the tasks on your board. Filter by status (including backlog, monitoring, or hillclimb) or legacy state. Omit both to list every task that is not done or dropped, which includes monitoring tasks. Backlog is intentionally parked: do not start workers or schedule wakes for it.",
   parameters: FirstmateTaskListInput,
   success: FirstmateTaskListResult,
 })
@@ -74,7 +75,7 @@ const FirstmateTaskGetTool = Tool.make("firstmate_task_get", {
 const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
   ...shared,
   description:
-    "Create a task on your board. Only an agent's coordinator chat may create its tasks. Set status explicitly: backlog for deferred work, planning, in_progress, in_review, ready_for_deployment, or monitoring (live in production with post-release checks open, such as error watch, readbacks, or backfills). Backlog is parked: do not launch a worker until the user asks to start it. Give it a nextStep: a short imperative phrase naming the PR or decision.",
+    "Create a task on your board. Only an agent's coordinator chat may create its tasks. Set status explicitly: backlog for deferred work, planning, in_progress, in_review, ready_for_deployment, monitoring (live in production with post-release checks open, such as error watch, readbacks, or backfills), or hillclimb (a worker climbing a measured goal; keep the title plain, the worker reports its score with task_report_progress). Backlog is parked: do not launch a worker until the user asks to start it. Give it a nextStep: a short imperative phrase naming the PR or decision.",
   parameters: FirstmateTaskCreateInput,
   success: FirstmateTaskMutationResult,
 })
@@ -84,12 +85,22 @@ const FirstmateTaskCreateTool = Tool.make("firstmate_task_create", {
 const FirstmateTaskUpdateTool = Tool.make("firstmate_task_update", {
   ...shared,
   description:
-    'Partially update a task on your board and append an event. Only an agent\'s coordinator chat may update its tasks. Set status explicitly for lifecycle moves: backlog, planning, in_progress, in_review, ready_for_deployment, monitoring, done, or canceled. Move a merged, live task to monitoring, not done, while post-release checks (error watch, readbacks, production checks, backfills) are open; it stays active and can wake you. Use nextActor separately for who acts next. Whenever you change status, state, or nextActor, also set nextStep: a short imperative phrase naming the PR or decision ("Approve merge of #4118", "Waiting on Office review"), not a sentence about who acts. Closing requires closeEvidence. Backlog tasks are parked and do not wake the coordinator.',
+    'Partially update a task on your board and append an event. Only an agent\'s coordinator chat may update its tasks. Set status explicitly for lifecycle moves: backlog, planning, in_progress, in_review, ready_for_deployment, monitoring, hillclimb, done, or canceled. Move a merged, live task to monitoring, not done, while post-release checks (error watch, readbacks, production checks, backfills) are open; it stays active and can wake you. Use nextActor separately for who acts next. Whenever you change status, state, or nextActor, also set nextStep: a short imperative phrase naming the PR or decision ("Approve merge of #4118", "Waiting on Office review"), not a sentence about who acts. Closing requires closeEvidence. Backlog tasks are parked and do not wake the coordinator. progress sets the progress line shown under the title; workers usually report it themselves.',
   parameters: FirstmateTaskUpdateInput,
   success: FirstmateTaskMutationResult,
 })
   .annotate(Tool.Title, "Update task")
   .annotate(Tool.Destructive, true);
+
+const FirstmateTaskReportProgressTool = Tool.make("task_report_progress", {
+  ...shared,
+  description:
+    'Report your measured progress on the board task you work on, shown under its title: a metric ("Recall 87.5%, baseline 72%, target 90%") or a count ("1,611 / 1,942 hotels", with the total as target). Only the task\'s worker chat, or a subagent it delegated to, may call it, and it changes nothing but progress. Report again whenever the number moves; the board keeps a short history for a sparkline. Keep the score out of the title.',
+  parameters: FirstmateTaskReportProgressInput,
+  success: FirstmateTaskMutationResult,
+})
+  .annotate(Tool.Title, "Report task progress")
+  .annotate(Tool.Destructive, false);
 
 const AgentListTool = Tool.make("agent_list", {
   ...shared,
@@ -191,6 +202,7 @@ export const FirstmateToolkit = Toolkit.make(
   FirstmateTaskGetTool,
   FirstmateTaskCreateTool,
   FirstmateTaskUpdateTool,
+  FirstmateTaskReportProgressTool,
   AgentListTool,
   AgentTasksTool,
   AgentTaskGetTool,

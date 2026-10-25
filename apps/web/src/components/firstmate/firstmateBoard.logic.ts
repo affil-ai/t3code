@@ -8,6 +8,7 @@ export const FIRSTMATE_COLUMN_IDS = [
   "monitoring",
   "in-progress",
   "in-review",
+  "hillclimb",
   "done",
 ] as const;
 export type FirstmateColumnId = (typeof FIRSTMATE_COLUMN_IDS)[number];
@@ -22,6 +23,7 @@ export const FIRSTMATE_SECTION_ORDER = [
   "planning",
   "in-progress",
   "in-review",
+  "hillclimb",
   "backlog",
   "done",
 ] as const satisfies readonly Exclude<FirstmateColumnId, "needs-you">[];
@@ -42,6 +44,8 @@ export function firstmateColumnForTask(task: FirstmateTask): FirstmateColumnId {
       return "ready";
     case "monitoring":
       return "monitoring";
+    case "hillclimb":
+      return "hillclimb";
     case "in_review":
       return "in-review";
     case "done":
@@ -88,6 +92,7 @@ export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoa
     monitoring: [],
     "in-progress": [],
     "in-review": [],
+    hillclimb: [],
     "needs-you": [],
     done: [],
   };

@@ -19,6 +19,7 @@ import * as AgentMcpService from "../../AgentMcpService.ts";
 import * as FirstmateHome from "../../../firstmate/FirstmateHome.ts";
 import * as FirstmateService from "../../../firstmate/FirstmateService.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
@@ -29,6 +30,38 @@ const FM = FIRSTMATE_AGENT_ID;
 
 const COORDINATOR = ThreadId.make("coordinator");
 const WORKER = ThreadId.make("worker");
+/** A subagent the worker delegated a lane to, and one that lane delegated in turn. */
+const LANE = ThreadId.make("worker-lane");
+const LANE_CHILD = ThreadId.make("worker-lane-child");
+/** A fork of the worker: its own conversation, not working on the task. */
+const FORK = ThreadId.make("worker-fork");
+/** A subagent of the coordinator that is not any task's worker. */
+const HELPER = ThreadId.make("coordinator-helper");
+const PARENTS: Record<string, readonly [ThreadId, "subagent" | "fork"]> = {
+  [LANE]: [WORKER, "subagent"],
+  [LANE_CHILD]: [LANE, "subagent"],
+  [FORK]: [WORKER, "fork"],
+  [HELPER]: [COORDINATOR, "subagent"],
+};
+/** Every thread is live, and the ones in PARENTS hang below their parent. */
+const threadsLayer = Layer.mock(ThreadManagement.ThreadManagementService)({
+  getThreadShell: (threadId) => {
+    const shell = McpToolAccessTestkit.liveThreadShell(threadId);
+    const parent = PARENTS[threadId];
+    return Effect.succeed(
+      parent === undefined
+        ? shell
+        : {
+            ...shell,
+            lineage: {
+              rootThreadId: COORDINATOR,
+              parentThreadId: parent[0],
+              relationshipToParent: parent[1],
+            },
+          },
+    );
+  },
+});
 const external: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment-1"),
   requestNamespace: "external-client",
@@ -61,7 +94,7 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
           artifactsRoot: "/agents/artifacts",
         }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
-        McpToolAccessTestkit.liveThreadsLayer,
+        threadsLayer,
         Layer.mock(SecretRequests.SecretRequests)({}),
         Scheduler.layer,
         NodeCrypto.layer,
@@ -71,7 +104,7 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
   );
   const domainDependencies = Layer.mergeAll(
     yield* Layer.build(layerFirstmate).pipe(Effect.map(Layer.succeedContext)),
-    McpToolAccessTestkit.liveThreadsLayer,
+    threadsLayer,
   );
   const layerDependencies = AgentMcpService.layer.pipe(Layer.provideMerge(domainDependencies));
   const service = yield* FirstmateService.FirstmateService.pipe(Effect.provide(layerDependencies));
@@ -255,6 +288,187 @@ describe("Firstmate toolkit handlers", () => {
           COORDINATOR,
         );
         expect(updated.result).toMatchObject({ task: { status: "monitoring" } });
+      }),
+    ),
+  );
+
+  it.effect("lets a task's worker report progress on it and change nothing else", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const { task } = yield* harness.service.create(FM, {
+          ...createParams,
+          status: "hillclimb",
+          workerThreadId: WORKER,
+        });
+        const reported = yield* harness.call(
+          "task_report_progress",
+          { progress: { label: "Recall", kind: "metric", value: 72, unit: "%", target: 90 } },
+          WORKER,
+        );
+        expect(reported.isFailure).toBe(false);
+        expect(reported.result).toMatchObject({
+          task: {
+            id: task.id,
+            status: "hillclimb",
+            progress: { label: "Recall", value: 72, history: [{ value: 72 }] },
+          },
+        });
+        const improved = yield* harness.call(
+          "task_report_progress",
+          {
+            taskId: task.id,
+            progress: { label: "Recall", kind: "metric", value: 87.5, unit: "%", target: 90 },
+          },
+          WORKER,
+        );
+        expect(improved.isFailure).toBe(false);
+        const { task: after, events } = yield* harness.service.get(FM, { taskId: task.id });
+        expect(after.progress?.history.map((point) => point.value)).toEqual([72, 87.5]);
+        // Everything but progress is as the coordinator left it.
+        const { progress: _progress, ...rest } = after;
+        const { progress: _none, ...created } = task;
+        expect(rest).toEqual(created);
+        expect(events).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("lets the worker's delegated subagents report, but not forks or other threads", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const { task } = yield* harness.service.create(FM, {
+          ...createParams,
+          status: "hillclimb",
+          workerThreadId: WORKER,
+        });
+        const report = (value: number) =>
+          ({ progress: { label: "Recall", kind: "metric", value } }) as const;
+        for (const [caller, value] of [
+          [LANE, 1],
+          [LANE_CHILD, 2],
+        ] as const) {
+          const result = yield* harness.call("task_report_progress", report(value), caller);
+          expect(result.isFailure).toBe(false);
+        }
+        for (const caller of [FORK, HELPER, COORDINATOR, ThreadId.make("stranger")]) {
+          const refused = yield* harness.call("task_report_progress", report(99), caller);
+          expect(refused.isFailure).toBe(true);
+          expect(refused.result).toMatchObject({ _tag: "FirstmateError" });
+        }
+        const external = yield* harness.call("task_report_progress", report(99), {
+          ...invocation(WORKER),
+          thread: undefined,
+          client: { sessionId: "external-writer", label: "ChatGPT", access: "full-access" },
+        });
+        expect(external.isFailure).toBe(true);
+        expect(external.result).toMatchObject({ code: "capability_denied" });
+        const { task: after } = yield* harness.service.get(FM, { taskId: task.id });
+        expect(after.progress?.value).toBe(2);
+      }),
+    ),
+  );
+
+  it.effect("refuses progress on another task, a closed task, or with other fields", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const report = {
+          progress: { label: "Hotels", kind: "count", value: 10, target: 20 },
+        } as const;
+        const { task: mine } = yield* harness.service.create(FM, {
+          ...createParams,
+          workerThreadId: WORKER,
+        });
+        const { task: theirs } = yield* harness.service.create(FM, {
+          ...createParams,
+          workerThreadId: ThreadId.make("other-worker"),
+        });
+        const other = yield* harness.call(
+          "task_report_progress",
+          { ...report, taskId: theirs.id },
+          WORKER,
+        );
+        expect(other.isFailure).toBe(true);
+        expect(other.result).toMatchObject({ _tag: "FirstmateError" });
+
+        const smuggled = yield* harness.call(
+          "task_report_progress",
+          { ...report, title: "(50%) Hotels" } as typeof report,
+          WORKER,
+        );
+        expect(smuggled).toMatchObject({
+          isFailure: true,
+          result: { reason: { _tag: "ToolParameterValidationError" } },
+        });
+
+        // Two open tasks for one worker need an explicit taskId.
+        yield* harness.service.update(FM, {
+          taskId: theirs.id,
+          summary: "Same worker",
+          workerThreadId: WORKER,
+        });
+        const ambiguous = yield* harness.call("task_report_progress", report, WORKER);
+        expect(ambiguous.isFailure).toBe(true);
+        expect(ambiguous.result).toMatchObject({ message: expect.stringContaining("taskId") });
+
+        yield* harness.service.update(FM, {
+          taskId: mine.id,
+          summary: "Shipped",
+          status: "done",
+          closeEvidence: "Merged",
+        });
+        const closed = yield* harness.call(
+          "task_report_progress",
+          { ...report, taskId: mine.id },
+          WORKER,
+        );
+        expect(closed.isFailure).toBe(true);
+        for (const id of [mine.id, theirs.id]) {
+          expect((yield* harness.service.get(FM, { taskId: id })).task).toMatchObject({
+            progress: null,
+            title: "Ship the board",
+          });
+        }
+      }),
+    ),
+  );
+
+  it.effect("lets the coordinator set and clear progress through task update", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const { task } = yield* harness.service.create(FM, createParams);
+        const set = yield* harness.call(
+          "firstmate_task_update",
+          {
+            taskId: task.id,
+            summary: "Baseline measured.",
+            status: "hillclimb",
+            progress: { label: "Recall", kind: "metric", value: 72, baseline: 72, unit: "%" },
+          },
+          COORDINATOR,
+        );
+        expect(set.result).toMatchObject({
+          task: {
+            status: "hillclimb",
+            state: "open",
+            progress: { baseline: 72, history: [{ value: 72 }] },
+          },
+        });
+        const cleared = yield* harness.call(
+          "firstmate_task_update",
+          { taskId: task.id, summary: "Reset the climb.", progress: null },
+          COORDINATOR,
+        );
+        expect(cleared.result).toMatchObject({ task: { progress: null } });
+        const listed = yield* harness.call(
+          "firstmate_task_list",
+          { status: "hillclimb" },
+          COORDINATOR,
+        );
+        expect((listed.result as { tasks: unknown[] }).tasks).toHaveLength(1);
       }),
     ),
   );

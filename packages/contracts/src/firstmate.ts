@@ -43,6 +43,10 @@ export type FirstmateTaskEventId = typeof FirstmateTaskEventId.Type;
  *
  * A `monitoring` task is live in production with post-release checks still
  * open. Its legacy state is `open`: the work is active, not waiting on a merge.
+ *
+ * A `hillclimb` task is a worker climbing a frozen metric through rounds of
+ * keep-or-revert experiments. Coordinators set it explicitly; it is never
+ * inferred from a title. Its legacy state is `open`.
  */
 export const FirstmateTaskState = Schema.Literals(["open", "waiting", "ready", "done", "dropped"]);
 export type FirstmateTaskState = typeof FirstmateTaskState.Type;
@@ -55,6 +59,7 @@ export const FirstmateTaskStatus = Schema.Literals([
   "in_review",
   "ready_for_deployment",
   "monitoring",
+  "hillclimb",
   "done",
   "canceled",
 ]);
@@ -138,6 +143,69 @@ export type FirstmateNextStep = typeof FirstmateNextStep.Type;
 const NEXT_STEP_DESCRIPTION =
   'What happens next, as a short imperative phrase (at most 80 characters) naming the PR or decision, e.g. "Approve merge of #4118" or "Worker fixing Office comment". Not a sentence about who acts.';
 
+/**
+ * A worker's latest measured progress on a task, written by the worker with
+ * `task_report_progress` or by the coordinator with `firstmate_task_update`.
+ * A `metric` is a score ("Recall 87.5%"); a `count` is done-out-of-total, with
+ * the total in `target` ("1,611 / 1,942 hotels").
+ */
+const progressReportFields = {
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(40)).annotate({
+    description: 'What is measured, e.g. "Recall" or "Hotels scraped".',
+  }),
+  kind: Schema.Literals(["metric", "count"]).annotate({
+    description: "metric for a score; count for done out of a total, with the total in target.",
+  }),
+  value: Schema.Finite,
+  baseline: Schema.optional(Schema.Finite).annotate({
+    description: "The starting score, for a metric.",
+  }),
+  target: Schema.optional(Schema.Finite).annotate({
+    description: "The score that reaches the goal, or the total for a count.",
+  }),
+  unit: Schema.optional(Schema.String.check(Schema.isMaxLength(16))).annotate({
+    description: 'Shown after the number: "%", "ms", "hotels", "$". A "$" goes before it.',
+  }),
+  direction: Schema.optional(Schema.Literals(["higher", "lower"])).annotate({
+    description: "Whether higher or lower is better. Omit for higher.",
+  }),
+};
+
+/** A struct that fails on keys it does not declare, so a caller never mistakes a dropped field for an applied one. */
+function closedStruct<const Fields extends Schema.Struct.Fields>(fields: Fields) {
+  const struct = Schema.Struct(fields);
+  return Schema.StructWithRest(struct, [
+    Schema.Record(
+      Schema.String.check(
+        Schema.makeFilter((key: string) => !Object.hasOwn(fields, key), {
+          expected: `only the fields ${Object.keys(fields).join(", ")}`,
+        }),
+      ),
+      Schema.Never,
+    ),
+  ]).pipe(Schema.decodeTo(struct));
+}
+
+export const FirstmateTaskProgressReport = closedStruct(progressReportFields);
+export type FirstmateTaskProgressReport = typeof FirstmateTaskProgressReport.Type;
+
+export const FirstmateTaskProgressPoint = Schema.Struct({
+  value: Schema.Finite,
+  at: IsoDateTime,
+});
+export type FirstmateTaskProgressPoint = typeof FirstmateTaskProgressPoint.Type;
+
+/** At most this many past values are kept for the board's sparkline. */
+export const FIRSTMATE_PROGRESS_HISTORY_LIMIT = 32;
+
+/** The stored progress: the latest report, when it arrived, and its recent values, oldest first. */
+export const FirstmateTaskProgress = Schema.Struct({
+  ...progressReportFields,
+  updatedAt: IsoDateTime,
+  history: Schema.Array(FirstmateTaskProgressPoint),
+});
+export type FirstmateTaskProgress = typeof FirstmateTaskProgress.Type;
+
 /** Public task model; reactor bookkeeping stays on the server. */
 export const FirstmateTask = Schema.Struct({
   id: FirstmateTaskId,
@@ -159,6 +227,8 @@ export const FirstmateTask = Schema.Struct({
   /** Older servers omit it; read it as empty. */
   artifacts: Schema.optional(Schema.Array(FirstmateTaskArtifact)),
   closeEvidence: Schema.NullOr(TrimmedNonEmptyString),
+  /** Older servers omit it; read it as none. */
+  progress: Schema.optional(Schema.NullOr(FirstmateTaskProgress)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   closedAt: Schema.NullOr(IsoDateTime),
@@ -311,10 +381,11 @@ export const FirstmateTaskCreateInput = Schema.Struct({
       "in_review",
       "ready_for_deployment",
       "monitoring",
+      "hillclimb",
     ]),
   ).annotate({
     description:
-      "Lifecycle status. Backlog is parked; do not start workers for it. Monitoring means live in production with post-release checks open.",
+      "Lifecycle status. Backlog is parked; do not start workers for it. Monitoring means live in production with post-release checks open. Hillclimb means a worker is climbing a measured goal.",
   }),
   nextActor: Schema.optional(FirstmateNextActor).annotate({
     description: "Who acts next. Omit for coordinator.",
@@ -367,6 +438,10 @@ export const FirstmateTaskUpdateInput = Schema.Struct({
   closeEvidence: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).annotate({
     description: "Required when moving to done or dropped. Evidence of the outcome or decision.",
   }),
+  progress: Schema.optional(Schema.NullOr(FirstmateTaskProgressReport)).annotate({
+    description:
+      "Sets the task's progress line, as task_report_progress does. Null clears it and its history.",
+  }),
 }).check(
   Schema.makeFilter(
     (input) =>
@@ -379,6 +454,16 @@ export const FirstmateTaskUpdateInput = Schema.Struct({
   ),
 );
 export type FirstmateTaskUpdateInput = typeof FirstmateTaskUpdateInput.Type;
+
+/** A worker's progress report on the task it works on; it changes nothing else. */
+// A worker may change only progress: any other task field is an error, not ignored.
+export const FirstmateTaskReportProgressInput = closedStruct({
+  taskId: Schema.optional(FirstmateTaskId).annotate({
+    description: "The task you work on. Omit when you are the worker of exactly one open task.",
+  }),
+  progress: FirstmateTaskProgressReport,
+});
+export type FirstmateTaskReportProgressInput = typeof FirstmateTaskReportProgressInput.Type;
 
 export const FirstmateSetTaskPriorityInput = Schema.Struct({
   taskId: FirstmateTaskId,

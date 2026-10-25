@@ -20,6 +20,7 @@ import { toastManager } from "../ui/toast";
 import { firstmateColumnForTask } from "./firstmateBoard.logic";
 import { FirstmateArtifactList } from "./FirstmateTaskArtifacts";
 import { TaskPriorityToggle } from "./TaskPriority";
+import { TaskProgressLine } from "./FirstmateTaskProgress";
 import { ExternalTaskLink, WorkerThreadLink } from "./FirstmateTaskLinks";
 import {
   COLUMN_DOT,
@@ -268,6 +269,7 @@ export function TaskDetail({
             </h3>
             <TaskPriorityToggle environmentId={environmentId} task={task} />
           </div>
+          <TaskProgressLine task={task} />
         </header>
         {nextStep !== null ? (
           <NextStepCard environmentId={environmentId} task={task} nextStep={nextStep} />

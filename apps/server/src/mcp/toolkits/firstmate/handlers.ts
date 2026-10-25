@@ -14,6 +14,7 @@ import { FirstmateToolkit } from "./tools.ts";
 const notAnAgent =
   "This thread has no task board. The task tools act on the board of the agent whose coordinator chat calls them, or whose task the calling worker runs.";
 const coordinatorRequired = "Only an agent's coordinator chat may create or update its tasks.";
+const workerRequired = "Only a task's worker chat may report its progress.";
 const agentToolsRequireCoordinator = "Only an agent's coordinator chat may use the agent tools.";
 const modelRequired =
   "The calling agent has no recorded model to copy. Pass modelSelection, as orchestrator_capabilities lists it.";
@@ -128,6 +129,18 @@ const make = Effect.gen(function* () {
     ),
     firstmate_task_update: McpToolAccess.writes((input) =>
       requireCoordinator.pipe(Effect.flatMap((agent) => firstmate.update(agent.id, input))),
+    ),
+    task_report_progress: McpToolAccess.writes((input) =>
+      Effect.gen(function* () {
+        const { thread } = yield* McpInvocationContext.McpInvocationContext;
+        if (thread === undefined) {
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: workerRequired,
+          });
+        }
+        return yield* firstmate.reportProgress(thread.threadId, input);
+      }),
     ),
   } satisfies McpToolAccess.Handlers<typeof FirstmateToolkit.tools>;
 });

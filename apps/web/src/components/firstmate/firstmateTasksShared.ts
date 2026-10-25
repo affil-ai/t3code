@@ -26,6 +26,7 @@ export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
   planning: "Planning",
   "in-progress": "In progress",
   "in-review": "In review",
+  hillclimb: "Hillclimb",
   done: "Done",
 };
 
@@ -37,6 +38,7 @@ export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = 
   planning: "Nothing being planned",
   "in-progress": "Nothing in progress",
   "in-review": "Nothing in review",
+  hillclimb: "No hillclimbs running",
 };
 
 /** A small dot per column; it is the board's only color. */
@@ -48,6 +50,7 @@ export const COLUMN_DOT: Record<FirstmateColumnId, string> = {
   planning: "bg-primary/60",
   "in-progress": "bg-info",
   "in-review": "bg-muted-foreground/60",
+  hillclimb: "bg-info/50",
   done: "bg-muted-foreground/30",
 };
 

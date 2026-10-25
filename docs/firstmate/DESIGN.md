@@ -50,23 +50,24 @@ This is a fork-only feature. Keep it modular so upstream merges stay easy.
 
 `firstmate_task`:
 
-| Field                                | Meaning                                                                                                                                                          |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                                 | Branded `FirstmateTaskId`                                                                                                                                        |
-| `title`                              | Short label                                                                                                                                                      |
-| `intent`                             | The user's request in their own words                                                                                                                            |
-| `definitionOfDone`                   | What closes the task                                                                                                                                             |
-| `status`                             | Explicit lifecycle: `backlog`, `planning`, `in_progress`, `in_review`, `ready_for_deployment`, `monitoring` (live, post-release checks open), `done`, `canceled` |
-| `state`                              | Legacy operational value, maintained from status by the service; old callers may still write it                                                                  |
-| `nextActor`                          | `coordinator`, `worker`, `user`, or `external`                                                                                                                   |
-| `note`                               | One-line current status                                                                                                                                          |
-| `wakeAt`                             | ISO time or null                                                                                                                                                 |
-| `workerThreadId`                     | Null, or one worker thread. A task has at most one live worker; replacing it overwrites the field and logs an event.                                             |
-| `links`                              | Array of `{label, url}`, such as PRs and reports                                                                                                                 |
-| `closeEvidence`                      | Required when the state becomes `done` or `dropped`                                                                                                              |
-| `createdAt`, `updatedAt`, `closedAt` | Timestamps                                                                                                                                                       |
-| `lastReportedRunId`                  | Internal; dedupes worker wakes                                                                                                                                   |
-| `orphanNotifiedAt`                   | Internal; dedupes orphan wakes                                                                                                                                   |
+| Field                                | Meaning                                                                                                                                                                       |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                 | Branded `FirstmateTaskId`                                                                                                                                                     |
+| `title`                              | Short label                                                                                                                                                                   |
+| `intent`                             | The user's request in their own words                                                                                                                                         |
+| `definitionOfDone`                   | What closes the task                                                                                                                                                          |
+| `status`                             | Explicit lifecycle: `backlog`, `planning`, `in_progress`, `in_review`, `ready_for_deployment`, `monitoring` (live, post-release checks open), `hillclimb`, `done`, `canceled` |
+| `state`                              | Legacy operational value, maintained from status by the service; old callers may still write it                                                                               |
+| `nextActor`                          | `coordinator`, `worker`, `user`, or `external`                                                                                                                                |
+| `note`                               | One-line current status                                                                                                                                                       |
+| `wakeAt`                             | ISO time or null                                                                                                                                                              |
+| `workerThreadId`                     | Null, or one worker thread. A task has at most one live worker; replacing it overwrites the field and logs an event.                                                          |
+| `links`                              | Array of `{label, url}`, such as PRs and reports                                                                                                                              |
+| `progress`                           | Null, or the worker's latest measurement: a metric or a count, with a history of at most 32 values for the sparkline. Its own `updatedAt`; reports do not touch the task's.   |
+| `closeEvidence`                      | Required when the state becomes `done` or `dropped`                                                                                                                           |
+| `createdAt`, `updatedAt`, `closedAt` | Timestamps                                                                                                                                                                    |
+| `lastReportedRunId`                  | Internal; dedupes worker wakes                                                                                                                                                |
+| `orphanNotifiedAt`                   | Internal; dedupes orphan wakes                                                                                                                                                |
 
 `firstmate_task_event` is append-only. Each row has an id, a task id, a time,
 an actor (`coordinator`, `user`, or `system`), and a summary. Every create and
@@ -126,14 +127,17 @@ If no coordinator is set, the reactor does nothing.
 These live in `apps/server/src/mcp/toolkits/firstmate/`. Follow the
 `pullRequests` toolkit's shape.
 
-| Tool                    | Access           | Purpose                                                                                                     |
-| ----------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| `firstmate_task_list`   | Any thread       | Filter by state. Defaults to every task that is not closed.                                                 |
-| `firstmate_task_get`    | Any thread       | One task with its events                                                                                    |
-| `firstmate_task_create` | Coordinator only | Create a task                                                                                               |
-| `firstmate_task_update` | Coordinator only | Partial update. Requires an event `summary`. Moving a task to `done` or `dropped` requires `closeEvidence`. |
+| Tool                    | Access           | Purpose                                                                                                                                                                                  |
+| ----------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `firstmate_task_list`   | Any thread       | Filter by state. Defaults to every task that is not closed.                                                                                                                              |
+| `firstmate_task_get`    | Any thread       | One task with its events                                                                                                                                                                 |
+| `firstmate_task_create` | Coordinator only | Create a task                                                                                                                                                                            |
+| `firstmate_task_update` | Coordinator only | Partial update. Requires an event `summary`. Moving a task to `done` or `dropped` requires `closeEvidence`.                                                                              |
+| `task_report_progress`  | Task worker only | Sets `progress` and nothing else, on an open task whose worker is the caller or, for a delegated subagent, the nearest worker above it. Forks do not count. Any other field is rejected. |
 
-Mutations from any other thread return a clear error.
+Mutations from any other thread return a clear error. Workers keep scores
+out of titles: only the coordinator can rename a task, so a score in the
+title goes stale between wakes.
 
 The agent tools let one agent watch and shape the others, for example a chief
 agent that monitors the rest. Coordinator chats retain cross-agent access.
@@ -299,8 +303,11 @@ write skills on request.
   - Needs you is a separate attention view for tasks whose next actor is the
     user, excluding backlog and closed work. The same task remains in its
     lifecycle section. Deployment decisions also appear in Needs you.
-  - All work contains Backlog, Planning, In progress, In review, Ready for
-    deployment, and Done. Backlog and Done are collapsed in the panel.
+  - All work follows `FIRSTMATE_SECTION_ORDER`: Monitoring, Ready for
+    deployment, Planning, In progress, In review, Hillclimb, Backlog, and
+    Done. Backlog and Done are collapsed in the panel.
+  - Hillclimb holds tasks whose worker climbs a measured goal. Only an
+    explicit `hillclimb` status puts a task there, never its title.
   - Backlog is intentionally parked. The reactor ignores it and removes its
     queued wakes. Parking clears `wakeAt` and rejects a linked active worker;
     it never stops a worker. Promotion is an explicit status update.
@@ -308,8 +315,10 @@ write skills on request.
   - Old rows receive a status at startup. Old wire payloads use the same
     compatibility mapping. `state` updates from old callers still work, but
     new callers should send `status` and let the service maintain `state`.
-- A card shows the title, the worker chat link, status, and age, plus its
-  links. Clicking it drills into the task inside the panel, with a back
+- A card shows the title, its progress line, the worker chat link, status,
+  and age, plus its links. The progress line is plain text, with a sparkline
+  for a metric or a bar for a count; a hillclimb without progress reads
+  "baseline pending". Clicking it drills into the task inside the panel, with a back
   button: the intent, the definition of done, the close evidence, review
   artifacts, links, and the event log. Artifacts appear only in the detail,
   so the list stays clean. The Tasks tab cannot be closed.

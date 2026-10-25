@@ -27,12 +27,14 @@ import {
   FirstmateTaskCreateInput as TaskCreateInput,
   FirstmateTaskUpdateInput as TaskUpdateInput,
   FirstmateTaskListInput as TaskListInput,
+  FirstmateTaskReportProgressInput as ReportProgressInput,
   type FirstmateTaskArtifact,
   firstmateTaskStatus,
   firstmateStateForStatus,
   FirstmateSetAppearanceInput as AppearanceInput,
   MessageId,
   type ModelSelection,
+  type OrchestrationV2ThreadShell,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -50,6 +52,7 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { coordinatorKickoff } from "./coordinatorPrompt.ts";
 import * as FirstmateHome from "./FirstmateHome.ts";
+import { applyProgressReport } from "./progress.ts";
 import * as Store from "./store.ts";
 import {
   type AgentRow,
@@ -57,6 +60,7 @@ import {
   encodeArtifacts,
   encodeLinks,
   encodeModelSelection,
+  encodeProgress,
   type EventRow,
   publicTask,
   type StoredTask,
@@ -71,6 +75,7 @@ export type FirstmateSnapshot = typeof ContractFirstmateSnapshot.Type;
 export type FirstmateTaskListInput = typeof TaskListInput.Type;
 export type FirstmateTaskCreateInput = typeof TaskCreateInput.Type;
 export type FirstmateTaskUpdateInput = typeof TaskUpdateInput.Type;
+export type FirstmateTaskReportProgressInput = typeof ReportProgressInput.Type;
 
 export interface FirstmateTaskGetInput {
   readonly taskId: FirstmateTask["id"];
@@ -129,6 +134,9 @@ const isFirstmateError = Schema.is(ContractFirstmateError);
 // Service callers are typed, but MCP and tests can bypass trimming; decode re-checks it.
 const decodeCreateInput = Schema.decodeUnknownEffect(TaskCreateInput);
 const decodeUpdateInput = Schema.decodeUnknownEffect(TaskUpdateInput);
+const decodeReportProgressInput = Schema.decodeUnknownEffect(ReportProgressInput);
+/** How many delegated-subagent hops a progress report may climb to find its worker. */
+const MAX_SUBAGENT_DEPTH = 8;
 const decodeAppearanceInput = Schema.decodeUnknownEffect(AppearanceInput);
 const decodeCreateAgentInput = Schema.decodeUnknownEffect(CreateAgentInput);
 const decodeUpdateAgentInput = Schema.decodeUnknownEffect(UpdateAgentInput);
@@ -168,6 +176,15 @@ export class FirstmateService extends Context.Service<
     readonly update: (
       agentId: AgentProfileId,
       input: FirstmateTaskUpdateInput,
+    ) => Effect.Effect<FirstmateTaskMutationResult, ContractFirstmateError>;
+    /**
+     * A worker's progress report. It changes only `progress`, and only on an
+     * open task whose worker is the calling thread or, for a delegated
+     * subagent, the nearest thread above it that works on a task.
+     */
+    readonly reportProgress: (
+      callerThreadId: ThreadId,
+      input: FirstmateTaskReportProgressInput,
     ) => Effect.Effect<FirstmateTaskMutationResult, ContractFirstmateError>;
     /** Human priority changes preserve lifecycle, worker ownership, and task order. */
     readonly setTaskPriority: (input: {
@@ -528,6 +545,7 @@ export const layer = Layer.effect(
               links: input.links ?? [],
               artifacts: yield* keepArtifacts(taskId, input.artifacts ?? []),
               closeEvidence: null,
+              progress: null,
               createdAt: at,
               updatedAt: at,
               closedAt: null,
@@ -553,6 +571,7 @@ export const layer = Layer.effect(
             links_json: encodeLinks(task.links),
             artifacts_json: encodeArtifacts(task.artifacts ?? []),
             close_evidence: task.closeEvidence,
+            progress_json: null,
             created_at: task.createdAt,
             updated_at: task.updatedAt,
             closed_at: task.closedAt,
@@ -634,6 +653,12 @@ export const layer = Layer.effect(
                 ...(yield* keepArtifacts(existing.id, input.addArtifacts ?? [])),
               ],
               closeEvidence: evidence,
+              progress:
+                input.progress === undefined
+                  ? (existing.progress ?? null)
+                  : input.progress === null
+                    ? null
+                    : applyProgressReport(existing.progress ?? null, input.progress, at),
               updatedAt: at,
               closedAt: closing ? (existing.closedAt ?? at) : null,
               orphanNotifiedAt: null,
@@ -645,7 +670,8 @@ export const layer = Layer.effect(
             state = ${next.state}, status = ${next.status ?? null}, next_actor = ${next.nextActor}, next_step = ${next.nextStep ?? null}, note = ${next.note}, wake_at = ${next.wakeAt},
             worker_thread_id = ${next.workerThreadId}, links_json = ${encodeLinks(next.links)},
             artifacts_json = ${encodeArtifacts(next.artifacts ?? [])},
-            close_evidence = ${next.closeEvidence}, updated_at = ${next.updatedAt}, closed_at = ${next.closedAt},
+            close_evidence = ${next.closeEvidence}, progress_json = ${encodeProgress(next.progress ?? null)},
+            updated_at = ${next.updatedAt}, closed_at = ${next.closedAt},
             orphan_notified_at = NULL
           WHERE task_id = ${next.id}
         `.pipe(Effect.mapError(dbError("Could not update the task.", next.id)));
@@ -658,6 +684,59 @@ export const layer = Layer.effect(
         )
         .pipe(
           Effect.mapError(dbError("Could not update the task.", raw.taskId)),
+          Effect.tap(() => notify),
+        );
+    /** Open tasks worked by the caller or, failing that, by the nearest delegating thread above it. */
+    const tasksWorkedBy = (callerThreadId: ThreadId) =>
+      Effect.gen(function* () {
+        let threadId: ThreadId | null = callerThreadId;
+        for (let hop = 0; threadId !== null && hop <= MAX_SUBAGENT_DEPTH; hop += 1) {
+          const rows = yield* sql<TaskRow>`
+            SELECT * FROM firstmate_task
+            WHERE worker_thread_id = ${threadId} AND state NOT IN ('done', 'dropped')
+          `;
+          if (rows.length > 0) return rows.map(taskFromRow);
+          // Only a delegated subagent reports for its parent; a fork is its own conversation.
+          const shell: OrchestrationV2ThreadShell | null = yield* threads.getThreadShell(threadId);
+          threadId =
+            shell?.lineage.relationshipToParent === "subagent"
+              ? shell.lineage.parentThreadId
+              : null;
+        }
+        return [];
+      });
+    const reportProgress: FirstmateService["Service"]["reportProgress"] = (callerThreadId, raw) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const input = yield* decodeReportProgressInput(raw);
+            const worked = yield* tasksWorkedBy(callerThreadId);
+            const task =
+              input.taskId === undefined
+                ? worked.length === 1
+                  ? worked[0]
+                  : undefined
+                : worked.find((candidate) => candidate.id === input.taskId);
+            if (task === undefined) {
+              return yield* error(
+                input.taskId === undefined && worked.length > 1
+                  ? "You work on more than one open task. Pass taskId."
+                  : "You can report progress only on an open task you are the worker for.",
+                input.taskId,
+              );
+            }
+            const progress = applyProgressReport(
+              task.progress ?? null,
+              input.progress,
+              yield* now(),
+            );
+            // Progress has its own updatedAt; leaving the task's keeps board order and wakes as they were.
+            yield* sql`UPDATE firstmate_task SET progress_json = ${encodeProgress(progress)} WHERE task_id = ${task.id}`;
+            return { task: publicTask({ ...task, progress }) };
+          }),
+        )
+        .pipe(
+          Effect.mapError(dbError("Could not report the task's progress.", raw.taskId)),
           Effect.tap(() => notify),
         );
     const setCoordinator: FirstmateService["Service"]["setCoordinator"] = (agentId, input) =>
@@ -887,6 +966,7 @@ export const layer = Layer.effect(
       get,
       create,
       update,
+      reportProgress,
       setCoordinator,
       start,
       setAppearance,

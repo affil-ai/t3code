@@ -25,12 +25,14 @@ import {
   FirstmateTaskArtifact,
   FirstmateTaskId,
   FirstmateTaskLink,
+  FirstmateTaskProgress,
   ModelSelection,
   ProjectId,
   type ProjectIconColor,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -59,6 +61,7 @@ export interface TaskRow {
   readonly links_json: string;
   readonly artifacts_json: string;
   readonly close_evidence: string | null;
+  readonly progress_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
   readonly closed_at: string | null;
@@ -96,6 +99,12 @@ export const encodeLinks = Schema.encodeSync(linksJson);
 const artifactsJson = Schema.fromJsonString(Schema.Array(FirstmateTaskArtifact));
 const decodeArtifacts = Schema.decodeUnknownSync(artifactsJson);
 export const encodeArtifacts = Schema.encodeSync(artifactsJson);
+const progressJson = Schema.fromJsonString(FirstmateTaskProgress);
+// A row a newer build wrote in a shape this one cannot read shows no progress
+// rather than failing the board.
+const decodeProgress = Schema.decodeUnknownOption(progressJson);
+export const encodeProgress = (progress: FirstmateTaskProgress | null) =>
+  progress === null ? null : Schema.encodeSync(progressJson)(progress);
 const modelSelectionJson = Schema.fromJsonString(ModelSelection);
 const decodeModelSelection = Schema.decodeUnknownOption(modelSelectionJson);
 export const encodeModelSelection = Schema.encodeSync(modelSelectionJson);
@@ -123,6 +132,8 @@ export function taskFromRow(row: TaskRow): StoredTask {
     links: decodeLinks(row.links_json),
     artifacts: decodeArtifacts(row.artifacts_json),
     closeEvidence: row.close_evidence,
+    progress:
+      row.progress_json == null ? null : Option.getOrNull(decodeProgress(row.progress_json)),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     closedAt: row.closed_at,
@@ -218,6 +229,11 @@ export const ensureSchema = Effect.gen(function* () {
   }
   if (!taskColumns.has("status")) {
     yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN status TEXT`);
+  }
+  // Nullable with no default, so an older build's INSERT, which names its
+  // columns, still succeeds and its UPDATE leaves the progress alone.
+  if (!taskColumns.has("progress_json")) {
+    yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN progress_json TEXT`);
   }
   // Freeze the legacy classification once. A next-actor change after startup
   // must not move an existing task to another lifecycle section.
