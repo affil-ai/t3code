@@ -172,9 +172,12 @@ const progressReportFields = {
 };
 
 /** A struct that fails on keys it does not declare, so a caller never mistakes a dropped field for an applied one. */
-function closedStruct<const Fields extends Schema.Struct.Fields>(fields: Fields) {
+function closedStruct<const Fields extends Schema.Struct.Fields>(
+  fields: Fields,
+): Schema.decodeTo<Schema.Struct<Fields>, Schema.Struct<Fields>> {
   const struct = Schema.Struct(fields);
-  return Schema.StructWithRest(struct, [
+  // The rest record only rejects keys; typed as the plain struct, callers never see its `never` index.
+  const closed = Schema.StructWithRest(struct, [
     Schema.Record(
       Schema.String.check(
         Schema.makeFilter((key: string) => !Object.hasOwn(fields, key), {
@@ -183,7 +186,8 @@ function closedStruct<const Fields extends Schema.Struct.Fields>(fields: Fields)
       ),
       Schema.Never,
     ),
-  ]).pipe(Schema.decodeTo(struct));
+  ]) as unknown as Schema.Struct<Fields>;
+  return closed.pipe(Schema.decodeTo(struct));
 }
 
 export const FirstmateTaskProgressReport = closedStruct(progressReportFields);
