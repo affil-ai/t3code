@@ -26,6 +26,7 @@ export type T3McpToolSummaryAction =
   | "firstmate-task-read"
   | "firstmate-task-create"
   | "firstmate-task-update"
+  | "firstmate-task-progress"
   | "agent-create"
   | "agent-update"
   | "thread-create"
@@ -181,6 +182,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   firstmate_task_update: tool(
     ["Update", "Updating", "Updated", "a Firstmate task"],
     "firstmate-task-update",
+  ),
+  task_report_progress: tool(
+    ["Report", "Reporting", "Reported", "task progress"],
+    "firstmate-task-progress",
   ),
   agent_create: tool(["Create", "Creating", "Created", "an agent"], "agent-create"),
   agent_update: tool(["Update", "Updating", "Updated", "an agent"], "agent-update"),

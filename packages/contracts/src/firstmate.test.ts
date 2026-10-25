@@ -19,7 +19,9 @@ import {
   FirstmateTaskEvent,
   FirstmateTaskId,
   FirstmateTaskListInput,
+  FirstmateTaskReportProgressInput,
   FirstmateTaskUpdateInput,
+  firstmateStateForStatus,
   AgentProfile,
   AgentUpdateInput,
 } from "./firstmate.ts";
@@ -206,6 +208,68 @@ describe("Firstmate task contracts", () => {
       type: "object",
       required: ["taskId", "summary"],
     });
+  });
+});
+
+describe("Firstmate task progress", () => {
+  const decodeReport = Schema.decodeUnknownSync(FirstmateTaskReportProgressInput);
+  const metric = {
+    label: "Recall",
+    kind: "metric",
+    value: 87.5,
+    baseline: 72,
+    target: 90,
+    unit: "%",
+    direction: "higher",
+  } as const;
+
+  it("accepts a metric or a count, with only label, kind, and value required", () => {
+    expect(decodeReport({ progress: metric })).toEqual({ progress: metric });
+    expect(
+      decodeReport({
+        taskId: "firstmate-task:1",
+        progress: { label: "Hotels", kind: "count", value: 1611 },
+      }),
+    ).toMatchObject({ taskId: "firstmate-task:1", progress: { kind: "count", value: 1611 } });
+  });
+
+  it("rejects malformed values and any field besides taskId and progress", () => {
+    expect(() => decodeReport({ progress: { ...metric, value: Number.NaN } })).toThrow();
+    expect(() => decodeReport({ progress: { ...metric, value: "87.5" } })).toThrow();
+    expect(() => decodeReport({ progress: { ...metric, kind: "percent" } })).toThrow();
+    expect(() => decodeReport({ progress: { ...metric, direction: "up" } })).toThrow();
+    expect(() => decodeReport({ progress: { ...metric, label: " " } })).toThrow();
+    expect(() => decodeReport({ progress: { ...metric, unit: "x".repeat(17) } })).toThrow();
+    expect(() => decodeReport({ progress: metric, title: "(88%) Recall" })).toThrow();
+    expect(() => decodeReport({ progress: metric, status: "done" })).toThrow();
+    expect(() => decodeReport({ progress: { ...metric, updatedAt: task.createdAt } })).toThrow();
+  });
+
+  it("lets a coordinator set or clear progress on update, and old tasks decode without it", () => {
+    expect(
+      decodeUpdate({ taskId: "firstmate-task:1", summary: "Baseline", progress: metric }),
+    ).toMatchObject({
+      progress: metric,
+    });
+    expect(
+      decodeUpdate({ taskId: "firstmate-task:1", summary: "Reset", progress: null }).progress,
+    ).toBeNull();
+    expect(decodeTask(task).progress).toBeUndefined();
+    const stored = {
+      ...metric,
+      updatedAt: task.createdAt,
+      history: [{ value: 87.5, at: task.createdAt }],
+    };
+    expect(decodeTask({ ...task, progress: stored }).progress).toEqual(stored);
+  });
+
+  it("adds hillclimb as an open status that creates and updates accept", () => {
+    expect(firstmateStateForStatus("hillclimb")).toBe("open");
+    expect(decodeTask({ ...task, status: "hillclimb" }).status).toBe("hillclimb");
+    expect(decodeCreate({ ...task, status: "hillclimb" }).status).toBe("hillclimb");
+    expect(
+      decodeUpdate({ taskId: "firstmate-task:1", summary: "Climbing", status: "hillclimb" }).status,
+    ).toBe("hillclimb");
   });
 });
 

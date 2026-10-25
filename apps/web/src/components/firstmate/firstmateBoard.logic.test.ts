@@ -52,6 +52,7 @@ describe("firstmateColumnForTask", () => {
     ["in_review", "in-review"],
     ["ready_for_deployment", "ready"],
     ["monitoring", "monitoring"],
+    ["hillclimb", "hillclimb"],
     ["done", "done"],
     ["canceled", "done"],
   ] as const)("keeps %s in %s for every next actor", (status, column) => {
@@ -148,6 +149,19 @@ describe("mapFirstmateBoard", () => {
     expect(countFirstmateOpenTasks([watch, ask])).toBe(2);
   });
 
+  it("groups hillclimbs as open work above Backlog, and drops them once closed", () => {
+    const climb = { ...task("climb", "open", "worker"), status: "hillclimb" as const };
+    const closed = { ...task("closed", "done", "worker"), status: "done" as const };
+    const columns = mapFirstmateBoard([climb, closed]);
+    expect(columns.hillclimb.map((t) => t.id)).toEqual(["climb"]);
+    expect(columns["in-progress"]).toHaveLength(0);
+    expect(columns.done.map((t) => t.id)).toEqual(["closed"]);
+    expect(countFirstmateOpenTasks([climb, closed])).toBe(1);
+    expect(FIRSTMATE_SECTION_ORDER.indexOf("hillclimb")).toBe(
+      FIRSTMATE_SECTION_ORDER.indexOf("backlog") - 1,
+    );
+  });
+
   it("places every task in exactly one column", () => {
     const tasks = STATES.flatMap((state) =>
       ACTORS.map((actor) => task(`${state}-${actor}`, state, actor)),
@@ -242,6 +256,7 @@ describe("FIRSTMATE_SECTION_ORDER", () => {
       "planning",
       "in-progress",
       "in-review",
+      "hillclimb",
       "backlog",
       "done",
     ]);

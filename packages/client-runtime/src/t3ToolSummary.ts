@@ -270,6 +270,9 @@ export function summarizeT3ToolCalls(
         quantity(countEntities(entityIds("taskId")), "Firstmate task"),
       );
       break;
+    case "firstmate-task-progress":
+      label = phrase("Reported", "report", `task progress ${times}`);
+      break;
     case "agent-create":
       label = phrase("Created", "create", quantity(countEntities(entityIds("agentId")), "agent"));
       break;
