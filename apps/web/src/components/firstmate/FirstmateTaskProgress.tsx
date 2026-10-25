@@ -51,7 +51,10 @@ export function TaskProgressLine({
         </svg>
       ) : null}
       {view.kind === "count" && view.fraction !== null ? (
-        <span aria-hidden className="h-0.5 w-12 shrink-0 overflow-hidden rounded-full bg-muted">
+        <span
+          aria-hidden
+          className="h-1 w-12 shrink-0 overflow-hidden rounded-full bg-muted-foreground/15"
+        >
           <span
             className="block h-full rounded-full bg-muted-foreground/60"
             style={{ width: `${view.fraction * 100}%` }}
