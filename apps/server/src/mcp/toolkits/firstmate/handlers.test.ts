@@ -370,6 +370,67 @@ describe("Firstmate toolkit handlers", () => {
     ),
   );
 
+  it.effect("lets a subagent that works its own task still report on its worker's task", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const report = { progress: { label: "Recall", kind: "metric", value: 80 } } as const;
+        const { task: climb } = yield* harness.service.create(FM, {
+          ...createParams,
+          status: "hillclimb",
+          workerThreadId: WORKER,
+        });
+        const { task: lane } = yield* harness.service.create(FM, {
+          ...createParams,
+          workerThreadId: LANE,
+        });
+        const named = yield* harness.call(
+          "task_report_progress",
+          { ...report, taskId: climb.id },
+          LANE,
+        );
+        expect(named.result).toMatchObject({ task: { id: climb.id, progress: { value: 80 } } });
+        // Without a taskId the lane reports on its own task.
+        const own = yield* harness.call("task_report_progress", report, LANE);
+        expect(own.result).toMatchObject({ task: { id: lane.id } });
+      }),
+    ),
+  );
+
+  it.effect("refuses a task with no worker and keeps progress through other updates", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const report = { progress: { label: "Recall", kind: "metric", value: 80 } } as const;
+        const { task: unowned } = yield* harness.service.create(FM, createParams);
+        const refused = yield* harness.call(
+          "task_report_progress",
+          { ...report, taskId: unowned.id },
+          WORKER,
+        );
+        expect(refused.isFailure).toBe(true);
+        const { task } = yield* harness.service.create(FM, {
+          ...createParams,
+          workerThreadId: WORKER,
+        });
+        yield* harness.call("task_report_progress", report, WORKER);
+        yield* harness.call(
+          "task_report_progress",
+          { progress: { ...report.progress, value: 85 } },
+          WORKER,
+        );
+        yield* harness.service.update(FM, {
+          taskId: task.id,
+          summary: "Lane 2 started",
+          nextStep: "Watch lane 2",
+        });
+        const { task: after } = yield* harness.service.get(FM, { taskId: task.id });
+        expect(after.progress?.history.map((point) => point.value)).toEqual([80, 85]);
+        expect(after.progress?.value).toBe(85);
+      }),
+    ),
+  );
+
   it.effect("refuses progress on another task, a closed task, or with other fields", () =>
     Effect.scoped(
       Effect.gen(function* () {

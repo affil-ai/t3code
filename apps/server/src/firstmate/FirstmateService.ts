@@ -686,16 +686,23 @@ export const layer = Layer.effect(
           Effect.mapError(dbError("Could not update the task.", raw.taskId)),
           Effect.tap(() => notify),
         );
-    /** Open tasks worked by the caller or, failing that, by the nearest delegating thread above it. */
-    const tasksWorkedBy = (callerThreadId: ThreadId) =>
+    const openTasksWorkedBy = (threadId: ThreadId) =>
+      sql<TaskRow>`
+        SELECT * FROM firstmate_task
+        WHERE worker_thread_id = ${threadId} AND state NOT IN ('done', 'dropped')
+      `.pipe(Effect.map((rows) => rows.map(taskFromRow)));
+    /**
+     * The thread a report speaks for: the caller, or the nearest thread above
+     * it, through delegated-subagent links only, that works on `taskId` or,
+     * without one, on any open task. Null when there is none.
+     */
+    const reportingWorker = (callerThreadId: ThreadId, taskId: FirstmateTask["id"] | undefined) =>
       Effect.gen(function* () {
         let threadId: ThreadId | null = callerThreadId;
         for (let hop = 0; threadId !== null && hop <= MAX_SUBAGENT_DEPTH; hop += 1) {
-          const rows = yield* sql<TaskRow>`
-            SELECT * FROM firstmate_task
-            WHERE worker_thread_id = ${threadId} AND state NOT IN ('done', 'dropped')
-          `;
-          if (rows.length > 0) return rows.map(taskFromRow);
+          const worked = yield* openTasksWorkedBy(threadId);
+          if (taskId === undefined ? worked.length > 0 : worked.some((task) => task.id === taskId))
+            return threadId;
           // Only a delegated subagent reports for its parent; a fork is its own conversation.
           const shell: OrchestrationV2ThreadShell | null = yield* threads.getThreadShell(threadId);
           threadId =
@@ -703,14 +710,16 @@ export const layer = Layer.effect(
               ? shell.lineage.parentThreadId
               : null;
         }
-        return [];
+        return null;
       });
     const reportProgress: FirstmateService["Service"]["reportProgress"] = (callerThreadId, raw) =>
-      sql
-        .withTransaction(
+      Effect.gen(function* () {
+        const input = yield* decodeReportProgressInput(raw);
+        // Thread lookups stay outside the write transaction.
+        const worker = yield* reportingWorker(callerThreadId, input.taskId);
+        return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const input = yield* decodeReportProgressInput(raw);
-            const worked = yield* tasksWorkedBy(callerThreadId);
+            const worked = worker === null ? [] : yield* openTasksWorkedBy(worker);
             const task =
               input.taskId === undefined
                 ? worked.length === 1
@@ -734,11 +743,11 @@ export const layer = Layer.effect(
             yield* sql`UPDATE firstmate_task SET progress_json = ${encodeProgress(progress)} WHERE task_id = ${task.id}`;
             return { task: publicTask({ ...task, progress }) };
           }),
-        )
-        .pipe(
-          Effect.mapError(dbError("Could not report the task's progress.", raw.taskId)),
-          Effect.tap(() => notify),
         );
+      }).pipe(
+        Effect.mapError(dbError("Could not report the task's progress.", raw.taskId)),
+        Effect.tap(() => notify),
+      );
     const setCoordinator: FirstmateService["Service"]["setCoordinator"] = (agentId, input) =>
       sql`UPDATE firstmate_agent SET coordinator_thread_id = ${input.threadId} WHERE agent_id = ${agentId}`.pipe(
         Effect.andThen(mirrorFirstmateConfig(agentId)),
