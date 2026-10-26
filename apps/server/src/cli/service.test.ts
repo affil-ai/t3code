@@ -19,6 +19,7 @@ import {
   recoverServiceOnboardingOffer,
   serviceCommand,
 } from "./service.ts";
+import { DETACHED_SERVICE_UPDATE_ENV } from "./managedProcessTree.ts"; // fork: detached-service-update
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -121,6 +122,10 @@ function makeTestService(serviceStatus: BootService.BootServiceStatus) {
   return { service, installOptions, restarts };
 }
 
+// These commands stop the service; run them as the detached release unit would,
+// so the outcome does not depend on whether the test runs inside a T3 agent.
+const detachedEnvironment = { [DETACHED_SERVICE_UPDATE_ENV]: "1" }; // fork: detached-service-update
+
 it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands", (it) => {
   it.effect("restart restarts the installed service", () =>
     Effect.gen(function* () {
@@ -136,7 +141,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
         "--base-dir",
         baseDir,
       ]).pipe(
-        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provideService(HostProcess.Environment, detachedEnvironment),
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
       );
 
@@ -161,7 +166,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
           "--base-dir",
           baseDir,
         ]).pipe(
-          Effect.provideService(HostProcess.Environment, {}),
+          Effect.provideService(HostProcess.Environment, detachedEnvironment),
           Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
           Effect.flip,
         );
@@ -190,7 +195,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
         baseDir,
         "--allow-downgrade",
       ]).pipe(
-        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provideService(HostProcess.Environment, detachedEnvironment),
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
       );
 

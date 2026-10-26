@@ -10,13 +10,57 @@ const fs = NodeFSP;
 const { tmpdir } = NodeOS;
 const { join } = NodePath;
 const { createHash } = NodeCrypto;
-import { artifactMirror, assertForwardVersion, validateCompatibilityReview } from "./activate.mjs";
+import {
+  artifactMirror,
+  assertForwardVersion,
+  insideT3ProviderScope,
+  validateCompatibilityReview,
+} from "./activate.mjs";
 import { execute, remoteCommand, sshArgs, verifyReceipt } from "./transport.mjs";
-import { xml, startLinux, watchLinux } from "./handoff.mjs";
+import { linuxUnitArgs, parseLinuxOptions, xml, startLinux, watchLinux } from "./handoff.mjs";
+import { releasePolicy } from "./release.mjs";
 
 test("Ubuntu-only handoff rejects invalid release targets before spawning", async () => {
   await assert.rejects(startLinux("../escape"));
   await assert.rejects(watchLinux("../escape"));
+});
+
+test("installs refuse from a T3 agent scope but run from the detached unit", () => {
+  const agent =
+    "0::/user.slice/user-1003.slice/user@1003.service/app.slice/app-t3code.slice/app-t3code-agents.slice/t3code-codex-1a2b.scope";
+  assert.equal(insideT3ProviderScope(agent), true);
+  assert.equal(insideT3ProviderScope(`${agent}/child`), true);
+  for (const cgroup of [
+    "0::/user.slice/user-1003.slice/user@1003.service/app.slice/t3-fork-release.service",
+    "0::/user.slice/user-1003.slice/user@1003.service/app.slice/t3code.service",
+    "0::/user.slice/user-1003.slice/session-4.scope",
+  ])
+    assert.equal(insideT3ProviderScope(cgroup), false, cgroup);
+});
+
+test("the detached Linux unit carries its own environment and the caller's policy", () => {
+  const policy = releasePolicy({
+    restartThread: "mcp:961cb8d8-a15e-4e16-901f-bd19a9911453",
+    approvedInterrupt: "Vivek approved the restart",
+  });
+  const args = linuxUnitArgs("0.1.0-stable.fork.74", policy, "/state/handoff-linux.log", {
+    PATH: "/usr/bin",
+    T3CODE_HOME: "/home/u/.t3",
+  });
+  assert.ok(args.includes("--unit=t3-fork-release.service"));
+  assert.ok(args.includes("--collect"));
+  assert.ok(args.includes("--setenv=PATH=/usr/bin"));
+  assert.ok(args.includes("--setenv=T3CODE_HOME=/home/u/.t3"));
+  assert.ok(args.includes("--property=StandardOutput=append:/state/handoff-linux.log"));
+  assert.ok(!args.some((arg) => arg.startsWith("--setenv=T3_FORK_RELEASE_STATE")));
+  const watch = args.slice(args.indexOf("watch-linux"));
+  assert.deepEqual(parseLinuxOptions(watch.slice(2)), {
+    restartThread: policy.restartThread,
+    approvedInterrupt: policy.approvedInterrupt,
+  });
+  assert.throws(() => parseLinuxOptions(["--restart-thread"]), /needs a value/);
+  assert.throws(() => parseLinuxOptions(["--force", "yes"]), /Unknown option/);
+  assert.throws(() => releasePolicy({ restartThread: "x' or 1=1" }), /calling T3 thread/);
 });
 
 test("server changes require evidence bound to both commits and the exact diff", () => {

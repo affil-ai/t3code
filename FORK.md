@@ -30,6 +30,8 @@ language, and ownership boundaries.
 | Chat dock                                 | No            | `apps/web/src/components/work/DockChatPanel.tsx`       |
 | Desktop app identity and data directories | No            | `apps/desktop/src/app/`, `scripts/lib/brand-assets.ts` |
 | Firstmate                                 | **Yes**       | See [Firstmate](#firstmate)                            |
+| Detached service updates                  | **Yes**       | `apps/server/src/cli/managedProcessTree.ts`            |
+| Release build dependency pinning          | No            | `scripts/lib/pin-patched-dependencies.ts`              |
 
 Keep fork code in its own files. When an upstream file must change, limit the
 edit to an import plus one registration line, and mark it with a

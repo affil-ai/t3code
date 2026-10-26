@@ -65,6 +65,32 @@ test("paired artifacts require identical commit and version", () => {
   duplicate.artifacts[1].platform = "linux-x64";
   assert.throws(() => validateManifest(duplicate));
 });
+test("a Linux-only release carries exactly one Linux artifact and says so", () => {
+  const linux = {
+    platform: "linux-x64",
+    commit: "a".repeat(40),
+    version: "0.1.0-stable.fork.74",
+    path: "/tmp/t3.tar.gz",
+    bytes: 1,
+    sha256: "b".repeat(64),
+  };
+  const manifest = {
+    schema: 1,
+    repository: "affil-ai/t3code",
+    commit: linux.commit,
+    version: linux.version,
+    scope: "linux-only",
+    artifacts: [linux],
+  };
+  validateManifest(manifest);
+  assert.throws(() => validateManifest({ ...manifest, scope: undefined }), /one Linux and one Mac/);
+  assert.throws(() => validateManifest({ ...manifest, scope: "mac-only" }), /scope/);
+  assert.throws(
+    () => validateManifest({ ...manifest, artifacts: [{ ...linux, platform: "darwin-arm64" }] }),
+    /Linux-only/,
+  );
+});
+
 test("streamed verification catches altered bytes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "t3-release-test-"));
   try {

@@ -12,6 +12,7 @@ import { compareExactServiceVersions } from "../cloud/serviceProtocol.ts";
 import type * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
+import { guardServiceStop } from "./managedProcessTree.ts"; // fork: detached-service-update
 
 export const layer = (config: ServerConfig.ServerConfig["Service"]) =>
   BootService.layer({
@@ -104,10 +105,13 @@ export function formatServiceStatus(
 const runServiceCommand = Effect.fn("cli.service.run")(function* <A, E>(
   flags: { readonly baseDir: Parameters<typeof resolveCliAuthConfig>[0]["baseDir"] },
   run: Effect.Effect<A, E, BootService.BootService>,
+  stops?: string, // fork: detached-service-update
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel);
-  return yield* run.pipe(Effect.provide(layer(config)));
+  return yield* guardServiceStop(stops, config.serverRuntimeStatePath, run).pipe(
+    Effect.provide(layer(config)),
+  ); // fork: detached-service-update
 });
 
 const serviceReconcileFlags = {
@@ -135,6 +139,7 @@ const serviceInstallCommand = Command.make("install", serviceReconcileFlags).pip
           `${result.previouslyInstalled ? "Updated" : "Installed"} T3 Code service with t3@${packageJson.version}.\nLogs: ${result.plan.logPath}`,
         );
       }),
+      "reinstall", // fork: detached-service-update
     ),
   ),
 );
@@ -160,6 +165,7 @@ const serviceUpdateCommand = Command.make("update", serviceReconcileFlags).pipe(
           `${result.previouslyInstalled ? "Updated" : "Installed"} T3 Code service with t3@${packageJson.version}.\nLogs: ${result.plan.logPath}`,
         );
       }),
+      "reinstall", // fork: detached-service-update
     ),
   ),
 );
@@ -181,6 +187,7 @@ const serviceRestartCommand = Command.make("restart", projectLocationFlags).pipe
             : "T3 Code service is not installed.",
         );
       }),
+      "restart", // fork: detached-service-update
     ),
   ),
 );
@@ -197,6 +204,7 @@ const serviceUninstallCommand = Command.make("uninstall", projectLocationFlags).
           removed ? "Removed the T3 Code service." : "T3 Code service is not installed.",
         );
       }),
+      "uninstall", // fork: detached-service-update
     ),
   ),
 );

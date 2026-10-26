@@ -14,11 +14,15 @@ const { homedir } = NodeOS;
 const { basename, join, resolve } = NodePath;
 const { pathToFileURL } = NodeURL;
 const { createHash } = NodeCrypto;
+import * as NodeChildProcess from "node:child_process";
+const { spawnSync } = NodeChildProcess;
 import {
+  assertReleaseIdle,
   atomicJson,
   checkDeploy,
   jobPath,
   readJson,
+  releasePolicy,
   run,
   stateRoot,
   validateRequest,
@@ -157,10 +161,12 @@ async function officeCheck(version, expectedRelease) {
   await response.arrayBuffer();
 }
 
-export async function releaseGuard(version) {
-  await checkDeploy(version);
+export async function releaseGuard(version, policy = releasePolicy()) {
+  await checkDeploy(version, policy);
   const folder = jobPath(version);
   const manifest = await readJson(join(folder, "manifest.json"));
+  if (manifest.scope === "linux-only" && process.platform !== "linux")
+    throw Error("Linux-only release; this host keeps its current version");
   if (process.platform === "linux") {
     // A paired release cannot restart Ubuntu while its public web payload is absent.
     await verifyWeb(join(folder, "web"), manifest);
@@ -223,26 +229,72 @@ async function discovery(version) {
   }
 }
 
-async function linuxInstall(version, manifest, log) {
+/** True when `cgroup` places this process in a T3 provider scope that dies with the server. */
+export function insideT3ProviderScope(cgroup) {
+  return cgroup
+    .split("\n")
+    .some((line) => /(^|\/)t3code-[^/]+\.scope(\/|$)/.test(line.split(":").slice(2).join(":")));
+}
+
+// The updater stops the server it replaces. It must run from a detached unit
+// (handoff.mjs start-linux), never a shell inside T3; this tells it that it is.
+const detachedUpdate = { T3_DETACHED_SERVICE_UPDATE: "1" };
+
+async function linuxInstall(version, manifest, log, policy) {
   const artifact = manifest.artifacts.find((entry) => entry.platform === platform);
   await artifactMirror(artifact, async (origin) => {
     const current = await installedVersion();
     const executable = join(home, "runtime/versions", current, "t3");
     // Final observation immediately before invoking the native service updater.
-    assertIdle(workloadCounts(home));
+    const counts = assertReleaseIdle(home, policy);
+    await log.write(`${JSON.stringify({ current, target: version, counts, policy })}\n`);
     await execute(executable, ["update", version, "--base-dir", home, "--yes"], {
-      env: { ...process.env, T3CODE_RELEASE_BASE_URL: origin },
+      env: { ...process.env, ...detachedUpdate, T3CODE_RELEASE_BASE_URL: origin },
       stdio: ["ignore", log.fd, log.fd],
     });
   });
-  run("systemctl", [
-    "--user",
-    "is-active",
+}
+
+/** Unit states for the server and its companions; only the server gates health. */
+function linuxServiceStates() {
+  const units = [
     "t3code.service",
     "t3code-browser-proxy.service",
     "t3-even-terminal.service",
     "t3-feedback-relay.service",
-  ]);
+  ];
+  const result = spawnSync("systemctl", ["--user", "is-active", ...units], { encoding: "utf8" });
+  const states = (result.stdout ?? "").trim().split("\n");
+  return Object.fromEntries(units.map((unit, index) => [unit, states[index] ?? "unknown"]));
+}
+
+async function awaitVersion(version, attempts, onMiss = async () => {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await discovery(version);
+      return true;
+    } catch {
+      await onMiss(attempt);
+      await pause(1000);
+    }
+  }
+  return false;
+}
+
+// Older runtimes stay under runtime/versions, so this switches back without a
+// download. Qualification's database review is what makes the old binary safe here.
+async function linuxRollback(previous, log) {
+  await log.write(`rolling back to ${previous}\n`);
+  await execute(
+    join(home, "runtime/versions", previous, "t3"),
+    ["update", previous, "--base-dir", home, "--yes", "--allow-downgrade"],
+    { env: { ...process.env, ...detachedUpdate }, stdio: ["ignore", log.fd, log.fd] },
+  ).catch((error) => log.write(`rollback updater failed: ${error.message}\n`));
+  // Never leave the host without a server, even after a partial update.
+  if (linuxServiceStates()["t3code.service"] !== "active") {
+    spawnSync("systemctl", ["--user", "start", "t3code.service"], { stdio: "ignore" });
+  }
+  return awaitVersion(previous, 120);
 }
 
 async function macInstall(version, manifest, log) {
@@ -319,9 +371,9 @@ async function macInstall(version, manifest, log) {
   // Keep the previous bundle. No automatic rollback against a possibly changed database.
 }
 
-export async function activate(version) {
+export async function activate(version, policy = releasePolicy()) {
   return withLock(join(stateRoot, "activation.lock"), async () => {
-    const manifest = await releaseGuard(version);
+    const manifest = await releaseGuard(version, policy);
     const folder = jobPath(version);
     const receipt = join(folder, `${platform}-installed.json`);
     if ((await installedVersion()) === version) {
@@ -332,46 +384,86 @@ export async function activate(version) {
       if (process.platform === "linux") await publishWeb(version);
       return prior;
     }
+    // Installed runtimes before the updater's own guard cannot refuse this themselves.
+    if (
+      process.platform === "linux" &&
+      insideT3ProviderScope(await fs.readFile("/proc/self/cgroup", "utf8"))
+    )
+      throw Error(
+        "Refusing to restart T3 from inside a T3 agent; run `node scripts/fork-release/handoff.mjs start-linux VERSION`",
+      );
     const log = await fs.open(join(folder, `${platform}-install.log`), "a", 0o600);
+    const status = join(folder, `${platform}-activation.json`);
+    const previousVersion = await installedVersion();
+    const started = {
+      version,
+      commit: manifest.commit,
+      previousVersion,
+      startedAt: new Date().toISOString(),
+    };
     try {
-      await atomicJson(join(folder, `${platform}-activation.json`), {
-        version,
-        commit: manifest.commit,
-        phase: "activating",
-        startedAt: new Date().toISOString(),
-      });
-      if (process.platform === "linux") await linuxInstall(version, manifest, log);
-      else if (process.platform === "darwin") await macInstall(version, manifest, log);
-      else throw Error("Unsupported host");
+      await atomicJson(status, { ...started, phase: "activating" });
       let healthy = false;
-      for (let attempt = 0; attempt < 30; attempt++) {
-        try {
-          await discovery(version);
-          healthy = true;
-          break;
-        } catch {
-          // LaunchServices can return success before opening a replaced bundle.
-          // Retry from Finder without starting a duplicate instance or killing anything.
-          if (process.platform === "darwin" && attempt === 10) {
-            await execute(
-              "osascript",
-              ["-e", `tell application "Finder" to open (POSIX file "${app}" as alias)`],
-              { stdio: ["ignore", log.fd, log.fd] },
-            );
-          }
-          await pause(1000);
+      try {
+        if (process.platform === "linux") await linuxInstall(version, manifest, log, policy);
+        else if (process.platform === "darwin") await macInstall(version, manifest, log);
+        else throw Error("Unsupported host");
+        // A large database can take a while to open; the Mac app relaunches faster.
+        healthy = await awaitVersion(
+          version,
+          process.platform === "linux" ? 180 : 30,
+          async (attempt) => {
+            // LaunchServices can return success before opening a replaced bundle.
+            // Retry from Finder without starting a duplicate instance or killing anything.
+            if (process.platform === "darwin" && attempt === 10) {
+              await execute(
+                "osascript",
+                ["-e", `tell application "Finder" to open (POSIX file "${app}" as alias)`],
+                { stdio: ["ignore", log.fd, log.fd] },
+              );
+            }
+          },
+        );
+        if (!healthy)
+          throw Error("Target installed but API health unverified; inspect private log");
+      } catch (error) {
+        if (process.platform !== "linux") throw error;
+        // Refused before the updater switched anything: the old server is still serving.
+        if (
+          (await installedVersion()) === previousVersion &&
+          (await awaitVersion(previousVersion, 1))
+        ) {
+          await atomicJson(status, { ...started, phase: "failed", error: error.message });
+          throw error;
         }
+        await atomicJson(status, { ...started, phase: "rolling-back", error: error.message });
+        const restored = await linuxRollback(previousVersion, log);
+        await atomicJson(status, {
+          ...started,
+          phase: restored ? "rolled-back" : "rollback-failed",
+          error: error.message,
+          services: linuxServiceStates(),
+          at: new Date().toISOString(),
+        });
+        throw Error(
+          restored
+            ? `${error.message}; rolled back to ${previousVersion}, which is serving`
+            : `${error.message}; rollback to ${previousVersion} unverified, inspect the server now`,
+          { cause: error },
+        );
       }
-      if (!healthy) throw Error("Target installed but API health unverified; inspect private log");
       await log.write("relaunched; target API version and protocol verified\n");
       const result = {
         version,
         commit: manifest.commit,
         platform,
+        previousVersion,
         artifacts: manifest.artifacts.map(({ platform, sha256 }) => ({ platform, sha256 })),
+        ...(process.platform === "linux" ? { services: linuxServiceStates() } : {}),
         phase: "installed",
         verifiedAt: new Date().toISOString(),
       };
+      await atomicJson(status, { ...started, phase: "installed", at: result.verifiedAt });
       await atomicJson(receipt, result);
       if (process.platform === "linux") await publishWeb(version);
       return result;
