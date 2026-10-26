@@ -145,8 +145,18 @@ export async function startLinux(version, options = {}) {
   }).stdout?.trim();
   if (["active", "activating", "reloading"].includes(unitState))
     throw Error(`${linuxUnit} is already running; read handoff-linux.json instead of retrying`);
-  await readJson(join(folder, "manifest.json"));
-  await readJson(join(folder, "linux-x64-qualification.json"));
+  await readJson(join(folder, "manifest.json")).catch(() => {
+    throw Error(
+      `No manifest for ${version}; run \`node scripts/fork-release/release.mjs manifest ${version} --linux-only\` (Ubuntu-only) first`,
+    );
+  });
+  const qualification = await readJson(join(folder, "linux-x64-qualification.json")).catch(
+    () => null,
+  );
+  if (qualification?.commit !== request.commit)
+    throw Error(
+      `${version} is not qualified on this host; run \`node scripts/fork-release/activate.mjs qualify ${version}\` first`,
+    );
   const status = join(folder, "handoff-linux.json");
   const error = join(folder, "handoff-error.json");
   const log = join(folder, "handoff-linux.log");

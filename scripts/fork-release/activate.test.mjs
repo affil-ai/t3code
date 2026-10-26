@@ -15,7 +15,10 @@ import {
   assertForwardVersion,
   companionsToStart,
   insideT3ProviderScope,
+  parseQualifyArgs,
+  restartCompanions,
   validateCompatibilityReview,
+  withRetries,
 } from "./activate.mjs";
 import { execute, remoteCommand, sshArgs, verifyReceipt } from "./transport.mjs";
 import { linuxUnitArgs, parseLinuxOptions, xml, startLinux, watchLinux } from "./handoff.mjs";
@@ -54,6 +57,105 @@ test("companions stopped with the server are started again; the server itself is
   };
   assert.deepEqual(companionsToStart(before, after), ["t3code-browser-proxy.service"]);
   assert.deepEqual(companionsToStart(before, before), []);
+});
+
+test("companions start only after the server answers, and are retried until active", async () => {
+  const before = {
+    "t3code.service": "active",
+    "t3code-browser-proxy.service": "active",
+    "t3-even-terminal.service": "active",
+    "t3-feedback-relay.service": "active",
+  };
+  // fork.75: the server unit was active but still opening its database, so the
+  // proxy's token refresh failed and the proxy start failed with 'dependency'.
+  const fakeHost = (states, { answersAt = 0, startsNeeded = 1 } = {}) => {
+    const host = {
+      clock: 0,
+      starts: [],
+      states: () => ({ ...states }),
+      originAnswers: async () => host.clock >= answersAt,
+      start: (units) => {
+        host.starts.push([host.clock, units]);
+        if (host.starts.length === startsNeeded) for (const unit of units) states[unit] = "active";
+      },
+      now: () => host.clock,
+      pause: async (ms) => {
+        host.clock += ms;
+      },
+    };
+    return host;
+  };
+  const log = { lines: [], write: async (line) => log.lines.push(line) };
+  const down = { ...before, "t3code-browser-proxy.service": "inactive" };
+
+  const slow = fakeHost({ ...down }, { answersAt: 60_000, startsNeeded: 2 });
+  assert.equal(await restartCompanions(before, log, slow), true);
+  assert.deepEqual(
+    slow.starts.map(([at, units]) => [at, units]),
+    [
+      [60_000, ["t3code-browser-proxy.service"]],
+      [70_000, ["t3code-browser-proxy.service"]],
+    ],
+  );
+  assert.match(log.lines.at(-1), /companions active/);
+
+  // A server that never answers fails within the bound without starting anything.
+  const silent = fakeHost({ ...down }, { answersAt: Infinity });
+  assert.equal(await restartCompanions(before, log, silent), false);
+  assert.deepEqual(silent.starts, []);
+  assert.ok(silent.clock <= 181_000);
+
+  // A companion that never starts is reported within its bound, not hidden.
+  const stuck = fakeHost({ ...down }, { startsNeeded: Infinity });
+  assert.equal(await restartCompanions(before, log, stuck), false);
+  assert.ok(stuck.clock <= 122_000);
+  assert.match(log.lines.at(-1), /still inactive after 2 minutes: t3code-browser-proxy.service/);
+});
+
+test("qualify takes named flags and rejects a positional review path", () => {
+  const sha = "a".repeat(40);
+  assert.deepEqual(parseQualifyArgs(["v"]), { version: "v" });
+  assert.deepEqual(parseQualifyArgs(["v", "--baseline", sha, "--review", "/r.json"]), {
+    version: "v",
+    baseline: sha,
+    review: "/r.json",
+  });
+  // The Mac worker's positional form still works.
+  assert.deepEqual(parseQualifyArgs(["v", sha, "digest"]), {
+    version: "v",
+    baseline: sha,
+    sharedDiff: "digest",
+  });
+  // fork.75: a review path passed positionally was silently ignored.
+  assert.throws(() => parseQualifyArgs(["v", sha, "digest", "/r.json"]), /--review PATH/);
+  assert.throws(() => parseQualifyArgs(["v", "--review"]), /needs a value/);
+  assert.throws(() => parseQualifyArgs(["v", "--force", "x"]), /Unknown option/);
+});
+
+test("a slow health probe is retried before failing", async () => {
+  let calls = 0;
+  const value = await withRetries(
+    3,
+    async () => {
+      if (++calls < 3) throw Error("The operation was aborted due to timeout");
+      return "ok";
+    },
+    async () => {},
+  );
+  assert.equal(value, "ok");
+  calls = 0;
+  await assert.rejects(
+    withRetries(
+      2,
+      async () => {
+        calls++;
+        throw Error("down");
+      },
+      async () => {},
+    ),
+    /down/,
+  );
+  assert.equal(calls, 2);
 });
 
 test("the detached Linux unit carries its own environment and the caller's policy", () => {

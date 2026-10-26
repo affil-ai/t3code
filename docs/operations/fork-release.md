@@ -90,12 +90,28 @@ assets remain available for already-open clients; no service restart is needed.
 
 ### Ubuntu activation, including from an agent inside T3
 
-Ubuntu activation always goes through one command:
+An Ubuntu-only release, from a checkout of the release commit, is this whole
+sequence:
 
 ```sh
+node scripts/fork-release/release.mjs request COMMIT VERSION
+node scripts/fork-release/release.mjs build VERSION
+node scripts/fork-release/release.mjs manifest VERSION --linux-only
+node scripts/fork-release/activate.mjs qualify VERSION
 node scripts/fork-release/handoff.mjs start-linux VERSION \
   [--restart-thread YOUR_T3_THREAD_ID] [--approved-interrupt "who approved, when"]
 ```
+
+`qualify` takes the installed source commit from the installed version's
+receipt; pass `--baseline SHA` only when that receipt is missing. If server or
+contracts source changed, it fails with the exact diff command and digest.
+Review that diff, write `compatibility-review.json` in the release directory
+with the fields it names, and run `qualify VERSION` again; `--review PATH`
+reads it from elsewhere. If shared source changed, pass the reported digest
+with `--shared-diff DIGEST`. `start-linux` refuses an unqualified version and
+names the command to run.
+
+Ubuntu activation always goes through `start-linux`.
 
 Never run `t3 update`, `t3 service restart`, `activate.mjs install`, or a
 hand-written installer from an agent shell. Each agent runs in a T3-owned
@@ -110,9 +126,12 @@ detached unit sets `T3_DETACHED_SERVICE_UPDATE=1`, the updater's only bypass.
 
 1. waits up to 24 hours until no blocking work remains;
 2. rechecks artifacts, qualification, schema, Office, and provenance;
-3. runs the native updater, starts companion units the server stop took down
-   (the browser proxy has `Requires=t3code.service`), waits up to 3 minutes
-   for the target API, then publishes web;
+3. runs the native updater, waits up to 3 minutes for the server to answer on
+   its own port, then starts companion units the server stop took down and
+   retries for up to 2 minutes until they are active; otherwise it rolls back. The browser proxy requires the server and a
+   one-shot token refresh that fails while the server is still opening its
+   database, so starting it early fails with result `dependency` (fork.75).
+   It then waits up to 3 minutes for the target API and publishes web;
 4. if the target never becomes healthy, switches back to the previous runtime
    and starts the service, so the host is never left without a server.
 
@@ -191,14 +210,14 @@ Before activation, identify the source commit of each installed runtime. On
 each host run:
 
 ```sh
-node scripts/fork-release/activate.mjs qualify VERSION INSTALLED_SOURCE_SHA
+node scripts/fork-release/activate.mjs qualify VERSION [--baseline INSTALLED_SOURCE_SHA]
 ```
 
 Qualification requires unchanged server and contracts source. It records the
 current installed version and database schema fingerprint. Changes to those
 sources require a separate database and protocol review; this tool does not
 override that gate. If shared source changed, inspect its full diff and pass
-the reported SHA-256 as the fourth argument only after confirming it does not
+the reported SHA-256 with `--shared-diff` only after confirming it does not
 change database or protocol compatibility. The receipt records that reviewed
 diff. Do not guess the installed source commit.
 Linux qualification also tests the deployed Office worker's version predicate
