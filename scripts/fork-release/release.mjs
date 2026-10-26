@@ -170,6 +170,23 @@ export function linuxBuildNode(optDir = join(homedir(), ".local/opt")) {
   );
 }
 
+/**
+ * Build environment. The selected Node's directory leads PATH: build scripts
+ * spawn `node` and `vp` by name, and the single-executable step refuses the host
+ * default Node 24 (fork.75 failed its first build this way).
+ */
+export function buildEnv(checkout, node, base = process.env) {
+  const env = {
+    ...base,
+    PATH: `${dirname(node)}:${checkout}/node_modules/.bin:${homedir()}/.cargo/bin:${base.PATH}`,
+    CARGO_BUILD_JOBS: "2",
+    TURBO_CONCURRENCY: "2",
+  };
+  delete env.GITHUB_REPOSITORY;
+  delete env.T3CODE_DESKTOP_UPDATE_REPOSITORY;
+  return env;
+}
+
 export async function build(version) {
   const job = jobPath(version);
   const value = validateRequest(await readJson(join(job, "request.json")));
@@ -213,14 +230,7 @@ export async function build(version) {
       const pkg = await readJson(join(checkout, "package.json"));
       if (!/^pnpm@\d+\.\d+\.\d+$/.test(pkg.packageManager))
         throw new Error("Unsupported package manager");
-      const env = {
-        ...process.env,
-        PATH: `${checkout}/node_modules/.bin:${homedir()}/.cargo/bin:${process.env.PATH}`,
-        CARGO_BUILD_JOBS: "2",
-        TURBO_CONCURRENCY: "2",
-      };
-      delete env.GITHUB_REPOSITORY;
-      delete env.T3CODE_DESKTOP_UPDATE_REPOSITORY;
+      const env = buildEnv(checkout, node);
       execute("npx", ["--yes", pkg.packageManager, "install", "--frozen-lockfile"], checkout, env);
       execute(node, ["scripts/update-release-package-versions.ts", version], checkout, env);
       let artifact;
