@@ -13,7 +13,7 @@ const { createHash, randomUUID } = NodeCrypto;
 const { createReadStream } = NodeFS;
 const fs = NodeFSP;
 const { homedir } = NodeOS;
-const { dirname, join, resolve } = NodePath;
+const { dirname, isAbsolute, join, resolve } = NodePath;
 const { fileURLToPath, pathToFileURL } = NodeURL;
 import {
   assertCutoverTime,
@@ -149,7 +149,7 @@ export function supportsLinuxExecutable(version) {
 }
 
 // The Linux single executable needs Node 25.7+, newer than the repository engine and
-// usually newer than the host default. Use T3_FORK_RELEASE_NODE, this Node, or the
+// usually newer than the host default. Use T3_FORK_RELEASE_NODE (an absolute path), this Node, or the
 // newest ~/.local/opt/node-v*-linux-x64 install, so builds never need a manual resume.
 export function linuxBuildNode(optDir = join(homedir(), ".local/opt")) {
   let installed = [];
@@ -160,14 +160,32 @@ export function linuxBuildNode(optDir = join(homedir(), ".local/opt")) {
       .map((name) => join(optDir, name, "bin/node"));
   } catch {}
   for (const node of [process.env.T3_FORK_RELEASE_NODE, process.execPath, ...installed]) {
-    if (!node) continue;
+    // Absolute only: its directory leads the build PATH (buildEnv).
+    if (!node || !isAbsolute(node)) continue;
     try {
       if (supportsLinuxExecutable(run(node, ["--version"]))) return node;
     } catch {}
   }
   throw new Error(
-    `Linux executable build needs Node 25.7+; set T3_FORK_RELEASE_NODE or install it under ${optDir}`,
+    `Linux executable build needs Node 25.7+; set T3_FORK_RELEASE_NODE to its absolute path or install it under ${optDir}`,
   );
+}
+
+/**
+ * Build environment. The selected Node's directory leads PATH: build scripts
+ * spawn `node` and `vp` by name, and the single-executable step refuses the host
+ * default Node 24 (fork.75 failed its first build this way).
+ */
+export function buildEnv(checkout, node, base = process.env) {
+  const env = {
+    ...base,
+    PATH: `${dirname(node)}:${checkout}/node_modules/.bin:${homedir()}/.cargo/bin:${base.PATH}`,
+    CARGO_BUILD_JOBS: "2",
+    TURBO_CONCURRENCY: "2",
+  };
+  delete env.GITHUB_REPOSITORY;
+  delete env.T3CODE_DESKTOP_UPDATE_REPOSITORY;
+  return env;
 }
 
 export async function build(version) {
@@ -213,14 +231,7 @@ export async function build(version) {
       const pkg = await readJson(join(checkout, "package.json"));
       if (!/^pnpm@\d+\.\d+\.\d+$/.test(pkg.packageManager))
         throw new Error("Unsupported package manager");
-      const env = {
-        ...process.env,
-        PATH: `${checkout}/node_modules/.bin:${homedir()}/.cargo/bin:${process.env.PATH}`,
-        CARGO_BUILD_JOBS: "2",
-        TURBO_CONCURRENCY: "2",
-      };
-      delete env.GITHUB_REPOSITORY;
-      delete env.T3CODE_DESKTOP_UPDATE_REPOSITORY;
+      const env = buildEnv(checkout, node);
       execute("npx", ["--yes", pkg.packageManager, "install", "--frozen-lockfile"], checkout, env);
       execute(node, ["scripts/update-release-package-versions.ts", version], checkout, env);
       let artifact;

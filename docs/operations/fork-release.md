@@ -157,7 +157,7 @@ A lock whose recorded owner process is gone is renamed to `*-retired-PID-TIME`
 and taken; a live owner still blocks.
 
 The Linux build needs Node 25.7 or later for the single executable.
-`release.mjs build` uses `T3_FORK_RELEASE_NODE`, the running Node, or the newest
+`release.mjs build` uses `T3_FORK_RELEASE_NODE` (an absolute path), the running Node, or the newest
 `~/.local/opt/node-v*-linux-x64`, in that order. Patched runtime dependencies
 are pinned to their patch version when staged, so a newer upstream release
 cannot fail the build with `ERR_PNPM_UNUSED_PATCH`. If the build still fails,

@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import {
   assertReleaseIdle,
+  buildEnv,
   linuxBuildNode,
   releasePolicy,
   saveRequest,
@@ -232,6 +233,9 @@ test("Linux builds find a Node new enough for the single executable", async () =
     assert.equal(linuxBuildNode(root), expected);
     process.env.T3_FORK_RELEASE_NODE = join(root, "node-v24.18.0-linux-x64/bin/node");
     assert.equal(linuxBuildNode(root), expected);
+    // A command name would put "." on the build PATH; only absolute paths count.
+    process.env.T3_FORK_RELEASE_NODE = "node";
+    assert.equal(linuxBuildNode(root), expected);
     await fs.rm(join(root, "node-v25.7.0-linux-x64"), { recursive: true });
     if (!supportsLinuxExecutable(process.version))
       assert.throws(() => linuxBuildNode(root), /T3_FORK_RELEASE_NODE/);
@@ -240,4 +244,16 @@ test("Linux builds find a Node new enough for the single executable", async () =
     else process.env.T3_FORK_RELEASE_NODE = saved;
     await fs.rm(root, { recursive: true });
   }
+});
+
+test("build tools spawned by name run on the selected Node, not the host default", () => {
+  const env = buildEnv("/tmp/checkout", "/opt/node-v25.7.0-linux-x64/bin/node", {
+    PATH: "/usr/local/bin:/usr/bin",
+    GITHUB_REPOSITORY: "elsewhere/t3code",
+  });
+  const path = env.PATH.split(":");
+  assert.equal(path[0], "/opt/node-v25.7.0-linux-x64/bin");
+  assert.ok(path.indexOf("/tmp/checkout/node_modules/.bin") > 0);
+  assert.ok(path.indexOf("/usr/local/bin") > path.indexOf("/opt/node-v25.7.0-linux-x64/bin"));
+  assert.equal(env.GITHUB_REPOSITORY, undefined);
 });
