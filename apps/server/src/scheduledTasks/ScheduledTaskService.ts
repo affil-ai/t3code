@@ -1,5 +1,6 @@
 import {
   CommandId,
+  DEFAULT_SCHEDULED_TASK_DELIVERY_MODE,
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ScheduledTask,
@@ -46,6 +47,8 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import { ensureDeliveryModeColumn } from "./deliveryModeColumn.ts"; // fork: scheduled-task-delivery-mode
+import { SEND_MODE_RECORDS, steerSendMode } from "./deliveryMode.ts"; // fork: scheduled-task-delivery-mode
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
 import {
   redactHeaders,
@@ -187,6 +190,8 @@ interface ScheduledTaskRow {
   readonly model_selection_json: string;
   readonly runtime_mode: string;
   readonly interaction_mode: string;
+  /** Absent only before ensureDeliveryModeColumn has run. */
+  readonly delivery_mode?: string; // fork: scheduled-task-delivery-mode
   readonly created_by: string;
   readonly creation_source: string;
   readonly created_at: string;
@@ -338,6 +343,7 @@ const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =
       modelSelection,
       runtimeMode: row.runtime_mode,
       interactionMode: row.interaction_mode,
+      deliveryMode: row.delivery_mode ?? DEFAULT_SCHEDULED_TASK_DELIVERY_MODE, // fork: scheduled-task-delivery-mode
       createdBy: row.created_by,
       creationSource: row.creation_source,
       createdAt: row.created_at,
@@ -401,6 +407,7 @@ export const layer = Layer.effect(
   ScheduledTaskService,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* ensureDeliveryModeColumn.pipe(Effect.orDie); // fork: scheduled-task-delivery-mode
     const crypto = yield* Crypto.Crypto;
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -436,6 +443,7 @@ export const layer = Layer.effect(
         model_selection_json,
         runtime_mode,
         interaction_mode,
+        delivery_mode,
         created_by,
         creation_source,
         created_at,
@@ -471,6 +479,7 @@ export const layer = Layer.effect(
         model_selection_json,
         runtime_mode,
         interaction_mode,
+        delivery_mode,
         created_by,
         creation_source,
         created_at,
@@ -552,6 +561,7 @@ export const layer = Layer.effect(
           model_selection_json,
           runtime_mode,
           interaction_mode,
+          delivery_mode,
           created_by,
           creation_source,
           created_at,
@@ -576,6 +586,7 @@ export const layer = Layer.effect(
           ${JSON.stringify(task.modelSelection)},
           ${task.runtimeMode},
           ${task.interactionMode},
+          ${task.deliveryMode},
           ${task.createdBy},
           ${task.creationSource},
           ${task.createdAt},
@@ -601,6 +612,7 @@ export const layer = Layer.effect(
           model_selection_json = excluded.model_selection_json,
           runtime_mode = excluded.runtime_mode,
           interaction_mode = excluded.interaction_mode,
+          delivery_mode = excluded.delivery_mode,
           creation_source = excluded.creation_source,
           updated_at = excluded.updated_at,
           next_run_at = excluded.next_run_at,
@@ -814,8 +826,9 @@ export const layer = Layer.effect(
         // Effect.exit (not Effect.result) so defects and interruptions in the
         // dispatch are also captured and recorded as a failed run instead of
         // aborting before markCompleted.
+        const boundThreadId = active.threadId;
         const result =
-          active.threadId === null
+          boundThreadId === null
             ? yield* Effect.exit(
                 threadLaunch.launch({
                   commandId,
@@ -836,19 +849,34 @@ export const layer = Layer.effect(
                 }),
               )
             : yield* Effect.exit(
-                threadManagement.sendToThread({
-                  projectId: active.projectId,
-                  commandId,
-                  threadId: ThreadId.make(active.threadId),
-                  messageId,
-                  scheduledTaskId: active.id,
-                  text: prompt,
-                  attachments: [],
-                  modelSelection: active.modelSelection,
-                  // Scheduled prompts must not interrupt tools in the bound thread.
-                  mode: "queue",
-                  createdBy: active.createdBy,
-                  creationSource: active.creationSource,
+                Effect.gen(function* () {
+                  const target = {
+                    projectId: active.projectId,
+                    threadId: ThreadId.make(boundThreadId),
+                  };
+                  // fork: scheduled-task-delivery-mode
+                  const mode =
+                    active.deliveryMode === "queue"
+                      ? "queue"
+                      : steerSendMode(
+                          yield* threadManagement.getProjectThreadRecords(
+                            target,
+                            SEND_MODE_RECORDS,
+                            { omitSettledLeafNodes: true },
+                          ),
+                        );
+                  return yield* threadManagement.sendToThread({
+                    ...target,
+                    commandId,
+                    messageId,
+                    scheduledTaskId: active.id,
+                    text: prompt,
+                    attachments: [],
+                    modelSelection: active.modelSelection,
+                    mode,
+                    createdBy: active.createdBy,
+                    creationSource: active.creationSource,
+                  });
                 }),
               );
 
@@ -1126,6 +1154,10 @@ export const layer = Layer.effect(
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
+          deliveryMode:
+            input.deliveryMode ??
+            existingTask?.deliveryMode ??
+            DEFAULT_SCHEDULED_TASK_DELIVERY_MODE, // fork: scheduled-task-delivery-mode
           createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
           creationSource: input.creationSource ?? "web",
           createdAt: existingTask?.createdAt ?? iso(now),

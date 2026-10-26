@@ -107,6 +107,14 @@ returns. Leave it off if you don't want request bodies stored outside your
 machine. To skip requests that waited too long, set **Skip requests older
 than** on the task.
 
+## Tasks that post into a chat
+
+A task created from a chat runs in that chat instead of starting a new thread.
+If the chat is busy when a run arrives, **When the thread is busy** decides what
+happens. **Steer** (the default) adds the run to the agent's current turn, so it
+sees the run without stopping what it is doing. **Queue** waits for the turn to
+finish, then sends the run as a new message.
+
 ## Defaults and inheritance
 
 General contains the model and workspace for new threads. Integrations controls agent browser

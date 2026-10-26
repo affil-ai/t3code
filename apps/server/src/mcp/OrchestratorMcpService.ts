@@ -256,6 +256,7 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     enabled: task.enabled,
     projectId: task.projectId,
     boundThreadId: task.threadId,
+    deliveryMode: task.deliveryMode, // fork: scheduled-task-delivery-mode
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
     lastRunStatus: task.lastRunStatus,
@@ -1674,6 +1675,7 @@ const make = Effect.gen(function* () {
           modelSelection,
           runtimeMode: limits.runtimeMode,
           interactionMode: limits.interactionMode,
+          ...(input.deliveryMode === undefined ? {} : { deliveryMode: input.deliveryMode }), // fork: scheduled-task-delivery-mode
           createdBy: "agent",
           creationSource: "mcp",
           // Scope the idempotency key by provider session so two callers
@@ -1760,6 +1762,7 @@ const make = Effect.gen(function* () {
           modelSelection: existing.modelSelection,
           runtimeMode: existing.runtimeMode,
           interactionMode: existing.interactionMode,
+          deliveryMode: input.deliveryMode ?? existing.deliveryMode, // fork: scheduled-task-delivery-mode
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };
