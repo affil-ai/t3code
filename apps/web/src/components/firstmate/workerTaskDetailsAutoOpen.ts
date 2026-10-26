@@ -17,12 +17,14 @@ export function useAutoOpenWorkerTaskDetails(
   const autoOpenedTaskKeys = useRef(new Set<string>());
 
   useEffect(() => {
-    if (shouldUsePlanSidebarSheet || threadRef === null || taskId === null) return;
+    if (threadRef === null || taskId === null) return;
 
     const taskKey = `${scopedThreadKey(threadRef)}:${taskId}`;
     if (autoOpenedTaskKeys.current.has(taskKey)) return;
 
     autoOpenedTaskKeys.current.add(taskKey);
+    if (shouldUsePlanSidebarSheet) return;
+
     useRightPanelStore.getState().open(threadRef, "task-details");
   }, [shouldUsePlanSidebarSheet, taskId, threadRef]);
 }

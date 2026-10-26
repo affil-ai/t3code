@@ -59,6 +59,14 @@ describe("useAutoOpenWorkerTaskDetails", () => {
     expect(open).not.toHaveBeenCalled();
   });
 
+  it("does not open Details after a narrow-to-wide resize", async () => {
+    const task = { id: "task-1" as FirstmateTaskId, revision: 1 };
+    await render(task, true);
+    await render(task, false);
+
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it("does not reopen Details when the task object updates", async () => {
     const task = { id: "task-1" as FirstmateTaskId, revision: 1 };
     await render(task, false);
