@@ -52,8 +52,13 @@ node scripts/fork-release/release.mjs manifest VERSION
 On **each host**, qualify using that host's installed source SHA:
 
 ```sh
-node scripts/fork-release/activate.mjs qualify VERSION INSTALLED_SOURCE_SHA
+node scripts/fork-release/activate.mjs qualify VERSION [--baseline INSTALLED_SOURCE_SHA]
 ```
+
+The baseline defaults to the installed version's receipt. When server or
+contracts source changed, qualify prints the diff to review; write
+`compatibility-review.json` in the release directory and rerun. Pass a
+reviewed shared-source digest with `--shared-diff`.
 
 After both qualifications pass, start the detached handoff on the Mac:
 
@@ -69,7 +74,10 @@ stops your own process tree, so never run `t3 update`, `t3 service restart`,
 inside a T3 scope. Use only the detached handoff:
 
 ```sh
+node scripts/fork-release/release.mjs request COMMIT VERSION
+node scripts/fork-release/release.mjs build VERSION
 node scripts/fork-release/release.mjs manifest VERSION --linux-only   # no Mac artifact
+node scripts/fork-release/activate.mjs qualify VERSION
 node scripts/fork-release/handoff.mjs start-linux VERSION --restart-thread YOUR_THREAD_ID
 ```
 

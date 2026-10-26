@@ -89,10 +89,52 @@ export function validateCompatibilityReview(review, baselineCommit, commit, diff
   };
 }
 
+/** Source commit of the installed runtime, from its own installed receipt. */
+export async function installedCommit() {
+  const version = await installedVersion();
+  const receipt = await readJson(join(jobPath(version), `${platform}-installed.json`)).catch(
+    () => null,
+  );
+  if (receipt?.version !== version || !/^[a-f0-9]{40}$/.test(receipt?.commit ?? ""))
+    throw Error(`No installed receipt for ${version}; pass --baseline INSTALLED_SOURCE_SHA`);
+  return receipt.commit;
+}
+
+/** `qualify VERSION [--baseline SHA] [--shared-diff DIGEST] [--review PATH]`. */
+export function parseQualifyArgs(args) {
+  const [version, ...rest] = args;
+  const options = { version };
+  const positional = [];
+  const flags = { "--baseline": "baseline", "--shared-diff": "sharedDiff", "--review": "review" };
+  for (let index = 0; index < rest.length; index++) {
+    const arg = rest[index];
+    if (!arg.startsWith("--")) {
+      positional.push(arg);
+      continue;
+    }
+    if (!flags[arg]) throw Error(`Unknown option ${arg}`);
+    const value = rest[++index];
+    if (!value || value.startsWith("--")) throw Error(`${arg} needs a value`);
+    options[flags[arg]] = value;
+  }
+  // The Mac worker still passes `BASELINE [DIGEST]` positionally.
+  if (positional.length > 2)
+    throw Error("Pass the compatibility review as --review PATH, not a positional argument");
+  if (positional[0]) options.baseline ??= positional[0];
+  if (positional[1]) options.sharedDiff ??= positional[1];
+  if (!version) throw Error(qualifyUsage);
+  return options;
+}
+
+const qualifyUsage =
+  "Usage: activate.mjs qualify VERSION [--baseline INSTALLED_SHA] [--shared-diff DIGEST] [--review PATH]";
+
 export async function qualify(version, baselineCommit, reviewedSharedDiff, reviewPath) {
   const request = validateRequest(await readJson(join(jobPath(version), "request.json")));
+  baselineCommit ??= await installedCommit();
   if (!/^[a-f0-9]{40}$/.test(baselineCommit ?? ""))
     throw Error("Full installed baseline source required");
+  const defaultReview = join(jobPath(version), "compatibility-review.json");
   run("git", ["merge-base", "--is-ancestor", baselineCommit, request.commit]);
   const changes = run("git", [
     "diff",
@@ -102,14 +144,25 @@ export async function qualify(version, baselineCommit, reviewedSharedDiff, revie
     "apps/server/src",
     "packages/contracts/src",
   ]);
-  const compatibilityReview = changes
-    ? validateCompatibilityReview(
-        reviewPath ? await readJson(reviewPath) : null,
+  let compatibilityReview = null;
+  if (changes) {
+    const review = await readJson(reviewPath ?? defaultReview).catch(() => null);
+    try {
+      compatibilityReview = validateCompatibilityReview(
+        review,
         baselineCommit,
         request.commit,
         changes,
-      )
-    : null;
+      );
+    } catch (error) {
+      throw Error(
+        `${error.message}. Review \`git diff ${baselineCommit} ${request.commit} -- apps/server/src packages/contracts/src\`, ` +
+          `then write ${reviewPath ?? defaultReview} with baselineCommit, commit, serverContractsDiffSha256, ` +
+          `migrationEvidence, protocolEvidence, and rollbackPlan, and run qualify again`,
+        { cause: error },
+      );
+    }
+  }
   const sharedDiff = run("git", [
     "diff",
     baselineCommit,
@@ -119,7 +172,9 @@ export async function qualify(version, baselineCommit, reviewedSharedDiff, revie
   ]);
   const sharedDiffSha256 = createHash("sha256").update(sharedDiff).digest("hex");
   if (sharedDiff && reviewedSharedDiff !== sharedDiffSha256) {
-    throw Error(`Review the shared-source diff, then pass its exact digest: ${sharedDiffSha256}`);
+    throw Error(
+      `Review the shared-source diff, then pass --shared-diff ${sharedDiffSha256} to qualify`,
+    );
   }
   const current = await installedVersion();
   assertForwardVersion(current, version);
@@ -153,12 +208,26 @@ async function officeCheck(version, expectedRelease) {
     `const p = await import(${JSON.stringify(pin)}); p.assertApprovedT3ServerVersion(${JSON.stringify(version)});`,
   ]);
   run("systemctl", ["is-active", "office-t3-worker.service"]);
-  const response = await fetch("http://127.0.0.1:3779/api/orchestration/shell", {
-    headers: { "x-t3-orchestration-protocol": "2" },
-    signal: AbortSignal.timeout(10_000),
+  // The shell snapshot of a busy server can take several seconds; retry before failing.
+  await withRetries(3, async () => {
+    const response = await fetch("http://127.0.0.1:3779/api/orchestration/shell", {
+      headers: { "x-t3-orchestration-protocol": "2" },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw Error("Ubuntu orchestration protocol health failed");
+    await response.arrayBuffer();
   });
-  if (!response.ok) throw Error("Ubuntu orchestration protocol health failed");
-  await response.arrayBuffer();
+}
+
+export async function withRetries(attempts, operation, wait = pause) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      await wait(5000);
+    }
+  }
 }
 
 export async function releaseGuard(version, policy = releasePolicy()) {
@@ -268,11 +337,52 @@ export function companionsToStart(before, after) {
   );
 }
 
-async function restartCompanions(before, log) {
-  const units = companionsToStart(before, linuxServiceStates());
-  if (units.length === 0) return;
-  await log.write(`starting companions stopped with the server: ${units.join(" ")}\n`);
-  spawnSync("systemctl", ["--user", "start", ...units], { stdio: "ignore" });
+const linuxHost = {
+  states: () => linuxServiceStates(),
+  start: (units) => spawnSync("systemctl", ["--user", "start", ...units], { stdio: "ignore" }),
+  // The server's own port, not the proxy's: the proxy is one of the companions.
+  originAnswers: () =>
+    fetch("http://127.0.0.1:3778/.well-known/t3/environment", {
+      signal: AbortSignal.timeout(3000),
+    }).then(
+      (response) => response.ok,
+      () => false,
+    ),
+  pause,
+};
+
+/**
+ * Starts companions the server stop took down, once the server answers. The
+ * proxy also requires the one-shot browser-token refresh, which fails while the
+ * server is still opening its database; starting early fails the proxy with
+ * result 'dependency' (fork.75). Returns whether every companion is active.
+ */
+export async function restartCompanions(before, log, host = linuxHost) {
+  const units = companionsToStart(before, host.states());
+  if (units.length === 0) return true;
+  let ready = false;
+  for (let attempt = 0; attempt < 180 && !ready; attempt++) {
+    ready = host.states()["t3code.service"] === "active" && (await host.originAnswers());
+    if (!ready) await host.pause(1000);
+  }
+  await log.write(
+    `${ready ? "server answering" : "server not answering after 3 minutes"}; starting companions: ${units.join(" ")}\n`,
+  );
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const states = host.states();
+    const pending = units.filter((unit) => states[unit] !== "active");
+    if (pending.length === 0) {
+      await log.write("companions active\n");
+      return true;
+    }
+    host.start(pending);
+    await host.pause(5000);
+  }
+  const states = host.states();
+  const failed = units.filter((unit) => states[unit] !== "active");
+  if (failed.length === 0) return true;
+  await log.write(`companions still inactive: ${failed.join(" ")}\n`);
+  return false;
 }
 
 /** Unit states for the server and its companions; only the server gates health. */
@@ -496,16 +606,18 @@ export async function activate(version, policy = releasePolicy()) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [command, version, baseline, reviewedSharedDiff, reviewPath] = process.argv.slice(2);
+  const [command, version] = process.argv.slice(2);
   (command === "qualify"
-    ? qualify(version, baseline, reviewedSharedDiff, reviewPath)
+    ? Promise.resolve()
+        .then(() => parseQualifyArgs(process.argv.slice(3)))
+        .then(({ version, baseline, sharedDiff, review }) =>
+          qualify(version, baseline, sharedDiff, review),
+        )
     : command === "check"
       ? releaseGuard(version).then(({ version, commit }) => ({ version, commit }))
       : command === "install"
         ? activate(version)
-        : Promise.reject(
-            Error("Usage: activate.mjs qualify VERSION BASELINE_SHA | install VERSION"),
-          )
+        : Promise.reject(Error(`${qualifyUsage} | check VERSION | install VERSION`))
   )
     .then((result) => console.log(JSON.stringify(result)))
     .catch((error) => {

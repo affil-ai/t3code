@@ -15,7 +15,10 @@ import {
   assertForwardVersion,
   companionsToStart,
   insideT3ProviderScope,
+  parseQualifyArgs,
+  restartCompanions,
   validateCompatibilityReview,
+  withRetries,
 } from "./activate.mjs";
 import { execute, remoteCommand, sshArgs, verifyReceipt } from "./transport.mjs";
 import { linuxUnitArgs, parseLinuxOptions, xml, startLinux, watchLinux } from "./handoff.mjs";
@@ -54,6 +57,104 @@ test("companions stopped with the server are started again; the server itself is
   };
   assert.deepEqual(companionsToStart(before, after), ["t3code-browser-proxy.service"]);
   assert.deepEqual(companionsToStart(before, before), []);
+});
+
+test("companions start only after the server answers, and are retried until active", async () => {
+  const before = {
+    "t3code.service": "active",
+    "t3code-browser-proxy.service": "active",
+    "t3-even-terminal.service": "active",
+    "t3-feedback-relay.service": "active",
+  };
+  // fork.75: the server unit was active but still opening its database, so the
+  // proxy's token refresh failed and the proxy start failed with 'dependency'.
+  const states = {
+    ...before,
+    "t3code.service": "activating",
+    "t3code-browser-proxy.service": "inactive",
+  };
+  const events = [];
+  let probes = 0;
+  let starts = 0;
+  const host = {
+    states: () => ({ ...states }),
+    originAnswers: async () => {
+      probes++;
+      return probes >= 3;
+    },
+    start: (units) => {
+      events.push(["start", probes, units]);
+      // The first start still fails; the second succeeds.
+      if (++starts === 2) for (const unit of units) states[unit] = "active";
+    },
+    pause: async () => {
+      if (events.length === 0) states["t3code.service"] = "active";
+    },
+  };
+  const log = { lines: [], write: async (line) => log.lines.push(line) };
+  assert.equal(await restartCompanions(before, log, host), true);
+  assert.deepEqual(events, [
+    ["start", 3, ["t3code-browser-proxy.service"]],
+    ["start", 3, ["t3code-browser-proxy.service"]],
+  ]);
+  assert.match(log.lines.join(""), /companions active/);
+
+  // A companion that never starts is reported, not hidden.
+  const stuck = { ...before, "t3code-browser-proxy.service": "inactive" };
+  const failing = {
+    ...host,
+    states: () => stuck,
+    originAnswers: async () => true,
+    start: () => {},
+  };
+  assert.equal(await restartCompanions(before, log, failing), false);
+  assert.match(log.lines.at(-1), /still inactive: t3code-browser-proxy.service/);
+});
+
+test("qualify takes named flags and rejects a positional review path", () => {
+  const sha = "a".repeat(40);
+  assert.deepEqual(parseQualifyArgs(["v"]), { version: "v" });
+  assert.deepEqual(parseQualifyArgs(["v", "--baseline", sha, "--review", "/r.json"]), {
+    version: "v",
+    baseline: sha,
+    review: "/r.json",
+  });
+  // The Mac worker's positional form still works.
+  assert.deepEqual(parseQualifyArgs(["v", sha, "digest"]), {
+    version: "v",
+    baseline: sha,
+    sharedDiff: "digest",
+  });
+  // fork.75: a review path passed positionally was silently ignored.
+  assert.throws(() => parseQualifyArgs(["v", sha, "digest", "/r.json"]), /--review PATH/);
+  assert.throws(() => parseQualifyArgs(["v", "--review"]), /needs a value/);
+  assert.throws(() => parseQualifyArgs(["v", "--force", "x"]), /Unknown option/);
+});
+
+test("a slow health probe is retried before failing", async () => {
+  let calls = 0;
+  const value = await withRetries(
+    3,
+    async () => {
+      if (++calls < 3) throw Error("The operation was aborted due to timeout");
+      return "ok";
+    },
+    async () => {},
+  );
+  assert.equal(value, "ok");
+  calls = 0;
+  await assert.rejects(
+    withRetries(
+      2,
+      async () => {
+        calls++;
+        throw Error("down");
+      },
+      async () => {},
+    ),
+    /down/,
+  );
+  assert.equal(calls, 2);
 });
 
 test("the detached Linux unit carries its own environment and the caller's policy", () => {
