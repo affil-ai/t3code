@@ -71,6 +71,11 @@
       // reports an entire component module when nothing imports it.
       "ignoreIssues": { "src/components/ui/*.tsx": ["exports", "nsExports", "duplicates"] },
     },
+    "apps/standup-bot": {
+      // tsconfig.json names the Effect language service to relax its diagnostics for this
+      // plain Node app; the root's @effect/tsgo patch supplies it, not an npm dependency.
+      "ignoreDependencies": ["@effect/language-service"],
+    },
     "apps/mobile": {
       // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
       "entry": [
