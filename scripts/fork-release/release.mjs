@@ -13,7 +13,7 @@ const { createHash, randomUUID } = NodeCrypto;
 const { createReadStream } = NodeFS;
 const fs = NodeFSP;
 const { homedir } = NodeOS;
-const { dirname, join, resolve } = NodePath;
+const { dirname, isAbsolute, join, resolve } = NodePath;
 const { fileURLToPath, pathToFileURL } = NodeURL;
 import {
   assertCutoverTime,
@@ -149,7 +149,7 @@ export function supportsLinuxExecutable(version) {
 }
 
 // The Linux single executable needs Node 25.7+, newer than the repository engine and
-// usually newer than the host default. Use T3_FORK_RELEASE_NODE, this Node, or the
+// usually newer than the host default. Use T3_FORK_RELEASE_NODE (an absolute path), this Node, or the
 // newest ~/.local/opt/node-v*-linux-x64 install, so builds never need a manual resume.
 export function linuxBuildNode(optDir = join(homedir(), ".local/opt")) {
   let installed = [];
@@ -160,13 +160,14 @@ export function linuxBuildNode(optDir = join(homedir(), ".local/opt")) {
       .map((name) => join(optDir, name, "bin/node"));
   } catch {}
   for (const node of [process.env.T3_FORK_RELEASE_NODE, process.execPath, ...installed]) {
-    if (!node) continue;
+    // Absolute only: its directory leads the build PATH (buildEnv).
+    if (!node || !isAbsolute(node)) continue;
     try {
       if (supportsLinuxExecutable(run(node, ["--version"]))) return node;
     } catch {}
   }
   throw new Error(
-    `Linux executable build needs Node 25.7+; set T3_FORK_RELEASE_NODE or install it under ${optDir}`,
+    `Linux executable build needs Node 25.7+; set T3_FORK_RELEASE_NODE to its absolute path or install it under ${optDir}`,
   );
 }
 

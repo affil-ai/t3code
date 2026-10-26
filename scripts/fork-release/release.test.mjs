@@ -233,6 +233,9 @@ test("Linux builds find a Node new enough for the single executable", async () =
     assert.equal(linuxBuildNode(root), expected);
     process.env.T3_FORK_RELEASE_NODE = join(root, "node-v24.18.0-linux-x64/bin/node");
     assert.equal(linuxBuildNode(root), expected);
+    // A command name would put "." on the build PATH; only absolute paths count.
+    process.env.T3_FORK_RELEASE_NODE = "node";
+    assert.equal(linuxBuildNode(root), expected);
     await fs.rm(join(root, "node-v25.7.0-linux-x64"), { recursive: true });
     if (!supportsLinuxExecutable(process.version))
       assert.throws(() => linuxBuildNode(root), /T3_FORK_RELEASE_NODE/);
