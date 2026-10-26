@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -157,6 +158,19 @@ export const ScheduledTaskUpsertSchedule = Schema.Union([
 });
 export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Type;
 
+// fork: scheduled-task-delivery-mode
+/**
+ * How a run reaches its bound thread while that thread is busy. `steer` adds
+ * the prompt to a running turn (queueing only when the turn cannot take input
+ * yet); `queue` waits for the turn to finish. Fresh-thread runs ignore it.
+ */
+export const ScheduledTaskDeliveryMode = Schema.Literals(["steer", "queue"]).annotate({
+  description:
+    "When the bound thread is busy: 'steer' adds the run to the active turn, 'queue' waits for it to finish. Ignored when each run launches a fresh thread.",
+});
+export type ScheduledTaskDeliveryMode = typeof ScheduledTaskDeliveryMode.Type;
+export const DEFAULT_SCHEDULED_TASK_DELIVERY_MODE: ScheduledTaskDeliveryMode = "steer";
+
 export const ScheduledTaskRunStatus = Schema.Literals(["never", "running", "succeeded", "failed"]);
 export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
 
@@ -182,6 +196,10 @@ export const ScheduledTask = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  // Servers without this setting omit it; they always queue.
+  deliveryMode: ScheduledTaskDeliveryMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("queue" as const)),
+  ), // fork: scheduled-task-delivery-mode
   createdBy: OrchestrationV2Actor,
   creationSource: OrchestrationV2CreationSource,
   createdAt: IsoDateTime,
@@ -221,6 +239,9 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  deliveryMode: Schema.optional(ScheduledTaskDeliveryMode).annotate({
+    description: "Omit to keep the task's current mode, or steer for a new task.",
+  }), // fork: scheduled-task-delivery-mode
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
 });

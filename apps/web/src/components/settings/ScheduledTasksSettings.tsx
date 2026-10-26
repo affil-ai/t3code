@@ -25,6 +25,7 @@ import type {
 } from "@t3tools/contracts";
 import { DEFAULT_WEBHOOK_PROMPT } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
+  DEFAULT_SCHEDULED_TASK_DELIVERY_MODE,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
   ProviderInstanceId,
@@ -131,6 +132,7 @@ const EMPTY_DRAFT: DraftState = {
   modelKey: "",
   runtimeMode: "full-access",
   interactionMode: "default",
+  deliveryMode: DEFAULT_SCHEDULED_TASK_DELIVERY_MODE, // fork: scheduled-task-delivery-mode
   baseModelSelection: null,
   signatureEnabled: false,
   ...WEBHOOK_SIGNATURE_DEFAULTS,
@@ -460,6 +462,10 @@ function ScheduledTaskRow({
                   ? `Next run ${relativeLabel(task.nextRunAt)}`
                   : "Not scheduled"}
           </span>
+          {/* fork: scheduled-task-delivery-mode */}
+          {task.threadId !== null ? (
+            <span>{task.deliveryMode === "queue" ? "Queues when busy" : "Steers when busy"}</span>
+          ) : null}
           {task.lastRunStatus !== "never" ? (
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
           ) : null}
@@ -964,6 +970,7 @@ export function ScheduledTaskEditorDialog({
       modelSelection,
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.interactionMode,
+      deliveryMode: draft.deliveryMode, // fork: scheduled-task-delivery-mode
       creationSource: "web",
     };
     // Lock before React renders, and keep successful creates locked until the form closes.
@@ -1171,6 +1178,25 @@ export function ScheduledTaskEditorDialog({
                 />
               </div>
             </Field>
+
+            {/* fork: scheduled-task-delivery-mode */}
+            {draft.threadId ? (
+              <div className="flex items-center justify-between gap-2">
+                <Label>When the thread is busy</Label>
+                <ToggleGroup
+                  aria-label="When the thread is busy"
+                  value={[draft.deliveryMode]}
+                  onValueChange={(values) => {
+                    const mode = values[0];
+                    if (mode === "steer" || mode === "queue")
+                      setDraft((current) => ({ ...current, deliveryMode: mode }));
+                  }}
+                >
+                  <Toggle value="steer">Steer</Toggle>
+                  <Toggle value="queue">Queue</Toggle>
+                </ToggleGroup>
+              </div>
+            ) : null}
 
             <div className="space-y-3">
               {task?.schedule.type === "interval" &&

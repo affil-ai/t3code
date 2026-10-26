@@ -3,6 +3,7 @@ import {
   type ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
+  type ScheduledTaskDeliveryMode,
   type ScheduledTaskUpsertSchedule,
   type ModelSelection,
   type RuntimeMode,
@@ -67,6 +68,8 @@ export interface DraftState {
   /** Not editable in the dialog, but preserved so editing an agent-created task keeps its modes. */
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
+  /** Only shown, and only meaningful, for a task bound to a chat. */
+  readonly deliveryMode: ScheduledTaskDeliveryMode; // fork: scheduled-task-delivery-mode
   /**
    * The task's original model selection. The picker only edits
    * `instanceId:model`; keeping the source object preserves provider options
@@ -153,6 +156,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     modelKey: `${task.modelSelection.instanceId}:${task.modelSelection.model}`,
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
+    deliveryMode: task.deliveryMode, // fork: scheduled-task-delivery-mode
     baseModelSelection: task.modelSelection,
     ...(schedule.type === "webhook" && schedule.signature !== null
       ? {

@@ -1947,6 +1947,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
       runtimeMode: "approval-required",
       interactionMode: "default",
+      deliveryMode: "steer",
       createdBy: "agent",
       creationSource: "mcp",
       createdAt: "2026-10-05T00:00:00.000Z",

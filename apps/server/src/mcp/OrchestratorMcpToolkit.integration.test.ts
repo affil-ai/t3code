@@ -479,6 +479,7 @@ function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
+    deliveryMode: input.deliveryMode ?? "steer",
     createdBy: input.createdBy ?? "user",
     creationSource: input.creationSource ?? "web",
     createdAt: timestamp,
@@ -1531,6 +1532,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(scheduleCall.structuredContent).toMatchObject({
               // Defaults to binding the calling thread.
               boundThreadId: parentThreadId,
+              deliveryMode: "steer",
               projectId,
               enabled: true,
               schedule: { type: "interval", everyMs: 60_000 },
@@ -1557,7 +1559,14 @@ describe("orchestrator MCP toolkit", () => {
               tasks: [{ scheduledTaskId, boundThreadId: parentThreadId }],
             });
 
-            // update_scheduled_task pauses without deleting.
+            const deliveryModeCall = yield* invoke("update_scheduled_task", {
+              scheduledTaskId,
+              deliveryMode: "queue",
+            });
+            expect(deliveryModeCall.isError).toBe(false);
+            expect(deliveryModeCall.structuredContent).toMatchObject({ deliveryMode: "queue" });
+
+            // update_scheduled_task pauses without deleting, keeping fields it omits.
             const scheduledUpdateCall = yield* invoke("update_scheduled_task", {
               scheduledTaskId,
               enabled: false,
@@ -1566,6 +1575,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(scheduledUpdateCall.structuredContent).toMatchObject({
               scheduledTaskId,
               enabled: false,
+              deliveryMode: "queue",
             });
 
             // delete_scheduled_task removes it entirely.
