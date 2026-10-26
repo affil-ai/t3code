@@ -31,8 +31,8 @@ the recorded artifact instead of rebuilding. A lock blocks concurrent builds;
 after a crash, inspect its owner before removing that exact stale lock.
 Failed attempts and their private logs remain available for diagnosis.
 
-Linux builds need Node 25.7 or later for the single executable and Cargo for
-the resource monitor. macOS builds need the native build dependencies described
+Linux builds need Node 25.7 or later for the single executable (found as
+described under Ubuntu activation) and Cargo for the resource monitor. macOS builds need the native build dependencies described
 in `FORK.md`. The driver uses the source's exact pnpm version and builds its own
 resource monitor; it does not reuse unproven installed binaries.
 
@@ -88,14 +88,61 @@ The public-web files have their own single-writer lock. Publication checks
 checksums and backend compatibility before the atomic symlink change. Old hashed
 assets remain available for already-open clients; no service restart is needed.
 
-To finish Ubuntu and public web after an earlier Mac-only install, stage and
-qualify the matching Ubuntu release, then run
-`node scripts/fork-release/handoff.mjs start-linux VERSION` on Ubuntu.
-This starts one detached user service (`t3-fork-release.service`), not a timer.
-It waits at most 24 hours for idle, rechecks all activation guards, installs
-Ubuntu, and publishes web. It never reinstalls the Mac or cancels work.
-Inspect `handoff-linux.json`, `handoff-error.json`, and the platform install
-log. A second installer is rejected by the fixed service name and shared lock.
+### Ubuntu activation, including from an agent inside T3
+
+Ubuntu activation always goes through one command:
+
+```sh
+node scripts/fork-release/handoff.mjs start-linux VERSION \
+  [--restart-thread YOUR_T3_THREAD_ID] [--approved-interrupt "who approved, when"]
+```
+
+Never run `t3 update`, `t3 service restart`, `activate.mjs install`, or a
+hand-written installer from an agent shell. Each agent runs in a T3-owned
+`t3code-*.scope`. Stopping the server stops that scope, so an inline updater
+dies halfway and the server stays down. This happened with fork.73 and fork.74.
+The updater (`t3 update`, `t3 service restart|install|uninstall`) and
+`activate.mjs install` now refuse inside a T3 scope and name this command. The
+detached unit sets `T3_DETACHED_SERVICE_UPDATE=1`, the updater's only bypass.
+
+`start-linux` returns immediately. It starts one transient user unit,
+`t3-fork-release.service`, outside every T3 process tree. That unit:
+
+1. waits up to 24 hours until no blocking work remains;
+2. rechecks artifacts, qualification, schema, Office, and provenance;
+3. runs the native updater, starts companion units the server stop took down
+   (the browser proxy has `Requires=t3code.service`), waits up to 3 minutes
+   for the target API, then publishes web;
+4. if the target never becomes healthy, switches back to the previous runtime
+   and starts the service, so the host is never left without a server.
+
+By default every running, starting, waiting, or unheld queued run blocks.
+`--restart-thread` exempts only the caller's own running turn. The host is
+rarely idle, so an operator may pass `--approved-interrupt` with the human
+approval to restart over active work. It skips the idle wait, and the note and
+interrupted counts are recorded. Do not pass it without that explicit approval.
+
+**Your own turn ends when the server restarts.** After you resume, read
+`handoff-linux.json` in the release directory
+(`node scripts/fork-release/release.mjs location VERSION`). Its `phase` is
+`waiting`, `activating`, `ubuntu-and-web-origin-installed`, `rolled-back`, or
+`failed`. Then check `linux-x64-activation.json`, `handoff-error.json`, and
+`handoff-linux.log`, and confirm the live version yourself. A second start is
+refused while the unit runs; `start-linux` clears an earlier attempt's
+`handoff-error.json`.
+
+A Linux-only release, with no Mac artifact, uses
+`node scripts/fork-release/release.mjs manifest VERSION --linux-only`. The Mac
+refuses that manifest and keeps its version; report the Mac as not released.
+A lock whose recorded owner process is gone is renamed to `*-retired-PID-TIME`
+and taken; a live owner still blocks.
+
+The Linux build needs Node 25.7 or later for the single executable.
+`release.mjs build` uses `T3_FORK_RELEASE_NODE`, the running Node, or the newest
+`~/.local/opt/node-v*-linux-x64`, in that order. Patched runtime dependencies
+are pinned to their patch version when staged, so a newer upstream release
+cannot fail the build with `ERR_PNPM_UNUSED_PATCH`. If the build still fails,
+fix the build; never resume from a hand-edited checkout.
 
 `web-published.json` records the previous and new directories and source SHA.
 This proves origin publication, not public browser acceptance. Verify the live
@@ -185,8 +232,10 @@ release. Never remove a running job or its lock to bypass pending work.
 An install can finish on one host while the other becomes busy. Check each
 platform's `*-installed.json`. A failed or interrupted activation without a
 receipt requires reconciliation; the version string alone is not provenance.
-Keep the previous runtime and app bundle. No automatic database restore or
-binary rollback is attempted after startup.
+Keep the previous runtime and app bundle. The Mac never rolls back
+automatically. Ubuntu switches back to the previous runtime only when the target
+API never becomes healthy; qualification's database review must allow the old
+binary to run on the new schema. No database restore is ever attempted.
 
 The installer verifies target API versions and Linux service health. This is
 not UI acceptance. Verify local and remote threads, repository navigation,

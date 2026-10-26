@@ -30,6 +30,7 @@ import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/ser
 import * as ProcessRunner from "../processRunner.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
+import { assertOutsideManagedProcessTree } from "./managedProcessTree.ts"; // fork: detached-service-update
 import { createUpdateProgress } from "./updateProgress.ts";
 import * as CliService from "./service.ts";
 
@@ -455,6 +456,7 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   );
   let restartService = false;
   if (serviceInstalled && !serviceCurrent) {
+    yield* assertOutsideManagedProcessTree("update", input.serverRuntimeStatePath); // fork: detached-service-update
     yield* Console.log(
       "  A background service is installed for this T3 home. Restarting it interrupts anything running in it: agent turns, terminals, remote clients.",
     );

@@ -46,8 +46,18 @@ export function validateManifest(manifest) {
   if (!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?\.fork\.\d+$/.test(manifest.version ?? "")) {
     throw new Error("Release requires a unique fork version");
   }
-  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== 2) {
-    throw new Error("Require exactly one Linux and one Mac artifact");
+  const linuxOnly = manifest.scope === "linux-only";
+  if (manifest.scope !== undefined && !linuxOnly) throw new Error("Unknown release scope");
+  if (
+    !Array.isArray(manifest.artifacts) ||
+    manifest.artifacts.length !== (linuxOnly ? 1 : 2) ||
+    (linuxOnly && manifest.artifacts[0]?.platform !== "linux-x64")
+  ) {
+    throw new Error(
+      linuxOnly
+        ? "A Linux-only release has exactly one Linux artifact"
+        : "Require exactly one Linux and one Mac artifact",
+    );
   }
   const platforms = new Set();
   for (const artifact of manifest.artifacts) {

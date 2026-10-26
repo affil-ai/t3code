@@ -31,6 +31,7 @@ import {
   type WebAssetBrand,
 } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
+import { pinPatchedStageDependencies } from "./lib/pin-patched-dependencies.ts"; // fork: release-build
 import {
   findInlinedExternalPackages,
   selectCliRuntimeExternalDependencies,
@@ -3837,6 +3838,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
           arch: options.arch,
           fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
         });
+  Object.assign(
+    stageDependencies,
+    pinPatchedStageDependencies(stageDependencies, workspacePatchedDependencies),
+  ); // fork: release-build
   const stagePatchedDependencies = createStagePatchedDependencies(
     workspacePatchedDependencies,
     stageDependencies,

@@ -41,6 +41,7 @@ import {
   STAGE_INSTALL_ARGS,
 } from "./build-desktop-artifact.ts";
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
+import { pinPatchedStageDependencies } from "./lib/pin-patched-dependencies.ts"; // fork: release-build
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -176,6 +177,10 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
     ...selectCliRuntimeExternalDependencies(serverDependencies),
     ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
   };
+  Object.assign(
+    dependencies,
+    pinPatchedStageDependencies(dependencies, workspace.patchedDependencies ?? {}),
+  ); // fork: release-build
   const patchedDependencies = createStagePatchedDependencies(
     workspace.patchedDependencies ?? {},
     dependencies,

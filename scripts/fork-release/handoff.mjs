@@ -5,14 +5,18 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeOS from "node:os";
+import * as NodeChildProcess from "node:child_process";
+const { spawnSync } = NodeChildProcess;
 const fs = NodeFSP;
 const { join, resolve } = NodePath;
 const { pathToFileURL } = NodeURL;
 const { homedir } = NodeOS;
 import {
+  assertReleaseIdle,
   atomicJson,
   jobPath,
   readJson,
+  releasePolicy,
   run,
   shellQuote,
   sourceRoot,
@@ -33,57 +37,139 @@ export function xml(value) {
     .replaceAll('"', "&quot;");
 }
 
-// Recover a Mac-only release without reinstalling the Mac or interrupting Ubuntu turns.
-export async function watchLinux(version) {
+// Ubuntu activation from anywhere, including an agent running inside T3. The
+// restart stops every T3 provider process tree, so the install runs in its own
+// transient user unit and the caller reads the result after it resumes.
+export async function watchLinux(version, options = {}) {
   if (process.platform !== "linux") throw Error("Ubuntu handoff must run on Linux");
   const folder = jobPath(version);
   const request = validateRequest(await readJson(join(folder, "request.json")));
+  const policy = releasePolicy(options);
+  const checkpoint = (phase, detail = {}) =>
+    atomicJson(join(folder, "handoff-linux.json"), {
+      ...request,
+      phase,
+      unit: linuxUnit,
+      policy,
+      ...detail,
+      at: new Date().toISOString(),
+    });
   return withLock(join(stateRoot, "handoff.lock"), async () => {
     await verifyArtifacts(await readJson(join(folder, "manifest.json")));
     const deadline = Date.now() + 24 * 60 * 60 * 1000;
     while (Date.now() < deadline) {
-      const counts = workloadCounts(join(homedir(), ".t3"));
+      let counts;
       try {
-        assertIdle(counts);
-      } catch {
-        await atomicJson(join(folder, "handoff-linux.json"), {
-          ...request,
-          phase: "waiting",
-          counts,
-          at: new Date().toISOString(),
-        });
+        counts = assertReleaseIdle(process.env.T3CODE_HOME ?? join(homedir(), ".t3"), policy);
+      } catch (error) {
+        await checkpoint("waiting", { detail: error.message });
         await new Promise((resolve) => setTimeout(resolve, 30_000));
         continue;
       }
-      await activate(version); // Rechecks idle, provenance, schema, and Office, then publishes web.
-      await atomicJson(join(folder, "handoff-linux.json"), {
-        ...request,
-        phase: "ubuntu-and-web-origin-installed",
-        browserVerification: "pending",
-        at: new Date().toISOString(),
-      });
-      return;
+      await checkpoint("activating", { counts });
+      try {
+        // Rechecks provenance, schema, and Office; rolls back if the target is unhealthy.
+        const installed = await activate(version, policy);
+        await checkpoint("ubuntu-and-web-origin-installed", {
+          installed,
+          browserVerification: "pending",
+        });
+        return installed;
+      } catch (error) {
+        const activation = await readJson(join(folder, "linux-x64-activation.json")).catch(
+          () => null,
+        );
+        await checkpoint(activation?.phase === "rolled-back" ? "rolled-back" : "failed", {
+          error: error.message,
+          activation,
+        });
+        throw error;
+      }
     }
+    await checkpoint("pending", {
+      detail: "Idle window not reached within 24 hours; safe to retry",
+    });
     throw Error("Ubuntu remained busy for 24 hours; no work was cancelled");
   });
 }
 
-export async function startLinux(version) {
-  if (process.platform !== "linux") throw Error("Start Ubuntu handoff on Linux");
-  validateRequest(await readJson(join(jobPath(version), "request.json")));
-  // A fixed unit name prevents duplicate detached installers. No timer or recurring schedule.
-  run("systemd-run", [
+const linuxUnit = "t3-fork-release.service";
+
+/** `start-linux` options: `--restart-thread ID` and `--approved-interrupt NOTE`. */
+export function parseLinuxOptions(args) {
+  const options = {};
+  for (let index = 0; index < args.length; index += 2) {
+    const [flag, value] = [args[index], args[index + 1]];
+    if (!value) throw Error(`${flag} needs a value`);
+    if (flag === "--restart-thread") options.restartThread = value;
+    else if (flag === "--approved-interrupt") options.approvedInterrupt = value;
+    else throw Error(`Unknown option ${flag}`);
+  }
+  return options;
+}
+
+export function linuxUnitArgs(version, policy, log, env = process.env) {
+  const setenv = {
+    PATH: env.PATH,
+    T3CODE_HOME: env.T3CODE_HOME ?? join(homedir(), ".t3"),
+    T3_FORK_RELEASE_STATE: env.T3_FORK_RELEASE_STATE,
+  };
+  return [
     "--user",
-    "--unit=t3-fork-release",
+    `--unit=${linuxUnit}`,
     "--collect",
     "--property=Type=exec",
     "--property=UMask=0077",
+    `--property=StandardOutput=append:${log}`,
+    `--property=StandardError=append:${log}`,
+    ...Object.entries(setenv)
+      .filter(([, value]) => value)
+      .map(([name, value]) => `--setenv=${name}=${value}`),
     process.execPath,
     join(sourceRoot, "scripts/fork-release/handoff.mjs"),
     "watch-linux",
     version,
-  ]);
-  return { version, phase: "waiting-for-idle", unit: "t3-fork-release.service" };
+    ...(policy.restartThread ? ["--restart-thread", policy.restartThread] : []),
+    ...(policy.approvedInterrupt ? ["--approved-interrupt", policy.approvedInterrupt] : []),
+  ];
+}
+
+export async function startLinux(version, options = {}) {
+  if (process.platform !== "linux") throw Error("Start Ubuntu handoff on Linux");
+  const folder = jobPath(version);
+  const request = validateRequest(await readJson(join(folder, "request.json")));
+  const policy = releasePolicy(options);
+  // Fail here, where the caller sees it, rather than inside the detached unit.
+  const unitState = spawnSync("systemctl", ["--user", "is-active", linuxUnit], {
+    encoding: "utf8",
+  }).stdout?.trim();
+  if (["active", "activating", "reloading"].includes(unitState))
+    throw Error(`${linuxUnit} is already running; read handoff-linux.json instead of retrying`);
+  await readJson(join(folder, "manifest.json"));
+  await readJson(join(folder, "linux-x64-qualification.json"));
+  const status = join(folder, "handoff-linux.json");
+  const error = join(folder, "handoff-error.json");
+  const log = join(folder, "handoff-linux.log");
+  // A resumed agent must not mistake an earlier attempt's result for this one.
+  await fs.rm(error, { force: true });
+  await atomicJson(status, {
+    ...request,
+    phase: "starting",
+    unit: linuxUnit,
+    policy,
+    at: new Date().toISOString(),
+  });
+  // A fixed unit name prevents duplicate detached installers. No timer or recurring schedule.
+  run("systemd-run", linuxUnitArgs(version, policy, log));
+  return {
+    version,
+    phase: "started",
+    unit: linuxUnit,
+    status,
+    error,
+    log,
+    next: "The server restart ends this agent's turn. After resuming, read the status file.",
+  };
 }
 
 export async function watch(version, host, repo, macOnly = false) {
@@ -225,10 +311,11 @@ ${restartThread ? `<key>T3_FORK_RELEASE_RESTART_THREAD</key><string>${xml(restar
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [command, version, host, repo] = process.argv.slice(2);
+  const linuxOptions = () => parseLinuxOptions(process.argv.slice(4));
   (command === "start-linux"
-    ? startLinux(version)
+    ? Promise.resolve().then(() => startLinux(version, linuxOptions()))
     : command === "watch-linux"
-      ? watchLinux(version)
+      ? Promise.resolve().then(() => watchLinux(version, linuxOptions()))
       : command === "start"
         ? handoff(version, host, repo)
         : command === "start-mac"
@@ -237,7 +324,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
             ? watch(version, host, repo, true)
             : command === "watch"
               ? watch(version, host, repo)
-              : Promise.reject(Error("Usage: handoff.mjs start VERSION SSH_ALIAS REMOTE_CHECKOUT"))
+              : Promise.reject(
+                  Error(
+                    "Usage: handoff.mjs start VERSION SSH_ALIAS REMOTE_CHECKOUT | start-linux VERSION [--restart-thread ID] [--approved-interrupt NOTE]",
+                  ),
+                )
   )
     .then((value) => {
       if (value) console.log(JSON.stringify(value));

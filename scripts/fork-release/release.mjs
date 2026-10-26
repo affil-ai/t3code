@@ -52,14 +52,28 @@ export async function atomicJson(path, data) {
   await fs.rename(temporary, path);
 }
 
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
 export async function withLock(path, operation) {
   await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
   try {
     await fs.mkdir(path, { mode: 0o700 });
   } catch (error) {
-    if (error.code === "EEXIST")
+    if (error.code !== "EEXIST") throw error;
+    // A crashed owner leaves its lock behind. Retire it (kept for diagnosis) only
+    // when its recorded process is gone; a missing owner file may be mid-write.
+    const owner = await readJson(join(path, "owner.json")).catch(() => null);
+    if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0 || processAlive(owner.pid))
       throw new Error("Release is locked; inspect its owner before retrying", { cause: error });
-    throw error;
+    await fs.rename(path, `${path}-retired-${owner.pid}-${Date.now()}`);
+    await fs.mkdir(path, { mode: 0o700 });
   }
   try {
     await fs.writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid }), {
@@ -129,11 +143,39 @@ async function request(commit, version) {
   return saveRequest(stateRoot, { ...value, createdAt: new Date().toISOString() });
 }
 
+export function supportsLinuxExecutable(version) {
+  const [major, minor] = String(version).replace(/^v/, "").split(".").map(Number);
+  return major > 25 || (major === 25 && minor >= 7);
+}
+
+// The Linux single executable needs Node 25.7+, newer than the repository engine and
+// usually newer than the host default. Use T3_FORK_RELEASE_NODE, this Node, or the
+// newest ~/.local/opt/node-v*-linux-x64 install, so builds never need a manual resume.
+export function linuxBuildNode(optDir = join(homedir(), ".local/opt")) {
+  let installed = [];
+  try {
+    installed = NodeFS.readdirSync(optDir)
+      .filter((name) => /^node-v\d+\.\d+\.\d+-linux-x64$/.test(name))
+      .sort((a, b) => b.localeCompare(a, "en", { numeric: true }))
+      .map((name) => join(optDir, name, "bin/node"));
+  } catch {}
+  for (const node of [process.env.T3_FORK_RELEASE_NODE, process.execPath, ...installed]) {
+    if (!node) continue;
+    try {
+      if (supportsLinuxExecutable(run(node, ["--version"]))) return node;
+    } catch {}
+  }
+  throw new Error(
+    `Linux executable build needs Node 25.7+; set T3_FORK_RELEASE_NODE or install it under ${optDir}`,
+  );
+}
+
 export async function build(version) {
   const job = jobPath(version);
   const value = validateRequest(await readJson(join(job, "request.json")));
   const platform = `${process.platform}-${process.arch}`;
   if (!["linux-x64", "darwin-arm64"].includes(platform)) throw new Error("Unsupported build host");
+  const node = platform === "linux-x64" ? linuxBuildNode() : process.execPath;
   return withLock(join(job, `${platform}.lock`), async () => {
     const record = join(job, `${platform}.json`);
     try {
@@ -180,17 +222,9 @@ export async function build(version) {
       delete env.GITHUB_REPOSITORY;
       delete env.T3CODE_DESKTOP_UPDATE_REPOSITORY;
       execute("npx", ["--yes", pkg.packageManager, "install", "--frozen-lockfile"], checkout, env);
-      execute(
-        process.execPath,
-        ["scripts/update-release-package-versions.ts", version],
-        checkout,
-        env,
-      );
+      execute(node, ["scripts/update-release-package-versions.ts", version], checkout, env);
       let artifact;
       if (platform === "linux-x64") {
-        const [major, minor] = process.versions.node.split(".").map(Number);
-        if (major < 25 || (major === 25 && minor < 7))
-          throw new Error("Linux executable build needs Node 25.7+");
         execute(
           "cargo",
           [
@@ -210,9 +244,9 @@ export async function build(version) {
           join(monitor, "t3-resource-monitor"),
         );
         execute("vp", ["run", "--filter", "t3", "build"], checkout, env);
-        execute(process.execPath, ["apps/server/scripts/cli.ts", "build-exe"], checkout, env);
+        execute(node, ["apps/server/scripts/cli.ts", "build-exe"], checkout, env);
         execute(
-          process.execPath,
+          node,
           [
             "scripts/build-cli-archive.ts",
             "--platform",
@@ -231,14 +265,14 @@ export async function build(version) {
         );
         artifact = join(attempt, `t3-${version}-linux-x64.tar.gz`);
         execute(
-          process.execPath,
+          node,
           ["scripts/smoke-cli-archive.ts", "--archive", artifact, "--expect-version", version],
           checkout,
           env,
         );
       } else {
         execute(
-          process.execPath,
+          node,
           [
             "scripts/build-desktop-artifact.ts",
             "--platform",
@@ -286,11 +320,12 @@ export async function build(version) {
   });
 }
 
-export async function manifest(version) {
+/** `linuxOnly` stages an Ubuntu and web release without a Mac artifact; the Mac stays put. */
+export async function manifest(version, linuxOnly = false) {
   const folder = jobPath(version);
   const requestValue = validateRequest(await readJson(join(folder, "request.json")));
   const artifacts = [];
-  for (const platform of ["linux-x64", "darwin-arm64"]) {
+  for (const platform of linuxOnly ? ["linux-x64"] : ["linux-x64", "darwin-arm64"]) {
     artifacts.push(await readJson(join(folder, `${platform}.json`)));
   }
   const result = {
@@ -298,6 +333,7 @@ export async function manifest(version) {
     repository: requestValue.repository,
     commit: requestValue.commit,
     version,
+    ...(linuxOnly ? { scope: "linux-only" } : {}),
     artifacts,
     phase: "staged",
     createdAt: new Date().toISOString(),
@@ -358,9 +394,12 @@ export function readReleaseDatabase(home, sql, stopped = false) {
   return JSON.parse(result.stdout || "[]");
 }
 
+// T3 thread IDs, e.g. a UUID or `mcp:<uuid>`. The pattern also keeps the id out of SQL syntax.
+const threadIdPattern = /^[A-Za-z0-9][A-Za-z0-9:%._-]{0,255}$/;
+
 export function workloadCounts(home, restartThread = null, stopped = false) {
-  if (restartThread && (process.platform !== "darwin" || !/^[a-f0-9-]{36}$/.test(restartThread))) {
-    throw Error("Only an explicit local Mac caller may use graceful restart");
+  if (restartThread && !threadIdPattern.test(restartThread)) {
+    throw Error("Restart thread must be the calling T3 thread ID");
   }
   const sql = restartThread
     ? workloadSql.replace(
@@ -371,7 +410,28 @@ export function workloadCounts(home, restartThread = null, stopped = false) {
   return classifyWorkload(readReleaseDatabase(home, sql, stopped));
 }
 
-export async function checkDeploy(version) {
+/**
+ * Who may be interrupted by an activation. By default all work blocks except the
+ * caller's own running turn (`restartThread`). `approvedInterrupt` records a
+ * human's explicit approval to restart over active work; nothing waits for idle.
+ */
+export function releasePolicy(options = {}) {
+  const restartThread = options.restartThread ?? process.env.T3_FORK_RELEASE_RESTART_THREAD ?? null;
+  const approvedInterrupt = options.approvedInterrupt?.trim() || null;
+  if (restartThread && !threadIdPattern.test(restartThread)) {
+    throw Error("Restart thread must be the calling T3 thread ID");
+  }
+  return { restartThread, approvedInterrupt };
+}
+
+/** Throws while blocking work remains under `policy`; returns the observed counts. */
+export function assertReleaseIdle(home, policy, stopped = false) {
+  const counts = workloadCounts(home, policy.restartThread, stopped);
+  if (!policy.approvedInterrupt) assertIdle(counts);
+  return counts;
+}
+
+export async function checkDeploy(version, policy = releasePolicy()) {
   assertCutoverTime();
   const home = process.env.T3CODE_HOME ?? join(homedir(), ".t3");
   const folder = jobPath(version);
@@ -382,7 +442,7 @@ export async function checkDeploy(version) {
     throw new Error("Manifest does not match release request");
   }
   await verifyArtifacts(value);
-  assertIdle(workloadCounts(home, process.env.T3_FORK_RELEASE_RESTART_THREAD));
+  assertReleaseIdle(home, policy);
   return { version, commit: value.commit, checks: "artifacts-and-idle-passed", installed: false };
 }
 
@@ -431,7 +491,7 @@ async function main() {
   let result;
   if (command === "request") result = await request(a, b);
   else if (command === "build") result = await build(a);
-  else if (command === "manifest") result = await manifest(a);
+  else if (command === "manifest") result = await manifest(a, b === "--linux-only");
   else if (command === "check-deploy") result = await checkDeploy(a);
   else if (command === "queue") result = await queue();
   else if (command === "mac-pull") result = await macPull(a, b);
@@ -459,7 +519,7 @@ async function main() {
     result = await importArtifact(a, b);
   } else
     throw new Error(
-      "Usage: release.mjs request COMMIT VERSION | build VERSION | manifest VERSION | check-deploy VERSION | queue | mac-pull SSH_ALIAS REMOTE_REPO",
+      "Usage: release.mjs request COMMIT VERSION | build VERSION | manifest VERSION [--linux-only] | check-deploy VERSION | queue | mac-pull SSH_ALIAS REMOTE_REPO",
     );
   console.log(JSON.stringify(result));
 }
