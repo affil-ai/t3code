@@ -297,6 +297,7 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs } from "./RightPanelTabs";
 import { FirstmateTasksSurface } from "./firstmate/firstmateTab"; // fork: firstmate
 import { TaskDetailsSurface } from "./firstmate/TaskDetailsSurface"; // fork: firstmate
+import { useAutoOpenWorkerTaskDetails } from "./firstmate/workerTaskDetailsAutoOpen"; // fork: firstmate
 import { useIsAgentCoordinatorChat } from "./firstmate/agentCoordinatorChat"; // fork: firstmate
 import { AgentsPanel } from "./AgentsPanel";
 import {
@@ -2521,10 +2522,11 @@ export default function ChatView(props: ChatViewProps) {
   const activeWorkerTask = activeThreadRef
     ? (taskByWorkerThreadKey.get(scopedThreadKey(activeThreadRef)) ?? null)
     : null;
-  useEffect(() => {
-    if (activeThreadRef === null || activeWorkerTask === null) return;
-    useRightPanelStore.getState().open(activeThreadRef, "task-details");
-  }, [activeThreadRef, activeWorkerTask]);
+  useAutoOpenWorkerTaskDetails(
+    activeThreadRef,
+    activeWorkerTask?.id ?? null,
+    shouldUsePlanSidebarSheet,
+  );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const activeEnvironmentServerBrowser = useEnvironmentSupportsServerBrowser(
     activeThreadRef?.environmentId ?? null,
