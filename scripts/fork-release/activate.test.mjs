@@ -13,6 +13,7 @@ const { createHash } = NodeCrypto;
 import {
   artifactMirror,
   assertForwardVersion,
+  companionsToStart,
   insideT3ProviderScope,
   validateCompatibilityReview,
 } from "./activate.mjs";
@@ -36,6 +37,23 @@ test("installs refuse from a T3 agent scope but run from the detached unit", () 
     "0::/user.slice/user-1003.slice/session-4.scope",
   ])
     assert.equal(insideT3ProviderScope(cgroup), false, cgroup);
+});
+
+test("companions stopped with the server are started again; the server itself is not", () => {
+  const before = {
+    "t3code.service": "active",
+    "t3code-browser-proxy.service": "active",
+    "t3-even-terminal.service": "active",
+    "t3-feedback-relay.service": "inactive",
+  };
+  // fork.74: the proxy (Requires=t3code.service) stayed down after the restart.
+  const after = {
+    ...before,
+    "t3code.service": "inactive",
+    "t3code-browser-proxy.service": "inactive",
+  };
+  assert.deepEqual(companionsToStart(before, after), ["t3code-browser-proxy.service"]);
+  assert.deepEqual(companionsToStart(before, before), []);
 });
 
 test("the detached Linux unit carries its own environment and the caller's policy", () => {

@@ -110,8 +110,9 @@ detached unit sets `T3_DETACHED_SERVICE_UPDATE=1`, the updater's only bypass.
 
 1. waits up to 24 hours until no blocking work remains;
 2. rechecks artifacts, qualification, schema, Office, and provenance;
-3. runs the native updater, waits up to 3 minutes for the target API, then
-   publishes web;
+3. runs the native updater, starts companion units the server stop took down
+   (the browser proxy has `Requires=t3code.service`), waits up to 3 minutes
+   for the target API, then publishes web;
 4. if the target never becomes healthy, switches back to the previous runtime
    and starts the service, so the host is never left without a server.
 

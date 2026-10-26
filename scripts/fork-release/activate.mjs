@@ -248,11 +248,31 @@ async function linuxInstall(version, manifest, log, policy) {
     // Final observation immediately before invoking the native service updater.
     const counts = assertReleaseIdle(home, policy);
     await log.write(`${JSON.stringify({ current, target: version, counts, policy })}\n`);
+    const before = linuxServiceStates();
     await execute(executable, ["update", version, "--base-dir", home, "--yes"], {
       env: { ...process.env, ...detachedUpdate, T3CODE_RELEASE_BASE_URL: origin },
       stdio: ["ignore", log.fd, log.fd],
     });
+    await restartCompanions(before, log);
   });
+}
+
+/**
+ * Units active before the update that are not active now. The browser proxy has
+ * `Requires=t3code.service`, so stopping the server stops it and nothing starts it
+ * again; health is read through it.
+ */
+export function companionsToStart(before, after) {
+  return Object.keys(before).filter(
+    (unit) => unit !== "t3code.service" && before[unit] === "active" && after[unit] !== "active",
+  );
+}
+
+async function restartCompanions(before, log) {
+  const units = companionsToStart(before, linuxServiceStates());
+  if (units.length === 0) return;
+  await log.write(`starting companions stopped with the server: ${units.join(" ")}\n`);
+  spawnSync("systemctl", ["--user", "start", ...units], { stdio: "ignore" });
 }
 
 /** Unit states for the server and its companions; only the server gates health. */
@@ -283,7 +303,7 @@ async function awaitVersion(version, attempts, onMiss = async () => {}) {
 
 // Older runtimes stay under runtime/versions, so this switches back without a
 // download. Qualification's database review is what makes the old binary safe here.
-async function linuxRollback(previous, log) {
+async function linuxRollback(previous, before, log) {
   await log.write(`rolling back to ${previous}\n`);
   await execute(
     join(home, "runtime/versions", previous, "t3"),
@@ -294,6 +314,7 @@ async function linuxRollback(previous, log) {
   if (linuxServiceStates()["t3code.service"] !== "active") {
     spawnSync("systemctl", ["--user", "start", "t3code.service"], { stdio: "ignore" });
   }
+  await restartCompanions(before, log);
   return awaitVersion(previous, 120);
 }
 
@@ -395,6 +416,7 @@ export async function activate(version, policy = releasePolicy()) {
     const log = await fs.open(join(folder, `${platform}-install.log`), "a", 0o600);
     const status = join(folder, `${platform}-activation.json`);
     const previousVersion = await installedVersion();
+    const servicesBefore = process.platform === "linux" ? linuxServiceStates() : {};
     const started = {
       version,
       commit: manifest.commit,
@@ -437,7 +459,7 @@ export async function activate(version, policy = releasePolicy()) {
           throw error;
         }
         await atomicJson(status, { ...started, phase: "rolling-back", error: error.message });
-        const restored = await linuxRollback(previousVersion, log);
+        const restored = await linuxRollback(previousVersion, servicesBefore, log);
         await atomicJson(status, {
           ...started,
           phase: restored ? "rolled-back" : "rollback-failed",
