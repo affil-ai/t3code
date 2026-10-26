@@ -128,7 +128,7 @@ detached unit sets `T3_DETACHED_SERVICE_UPDATE=1`, the updater's only bypass.
 2. rechecks artifacts, qualification, schema, Office, and provenance;
 3. runs the native updater, waits up to 3 minutes for the server to answer on
    its own port, then starts companion units the server stop took down and
-   retries until they are active. The browser proxy requires the server and a
+   retries for up to 2 minutes until they are active; otherwise it rolls back. The browser proxy requires the server and a
    one-shot token refresh that fails while the server is still opening its
    database, so starting it early fails with result `dependency` (fork.75).
    It then waits up to 3 minutes for the target API and publishes web;

@@ -68,47 +68,48 @@ test("companions start only after the server answers, and are retried until acti
   };
   // fork.75: the server unit was active but still opening its database, so the
   // proxy's token refresh failed and the proxy start failed with 'dependency'.
-  const states = {
-    ...before,
-    "t3code.service": "activating",
-    "t3code-browser-proxy.service": "inactive",
-  };
-  const events = [];
-  let probes = 0;
-  let starts = 0;
-  const host = {
-    states: () => ({ ...states }),
-    originAnswers: async () => {
-      probes++;
-      return probes >= 3;
-    },
-    start: (units) => {
-      events.push(["start", probes, units]);
-      // The first start still fails; the second succeeds.
-      if (++starts === 2) for (const unit of units) states[unit] = "active";
-    },
-    pause: async () => {
-      if (events.length === 0) states["t3code.service"] = "active";
-    },
+  const fakeHost = (states, { answersAt = 0, startsNeeded = 1 } = {}) => {
+    const host = {
+      clock: 0,
+      starts: [],
+      states: () => ({ ...states }),
+      originAnswers: async () => host.clock >= answersAt,
+      start: (units) => {
+        host.starts.push([host.clock, units]);
+        if (host.starts.length === startsNeeded) for (const unit of units) states[unit] = "active";
+      },
+      now: () => host.clock,
+      pause: async (ms) => {
+        host.clock += ms;
+      },
+    };
+    return host;
   };
   const log = { lines: [], write: async (line) => log.lines.push(line) };
-  assert.equal(await restartCompanions(before, log, host), true);
-  assert.deepEqual(events, [
-    ["start", 3, ["t3code-browser-proxy.service"]],
-    ["start", 3, ["t3code-browser-proxy.service"]],
-  ]);
-  assert.match(log.lines.join(""), /companions active/);
+  const down = { ...before, "t3code-browser-proxy.service": "inactive" };
 
-  // A companion that never starts is reported, not hidden.
-  const stuck = { ...before, "t3code-browser-proxy.service": "inactive" };
-  const failing = {
-    ...host,
-    states: () => stuck,
-    originAnswers: async () => true,
-    start: () => {},
-  };
-  assert.equal(await restartCompanions(before, log, failing), false);
-  assert.match(log.lines.at(-1), /still inactive: t3code-browser-proxy.service/);
+  const slow = fakeHost({ ...down }, { answersAt: 60_000, startsNeeded: 2 });
+  assert.equal(await restartCompanions(before, log, slow), true);
+  assert.deepEqual(
+    slow.starts.map(([at, units]) => [at, units]),
+    [
+      [60_000, ["t3code-browser-proxy.service"]],
+      [70_000, ["t3code-browser-proxy.service"]],
+    ],
+  );
+  assert.match(log.lines.at(-1), /companions active/);
+
+  // A server that never answers fails within the bound without starting anything.
+  const silent = fakeHost({ ...down }, { answersAt: Infinity });
+  assert.equal(await restartCompanions(before, log, silent), false);
+  assert.deepEqual(silent.starts, []);
+  assert.ok(silent.clock <= 181_000);
+
+  // A companion that never starts is reported within its bound, not hidden.
+  const stuck = fakeHost({ ...down }, { startsNeeded: Infinity });
+  assert.equal(await restartCompanions(before, log, stuck), false);
+  assert.ok(stuck.clock <= 122_000);
+  assert.match(log.lines.at(-1), /still inactive after 2 minutes: t3code-browser-proxy.service/);
 });
 
 test("qualify takes named flags and rejects a positional review path", () => {

@@ -322,7 +322,10 @@ async function linuxInstall(version, manifest, log, policy) {
       env: { ...process.env, ...detachedUpdate, T3CODE_RELEASE_BASE_URL: origin },
       stdio: ["ignore", log.fd, log.fd],
     });
-    await restartCompanions(before, log);
+    // Health is read through the proxy; without it, roll back now rather than
+    // spend the full health wait first.
+    if (!(await restartCompanions(before, log)))
+      throw Error("Server or companion services did not come up after the update");
   });
 }
 
@@ -339,7 +342,10 @@ export function companionsToStart(before, after) {
 
 const linuxHost = {
   states: () => linuxServiceStates(),
-  start: (units) => spawnSync("systemctl", ["--user", "start", ...units], { stdio: "ignore" }),
+  // --no-block: the proxy's one-shot token refresh has no start timeout, and a
+  // hung job must not hold the installer past its own deadline.
+  start: (units) =>
+    spawnSync("systemctl", ["--user", "start", "--no-block", ...units], { stdio: "ignore" }),
   // The server's own port, not the proxy's: the proxy is one of the companions.
   originAnswers: () =>
     fetch("http://127.0.0.1:3778/.well-known/t3/environment", {
@@ -348,6 +354,7 @@ const linuxHost = {
       (response) => response.ok,
       () => false,
     ),
+  now: () => Date.now(),
   pause,
 };
 
@@ -355,34 +362,41 @@ const linuxHost = {
  * Starts companions the server stop took down, once the server answers. The
  * proxy also requires the one-shot browser-token refresh, which fails while the
  * server is still opening its database; starting early fails the proxy with
- * result 'dependency' (fork.75). Returns whether every companion is active.
+ * result 'dependency' (fork.75). Waits at most 3 minutes for the server and
+ * 2 minutes for the companions; returns whether every companion is active.
  */
 export async function restartCompanions(before, log, host = linuxHost) {
   const units = companionsToStart(before, host.states());
   if (units.length === 0) return true;
-  let ready = false;
-  for (let attempt = 0; attempt < 180 && !ready; attempt++) {
-    ready = host.states()["t3code.service"] === "active" && (await host.originAnswers());
-    if (!ready) await host.pause(1000);
+  const serverDeadline = host.now() + 180_000;
+  while (!(host.states()["t3code.service"] === "active" && (await host.originAnswers()))) {
+    if (host.now() >= serverDeadline) {
+      await log.write(`server did not answer within 3 minutes; not starting ${units.join(" ")}\n`);
+      return false;
+    }
+    await host.pause(1000);
   }
-  await log.write(
-    `${ready ? "server answering" : "server not answering after 3 minutes"}; starting companions: ${units.join(" ")}\n`,
-  );
-  for (let attempt = 0; attempt < 10; attempt++) {
+  await log.write(`server answering; starting companions: ${units.join(" ")}\n`);
+  const deadline = host.now() + 120_000;
+  let nextStart = host.now();
+  for (;;) {
     const states = host.states();
     const pending = units.filter((unit) => states[unit] !== "active");
     if (pending.length === 0) {
       await log.write("companions active\n");
       return true;
     }
-    host.start(pending);
-    await host.pause(5000);
+    if (host.now() >= deadline) {
+      await log.write(`companions still inactive after 2 minutes: ${pending.join(" ")}\n`);
+      return false;
+    }
+    // Starting a unit whose start job is still queued only merges into that job.
+    if (host.now() >= nextStart) {
+      host.start(pending);
+      nextStart = host.now() + 10_000;
+    }
+    await host.pause(2000);
   }
-  const states = host.states();
-  const failed = units.filter((unit) => states[unit] !== "active");
-  if (failed.length === 0) return true;
-  await log.write(`companions still inactive: ${failed.join(" ")}\n`);
-  return false;
 }
 
 /** Unit states for the server and its companions; only the server gates health. */
