@@ -9,6 +9,7 @@ import {
   linuxBuildNode,
   releasePolicy,
   saveRequest,
+  selectPullRequests,
   shellQuote,
   supportsLinuxExecutable,
   validateRequest,
@@ -256,4 +257,11 @@ test("build tools spawned by name run on the selected Node, not the host default
   assert.ok(path.indexOf("/tmp/checkout/node_modules/.bin") > 0);
   assert.ok(path.indexOf("/usr/local/bin") > path.indexOf("/opt/node-v25.7.0-linux-x64/bin"));
   assert.equal(env.GITHUB_REPOSITORY, undefined);
+});
+
+test("mac-pull with a version builds only that request, so an obsolete one cannot block it", () => {
+  const queued = ["68", "79"].map((n) => ({ ...request, version: `0.1.0-stable.fork.${n}` }));
+  assert.deepEqual(selectPullRequests(queued, "0.1.0-stable.fork.79"), [queued[1]]);
+  assert.deepEqual(selectPullRequests(queued, undefined), queued);
+  assert.throws(() => selectPullRequests(queued, "0.1.0-stable.fork.80"), /not in the Ubuntu/);
 });

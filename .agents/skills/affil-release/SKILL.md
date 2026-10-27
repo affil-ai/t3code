@@ -44,7 +44,7 @@ a one-shot installer alongside it. Otherwise, on the Mac (substitute the
 verified absolute Ubuntu checkout path):
 
 ```sh
-node scripts/fork-release/release.mjs mac-pull work UBUNTU_CHECKOUT
+node scripts/fork-release/release.mjs mac-pull work UBUNTU_CHECKOUT VERSION
 node scripts/fork-release/release.mjs exchange VERSION work UBUNTU_CHECKOUT
 node scripts/fork-release/release.mjs manifest VERSION
 ```
@@ -92,8 +92,9 @@ node scripts/fork-release/handoff.mjs start-linux VERSION --restart-thread YOUR_
 If a build fails (Node version, unused patch), fix the build tooling. Do not
 resume from a hand-edited checkout or install outside the handoff.
 
-`mac-pull` processes the queue, not just VERSION. Inspect the queue first.
-Do not rebuild obsolete requests blindly. See the guide for Mac-only and
+Always pass VERSION to `mac-pull`. Without it, the command builds every
+queued request oldest first and stops at the first failure: in fork.79 an
+obsolete fork.68 request that no longer builds blocked the Mac build. See the guide for Mac-only and
 Ubuntu/web-only paths.
 
 ## Hard gates
