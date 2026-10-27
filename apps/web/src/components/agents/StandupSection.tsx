@@ -19,6 +19,7 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import type { StandupTaskRow } from "~/state/agents";
 import { COLUMN_DOT, COLUMN_LABELS } from "../firstmate/firstmateTasksShared";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
+import { useClaimSidebarRouteReveal } from "../sidebar/routeReveal";
 import { useSidebar } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AgentAvatar } from "./AgentAvatar";
@@ -38,6 +39,7 @@ function StandupRow({
 }) {
   const { task, agent } = row;
   const navigate = useNavigate();
+  const claimRouteReveal = useClaimSidebarRouteReveal();
   const { isMobile, setOpenMobile } = useSidebar();
   const target = standupTarget(task, agent.id, agents);
   const active =
@@ -45,6 +47,8 @@ function StandupRow({
   const open = () => {
     if (target === null) return;
     if (isMobile) setOpenMobile(false);
+    const threadId = target.kind === "task" ? target.coordinatorThreadId : target.threadId;
+    claimRouteReveal(scopedThreadKey(scopeThreadRef(environmentId, threadId)));
     if (target.kind === "task") {
       const ref = scopeThreadRef(environmentId, target.coordinatorThreadId);
       useFirstmateTaskFocusStore
@@ -54,10 +58,7 @@ function StandupRow({
     }
     void navigate({
       to: "/$environmentId/$threadId",
-      params: {
-        environmentId,
-        threadId: target.kind === "task" ? target.coordinatorThreadId : target.threadId,
-      },
+      params: { environmentId, threadId },
     });
   };
   return (

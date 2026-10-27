@@ -247,8 +247,8 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
   completeSidebarRouteReveal,
-  pendingSidebarRouteReveal,
   type SidebarRouteReveal,
+  sidebarRouteRevealKey,
 } from "./sidebar/routeReveal";
 import { AgentSwitcher, useSelectedAgent } from "./agents/AgentSwitcher"; // fork: agents
 import { AgentSidebarSections } from "./agents/AgentSidebarSections"; // fork: agents
@@ -4608,8 +4608,7 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
   const routeRowRendered =
     routeThreadKey !== null && visibleSidebarThreadKeys.includes(routeThreadKey);
   const revealRouteRow = useStableCallback(() => {
-    const pendingKey = pendingSidebarRouteReveal(routeReveal, routeThreadKey);
-    if (pendingKey === null && (!mountRevealOwed.current || routeThreadKey === null)) return;
+    if (sidebarRouteRevealKey(routeReveal, mountRevealOwed, routeThreadKey) === null) return;
     const activeRow = document.querySelector(
       '[data-sidebar="content"] [data-thread-item] [data-active="true"]',
     );
