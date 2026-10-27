@@ -337,23 +337,24 @@ write skills on request.
 
 ## Standup
 
-The user's standup to-dos are one list, not a dated record: `firstmate_standup_item`
-holds the bullet text, an optional task on any agent's board (`agent_id` is the
-task's owner), and `started_at`, `finished_at`, `archived_at`. The tag lives on the
-item, not the task, because only a board's own coordinator may write its tasks, and
-an item may have no task yet.
+A standup task is an ordinary task marked as one of the user's standup to-dos:
+`firstmate_task.standup_started_at` (the mark) and `standup_finished_at`, shown as
+`task.standup` and in the task's details.
 
-- An item is listed until it is archived or its task is `done`, `monitoring`, or
-  `canceled`. The dates are a record; they never filter the list.
-- `finished_at` follows the task: the service records it before publishing any
-  board change and clears it if the task reopens (`standup.ts`,
-  `syncStandupFinished`). Archiving sets it too.
-- Only Firstmate's coordinator writes the list (`standup_add`, `standup_update`,
-  `standup_archive`); any coordinator may call `standup_list`.
-- Clients read `standup.subscribe`. The Work sidebar shows a Standup section above
-  the selected agent's task sections, for every agent. A row opens the task's
-  worker chat, which switches the sidebar to the owning agent; without a worker it
-  opens the owner's chat on the task; without a task, Firstmate's chat.
+- Only Firstmate's coordinator sets the mark (`standup_mark`), and it may do so on
+  any agent's board. That is the one cross-board write: it changes the mark and its
+  dates, never the owner's other fields. A to-do with no task becomes a task on
+  Firstmate's board first.
+- An open standup task sits in the board's Standup section instead of its status
+  section, ahead of the others. It leaves when it is done, monitoring, or canceled,
+  or is unmarked. Dates never filter it.
+- `standup_finished_at` follows the task: the service records it at startup and
+  before publishing any board change, and clears it if the task reopens
+  (`standup.ts`, `syncStandupFinished`).
+- In the Work sidebar, Firstmate's Standup section lists every agent's standup
+  tasks, each with its owner's icon; another agent's lists its own. A row opens the
+  worker chat, which switches the sidebar to the owner; without a worker, the
+  owner's chat on the task; with an archived owner, Firstmate's chat.
 - `GET /api/firstmate/standup` serves the phone widget a small summary. It takes the
   app's normal sign-in with `orchestration:read`, so the widget shares the phone's
   credential.

@@ -217,16 +217,25 @@ describe("Firstmate toolkit handlers", () => {
       ),
   );
 
-  it.effect("lets only Firstmate's coordinator change the standup list", () =>
+  it.effect("lets only Firstmate's coordinator mark standup tasks", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
-        const added = yield* harness.call("standup_add", { text: "resubmit ios app" }, COORDINATOR);
-        expect(added.isFailure).toBe(false);
-        const denied = yield* harness.call("standup_add", { text: "from a worker" }, WORKER);
+        const { task } = yield* harness.service.create(FM, createParams);
+        const marked = yield* harness.call(
+          "standup_mark",
+          { taskId: task.id, onStandup: true },
+          COORDINATOR,
+        );
+        expect(marked.isFailure).toBe(false);
+        const denied = yield* harness.call(
+          "standup_mark",
+          { taskId: task.id, onStandup: false },
+          WORKER,
+        );
         expect(denied.result).toMatchObject({ code: "capability_denied" });
         const listed = yield* harness.call("standup_list", {}, COORDINATOR);
-        expect(listed.result).toMatchObject({ items: [{ text: "resubmit ios app" }] });
+        expect(listed.result).toMatchObject({ tasks: [{ agentId: FM, task: { id: task.id } }] });
       }),
     ),
   );

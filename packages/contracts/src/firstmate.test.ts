@@ -349,7 +349,6 @@ describe("Firstmate RPC contracts", () => {
       "agents.update": "orchestration:operate",
       "agents.archive": "orchestration:operate",
       "agents.start": "orchestration:operate",
-      "standup.subscribe": "orchestration:read",
     });
     expect(FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES).toEqual({
       "firstmate.setTaskPriority": "orchestration:operate",

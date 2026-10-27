@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { AgentProfileId, FIRSTMATE_AGENT_ID, StandupItemId } from "@t3tools/contracts";
+import { AgentProfileId, FIRSTMATE_AGENT_ID } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -40,55 +40,78 @@ const addJoan = Effect.gen(function* () {
   `;
 });
 
+const joanTask = (service: FirstmateService.FirstmateService["Service"]) =>
+  service.create(JOAN, {
+    title: "Page and link system",
+    intent: "Simplify it",
+    definitionOfDone: "Shipped",
+    status: "in_progress",
+    nextActor: "worker",
+  });
+
 const openStandup = (service: FirstmateService.FirstmateService["Service"]) =>
-  service.subscribeStandup().pipe(
-    Stream.runHead,
-    Effect.map(Option.getOrThrow),
-    Effect.map(({ items }) => items),
-  );
+  service
+    .listStandup({})
+    .pipe(Effect.map(({ tasks }) => tasks.map(({ agentId, task }) => [agentId, task.title])));
 
 describe("standup", () => {
-  it.effect("lists text-only and cross-agent items until their task finishes", () =>
+  it.effect("marks another agent's task without changing its other fields", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
       yield* addJoan;
-      const { task } = yield* service.create(JOAN, {
-        title: "Page and link system",
-        intent: "Simplify it",
-        definitionOfDone: "Shipped",
-        status: "in_progress",
-        nextActor: "worker",
-      });
-      yield* service.addStandupItem(FM, { text: "upload hilton prices" });
-      const linked = yield* service.addStandupItem(FM, {
-        text: "simplify page/link system",
+      const { task } = yield* joanTask(service);
+      const { task: marked } = yield* service.markStandup(FM, {
         agentId: JOAN,
         taskId: task.id,
+        onStandup: true,
       });
-      expect(linked.item).toMatchObject({ agentId: JOAN, task: { id: task.id }, finishedAt: null });
-      expect((yield* openStandup(service)).map((item) => item.text)).toEqual([
-        "upload hilton prices",
-        "simplify page/link system",
-      ]);
-
-      // Joan's coordinator moves it live; monitoring counts as finished.
-      yield* service.update(JOAN, { taskId: task.id, summary: "Live", status: "monitoring" });
-      expect((yield* openStandup(service)).map((item) => item.text)).toEqual([
-        "upload hilton prices",
-      ]);
-      const finished = (yield* service.listStandup({ includeFinished: true })).items.find(
-        (item) => item.id === linked.item.id,
+      expect(marked.standup).toEqual({ startedAt: expect.any(String), finishedAt: null });
+      expect({ ...marked, standup: null }).toEqual({ ...task, standup: null });
+      expect(yield* openStandup(service)).toEqual([[JOAN, "Page and link system"]]);
+      // Joan's own board carries the mark, so her sidebar shows it under Standup.
+      const board = yield* service
+        .subscribe(JOAN)
+        .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+      expect(board.tasks[0]?.standup?.startedAt).toBe(marked.standup?.startedAt);
+      expect((yield* service.get(JOAN, { taskId: task.id })).events.at(-1)?.summary).toBe(
+        "Added to standup.",
       );
-      expect(finished?.finishedAt).not.toBeNull();
 
-      // Reopening the task brings the item back and clears its finish date.
-      yield* service.update(JOAN, { taskId: task.id, summary: "Regressed", status: "in_progress" });
-      const reopened = (yield* openStandup(service)).find((item) => item.id === linked.item.id);
-      expect(reopened?.finishedAt).toBeNull();
+      const wrongBoard = yield* service
+        .markStandup(FM, { taskId: task.id, onStandup: true })
+        .pipe(Effect.flip);
+      expect(wrongBoard.message).toContain("not on agent");
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
-  it.effect("closes items whose task finished before the service started", () =>
+  it.effect("finishes with the task, reopens with it, and comes off when unmarked", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      yield* addJoan;
+      const { task } = yield* joanTask(service);
+      yield* service.markStandup(FM, { agentId: JOAN, taskId: task.id, onStandup: true });
+
+      // Joan's coordinator moves it live; monitoring counts as finished.
+      yield* service.update(JOAN, { taskId: task.id, summary: "Live", status: "monitoring" });
+      expect(yield* openStandup(service)).toEqual([]);
+      const [finished] = (yield* service.listStandup({ includeFinished: true })).tasks;
+      expect(finished?.task.standup?.finishedAt).not.toBeNull();
+
+      yield* service.update(JOAN, { taskId: task.id, summary: "Regressed", status: "in_progress" });
+      const [reopened] = (yield* service.listStandup({})).tasks;
+      expect(reopened?.task.standup?.finishedAt).toBeNull();
+
+      const { task: off } = yield* service.markStandup(FM, {
+        agentId: JOAN,
+        taskId: task.id,
+        onStandup: false,
+      });
+      expect(off.standup).toBeNull();
+      expect((yield* service.listStandup({ includeFinished: true })).tasks).toEqual([]);
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
+  it.effect("records finishes that happened before the service started", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
       const { task } = yield* service.create(FM, {
@@ -97,89 +120,43 @@ describe("standup", () => {
         definitionOfDone: "Live",
         status: "in_progress",
       });
-      yield* service.update(FM, { taskId: task.id, summary: "Live", status: "monitoring" });
-      // A row written before finishes were tracked: linked to a finished task, still open.
+      yield* service.markStandup(FM, { taskId: task.id, onStandup: true });
+      // A finish that no running service saw: status moved, finish date never written.
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`
-        INSERT INTO firstmate_standup_item(item_id, text, agent_id, task_id, started_at)
-        VALUES ('standup:old', 'shipped earlier', ${FM}, ${task.id}, '2026-10-26T16:00:00.000Z')
-      `;
+      yield* sql`UPDATE firstmate_task SET status = 'done', state = 'done' WHERE task_id = ${task.id}`;
       const restarted = yield* FirstmateService.FirstmateService.pipe(
         Effect.provide(Layer.fresh(FirstmateService.layer)),
       );
-      expect(yield* openStandup(restarted)).toEqual([]);
-      const [finished] = (yield* restarted.listStandup({ includeFinished: true })).items;
-      expect(finished).toMatchObject({ id: "standup:old", archivedAt: null });
-      expect(finished?.finishedAt).not.toBeNull();
+      const [finished] = (yield* restarted.listStandup({ includeFinished: true })).tasks;
+      expect(finished?.task.standup?.finishedAt).not.toBeNull();
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
-  it.effect("archives an item, keeping its dates for the finished list", () =>
+  it.effect("summarizes open standup tasks for the widget", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;
-      const { item } = yield* service.addStandupItem(FM, { text: "resubmit ios app" });
-      const archived = yield* service.archiveStandupItem({ itemId: item.id });
-      expect(archived.item.archivedAt).not.toBeNull();
-      expect(archived.item.finishedAt).toBe(archived.item.archivedAt);
-      expect(yield* openStandup(service)).toEqual([]);
-      expect((yield* service.listStandup({})).items).toEqual([]);
-      expect((yield* service.listStandup({ includeFinished: true })).items).toEqual([
-        archived.item,
-      ]);
-      const again = yield* service
-        .updateStandupItem(FM, { itemId: item.id, text: "changed" })
-        .pipe(Effect.flip);
-      expect(again.message).toContain("archived");
-    }).pipe(Effect.provide(layerFirstmate)),
-  );
-
-  it.effect("links a task later, and rejects a task that is not on the named board", () =>
-    Effect.gen(function* () {
-      const service = yield* FirstmateService.FirstmateService;
-      yield* addJoan;
-      const { task } = yield* service.create(FM, {
-        title: "Hilton prices",
-        intent: "Upload them",
-        definitionOfDone: "Uploaded",
-      });
-      const { item } = yield* service.addStandupItem(FM, { text: "upload hilton prices" });
-      const wrongBoard = yield* service
-        .updateStandupItem(FM, { itemId: item.id, agentId: JOAN, taskId: task.id })
-        .pipe(Effect.flip);
-      expect(wrongBoard.message).toContain("not on agent");
-      const linked = yield* service.updateStandupItem(FM, { itemId: item.id, taskId: task.id });
-      expect(linked.item).toMatchObject({ agentId: FM, task: { id: task.id } });
-      const unlinked = yield* service.updateStandupItem(FM, { itemId: item.id, taskId: null });
-      expect(unlinked.item).toMatchObject({ agentId: null, task: null });
-      expect(
-        yield* service.archiveStandupItem({ itemId: StandupItemId.make("standup:missing") }).pipe(
-          Effect.flip,
-          Effect.map((error) => error.message),
-        ),
-      ).toContain("not found");
-    }).pipe(Effect.provide(layerFirstmate)),
-  );
-
-  it.effect("summarizes open items for the widget, with who acts next", () =>
-    Effect.gen(function* () {
-      const service = yield* FirstmateService.FirstmateService;
-      const { task } = yield* service.create(FM, {
+      const waiting = yield* service.create(FM, {
         title: "Offer history",
         intent: "Finish it",
         definitionOfDone: "Done",
         status: "in_progress",
         nextActor: "user",
       });
-      yield* service.addStandupItem(FM, { text: "finish offer history", taskId: task.id });
-      yield* service.addStandupItem(FM, { text: "upload hilton prices" });
-      const summary = yield* service.standupSummary();
-      expect(summary).toMatchObject({
+      const parked = yield* service.create(FM, {
+        title: "Upload hilton prices",
+        intent: "Upload them",
+        definitionOfDone: "Uploaded",
+        status: "backlog",
+      });
+      yield* service.markStandup(FM, { taskId: waiting.task.id, onStandup: true });
+      yield* service.markStandup(FM, { taskId: parked.task.id, onStandup: true });
+      expect(yield* service.standupSummary()).toMatchObject({
         open: 2,
         needsYou: 1,
         running: 0,
-        items: [
-          { text: "finish offer history", progress: "needs_you", agentName: "Firstmate" },
-          { text: "upload hilton prices", progress: "not_started", agentName: null },
+        tasks: [
+          { title: "Offer history", progress: "needs_you", agentName: "Firstmate" },
+          { title: "Upload hilton prices", progress: "not_started", agentName: "Firstmate" },
         ],
       });
     }).pipe(Effect.provide(layerFirstmate)),

@@ -19,6 +19,7 @@ import type { FirstmateColumnId } from "./firstmateBoard.logic";
 export const CoordinatorThreadContext = createContext<ThreadId | null>(null);
 
 export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
+  standup: "Standup",
   backlog: "Backlog",
   "needs-you": "Needs you",
   ready: "Ready for deployment",
@@ -31,6 +32,7 @@ export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
 };
 
 export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = {
+  standup: "Nothing on the standup",
   backlog: "Nothing in backlog",
   "needs-you": "Nothing needs you",
   ready: "Nothing ready to deploy",
@@ -43,6 +45,7 @@ export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = 
 
 /** A small dot per column; it is the board's only color. */
 export const COLUMN_DOT: Record<FirstmateColumnId, string> = {
+  standup: "bg-primary",
   backlog: "bg-muted-foreground/40",
   "needs-you": "bg-warning",
   ready: "bg-success",

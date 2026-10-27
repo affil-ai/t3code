@@ -36,14 +36,10 @@ import {
   type ModelSelection,
   type OrchestrationV2ThreadShell,
   ProjectId,
-  type StandupAddInput,
-  type StandupArchiveInput,
-  type StandupItemResult,
   type StandupListInput,
   type StandupListResult,
-  type StandupSnapshot,
+  type StandupMarkInput,
   type StandupSummary,
-  type StandupUpdateInput,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -260,23 +256,15 @@ export class FirstmateService extends Context.Service<
     readonly startAgent: (
       input: AgentStartInput,
     ) => Effect.Effect<AgentStartResult, ContractFirstmateError>;
-    /** Adds a standup item; a linked task may be on any agent's board. */
-    readonly addStandupItem: (
+    /** Adds a task on any agent's board to the user's standup, or takes it off. */
+    readonly markStandup: (
       callerAgentId: AgentProfileId,
-      input: StandupAddInput,
-    ) => Effect.Effect<StandupItemResult, ContractFirstmateError>;
-    readonly updateStandupItem: (
-      callerAgentId: AgentProfileId,
-      input: StandupUpdateInput,
-    ) => Effect.Effect<StandupItemResult, ContractFirstmateError>;
-    readonly archiveStandupItem: (
-      input: StandupArchiveInput,
-    ) => Effect.Effect<StandupItemResult, ContractFirstmateError>;
+      input: StandupMarkInput,
+    ) => Effect.Effect<FirstmateTaskMutationResult, ContractFirstmateError>;
+    /** Standup tasks across every agent's board. */
     readonly listStandup: (
       input: StandupListInput,
     ) => Effect.Effect<StandupListResult, ContractFirstmateError>;
-    /** Open standup items now and after every change to any board. */
-    readonly subscribeStandup: () => Stream.Stream<StandupSnapshot, ContractFirstmateError>;
     readonly standupSummary: () => Effect.Effect<StandupSummary, ContractFirstmateError>;
   }
 >()("t3/firstmate/FirstmateService") {}
@@ -318,12 +306,12 @@ export const layer = Layer.effect(
     }
 
     const now = () => Effect.map(isoNow, (at) => DateTime.formatIso(DateTime.toUtc(at)));
-    // Standup items follow their tasks, so record finishes before anyone re-reads.
-    // Items linked to tasks that finished before this build, or while it was down.
+    // Standup tasks that finished before this build, or while it was down.
     yield* now().pipe(
       Effect.flatMap(Standup.syncStandupFinished),
       Effect.catchCause((cause) => Effect.logWarning("Could not sync the standup.", { cause })),
     );
+    // Standup dates follow task status, so record finishes before anyone re-reads.
     const notify = now().pipe(
       Effect.flatMap(Standup.syncStandupFinished),
       Effect.provideService(SqlClient.SqlClient, sql),
@@ -585,6 +573,7 @@ export const layer = Layer.effect(
               artifacts: yield* keepArtifacts(taskId, input.artifacts ?? []),
               closeEvidence: null,
               progress: null,
+              standup: null,
               createdAt: at,
               updatedAt: at,
               closedAt: null,
@@ -1010,29 +999,17 @@ export const layer = Layer.effect(
     const standup = yield* Standup.makeStandup({
       now,
       notify,
+      appendEvent: (taskId, summary, at) => appendEvent(taskId, summary, "coordinator", at),
       threads,
       agentNames: () =>
         listAgents().pipe(
           Effect.map((agents) => new Map(agents.map((agent) => [agent.id, agent.name]))),
         ),
     });
-    const subscribeStandup: FirstmateService["Service"]["subscribeStandup"] = () =>
-      Stream.unwrap(
-        Effect.gen(function* () {
-          const subscription = yield* PubSub.subscribe(changes);
-          return Stream.concat(
-            Stream.fromEffect(standup.snapshot()),
-            Stream.fromSubscription(subscription).pipe(Stream.mapEffect(standup.snapshot)),
-          );
-        }),
-      );
 
     return {
-      addStandupItem: standup.add,
-      updateStandupItem: standup.update,
-      archiveStandupItem: standup.archive,
+      markStandup: standup.mark,
       listStandup: standup.list,
-      subscribeStandup,
       standupSummary: standup.summary,
       setTaskPriority,
       list,

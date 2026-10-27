@@ -69,18 +69,10 @@ const make = Effect.gen(function* () {
   );
 
   return {
-    standup_add: McpToolAccess.writes((input) =>
+    standup_mark: McpToolAccess.writes((input) =>
       requireFirstmateCoordinator.pipe(
-        Effect.flatMap((agent) => firstmate.addStandupItem(agent.id, input)),
+        Effect.flatMap((agent) => firstmate.markStandup(agent.id, input)),
       ),
-    ),
-    standup_update: McpToolAccess.writes((input) =>
-      requireFirstmateCoordinator.pipe(
-        Effect.flatMap((agent) => firstmate.updateStandupItem(agent.id, input)),
-      ),
-    ),
-    standup_archive: McpToolAccess.writes((input) =>
-      requireFirstmateCoordinator.pipe(Effect.andThen(firstmate.archiveStandupItem(input))),
     ),
     standup_list: McpToolAccess.reads((input) =>
       callingAgent.pipe(Effect.andThen(firstmate.listStandup(input))),

@@ -53,7 +53,6 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof FIRSTMATE_WS_METHODS.firstmateSubscribe // fork: firstmate
   | typeof FIRSTMATE_WS_METHODS.agentsSubscribe // fork: agents
   | typeof FIRSTMATE_WS_METHODS.agentTasksSubscribe // fork: agents
-  | typeof FIRSTMATE_WS_METHODS.standupSubscribe // fork: standup
   | typeof WS_METHODS.codexAuthCallbackSubscribe
   | typeof WS_METHODS.providerAuthSubscribe
   | typeof WS_METHODS.providerInstallSubscribe
