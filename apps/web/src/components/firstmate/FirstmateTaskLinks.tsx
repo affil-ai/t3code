@@ -30,7 +30,8 @@ import { useEnvironmentQuery } from "~/state/query";
 import { SlackIcon } from "../Icons";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
-import { isPullRequestUrl, isSlackUrl } from "./firstmateBoard.logic";
+import { isPullRequestUrl, isSlackUrl } from "@t3tools/client-runtime/firstmate/board";
+import { mergedPullRequestLabel } from "@t3tools/client-runtime/firstmate/tasks";
 import { CoordinatorThreadContext } from "./firstmateTasksShared";
 
 export function WorkerThreadLink({
@@ -187,7 +188,7 @@ export function ExternalTaskLink({
   const { href, onClick: handleClick, onContextMenu: handleContextMenu } = handlers;
   const label =
     isPullRequest && pullRequestSummary?.state === "merged"
-      ? link.label.replace(/\s*\([^)]*\)\s*$/, "")
+      ? mergedPullRequestLabel(link.label)
       : link.label;
 
   return (

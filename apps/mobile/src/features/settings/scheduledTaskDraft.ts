@@ -7,6 +7,7 @@ import type {
   ScheduledTask,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskWebhookSignature,
+  ThreadId, // fork: work
 } from "@t3tools/contracts";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
@@ -197,6 +198,8 @@ export type ScheduledTaskDraft = {
   readonly enabled: boolean;
   readonly startFromOrigin: boolean;
   readonly runtimeMode: RuntimeMode;
+  /** The chat a new task posts into, such as an agent's; edits keep the task's own. */
+  readonly boundThreadId?: ThreadId | null; // fork: work
 };
 
 function draftSignature(draft: ScheduledTaskDraft): string {

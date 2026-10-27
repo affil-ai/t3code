@@ -5,7 +5,7 @@
 import type { FirstmateTask } from "@t3tools/contracts";
 
 import { cn } from "~/lib/utils";
-import { firstmateProgressView, sparklinePoints } from "./firstmateProgress";
+import { firstmateProgressView, sparklinePoints } from "@t3tools/client-runtime/firstmate/progress";
 
 const SPARK_WIDTH = 40;
 const SPARK_HEIGHT = 10;

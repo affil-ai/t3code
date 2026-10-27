@@ -10,6 +10,7 @@ import type {
   ProjectId,
   ScheduledTask,
   ScheduledTaskUpsertInput,
+  ThreadId, // fork: work
 } from "@t3tools/contracts";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
@@ -33,7 +34,12 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { useFocusEffect, useNavigation, usePreventRemove } from "@react-navigation/native";
+import {
+  type StaticScreenProps, // fork: work
+  useFocusEffect,
+  useNavigation,
+  usePreventRemove,
+} from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { AppState, Platform, Pressable, TextInput as RNTextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -84,6 +90,13 @@ import {
   formatNextScheduledTaskRun,
   formatScheduledTaskInterval,
 } from "./scheduledTaskPresentation";
+
+/** A new task opened for one chat, such as an agent's Automations. */
+export type ScheduledTaskNewTarget = {
+  readonly environmentId: string;
+  readonly projectId: string;
+  readonly threadId: string;
+}; // fork: work
 
 type ScheduledTaskRoutes = {
   SettingsScheduledTaskNew: undefined;
@@ -449,15 +462,35 @@ export function SettingsScheduledTasksRouteScreen() {
   );
 }
 
-export function SettingsScheduledTaskNewRouteScreen() {
-  const { resetEditor } = useScheduledTaskEditor();
+export function SettingsScheduledTaskNewRouteScreen({
+  route,
+}: StaticScreenProps<ScheduledTaskNewTarget | undefined>) {
+  const { resetEditor, startEditor, draftForEnvironment } = useScheduledTaskEditor();
   const { availableTargets } = useSettingsEnvironmentFilter();
   const initialized = useRef(false);
+  const target = route.params; // fork: work
   useLayoutEffect(() => {
     if (initialized.current || availableTargets.length === 0) return;
     initialized.current = true;
+    // fork: work: a new automation for an agent opens in its project, posting into its chat.
+    const environment = target
+      ? availableTargets.find((candidate) => candidate.environmentId === target.environmentId)
+      : undefined;
+    if (target && environment) {
+      const draft = draftForEnvironment(environment.environmentId);
+      startEditor({
+        environmentId: environment.environmentId,
+        environmentLabel: environment.label,
+        draft: {
+          ...draft,
+          projectId: target.projectId as ProjectId,
+          boundThreadId: target.threadId as ThreadId,
+        },
+      });
+      return;
+    }
     resetEditor();
-  }, [availableTargets.length, resetEditor]);
+  }, [availableTargets, resetEditor, startEditor, draftForEnvironment, target]);
   return <SettingsScheduledTaskEditorScreen title="New scheduled task" />;
 }
 
@@ -749,7 +782,7 @@ function TaskForm({
       modelSelection: draft.modelSelection,
       schedule,
       enabled: draft.enabled,
-      threadId: draft.task?.threadId ?? null,
+      threadId: draft.task ? draft.task.threadId : (draft.boundThreadId ?? null), // fork: work
       workspaceStrategy:
         draft.workspace === "root"
           ? { type: "root" }

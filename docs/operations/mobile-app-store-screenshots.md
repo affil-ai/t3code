@@ -6,7 +6,8 @@ The screenshot harness runs the real mobile application against three disposable
 environments. It creates an isolated base directory and server for each environment, real Git
 projects with deterministic content, seeded orchestration projections, and persisted terminal
 history. The app pairs with every server through its normal connection flow and React Navigation
-opens the production Home, Thread, ThreadTerminal, ThreadReview, and SettingsEnvironments routes.
+opens the production Home, Thread, ThreadTerminal, ThreadReview, SettingsEnvironments, WorkTask, and
+WorkAgentEditor routes.
 
 No screenshot-specific screen recreates application UI. `EXPO_PUBLIC_SHOWCASE=1` only enables the
 non-rendering pairing/readiness coordinator, disables terminal autofocus so captures do not contain
@@ -52,8 +53,8 @@ verify process ownership. Concurrent screenshot harnesses in different worktrees
 collide or attach to the wrong Metro process.
 
 Every configured device defaults to dark appearance and the `t3-code` palette, so plain
-`pnpm screenshots:mobile` produces 35 dark PNGs. Pass `--appearance light`, `--appearance dark`, or
-`--appearance both` to override the configured appearance; `both` produces 70 PNGs.
+`pnpm screenshots:mobile` produces 44 dark PNGs. Pass `--appearance light`, `--appearance dark`, or
+`--appearance both` to override the configured appearance; `both` produces 88 PNGs.
 
 Pass `--theme <id>` (repeatable) or `--theme all` to capture the app's other palettes: `t3-code`,
 `t3-chat`, `grove`, `ocean`, `ember`, and `iris`. The runner hands the palette to the app as a launch
@@ -73,8 +74,10 @@ The default matrix is:
 | `google-play/tablet-10/dark/t3-code/` | Pixel AVD at 800dp width     | 1440×2560         | Google Play 10-inch tablet, portrait 9:16 |
 
 Each target captures thread, terminal, review, thread list, and environments, and every target but
-the iPad also captures agent activity. Each palette folder's five or six screenshots satisfy the configured Apple limit of 1–10, Google
-phone requirement of 2–8, and Google tablet recommendation/slot minimum of 4 with a maximum of 8.
+the iPad also captures agent activity. The Apple targets also capture the three Work scenes (see
+[Work scenes](#work-scenes)). Each palette folder's five to nine screenshots satisfy the configured
+Apple limit of 1–10, Google phone requirement of 2–8, and Google tablet recommendation/slot minimum
+of 4 with a maximum of 8.
 Every palette gets its own leaf folder so one upload slot never mixes themes and each folder keeps a
 store-legal screenshot count.
 
@@ -91,9 +94,9 @@ The generated tree is deliberately aligned with the store upload fields:
 
     artifacts/app-store/screenshots/
     ├── apple/
-    │   ├── iphone-6.9/dark/t3-code/{thread,terminal,review,threads,environments,agent-activity}.png
-    │   ├── iphone-6.5/dark/t3-code/{thread,terminal,review,threads,environments,agent-activity}.png
-    │   └── ipad-13/dark/t3-code/{thread,terminal,review,threads,environments}.png
+    │   ├── iphone-6.9/dark/t3-code/{thread,terminal,review,threads,environments,agent-activity,work,work-task,work-agent-editor}.png
+    │   ├── iphone-6.5/dark/t3-code/{thread,terminal,review,threads,environments,agent-activity,work,work-task,work-agent-editor}.png
+    │   └── ipad-13/dark/t3-code/{thread,terminal,review,threads,environments,work,work-task,work-agent-editor}.png
     └── google-play/
         ├── phone/dark/t3-code/{thread,terminal,review,threads,environments,agent-activity}.png
         ├── tablet-7/dark/t3-code/{thread,terminal,review,threads,environments,agent-activity}.png
@@ -107,6 +110,38 @@ names, light/dark appearance, default palette, iOS orientation, scenes, output d
 delay, Android ABI, or viewport. The selectable palette ids come from `MOBILE_THEME_IDS` in
 [themePalettes.ts](../../packages/shared/src/themePalettes.ts), so the harness and the app's
 appearance settings can never drift apart.
+
+## Work scenes
+
+The Work scenes show the fork's agents and task boards:
+
+| Scene               | Route                                       | What it shows                                                                                      |
+| ------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `work`              | Home with the Work tab selected             | Firstmate's board: two tasks that need you, a starred task, progress, folded backlog, automations  |
+| `work-task`         | `WorkTask` for the cold-start hillclimb     | The task detail: next step, progress sparkline, links, an image and a link artifact, recent events |
+| `work-agent-editor` | `WorkAgentEditor` with no agent (new agent) | The new-agent sheet over the Work tab                                                              |
+
+Every environment is seeded with the same Work data, because the app uses whichever connected
+environment answers first as its Firstmate home. The seed adds Firstmate's coordinator chat, five
+more agents (so the agent picker shows its grid), thirteen tasks, and three automations; see
+[mobile-showcase-work.ts](../../scripts/mobile-showcase-work.ts). Its data keeps the agent core
+quiet during capture: no task wakes the coordinator, and every automation next runs hours away. The
+servers keep the agent core's folders inside each environment (`T3CODE_AGENTS_HOME` and
+`T3CODE_FIRSTMATE_HOME`), never in the host's `~/agents` or `~/firstmate`.
+
+The capture coordinator selects the workspace tab each scene needs, so a Work scene shows the Work
+sidebar beside the detail on wide layouts, and the thread scenes switch back to Threads. There is no
+scene with the agent picker open, because the picker has no route to open it.
+
+Capture them on a phone (single column) and on the iPad (split view):
+
+    pnpm screenshots:mobile --device iphone-6.9 --scene work --scene work-task --scene work-agent-editor
+    pnpm screenshots:mobile --device ipad-13 --scene work --scene work-task --scene work-agent-editor
+
+The iPad target captures in landscape, which is the app's wide layout. Any other wide layout uses the
+same adaptive navigation, so the iPad capture stands for it. The Android targets leave the Work scenes
+out: all three would put a Google Play folder past its 8-image limit, so add the ones you want to an
+Android device's `scenes` once its Work tab is verified.
 
 ## Capture in GitHub Actions
 

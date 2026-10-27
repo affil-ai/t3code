@@ -1,4 +1,4 @@
-import type { FirstmateTask } from "@t3tools/contracts";
+import { FirstmateTaskId, ThreadId, type FirstmateTask } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -10,8 +10,11 @@ import {
   isPullRequestUrl,
   isSlackUrl,
   mapFirstmateBoard,
+  OPEN_TASK_COLUMNS,
+  adjacentSidebarTask,
+  sidebarNavigationTasks,
   type FirstmateColumnId,
-} from "./firstmateBoard.logic";
+} from "./board.ts";
 
 const STATES = ["open", "waiting", "ready", "done", "dropped"] as const;
 const ACTORS = ["coordinator", "worker", "user", "external"] as const;
@@ -198,8 +201,8 @@ describe("mapFirstmateBoard", () => {
         index % 2 === 0 ? "done" : "dropped",
         "coordinator",
         // Update times run the other way, so the order must come from closedAt.
-        new Date(Date.UTC(2026, 9, 1, index)).toISOString(),
-        new Date(Date.UTC(2026, 9, 12, 23 - index)).toISOString(),
+        `2026-10-01T10:${String(index).padStart(2, "0")}:00.000Z`,
+        `2026-10-12T10:${String(59 - index).padStart(2, "0")}:00.000Z`,
       ),
     );
     const columns = mapFirstmateBoard(done);
@@ -263,5 +266,50 @@ describe("FIRSTMATE_SECTION_ORDER", () => {
     expect(FIRSTMATE_SECTION_ORDER.toSorted()).toEqual(
       FIRSTMATE_COLUMN_IDS.filter((column) => column !== "needs-you").toSorted(),
     );
+  });
+});
+
+const navTask = (id: string, nextActor: "user" | "worker" = "worker"): FirstmateTask => ({
+  id: FirstmateTaskId.make(id),
+  title: id,
+  status: "in_progress",
+  state: "open",
+  nextActor,
+  intent: id,
+  nextStep: null,
+  workerThreadId: ThreadId.make(`${id}-thread`),
+  note: "",
+  wakeAt: null,
+  createdAt: "2026-10-19T00:00:00Z",
+  updatedAt: "2026-10-19T00:00:00Z",
+  closedAt: null,
+  definitionOfDone: id,
+  links: [],
+  artifacts: [],
+  closeEvidence: null,
+});
+
+describe("task sidebar navigation", () => {
+  it("keeps attention tasks only in their lifecycle section and navigation order", () => {
+    const first = navTask("first", "user");
+    const second = navTask("second");
+    expect(OPEN_TASK_COLUMNS).not.toContain("needs-you");
+    expect(sidebarNavigationTasks([first, second])).toEqual([first, second]);
+    const review = { ...navTask("review", "user"), status: "in_review" as const };
+    expect(sidebarNavigationTasks([review, second])).toEqual([second, review]);
+  });
+
+  it("uses the Tasks panel's section order without Done", () => {
+    expect(OPEN_TASK_COLUMNS).toEqual(FIRSTMATE_SECTION_ORDER.filter((c) => c !== "done"));
+    const monitoring = { ...navTask("monitoring"), status: "monitoring" as const };
+    const ready = { ...navTask("ready"), status: "ready_for_deployment" as const };
+    const work = navTask("work");
+    expect(sidebarNavigationTasks([work, ready, monitoring])).toEqual([monitoring, ready, work]);
+  });
+
+  it("wraps at both ends", () => {
+    const tasks = sidebarNavigationTasks([navTask("first"), navTask("second")]);
+    expect(adjacentSidebarTask(tasks, "first", "previous")?.id).toBe("second");
+    expect(adjacentSidebarTask(tasks, "second", "next")?.id).toBe("first");
   });
 });

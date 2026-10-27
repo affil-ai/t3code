@@ -2,12 +2,14 @@ import type { FirstmateTask, FirstmateTaskEvent } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  approvalMessage,
   doneCriteria,
+  mergedPullRequestLabel,
   nextActorLabel,
   readableTaskEvents,
   taskNextStep,
   taskStatusLabel,
-} from "./firstmateTasksShared";
+} from "./tasks.ts";
 
 const task = (overrides: Partial<FirstmateTask>): FirstmateTask =>
   ({
@@ -76,5 +78,18 @@ describe("readableTaskEvents", () => {
   it("drops next-step events and puts the newest first", () => {
     const events = [event("1", "Created"), event("2", "Next step: Approve"), event("3", "Shipped")];
     expect(readableTaskEvents(events).map((e) => e.id)).toEqual(["3", "1"]);
+  });
+});
+
+describe("approvalMessage", () => {
+  it("approves the next step by name", () => {
+    expect(approvalMessage("Merge #12")).toBe("Approved: Merge #12");
+  });
+});
+
+describe("mergedPullRequestLabel", () => {
+  it("drops a trailing state and keeps labels without one", () => {
+    expect(mergedPullRequestLabel("PR #12 (open)")).toBe("PR #12");
+    expect(mergedPullRequestLabel("PR #12")).toBe("PR #12");
   });
 });

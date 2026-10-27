@@ -40,7 +40,7 @@ import { useSelectedAgentStore } from "~/selectedAgentStore";
 import { useAgentByThreadKey, useAgentsHome, useAgentTasks } from "~/state/agents";
 import { useFirstmateHome } from "~/state/firstmate";
 import { resolveThreadRouteRef } from "~/threadRoutes";
-import { countFirstmateNeedsYou } from "../firstmate/firstmateBoard.logic";
+import { countFirstmateNeedsYou } from "@t3tools/client-runtime/firstmate/board";
 import { FirstmateAppearanceDialog } from "../firstmate/FirstmateAppearanceDialog";
 import { useFirstmateModelSelection } from "../firstmate/firstmateModel";
 import {
@@ -71,7 +71,11 @@ import { AgentAvatar } from "./AgentAvatar";
 import { useAgentCommands } from "./agentCommands";
 import { AgentDialog } from "./AgentDialog";
 import { AgentRowSubtitle, AgentSidebarRow } from "./AgentSidebarRow";
-import { orderAgents, reorderAgentIds, resolveSelectedAgent } from "./selectedAgent.logic";
+import {
+  orderAgents,
+  reorderAgentIds,
+  resolveSelectedAgent,
+} from "@t3tools/client-runtime/firstmate/agents";
 import { AgentJumpShortcuts } from "./WorkSidebarShortcuts";
 
 type RowMenuAction = "edit" | "archive";

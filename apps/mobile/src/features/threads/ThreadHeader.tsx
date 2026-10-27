@@ -5,6 +5,7 @@ import type { AppBarAction } from "../../components/ui/AppBar.types";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import type { ThreadInspectorMode } from "./thread-inspector-content-stack";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
+import { useThreadWorkspaceTab } from "./use-agent-chats"; // fork: agents
 import { useWorkspaceBackNavigation } from "../workspace/useAndroidWorkspaceNavigation";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 
@@ -19,7 +20,13 @@ export function ThreadHeader(
     readonly onOpenFilesInspector: () => void;
   },
 ) {
-  const goBack = useWorkspaceBackNavigation("threads");
+  // fork: agents. Agent chats opened from Work go back to Work.
+  const goBack = useWorkspaceBackNavigation(
+    useThreadWorkspaceTab(
+      String(props.gitControls.environmentId),
+      String(props.gitControls.threadId),
+    ),
+  );
   const { layout, panes, toggleAuxiliaryPane, composerKeyboardActive } =
     useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack } = props.gitControls;
@@ -31,6 +38,14 @@ export function ThreadHeader(
         accessibilityLabel: "Return to chat",
         icon: "chevron.left",
         onPress: props.onReturnToThread,
+      });
+    }
+    // fork: agents. A worker chat links to its task instead of showing it in the timeline.
+    if (props.onOpenTask) {
+      actions.push({
+        accessibilityLabel: "Open task",
+        icon: "checkmark.circle",
+        onPress: props.onOpenTask,
       });
     }
     if (props.hasThreadCwd) {
@@ -71,6 +86,7 @@ export function ThreadHeader(
     props.onOpenGitInspector,
     toggleAuxiliaryPane,
     props.onReturnToThread,
+    props.onOpenTask, // fork: agents
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
     props.gitControls.canOpenTerminal,

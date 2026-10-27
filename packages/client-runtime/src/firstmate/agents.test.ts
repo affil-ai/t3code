@@ -6,7 +6,12 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { orderAgents, reorderAgentIds, resolveSelectedAgent } from "./selectedAgent.logic";
+import {
+  orderAgents,
+  reorderAgentIds,
+  resolveSelectedAgent,
+  sanitizeSelectedAgentData,
+} from "./agents.ts";
 
 function agent(id: string, name = id): AgentProfile {
   return {
@@ -94,5 +99,28 @@ describe("reorderAgentIds", () => {
     expect(reorderAgentIds(ids, "chief", "chief")).toBe(ids);
     expect(reorderAgentIds(ids, "gone", "chief")).toBe(ids);
     expect(reorderAgentIds(ids, "chief", null)).toBe(ids);
+  });
+});
+
+describe("sanitizeSelectedAgentData", () => {
+  it("falls back to the defaults for anything malformed", () => {
+    const empty = { selectedAgentId: null, preferCustomAgent: false, agentOrder: [] };
+    expect(sanitizeSelectedAgentData(undefined)).toEqual(empty);
+    expect(sanitizeSelectedAgentData("chief")).toEqual(empty);
+    expect(sanitizeSelectedAgentData({ selectedAgentId: "", agentOrder: "chief" })).toEqual(empty);
+  });
+
+  it("keeps a valid choice and dedupes the saved order", () => {
+    expect(
+      sanitizeSelectedAgentData({
+        selectedAgentId: "chief",
+        preferCustomAgent: true,
+        agentOrder: ["chief", 4, "", "scout", "chief"],
+      }),
+    ).toEqual({
+      selectedAgentId: "chief",
+      preferCustomAgent: true,
+      agentOrder: ["chief", "scout"],
+    });
   });
 });

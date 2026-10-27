@@ -1,16 +1,9 @@
 import { requireOptionalNativeModule } from "expo";
 
 import { MOBILE_THEME_IDS, type MobileThemeId } from "../../lib/mobileTheme";
+import { SHOWCASE_SCENES, type ShowcaseScene } from "./showcaseScenes";
 
-export const SHOWCASE_SCENES = [
-  "threads",
-  "thread",
-  "terminal",
-  "review",
-  "environments",
-  "agent-activity",
-] as const;
-export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
+export type { ShowcaseScene };
 
 export type ShowcaseOrientation = "portrait" | "landscape";
 

@@ -24,14 +24,20 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
-import { firstmateNeedsYou, mapFirstmateBoard } from "../firstmate/firstmateBoard.logic";
+import {
+  adjacentSidebarTask,
+  firstmateNeedsYou,
+  mapFirstmateBoard,
+  OPEN_TASK_COLUMNS,
+  sidebarNavigationTasks,
+} from "@t3tools/client-runtime/firstmate/board";
+import { COLUMN_LABELS } from "@t3tools/client-runtime/firstmate/tasks";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
-import { COLUMN_DOT, COLUMN_LABELS } from "../firstmate/firstmateTasksShared";
+import { COLUMN_DOT } from "../firstmate/firstmateTasksShared";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useSidebar } from "../ui/sidebar";
 import { useWorkSidebarShortcut } from "./WorkSidebarShortcuts";
 import { TaskPriorityStar } from "../firstmate/TaskPriority";
-import { adjacentSidebarTask, OPEN_TASK_COLUMNS, sidebarNavigationTasks } from "./taskNavigation";
 
 function TaskAttention({ task }: { readonly task: FirstmateTask }) {
   if (!firstmateNeedsYou(task)) return null;

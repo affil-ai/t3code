@@ -442,6 +442,38 @@
     "./model-traits": {
       "types": "./src/modelTraits.ts",
       "default": "./src/modelTraits.ts"
+    },
+    "./firstmate/board": {
+      "types": "./src/firstmate/board.ts",
+      "default": "./src/firstmate/board.ts"
+    },
+    "./firstmate/tasks": {
+      "types": "./src/firstmate/tasks.ts",
+      "default": "./src/firstmate/tasks.ts"
+    },
+    "./firstmate/progress": {
+      "types": "./src/firstmate/progress.ts",
+      "default": "./src/firstmate/progress.ts"
+    },
+    "./firstmate/agents": {
+      "types": "./src/firstmate/agents.ts",
+      "default": "./src/firstmate/agents.ts"
+    },
+    "./firstmate/chat-lists": {
+      "types": "./src/firstmate/chatLists.ts",
+      "default": "./src/firstmate/chatLists.ts"
+    },
+    "./firstmate/icons": {
+      "types": "./src/firstmate/icons.ts",
+      "default": "./src/firstmate/icons.ts"
+    },
+    "./state/agents": {
+      "types": "./src/state/agents.ts",
+      "default": "./src/state/agents.ts"
+    },
+    "./state/firstmate": {
+      "types": "./src/state/firstmate.ts",
+      "default": "./src/state/firstmate.ts"
     }
   },
   "scripts": {

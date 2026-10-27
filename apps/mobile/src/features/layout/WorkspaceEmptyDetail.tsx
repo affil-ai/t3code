@@ -13,6 +13,7 @@ export function WorkspaceEmptyDetail(props: {
   readonly onAddConnection?: () => void;
 }) {
   const pullRequests = props.tab === "pullRequests";
+  const work = props.tab === "work"; // fork: work
   return (
     <View
       className={
@@ -47,16 +48,18 @@ export function WorkspaceEmptyDetail(props: {
             type="hierarchical"
           />
           <Text className="text-center text-xl font-t3-bold">
-            {pullRequests ? "Select a pull request" : "Select a thread"}
+            {work ? "Select a task" : pullRequests ? "Select a pull request" : "Select a thread"}
           </Text>
           <Text className="text-center text-base text-foreground-muted">
-            {pullRequests
-              ? "Choose a pull request from the sidebar to review it."
-              : Platform.OS === "android"
-                ? "Choose a thread from the sidebar or start a new thread."
-                : "Choose a thread from the sidebar or start a new task."}
+            {work // fork: work
+              ? "Choose a task or chat from the sidebar."
+              : pullRequests
+                ? "Choose a pull request from the sidebar to review it."
+                : Platform.OS === "android"
+                  ? "Choose a thread from the sidebar or start a new thread."
+                  : "Choose a thread from the sidebar or start a new task."}
           </Text>
-          {props.onStartNewTask && !pullRequests ? (
+          {props.onStartNewTask && !pullRequests && !work ? (
             Platform.OS === "android" ? (
               <NewThreadButton extended className="mt-2" onPress={props.onStartNewTask} />
             ) : (

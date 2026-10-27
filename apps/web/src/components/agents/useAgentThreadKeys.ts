@@ -1,10 +1,7 @@
 import {
-  scopedProjectKey,
-  scopedThreadKey,
-  scopeProjectRef,
-  scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
-import { useMemo } from "react";
+  agentCoordinatorThreadKeys,
+  agentHomeProjectKeys,
+} from "@t3tools/client-runtime/firstmate/chat-lists";
 
 import { readAgentsHome, useAgentsHome } from "~/state/agents";
 
@@ -15,27 +12,10 @@ import { readAgentsHome, useAgentsHome } from "~/state/agents";
  */
 export function useAgentCoordinatorThreadKeys(): ReadonlySet<string> {
   const home = useAgentsHome();
-  return useMemo(() => {
-    if (home === null) return new Set<string>();
-    return new Set(
-      home.agents.flatMap((agent) =>
-        agent.coordinatorThreadId === null
-          ? []
-          : [scopedThreadKey(scopeThreadRef(home.environmentId, agent.coordinatorThreadId))],
-      ),
-    );
-  }, [home]);
+  return agentCoordinatorThreadKeys(home);
 }
 
 /** Every agent's home project key, for the Work sidebar's new chat to skip. */
 export function readAgentHomeProjectKeys(): ReadonlySet<string> {
-  const home = readAgentsHome();
-  if (home === null) return new Set<string>();
-  return new Set(
-    home.agents.flatMap((agent) =>
-      agent.homeProjectId === null
-        ? []
-        : [scopedProjectKey(scopeProjectRef(home.environmentId, agent.homeProjectId))],
-    ),
-  );
+  return agentHomeProjectKeys(readAgentsHome());
 }

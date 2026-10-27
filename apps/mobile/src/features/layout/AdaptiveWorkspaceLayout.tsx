@@ -55,7 +55,6 @@ import {
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import type { ThreadListFilters } from "../../persistence/mobile-preferences";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { useProjects } from "../../state/entities";
 import { environmentThreadShells } from "../../state/threads";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import {
@@ -75,6 +74,7 @@ import { AndroidWorkspaceSidebar } from "../workspace/AndroidWorkspaceSidebar";
 import { useAndroidWorkspaceSelection } from "../workspace/useAndroidWorkspaceSelection";
 import { HomeListOptionsProvider } from "../home/home-list-options";
 import { newTaskDestination } from "../threads/new-task-project-selection";
+import { useUserProjects } from "../threads/use-agent-chats"; // fork: agents
 import { usePendingTaskListActions } from "../home/usePendingTaskListActions";
 import { ThreadNavigationSidebar } from "../threads/ThreadNavigationSidebar";
 import { useOpenThreadPullRequests } from "../threads/use-open-thread-pull-requests";
@@ -559,7 +559,8 @@ function AdaptiveWorkspaceLayoutContent(
     navigation.navigate("Thread", params);
   }
 
-  const projects = useProjects();
+  // fork: agents. New chats skip agents' home projects, which run only their coordinator.
+  const projects = useUserProjects();
   const handleStartNewTask = () => {
     const thread = appAtomRegistry
       .get(environmentThreadShells.navigationThreadShellsAtom)

@@ -21,6 +21,7 @@ import {
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAndroidWorkspaceRoot } from "./AndroidWorkspaceTabsProvider";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
+import { useWorkTabAvailable } from "../work/WorkTabState"; // fork: work
 
 // Matches RAIL_WIDTH in the native rail.
 export const ANDROID_WORKSPACE_RAIL_WIDTH = 72;
@@ -28,6 +29,7 @@ export const ANDROID_WORKSPACE_RAIL_WIDTH = 72;
 interface NativeNavigationProps extends ViewProps {
   readonly rail: boolean;
   readonly selectedTab: AndroidWorkspaceNavigationTab;
+  readonly workAvailable: boolean; // fork: work
   readonly dark: boolean;
   readonly textScale: number;
   readonly newEnabled: boolean;
@@ -71,6 +73,7 @@ export function AndroidWorkspaceNavigation(props: {
   const { themeAppearance, themeVariables: colors } = useAppearancePreferences();
   const { scale } = useAndroidControlSizing();
   const rail = Boolean(props.rail);
+  const workAvailable = useWorkTabAvailable(); // fork: work
   const { containerColor, indicatorColor, selectedColor, unselectedColor } =
     androidWorkspaceNavigationColors(colors, rail);
   const selectedTab: AndroidWorkspaceNavigationTab = root?.settingsOpen
@@ -89,6 +92,7 @@ export function AndroidWorkspaceNavigation(props: {
       <NativeNavigation
         rail={rail}
         selectedTab={selectedTab}
+        workAvailable={workAvailable}
         dark={themeAppearance === "dark"}
         textScale={scale}
         newEnabled={connectionState.hasConnections}

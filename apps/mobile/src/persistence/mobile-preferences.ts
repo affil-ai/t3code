@@ -14,6 +14,10 @@ import {
   type PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
+import {
+  sanitizeSelectedAgentData,
+  type SelectedAgentData,
+} from "@t3tools/client-runtime/firstmate/agents"; // fork: work
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import type { FollowUpBehavior } from "../lib/followUpBehavior";
 import { isMicrophoneKind, type MicrophoneEntry } from "../lib/microphonePriority";
@@ -85,6 +89,7 @@ export interface Preferences {
   readonly threadListWorkingShelfExpanded?: boolean;
   readonly threadListFilters?: ThreadListFilters;
   readonly pullRequestListFilters?: PullRequestListPreferences;
+  readonly selectedAgent?: SelectedAgentData; // fork: work
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedError<MobilePreferencesLoadError>()(
@@ -155,6 +160,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
+    selectedAgent?: SelectedAgentData; // fork: work
   } = {};
 
   if (typeof parsed.pullRequestHideTestFiles === "boolean") {
@@ -281,6 +287,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isPullRequestListPreferences(parsed.pullRequestListFilters)) {
     preferences.pullRequestListFilters = parsed.pullRequestListFilters;
+  }
+  if (parsed.selectedAgent !== undefined) {
+    preferences.selectedAgent = sanitizeSelectedAgentData(parsed.selectedAgent); // fork: work
   }
   return preferences;
 }

@@ -22,6 +22,7 @@ import { WORKSPACE_TOOLBAR, type WorkspaceTab } from "./workspace-tabs-state";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 
 const TABS: ReadonlyArray<{ id: WorkspaceTab; label: string; icon: AppSymbolName }> = [
+  { id: "work", label: "Work", icon: "person.2" }, // fork: work
   { id: "threads", label: "Threads", icon: "text.bubble" },
   { id: "pullRequests", label: "PRs", icon: PullRequestGlyph.pullRequest },
 ];

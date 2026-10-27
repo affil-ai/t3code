@@ -29,6 +29,7 @@ import {
   SHOWCASE_THREADS,
   seedShowcaseEnvironment,
 } from "./mobile-showcase-environment.ts";
+import { showcaseAgentsHomeEnv } from "./mobile-showcase-work.ts";
 
 const REPO_ROOT = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const MOBILE_ROOT = NodePath.join(REPO_ROOT, "apps/mobile");
@@ -631,6 +632,7 @@ function startShowcaseServer(
     {
       env: {
         ...NodeProcess.env,
+        ...showcaseAgentsHomeEnv(baseDir), // fork: agents
         PATH: `${labelProbeDirectory}:${NodeProcess.env.PATH ?? ""}`,
         SHELL: shellPath,
       },
@@ -657,7 +659,7 @@ async function issuePairingCredential(baseDir: string): Promise<string> {
   const output = await commandOutput(
     "node",
     ["apps/server/src/bin.ts", "auth", "pairing", "create", "--base-dir", baseDir, "--json"],
-    { env: { ...NodeProcess.env, NO_COLOR: "1" } },
+    { env: { ...NodeProcess.env, ...showcaseAgentsHomeEnv(baseDir), NO_COLOR: "1" } },
   );
   return parsePairingCredentialOutput(output);
 }

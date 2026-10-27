@@ -14,13 +14,13 @@ import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { AndroidWorkspaceNavigation } from "./AndroidWorkspaceNavigation";
 import { WorkspaceTabsContext, useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { WorkspaceTabPanes } from "./WorkspaceTabPanes";
-import type { WorkspaceTab } from "./workspace-tabs-state";
-
-const TABS: readonly WorkspaceTab[] = ["threads", "pullRequests"];
+import { WorkScreen } from "../work/WorkScreen"; // fork: work
+import { useVisibleWorkspaceTabs } from "../work/WorkTabState"; // fork: work
 
 export function WorkspaceRootScreen() {
-  const { layout, startNewTask } = useAdaptiveWorkspaceLayout();
+  const { layout, startNewTask, selectThreadRoute } = useAdaptiveWorkspaceLayout();
   const workspace = useWorkspaceTabs()!;
+  const tabs = useVisibleWorkspaceTabs(); // fork: work
   const insets = useSafeAreaInsets();
   const { fabClearance } = useAndroidControlSizing();
   const context = useMemo(
@@ -35,7 +35,7 @@ export function WorkspaceRootScreen() {
   if (layout.usesSplitView) {
     return (
       <WorkspaceTabPanes
-        tabs={TABS}
+        tabs={tabs}
         selected={tab}
         renderTab={(tab) =>
           tab === "threads" ? (
@@ -43,13 +43,21 @@ export function WorkspaceRootScreen() {
           ) : (
             <>
               <NativeStackScreenOptions options={{ headerShown: false }} />
-              <AndroidScreenHeader title="Pull requests" />
+              <AndroidScreenHeader title={tab === "work" ? "Work" : "Pull requests"} />
               <View className="flex-1 items-center justify-center px-10">
-                <EmptyState
-                  title="Select a pull request"
-                  detail="Choose a pull request from the sidebar to review it."
-                  variant="plain"
-                />
+                {tab === "work" ? ( // fork: work
+                  <EmptyState
+                    title="Select a task"
+                    detail="Choose a task or chat from the sidebar."
+                    variant="plain"
+                  />
+                ) : (
+                  <EmptyState
+                    title="Select a pull request"
+                    detail="Choose a pull request from the sidebar to review it."
+                    variant="plain"
+                  />
+                )}
               </View>
             </>
           )
@@ -64,11 +72,18 @@ export function WorkspaceRootScreen() {
         <NativeStackScreenOptions options={{ headerShown: false }} />
         <SafeAreaInsetsContext value={{ ...insets, bottom: 0 }}>
           <WorkspaceTabPanes
-            tabs={TABS}
+            tabs={tabs}
             selected={tab}
             renderTab={(tab) =>
               tab === "threads" ? (
                 <HomeRouteScreen />
+              ) : tab === "work" ? ( // fork: work
+                <>
+                  <AndroidScreenHeader title="Work" />
+                  <ScreenContent>
+                    <WorkScreen onOpenChat={selectThreadRoute} />
+                  </ScreenContent>
+                </>
               ) : (
                 <PullRequestFilterMenuProvider>
                   <PullRequestToolbar />

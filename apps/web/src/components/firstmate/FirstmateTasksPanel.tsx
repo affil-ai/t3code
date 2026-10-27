@@ -34,21 +34,19 @@ import {
   firstmateColumnForTask,
   firstmateTaskActivityAt,
   mapFirstmateBoard,
-} from "./firstmateBoard.logic";
+} from "@t3tools/client-runtime/firstmate/board";
 import { TaskDetail } from "./FirstmateTaskDetail";
 import { TaskPriorityStar } from "./TaskPriority";
 import { TaskProgressLine } from "./FirstmateTaskProgress";
 import { CARD_LINK_CLASS, ExternalTaskLink, WorkerThreadLink } from "./FirstmateTaskLinks";
+import { COLUMN_DOT, CoordinatorThreadContext, relativeAge } from "./firstmateTasksShared";
 import {
-  COLUMN_DOT,
   COLUMN_EMPTY,
   COLUMN_LABELS,
-  CoordinatorThreadContext,
-  relativeAge,
   nextActorLabel,
   taskNextStep,
   taskStatusLabel,
-} from "./firstmateTasksShared";
+} from "@t3tools/client-runtime/firstmate/tasks";
 
 function TaskCard({
   environmentId,

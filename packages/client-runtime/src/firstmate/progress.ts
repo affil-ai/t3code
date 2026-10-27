@@ -2,7 +2,7 @@
  * How a task's progress reads on the board: one line of text, plus the values
  * for a metric's sparkline or a count's bar.
  *
- * @module firstmateProgress
+ * @module firstmate/progress
  */
 import { firstmateTaskStatus, type FirstmateTask } from "@t3tools/contracts";
 
