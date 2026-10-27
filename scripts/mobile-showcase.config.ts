@@ -64,11 +64,7 @@ export interface ShowcaseConfig {
 
 // fork: work. iOS sets only: all three would push a Google Play set past its
 // 8-image limit, so add Android's chosen Work scenes once its Work tab is verified.
-const WORK_SCENES = [
-  "work",
-  "work-task",
-  "work-agent-editor",
-] as const satisfies ReadonlyArray<ShowcaseScene>;
+const WORK_SCENES = ["work", "work-task"] as const satisfies ReadonlyArray<ShowcaseScene>;
 
 const ANDROID_ABIS = ["arm64-v8a", "x86_64", "x86", "armeabi-v7a"] as const;
 

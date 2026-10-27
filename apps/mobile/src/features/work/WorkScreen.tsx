@@ -1,10 +1,10 @@
 /**
- * The Work tab, mobile's Work sidebar: the selected agent with its switcher,
- * its chat, its tasks in the board's sections (Backlog and Done folded), and
- * its automations.
- * Firstmate also links to Threads, where the pinned, project, and other
- * chats live on mobile. A phone shows it as one column; a split view keeps
- * it in the sidebar with tasks and chats opening in the detail column.
+ * The Work tab, mobile's Work sidebar: the agent icons, the selected agent's
+ * tasks in the board's sections (Backlog and Done folded), and its
+ * automations. As on web, an agent icon opens that agent's chat and a task
+ * opens its worker's chat; a task's details are a button in that chat's
+ * header. A phone shows it as one column; a split view keeps it in the
+ * sidebar with chats opening in the detail column.
  */
 import {
   isAtomCommandInterrupted,
@@ -25,8 +25,6 @@ import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
-import { ListRow } from "../../components/ui/ListRow";
-import { ListSection } from "../../components/ui/ListSection";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAgentCommands, useAgentTasks } from "../../state/agents";
 import { useFirstmateCommands, useFirstmateHome } from "../../state/firstmate";
@@ -129,7 +127,6 @@ function AgentWork(props: {
   const { agent, isFirstmate } = props;
   const firstmateHome = useFirstmateHome();
   const navigation = useWorkNavigation();
-  const workspace = useWorkspaceTabs();
   // Firstmate's board, name, and chat come from its own stream, which may live
   // elsewhere. Until that stream answers (or if it fails), Firstmate's board is
   // read like any agent's, so a broken stream shows an error, not a spinner.
@@ -143,12 +140,23 @@ function AgentWork(props: {
   const board: FirstmateSnapshot | null = firstmateStream?.snapshot ?? agentBoard.data;
   const openChat = (threadId: ThreadId) =>
     props.onOpenChat({ environmentId: String(environmentId), threadId: String(threadId) });
-  const openTask = (task: FirstmateTask) =>
+  // A task with a worker opens the worker's chat; one without opens its details.
+  const openTask = (task: FirstmateTask) => {
+    if (task.workerThreadId) {
+      openChat(task.workerThreadId);
+      return;
+    }
     navigation.openTask({
       environmentId: String(environmentId),
       taskId: String(task.id),
       ...(isFirstmate ? {} : { agentId: String(agent.id) }),
     });
+  };
+  const selectAgent = (next: AgentProfile) => {
+    props.selectAgent(next.id);
+    const threadId = agentPresentation(next, firstmateHome?.snapshot ?? null).coordinatorThreadId;
+    if (threadId !== null) openChat(threadId);
+  };
 
   return (
     <View className="gap-6">
@@ -156,9 +164,7 @@ function AgentWork(props: {
         environmentId={props.environmentId}
         agents={props.agents}
         selectedAgent={agent}
-        onSelect={(next) => props.selectAgent(next.id)}
-        onNewAgent={() => navigation.openAgentEditor(props.environmentId)}
-        onEdit={(target) => navigation.openAgentEditor(props.environmentId, target.id)}
+        onSelect={selectAgent}
         onReorder={props.setAgentOrder}
       />
       {presentation.coordinatorThreadId === null ? (
@@ -172,27 +178,6 @@ function AgentWork(props: {
         />
       ) : (
         <>
-          <ListSection>
-            <ListRow
-              icon="bubble.left"
-              label="Open chat"
-              description={`Talk to ${presentation.name}`}
-              onPress={() => {
-                if (presentation.coordinatorThreadId !== null)
-                  openChat(presentation.coordinatorThreadId);
-              }}
-            />
-            {isFirstmate && workspace ? (
-              <View className="border-t border-border">
-                <ListRow
-                  icon="text.bubble"
-                  label="Threads"
-                  description="Pinned, projects, and chats"
-                  onPress={() => workspace.dispatch({ type: "select", tab: "threads" })}
-                />
-              </View>
-            ) : null}
-          </ListSection>
           {board === null ? (
             agentBoard.error !== null ? (
               <Text textRole="footnote" className="px-2 text-danger-foreground">

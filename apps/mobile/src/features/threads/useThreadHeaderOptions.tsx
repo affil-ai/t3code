@@ -72,14 +72,14 @@ export function useThreadHeaderOptions(props: {
     ],
     [sidebarHeaderItem, props.onReturnToThread, props.draft, startNewTask, usesDuoHeader],
   );
-  // fork: agents. A worker chat links to its task instead of showing it in the timeline.
+  // fork: agents. A worker chat opens its task's details from the header, never the timeline.
   const taskHeaderItems = useMemo<NativeHeaderItems>(
     () =>
       props.onOpenTask
         ? [
             withNativeGlassHeaderItem({
-              accessibilityLabel: "Open task",
-              icon: { name: "checkmark.circle", type: "sfSymbol" as const },
+              accessibilityLabel: "Task details",
+              icon: { name: "info.circle", type: "sfSymbol" as const },
               identifier: "thread-right-open-task",
               onPress: props.onOpenTask,
               type: "button" as const,

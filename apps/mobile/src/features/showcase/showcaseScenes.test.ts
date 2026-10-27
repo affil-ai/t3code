@@ -36,13 +36,6 @@ describe("resolveShowcaseScene", () => {
         selectedTab: "work",
       }),
     ).toBe("work-task");
-    expect(
-      resolveShowcaseScene({
-        pathname: "/work/env-1/agents/edit",
-        requestedScene: "work-agent-editor",
-        selectedTab: "work",
-      }),
-    ).toBe("work-agent-editor");
   });
 
   it("keeps the existing thread routes", () => {

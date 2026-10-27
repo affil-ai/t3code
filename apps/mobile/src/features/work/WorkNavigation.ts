@@ -26,12 +26,6 @@ export function useWorkNavigation() {
       if (Platform.OS === "android") selectAndroidWorkspace({ name: "WorkTask", params });
       else navigation.navigate("WorkTask", params);
     },
-    /** With no agent, the sheet creates one. */
-    openAgentEditor: (environmentId: EnvironmentId, agentId?: string) =>
-      navigation.navigate("WorkAgentEditor", {
-        environmentId: String(environmentId),
-        ...(agentId === undefined ? {} : { agentId }),
-      }),
     editAutomation: (environmentId: EnvironmentId, task: ScheduledTask) => {
       startScheduledTaskEditor({
         environmentId,

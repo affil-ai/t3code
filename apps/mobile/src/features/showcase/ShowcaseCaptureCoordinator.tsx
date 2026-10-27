@@ -280,20 +280,16 @@ function EnabledShowcaseCaptureCoordinator(props: { readonly pathname: string })
       return;
     }
     const routes: ShowcaseResetRoute[] = [{ name: "Home" }];
-    if (requestedScene === "work-task" || requestedScene === "work-agent-editor") {
+    if (requestedScene === "work-task") {
       if (workEnvironmentId === null) return;
-      routes.push(
-        requestedScene === "work-task"
-          ? {
-              name: "WorkTask",
-              params: {
-                environmentId: String(workEnvironmentId),
-                taskId: SHOWCASE_WORK_TASK_ID,
-                agentId: FIRSTMATE_AGENT_ID,
-              },
-            }
-          : { name: "WorkAgentEditor", params: { environmentId: String(workEnvironmentId) } },
-      );
+      routes.push({
+        name: "WorkTask",
+        params: {
+          environmentId: String(workEnvironmentId),
+          taskId: SHOWCASE_WORK_TASK_ID,
+          agentId: FIRSTMATE_AGENT_ID,
+        },
+      });
     } else if (requestedScene === "environments") {
       routes.push({
         name: "SettingsSheet",

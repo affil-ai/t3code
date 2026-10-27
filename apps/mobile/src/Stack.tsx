@@ -64,7 +64,6 @@ import { ThreadPullRequestsSheet } from "./features/threads/ThreadPullRequestsSh
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { ThreadBackgroundWorkSheet } from "./features/threads/ThreadBackgroundWorkSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
-import { WorkAgentEditorSheet } from "./features/work/WorkAgentEditorSheet"; // fork: work
 import { WorkTaskScreen } from "./features/work/WorkTaskScreen"; // fork: work
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
@@ -485,7 +484,6 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "ThreadDevicePreview",
   "ThreadBrowserPreview",
   "ThreadSettingsSheet",
-  "WorkAgentEditor", // fork: work
 ]);
 
 function workspaceLocationFromState(state: NavigationState) {
@@ -712,17 +710,6 @@ const RootStackConfig = createWorkspaceStackNavigator({
       screen: WorkTaskScreen,
       linking: "work/:environmentId/tasks/:taskId",
       options: DETAIL_HEADER_OPTIONS,
-    }),
-    // fork: work
-    WorkAgentEditor: createNativeStackScreen({
-      screen: WorkAgentEditorSheet,
-      linking: "work/:environmentId/agents/edit/:agentId?",
-      options: {
-        ...(Platform.OS === "ios" ? SHEET_GLASS_HEADER_OPTIONS : undefined),
-        ...HORIZONTAL_FORM_SHEET_OPTIONS,
-        sheetAllowedDetents: formSheetDetents(0.9),
-        sheetGrabberVisible: true,
-      },
     }),
     Thread: createNativeStackScreen({
       screen: ThreadRouteScreen,

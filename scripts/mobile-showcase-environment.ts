@@ -30,7 +30,6 @@ export const SHOWCASE_SCENES = [
   // fork: work
   "work",
   "work-task",
-  "work-agent-editor",
 ] as const;
 export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
 

@@ -40,11 +40,11 @@ export function ThreadHeader(
         onPress: props.onReturnToThread,
       });
     }
-    // fork: agents. A worker chat links to its task instead of showing it in the timeline.
+    // fork: agents. A worker chat opens its task's details from the header, never the timeline.
     if (props.onOpenTask) {
       actions.push({
-        accessibilityLabel: "Open task",
-        icon: "checkmark.circle",
+        accessibilityLabel: "Task details",
+        icon: "info.circle",
         onPress: props.onOpenTask,
       });
     }

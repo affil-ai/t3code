@@ -11,7 +11,6 @@ export const SHOWCASE_SCENES = [
   // fork: work
   "work",
   "work-task",
-  "work-agent-editor",
 ] as const;
 export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
 
@@ -22,7 +21,7 @@ export const SHOWCASE_WORK_TASK_ID = "fm-cold-start";
 export const SHOWCASE_WORK_AGENT_COUNT = 6;
 
 export function isWorkShowcaseScene(scene: ShowcaseScene): boolean {
-  return scene === "work" || scene === "work-task" || scene === "work-agent-editor";
+  return scene === "work" || scene === "work-task";
 }
 
 /** The workspace tab a scene shows; on wide layouts it is the sidebar beside the detail. */
@@ -34,7 +33,6 @@ function sceneFromPathname(pathname: string): ShowcaseScene | null {
   const routePath = pathname.split(/[?#]/u, 1)[0] ?? pathname;
   if (routePath.startsWith("/work/")) {
     if (routePath.includes("/tasks/")) return "work-task";
-    if (routePath.includes("/agents/edit")) return "work-agent-editor";
     return null;
   }
   if (routePath === "/settings" || routePath.endsWith("/settings/environments")) {

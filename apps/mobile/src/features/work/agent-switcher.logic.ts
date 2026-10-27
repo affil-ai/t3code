@@ -33,9 +33,6 @@ export function agentRoleLine(agent: AgentProfile, coordinatorThreadId: ThreadId
   return role || (isFirstmateAgent(agent) ? "Your coordinator" : "Agent");
 }
 
-/** The picker draws a grid of avatars once there are more agents than fit as rows. */
-export const AGENT_PICKER_ROW_LIMIT = 4;
-
 /**
  * The agent order after moving one agent a place up or down, the phone's
  * stand-in for web's drag to reorder. At either end the order is unchanged.
