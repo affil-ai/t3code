@@ -214,6 +214,26 @@ export function draftBoundThreadId(
   return draft.task ? draft.task.threadId : (draft.boundThreadId ?? null);
 }
 
+/**
+ * The model a save sends. A bound run uses its chat's current model, so the
+ * value only matters to servers that predate optional models and still require
+ * one: an edited task sends its stored model back, a new one its seeded default.
+ */
+export function draftModelSelectionInput(
+  draft: Pick<ScheduledTaskDraft, "boundThreadId" | "modelSelection"> & {
+    readonly task: {
+      readonly threadId: ThreadId | null;
+      readonly modelSelection?: ModelSelection | null | undefined;
+    } | null;
+  },
+): { readonly modelSelection?: ModelSelection } {
+  if (draftBoundThreadId(draft) === null) {
+    return draft.modelSelection ? { modelSelection: draft.modelSelection } : {};
+  }
+  const modelSelection = draft.task ? draft.task.modelSelection : draft.modelSelection;
+  return modelSelection ? { modelSelection } : {};
+}
+
 function draftSignature(draft: ScheduledTaskDraft): string {
   return JSON.stringify([
     draft.title,

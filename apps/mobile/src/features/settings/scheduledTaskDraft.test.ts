@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import {
   draftBoundThreadId,
+  draftModelSelectionInput,
   scheduledTaskDefaultModel,
   DEFAULT_SCHEDULE,
   scheduleDraftForTask,
@@ -209,5 +210,35 @@ describe("draftBoundThreadId", () => {
   it("binds a new task to the chat it was opened for", () => {
     expect(draftBoundThreadId({ task: null, boundThreadId: chat })).toBe(chat);
     expect(draftBoundThreadId({ task: null })).toBeNull();
+  });
+});
+
+describe("draftModelSelectionInput", () => {
+  const seeded = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-seeded" };
+  const stored = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-stored" };
+  const chat = ThreadId.make("agent-chat");
+  it("sends a new bound task's seeded model for servers that still require one", () => {
+    expect(
+      draftModelSelectionInput({ task: null, boundThreadId: chat, modelSelection: seeded }),
+    ).toEqual({ modelSelection: seeded });
+  });
+  it("sends an edited bound task's stored model back, not the draft's", () => {
+    expect(
+      draftModelSelectionInput({
+        task: { threadId: chat, modelSelection: stored },
+        modelSelection: seeded,
+      }),
+    ).toEqual({ modelSelection: stored });
+    expect(
+      draftModelSelectionInput({
+        task: { threadId: chat, modelSelection: null },
+        modelSelection: seeded,
+      }),
+    ).toEqual({});
+  });
+  it("sends the chosen model for an unbound task", () => {
+    expect(draftModelSelectionInput({ task: null, modelSelection: seeded })).toEqual({
+      modelSelection: seeded,
+    });
   });
 });

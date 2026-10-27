@@ -78,6 +78,7 @@ import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 import {
   draftBoundThreadId,
+  draftModelSelectionInput,
   editDraft,
   scheduledTaskDefaultModel,
   scheduleFromDraft,
@@ -788,13 +789,7 @@ function TaskForm({
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
       projectId: draft.projectId,
-      // A bound run uses its chat's current model. The stored one is sent back
-      // because servers that predate optional models still require it.
-      ...(boundThreadId === null
-        ? { modelSelection: draft.modelSelection }
-        : draft.task?.modelSelection
-          ? { modelSelection: draft.task.modelSelection }
-          : {}),
+      ...draftModelSelectionInput(draft), // fork: scheduled-task-inherit-model, work
       schedule,
       enabled: draft.enabled,
       threadId: boundThreadId,
