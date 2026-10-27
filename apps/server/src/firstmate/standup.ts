@@ -19,6 +19,7 @@ import {
   standupProgress,
 } from "@t3tools/contracts";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -28,6 +29,8 @@ import { agentFromRow, type AgentRow, publicTask, type TaskRow, taskFromRow } fr
 
 const FINISHED_STATUSES = ["done", "monitoring", "canceled"] as const;
 const SUMMARY_TASK_LIMIT = 5;
+/** Long enough to cover the phone's whole today in any time zone. */
+const SUMMARY_DONE_WINDOW_HOURS = 48;
 
 const isFirstmateError = Schema.is(FirstmateError);
 const fail = (message: string, cause?: unknown) =>
@@ -168,6 +171,16 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
         );
       }),
     );
+    const generatedAt = yield* deps.now();
+    const doneSince = DateTime.formatIso(
+      DateTime.subtract(DateTime.makeUnsafe(generatedAt), { hours: SUMMARY_DONE_WINDOW_HOURS }),
+    );
+    const done = yield* sql<{ readonly standup_finished_at: string }>`
+      SELECT standup_finished_at FROM firstmate_task
+      WHERE standup_started_at IS NOT NULL AND status IN ('done', 'monitoring')
+        AND standup_finished_at >= ${doneSince}
+      ORDER BY standup_finished_at DESC
+    `.pipe(Effect.mapError(dbError("Could not read the standup.")));
     return {
       open: entries.length,
       needsYou: progress.filter((value) => value === "needs_you").length,
@@ -178,7 +191,8 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
         progress: progress[index] ?? "not_started",
         agentName: agent.name,
       })),
-      generatedAt: yield* deps.now(),
+      doneAt: done.map((row) => row.standup_finished_at),
+      generatedAt,
     } satisfies StandupSummary;
   });
 

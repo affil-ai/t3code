@@ -1,7 +1,7 @@
 /**
- * The Work tab, mobile's Work sidebar: the agent icons, the selected agent's
- * tasks in the board's sections (Backlog and Done folded), and its
- * automations. As on web, an agent icon opens that agent's chat and a task
+ * The Work tab, mobile's Work sidebar: the agent icons, the Standup section,
+ * the selected agent's tasks in the board's sections (Backlog and Done
+ * folded), and its automations. As on web, an agent icon opens that agent's chat and a task
  * opens its worker's chat; a task's details are a button in that chat's
  * header. A phone shows it as one column; a split view keeps it in the
  * sidebar with chats opening in the detail column.
@@ -33,6 +33,7 @@ import { agentPresentation } from "./agent-switcher.logic";
 import { AgentSwitcher } from "./agent-switcher";
 import { TaskList } from "./task-list";
 import { useDefaultAgentModelSelection } from "./useDefaultAgentModelSelection";
+import { StandupSection } from "./StandupSection";
 import { useSelectedAgent } from "./useSelectedAgent";
 import { WorkAutomations } from "./WorkAutomations";
 import { useWorkNavigation } from "./WorkNavigation";
@@ -166,6 +167,17 @@ function AgentWork(props: {
         selectedAgent={agent}
         onSelect={selectAgent}
         onReorder={props.setAgentOrder}
+      />
+      <StandupSection
+        environmentId={props.environmentId}
+        agents={props.agents}
+        selectedAgentId={agent.id}
+        onOpenChat={(threadId) =>
+          props.onOpenChat({
+            environmentId: String(props.environmentId),
+            threadId: String(threadId),
+          })
+        }
       />
       {presentation.coordinatorThreadId === null ? (
         <StartAgentCard

@@ -72,6 +72,27 @@ export const ForwardCompatibleNullable = <Value extends Schema.Top>(value: Value
 };
 
 /**
+ * A literal a newer peer may extend. An unknown string decodes as `fallback`
+ * instead of failing the value around it; known values encode unchanged.
+ * Keep inputs on the strict literal, so a caller's mistake still fails.
+ */
+export const ForwardCompatibleLiteral = <const Literals extends ReadonlyArray<string>>(
+  schema: Schema.Literals<Literals>,
+  fallback: Literals[number],
+) => {
+  const known = new Set<string>(schema.literals);
+  return Schema.String.pipe(
+    Schema.decodeTo(
+      schema,
+      SchemaTransformation.transform<Literals[number], string>({
+        decode: (raw) => (known.has(raw) ? (raw as Literals[number]) : fallback),
+        encode: (value) => value,
+      }),
+    ),
+  );
+};
+
+/**
  * A nullable setting whose null is "unset" and never crosses the wire: it
  * decodes from a missing or unknown key and encodes back to a missing key.
  * For a field that older clients decode as a required literal, so a null

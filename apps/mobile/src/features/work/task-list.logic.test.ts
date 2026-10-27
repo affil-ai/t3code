@@ -46,6 +46,16 @@ describe("buildTaskListSections", () => {
     ]);
   });
 
+  it("leaves open standup tasks to the Standup section above the board", () => {
+    const standup = { startedAt: "2026-10-27T09:00:00.000Z", finishedAt: null };
+    const sections = buildTaskListSections(
+      [...board, task({ id: "e" as FirstmateTask["id"], status: "in_progress", standup })],
+      { backlogOpen: false, doneOpen: false },
+    );
+    expect(sections.map((section) => section.column)).not.toContain("standup");
+    expect(sections.flatMap((section) => section.tasks.map((item) => item.id))).not.toContain("e");
+  });
+
   it("folds Backlog until it is opened, keeping its count", () => {
     const backlog = (backlogOpen: boolean) =>
       buildTaskListSections(board, { backlogOpen, doneOpen: false }).find(

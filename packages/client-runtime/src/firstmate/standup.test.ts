@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { standupTarget } from "./standupSection.logic";
+import { standupRowsForAgent, standupTarget } from "./standup.ts";
 
 const JOAN = AgentProfileId.make("agent:joan");
 const agent = (id: AgentProfileId, chat: string | null) =>
@@ -56,5 +56,46 @@ describe("standupTarget", () => {
       threadId: worker,
     });
     expect(standupTarget(task({}), JOAN, [agent(FIRSTMATE_AGENT_ID, null)])).toBeNull();
+  });
+});
+
+describe("standupRowsForAgent", () => {
+  const MAKE_MONEY_MOVE = AgentProfileId.make("agent:make-money-move");
+  const firstmate = { id: FIRSTMATE_AGENT_ID, icon: "compass" };
+  const makeMoneyMove = { id: MAKE_MONEY_MOVE, icon: "banknote" };
+  const joan = { id: JOAN, icon: "shield" };
+  // The standup list as the server sends it: oldest standup first, across boards.
+  const rows = (
+    [
+      [firstmate, "fm-1"],
+      [joan, "joan-1"],
+      [makeMoneyMove, "mmm-1"],
+      [joan, "joan-2"],
+      [firstmate, "fm-2"],
+      [makeMoneyMove, "mmm-2"],
+      [joan, "joan-3"],
+    ] as const
+  ).map(([agent, id]) => ({ agent, task: task({ id: FirstmateTaskId.make(id) }) }));
+
+  it("lists every agent's standup tasks under Firstmate, each with its owner", () => {
+    const listed = standupRowsForAgent(rows, FIRSTMATE_AGENT_ID);
+    expect(listed.map((row) => [row.agent.icon, row.task.id])).toEqual([
+      ["compass", "fm-1"],
+      ["shield", "joan-1"],
+      ["banknote", "mmm-1"],
+      ["shield", "joan-2"],
+      ["compass", "fm-2"],
+      ["banknote", "mmm-2"],
+      ["shield", "joan-3"],
+    ]);
+  });
+
+  it("lists only an agent's own standup tasks under that agent", () => {
+    expect(standupRowsForAgent(rows, JOAN).map((row) => row.task.id)).toEqual([
+      "joan-1",
+      "joan-2",
+      "joan-3",
+    ]);
+    expect(standupRowsForAgent(rows, MAKE_MONEY_MOVE)).toHaveLength(2);
   });
 });

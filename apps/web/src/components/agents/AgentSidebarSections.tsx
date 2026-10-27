@@ -5,6 +5,7 @@
  * The Standup section leads: every agent's standup tasks under Firstmate, an
  * agent's own under it. The agent's own sections are absent until it has a chat.
  */
+import { standupRowsForAgent } from "@t3tools/client-runtime/firstmate/standup";
 import { type AgentProfile, FIRSTMATE_AGENT_ID } from "@t3tools/contracts";
 import { useParams } from "@tanstack/react-router";
 
@@ -34,9 +35,7 @@ export function AgentSidebarSections({ agent }: { readonly agent: AgentProfile }
   );
   const environmentId = firstmate ? firstmateHome?.environmentId : agentsHome?.environmentId;
   if (environmentId === undefined) return null;
-  const standupRows = firstmate
-    ? allStandupRows
-    : allStandupRows.filter((row) => row.agent.id === agent.id);
+  const standupRows = standupRowsForAgent(allStandupRows, agent.id);
   const standup =
     agentsHome === null ? null : (
       <StandupSection

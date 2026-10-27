@@ -467,6 +467,10 @@
       "types": "./src/firstmate/icons.ts",
       "default": "./src/firstmate/icons.ts"
     },
+    "./firstmate/standup": {
+      "types": "./src/firstmate/standup.ts",
+      "default": "./src/firstmate/standup.ts"
+    },
     "./state/agents": {
       "types": "./src/state/agents.ts",
       "default": "./src/state/agents.ts"
