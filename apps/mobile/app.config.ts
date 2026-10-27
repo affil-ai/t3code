@@ -466,6 +466,8 @@ const config: ExpoConfig = {
     // would delete the asset catalog) and its xcodeproj mod creates the widget
     // target (which must exist before the compile phase can be attached).
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
+    // fork: the Standup widget needs only the keychain group, so device builds keep it.
+    "./plugins/withStandupWidget.cjs",
     "./plugins/withAndroidCleartextTraffic.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
     "./plugins/withAndroidFbjniVersion.cjs",

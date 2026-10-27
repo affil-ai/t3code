@@ -34,7 +34,8 @@ export interface TaskListSection {
 }
 
 /**
- * The board's sections in the shared order, leaving out empty ones. Backlog
+ * The board's sections in the shared order, leaving out empty ones and
+ * Standup, which `StandupSection` draws above them from every board. Backlog
  * and Done start folded; Done holds the most recently closed tasks, so a
  * closed task can still be opened and reopened from the phone.
  */
@@ -43,7 +44,9 @@ export function buildTaskListSections(
   options: { readonly backlogOpen: boolean; readonly doneOpen: boolean },
 ): ReadonlyArray<TaskListSection> {
   const columns = mapFirstmateBoard(tasks);
-  return FIRSTMATE_SECTION_ORDER.filter((column) => columns[column].length > 0).map((column) => {
+  return FIRSTMATE_SECTION_ORDER.filter(
+    (column) => column !== "standup" && columns[column].length > 0,
+  ).map((column) => {
     const collapsible = column === "backlog" || column === "done";
     const open =
       column === "backlog" ? options.backlogOpen : column === "done" ? options.doneOpen : true;

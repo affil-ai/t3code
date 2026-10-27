@@ -4,7 +4,13 @@
  * on the user), the next step, the worker's status, and its progress.
  * Tapping a row opens the task's detail.
  */
-import type { EnvironmentId, FirstmateTask } from "@t3tools/contracts";
+import {
+  AGENT_DEFAULT_COLOR,
+  type AgentProfile,
+  type EnvironmentId,
+  type FirstmateTask,
+  standupTaskOpen,
+} from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
 
@@ -12,22 +18,26 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { RowPressable } from "../../components/ui/RowPressable";
 import { cn } from "../../lib/cn";
+import { AgentAvatar } from "./AgentAvatar";
 import { buildTaskListSections, taskRowPresentation } from "./task-list.logic";
 import { TaskStatusDot } from "./TaskStatusDot";
 import { WorkerStatusDot } from "./WorkerStatusDot";
 
-function TaskRow(props: {
+export function TaskRow(props: {
   readonly environmentId: EnvironmentId;
   readonly task: FirstmateTask;
   readonly first: boolean;
   readonly onOpen: (task: FirstmateTask) => void;
+  /** Shown before the title where rows come from several boards, as in Standup. */
+  readonly owner?: AgentProfile;
 }) {
-  const { task } = props;
+  const { task, owner } = props;
   const row = taskRowPresentation(task);
   return (
     <RowPressable
       accessibilityRole="button"
       accessibilityLabel={[
+        owner?.name,
         row.needsYou ? "Needs your input" : null,
         row.priority ? "Priority" : null,
         task.title,
@@ -40,6 +50,15 @@ function TaskRow(props: {
       className={cn("gap-1 px-4 py-3", !props.first && "border-t border-border")}
     >
       <View className="flex-row items-center gap-2">
+        {owner !== undefined ? (
+          <AgentAvatar
+            icon={owner.icon}
+            color={owner.color ?? AGENT_DEFAULT_COLOR}
+            size={18}
+            environmentId={props.environmentId}
+            avatarAttachmentId={owner.avatarAttachmentId}
+          />
+        ) : null}
         {row.needsYou ? (
           <Text className="font-t3-bold text-danger-foreground" textRole="body">
             !
@@ -97,7 +116,9 @@ export function TaskList(props: {
   const [backlogOpen, setBacklogOpen] = useState(false);
   const [doneOpen, setDoneOpen] = useState(false);
   const sections = buildTaskListSections(props.tasks, { backlogOpen, doneOpen });
-  const hasOpenTasks = sections.some((section) => section.column !== "done");
+  // Open standup tasks count as open work, though Standup draws them above the board.
+  const hasOpenTasks =
+    sections.some((section) => section.column !== "done") || props.tasks.some(standupTaskOpen);
   return (
     <View className="gap-5">
       {hasOpenTasks ? null : (

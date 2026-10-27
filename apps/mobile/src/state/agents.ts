@@ -41,6 +41,17 @@ export function useAgentTasks(environmentId: EnvironmentId | null, agentId: Agen
   );
 }
 
+/**
+ * Every open standup task across boards, oldest standup first, each with its
+ * owner (archived ones included), from the list web's sidebar and the widget
+ * read.
+ */
+export function useStandupTasks(environmentId: EnvironmentId | null) {
+  return useEnvironmentQuery(
+    environmentId === null ? null : agentsEnvironment.standup({ environmentId, input: {} }),
+  );
+}
+
 /** Every agent's coordinator chat, Firstmate's included, as scoped thread keys. */
 export function useAgentCoordinatorThreadKeys(): ReadonlySet<string> {
   return useAtomValue(agentsHome.coordinatorThreadKeysAtom);

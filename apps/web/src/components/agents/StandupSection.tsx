@@ -25,7 +25,7 @@ import { useSidebar } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AgentAvatar } from "./AgentAvatar";
 import { WorkerStatusDot } from "./AgentTaskTree";
-import { standupTarget } from "./standupSection.logic";
+import { standupTarget } from "@t3tools/client-runtime/firstmate/standup";
 
 function StandupRow({
   environmentId,

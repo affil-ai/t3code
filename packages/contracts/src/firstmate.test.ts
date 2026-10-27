@@ -22,6 +22,8 @@ import {
   FirstmateTaskReportProgressInput,
   FirstmateTaskUpdateInput,
   firstmateStateForStatus,
+  firstmateTaskStatus,
+  StandupSummary,
   AgentProfile,
   AgentUpdateInput,
 } from "./firstmate.ts";
@@ -44,6 +46,14 @@ const task = {
   closedAt: null,
 } as const;
 
+const event = {
+  id: "firstmate-event:1",
+  taskId: task.id,
+  createdAt: task.createdAt,
+  actor: "system",
+  summary: "Worker finished.",
+};
+
 const decodeCreate = Schema.decodeUnknownSync(FirstmateTaskCreateInput);
 const decodeStored = Schema.decodeUnknownSync(FirstmateStoredTask);
 const decodeId = Schema.decodeUnknownSync(FirstmateTaskId);
@@ -58,6 +68,7 @@ const decodeAppearance = Schema.decodeUnknownSync(FirstmateSetAppearanceInput);
 const decodeSnapshot = Schema.decodeUnknownSync(FirstmateSnapshot);
 const decodeStartInput = Schema.decodeUnknownSync(FirstmateStartInput);
 const decodeStart = Schema.decodeUnknownSync(FirstmateStartResult);
+const decodeSummary = Schema.decodeUnknownSync(StandupSummary);
 
 describe("Firstmate task contracts", () => {
   it("decodes legacy agents and preserves explicit avatar removal versus an omitted edit", () => {
@@ -179,18 +190,11 @@ describe("Firstmate task contracts", () => {
     expect(decodeTask(stored)).toEqual(task);
   });
 
-  it("requires valid task states, next actors, and event actors", () => {
-    expect(() => decodeTask({ ...task, state: "running" })).toThrow();
-    expect(() => decodeTask({ ...task, nextActor: "system" })).toThrow();
-    const event = {
-      id: "firstmate-event:1",
-      taskId: task.id,
-      createdAt: task.createdAt,
-      actor: "system",
-      summary: "Worker finished.",
-    };
+  it("requires task states, next actors, and event actors", () => {
+    expect(() => decodeTask({ ...task, state: 1 })).toThrow();
+    expect(() => decodeTask({ ...task, nextActor: undefined })).toThrow();
     expect(decodeEvent(event)).toEqual(event);
-    expect(() => decodeEvent({ ...event, actor: "worker" })).toThrow();
+    expect(() => decodeEvent({ ...event, actor: null })).toThrow();
   });
 
   it("offers state filtering while leaving the unclosed default to the service", () => {
@@ -303,16 +307,73 @@ describe("Firstmate RPC contracts", () => {
       icon: "compass",
       tasks: [task],
     };
-    expect(
-      decodeSnapshot({
-        ...snapshot,
-        tasks: [task, { ...task, id: "future-task", state: "future-state" }],
-      }),
-    ).toEqual(snapshot);
+    // A task this client cannot read at all drops; the rest of the board stays.
+    expect(decodeSnapshot({ ...snapshot, tasks: [task, { ...task, id: "" }] })).toEqual(snapshot);
     expect(decodeStart({ threadId: "thread:1", snapshot })).toEqual({
       threadId: "thread:1",
       snapshot,
     });
+  });
+
+  it("reads values a newer server adds as known ones instead of dropping the task", () => {
+    const future = decodeSnapshot({
+      coordinatorThreadId: "thread:1",
+      name: "Firstmate",
+      icon: "compass",
+      tasks: [
+        task,
+        {
+          ...task,
+          id: "firstmate-task:2",
+          state: "future-state",
+          status: "future-status",
+          nextActor: "future-actor",
+          artifacts: [
+            { kind: "link", label: "PR", url: "https://example.com/pr/1" },
+            { kind: "video", label: "Demo", url: "/tmp/demo.mp4" },
+          ],
+          progress: { label: "Recall", kind: "future-kind", value: 1, updatedAt: "x", history: [] },
+        },
+      ],
+    }).tasks[1]!;
+    expect(future).toMatchObject({
+      state: "open",
+      status: undefined,
+      nextActor: "coordinator",
+      artifacts: [
+        { kind: "link", label: "PR", url: "https://example.com/pr/1" },
+        { kind: "link", label: "Demo", url: "/tmp/demo.mp4" },
+      ],
+      progress: null,
+    });
+    // An unknown status falls back on the legacy state, as for servers that predate it.
+    expect(firstmateTaskStatus(future)).toBe("planning");
+    expect(firstmateTaskStatus(decodeTask({ ...task, state: "waiting", status: "blocked" }))).toBe(
+      "in_review",
+    );
+    expect(decodeEvent({ ...event, actor: "future-actor" }).actor).toBe("system");
+    // Known values still round-trip, and inputs stay strict.
+    expect(decodeTask({ ...task, status: "hillclimb" }).status).toBe("hillclimb");
+    expect(() => decodeUpdate({ taskId: task.id, status: "future-status" })).toThrow();
+  });
+
+  it("reads a standup summary from a newer or older server", () => {
+    const summary = {
+      open: 2,
+      needsYou: 0,
+      running: 1,
+      tasks: [
+        { taskId: "firstmate-task:1", title: "A", progress: "running", agentName: "Firstmate" },
+        { taskId: "firstmate-task:2", title: "B", progress: "paused", agentName: "Crew" },
+      ],
+      generatedAt: "2026-10-27T17:00:00.000Z",
+    };
+    const decoded = decodeSummary(summary);
+    expect(decoded.tasks.map((entry) => entry.progress)).toEqual(["running", "waiting"]);
+    expect(decoded.doneAt).toBeUndefined();
+    expect(decodeSummary({ ...summary, doneAt: ["2026-10-27T16:00:00.000Z"] }).doneAt).toEqual([
+      "2026-10-27T16:00:00.000Z",
+    ]);
   });
 
   it("sets a trimmed name and any short icon key, leaving unknown icons to the client", () => {

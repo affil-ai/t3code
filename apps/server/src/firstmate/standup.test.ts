@@ -188,4 +188,38 @@ describe("standup", () => {
       });
     }).pipe(Effect.provide(layerFirstmate)),
   );
+
+  it.effect("lists recent done and live finishes for the widget's done-today count", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const finish = (title: string, status: "done" | "monitoring" | "canceled") =>
+        Effect.gen(function* () {
+          const { task } = yield* service.create(FM, {
+            title,
+            intent: title,
+            definitionOfDone: "Done",
+            status: "in_progress",
+          });
+          yield* service.markStandup(FM, { taskId: task.id, onStandup: true });
+          yield* service.update(FM, {
+            taskId: task.id,
+            summary: "Finished",
+            status,
+            ...(status === "monitoring" ? {} : { closeEvidence: "Merged" }),
+          });
+          return task.id;
+        });
+      yield* finish("Shipped", "done");
+      yield* finish("Live", "monitoring");
+      yield* finish("Dropped", "canceled");
+      const old = yield* finish("Shipped last week", "done");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE firstmate_task SET standup_finished_at = '1969-12-01T00:00:00.000Z' WHERE task_id = ${old}`;
+
+      const summary = yield* service.standupSummary();
+      expect(summary.open).toBe(0);
+      // Canceled work is not done, and a finish from days ago is outside every time zone's today.
+      expect(summary.doneAt).toEqual([expect.any(String), expect.any(String)]);
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
 });

@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
@@ -8,6 +9,8 @@ import {
 } from "./auth.ts";
 import {
   ForwardCompatibleArray,
+  ForwardCompatibleLiteral,
+  ForwardCompatibleNullable,
   IsoDateTime,
   NonNegativeInt,
   PositiveInt,
@@ -103,6 +106,26 @@ export function firstmateStateForStatus(status: FirstmateTaskStatus): FirstmateT
 export const FirstmateTaskEventActor = Schema.Literals(["coordinator", "user", "system"]);
 export type FirstmateTaskEventActor = typeof FirstmateTaskEventActor.Type;
 
+/*
+ * The task's read model decodes values a newer server may add without failing
+ * the task, so an older phone still shows the whole board. Inputs keep the
+ * strict schemas.
+ */
+
+const knownTaskStatuses = new Set<string>(FirstmateTaskStatus.literals);
+
+/** An unknown status reads as absent, so `firstmateTaskStatus` falls back on the legacy state. */
+const FirstmateTaskStatusOrUnknown = Schema.UndefinedOr(Schema.String).pipe(
+  Schema.decodeTo(
+    Schema.UndefinedOr(FirstmateTaskStatus),
+    SchemaTransformation.transform<FirstmateTaskStatus | undefined, string | undefined>({
+      decode: (raw) =>
+        raw !== undefined && knownTaskStatuses.has(raw) ? (raw as FirstmateTaskStatus) : undefined,
+      encode: (status) => status,
+    }),
+  ),
+);
+
 /** Preserve the user's request verbatim, including whitespace, while rejecting blank requests. */
 const FirstmateIntent = Schema.String.check(
   Schema.makeFilter((value: string) => value.trim().length > 0, {
@@ -131,6 +154,12 @@ export const FirstmateTaskArtifact = Schema.Struct({
   caption: Schema.optional(Schema.String),
 });
 export type FirstmateTaskArtifact = typeof FirstmateTaskArtifact.Type;
+
+/** An artifact kind a newer server adds reads as a link to its url. */
+const FirstmateTaskArtifactRead = Schema.Struct({
+  ...FirstmateTaskArtifact.fields,
+  kind: ForwardCompatibleLiteral(FirstmateTaskArtifact.fields.kind, "link"),
+});
 
 /**
  * What happens next on a task, as a short imperative phrase that names the PR
@@ -229,10 +258,10 @@ export const FirstmateTask = Schema.Struct({
   title: TrimmedNonEmptyString,
   intent: FirstmateIntent,
   definitionOfDone: TrimmedNonEmptyString,
-  state: FirstmateTaskState,
+  state: ForwardCompatibleLiteral(FirstmateTaskState, "open"),
   /** Optional for wire compatibility with servers predating explicit status. */
-  status: Schema.optional(FirstmateTaskStatus),
-  nextActor: FirstmateNextActor,
+  status: Schema.optional(FirstmateTaskStatusOrUnknown),
+  nextActor: ForwardCompatibleLiteral(FirstmateNextActor, "coordinator"),
   /** Older servers omit it; read it as none. */
   nextStep: Schema.optional(Schema.NullOr(Schema.String)),
   note: Schema.String,
@@ -240,10 +269,10 @@ export const FirstmateTask = Schema.Struct({
   workerThreadId: Schema.NullOr(ThreadId),
   links: Schema.Array(FirstmateTaskLink),
   /** Older servers omit it; read it as empty. */
-  artifacts: Schema.optional(Schema.Array(FirstmateTaskArtifact)),
+  artifacts: Schema.optional(Schema.Array(FirstmateTaskArtifactRead)),
   closeEvidence: Schema.NullOr(TrimmedNonEmptyString),
   /** Older servers omit it; read it as none. */
-  progress: Schema.optional(Schema.NullOr(FirstmateTaskProgress)),
+  progress: Schema.optional(ForwardCompatibleNullable(FirstmateTaskProgress)),
   /** Set while the task is, or was, one of the user's standup to-dos. Older servers omit it. */
   standup: Schema.optional(Schema.NullOr(FirstmateTaskStandup)),
   createdAt: IsoDateTime,
@@ -264,7 +293,7 @@ export const FirstmateTaskEvent = Schema.Struct({
   id: FirstmateTaskEventId,
   taskId: FirstmateTaskId,
   createdAt: IsoDateTime,
-  actor: FirstmateTaskEventActor,
+  actor: ForwardCompatibleLiteral(FirstmateTaskEventActor, "system"),
   summary: TrimmedNonEmptyString,
 });
 export type FirstmateTaskEvent = typeof FirstmateTaskEvent.Type;
@@ -567,8 +596,6 @@ export const AgentUpdateInput = Schema.Struct({
 });
 export type AgentUpdateInput = typeof AgentUpdateInput.Type;
 
-// --- agent MCP tools -------------------------------------------------------
-
 export const AgentListToolInput = Schema.Struct({
   nameContains: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
   cursor: Schema.optional(NonNegativeInt).annotate({
@@ -808,14 +835,20 @@ export const StandupSummary = Schema.Struct({
   open: NonNegativeInt,
   needsYou: NonNegativeInt,
   running: NonNegativeInt,
-  tasks: Schema.Array(
+  tasks: ForwardCompatibleArray(
     Schema.Struct({
       taskId: FirstmateTaskId,
       title: Schema.String,
-      progress: StandupProgress,
+      progress: ForwardCompatibleLiteral(StandupProgress, "waiting"),
       agentName: Schema.String,
     }),
   ),
+  /**
+   * When standup tasks finished as done or live in production over the last
+   * two days, newest first. The widget counts the ones from its own today.
+   * Older servers omit it.
+   */
+  doneAt: Schema.optional(Schema.Array(IsoDateTime)),
   generatedAt: IsoDateTime,
 });
 export type StandupSummary = typeof StandupSummary.Type;

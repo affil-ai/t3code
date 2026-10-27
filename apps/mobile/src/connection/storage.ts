@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { clearStandupWidgetCredential } from "../widgets/standupWidgetKeychain";
 import * as CatalogStore from "./catalog-store";
 
 function targetPersistenceError(
@@ -70,7 +71,16 @@ export const layer = Layer.effectContext(
       remove: (environmentId) =>
         catalog
           .update((document) => removeConnectionFromCatalog(document, environmentId))
-          .pipe(Effect.mapError((error) => targetPersistenceError("remove-connection", error))),
+          .pipe(
+            Effect.mapError((error) => targetPersistenceError("remove-connection", error)),
+            Effect.tap(() =>
+              Effect.tryPromise(() => clearStandupWidgetCredential(environmentId)).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Could not clear the standup widget's credential", cause),
+                ),
+              ),
+            ),
+          ),
       setEnabled: (environmentId, enabled) =>
         catalog
           .update((document) => setConnectionEnabledInCatalog(document, environmentId, enabled))

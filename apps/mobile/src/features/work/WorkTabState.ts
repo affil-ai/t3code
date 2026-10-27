@@ -1,6 +1,7 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
+import * as Linking from "expo-linking";
 import { useEffect, useRef, type Dispatch } from "react";
 
 import { agentsEnvironment, useAgentsHome } from "../../state/agents";
@@ -84,4 +85,13 @@ export function useWorkTabSelection(
     defaultSettled.current = next.defaultSettled;
     if (next.tab !== null) dispatch({ type: "select", tab: next.tab });
   }, [available, state.selectedTab, state.selectionRevision, dispatch]);
+  // The standup widget opens `t3code://?tab=work`. A cold start already lands
+  // on Work; a running app may sit on another tab, and taps repeat one URL.
+  useEffect(() => {
+    if (!available) return;
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      if (Linking.parse(url).queryParams?.tab === "work") dispatch({ type: "select", tab: "work" });
+    });
+    return () => subscription.remove();
+  }, [available, dispatch]);
 }
