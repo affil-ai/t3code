@@ -747,8 +747,13 @@ function TaskForm({
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
       projectId: draft.projectId,
-      // A bound run uses its chat's current model, so the form leaves the stored one alone.
-      ...(boundThreadId === null ? { modelSelection: draft.modelSelection } : {}),
+      // A bound run uses its chat's current model. The stored one is sent back
+      // because servers that predate optional models still require it.
+      ...(boundThreadId === null
+        ? { modelSelection: draft.modelSelection }
+        : draft.task?.modelSelection
+          ? { modelSelection: draft.task.modelSelection }
+          : {}),
       schedule,
       enabled: draft.enabled,
       threadId: boundThreadId,

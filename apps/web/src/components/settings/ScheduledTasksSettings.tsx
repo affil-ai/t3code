@@ -1260,9 +1260,11 @@ function ScheduledTaskEditorForm({
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
-    // A bound run uses its chat's current model, so the form leaves the stored one alone.
-    const modelSelection =
-      bound || selection === null
+    // A bound run uses its chat's current model. The stored one is sent back
+    // because servers that predate optional models still require it.
+    const modelSelection = bound
+      ? (draft.baseModelSelection ?? undefined)
+      : selection === null
         ? undefined
         : draft.baseModelSelection !== null &&
             draft.baseModelSelection.instanceId === selection.instanceId &&
