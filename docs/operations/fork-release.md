@@ -323,6 +323,13 @@ checks and test its protocol before updating the shared T3 server. Leave a
 compatible worker unchanged. A local checkout's version pin is not evidence
 of deployed worker behavior.
 
+## iPhone app
+
+The paired release does not build the iPhone app. Build and install it
+separately from the released commit, as described in
+[Installing T3 Work on Vivek's iPhone](mobile-device-install.md). A plain build
+from `main` fails at provisioning.
+
 ## Cleanup
 
 After activation and live verification, remove only verified disposable build
