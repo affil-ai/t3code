@@ -44,7 +44,11 @@ import {
   type Thread,
 } from "../types";
 import { makeThreadFixture, type ThreadFixtureOverrides } from "../test-fixtures";
-import { completeSidebarRouteReveal, pendingSidebarRouteReveal } from "./sidebar/routeReveal";
+import {
+  claimSidebarRouteReveal,
+  completeSidebarRouteReveal,
+  pendingSidebarRouteReveal,
+} from "./sidebar/routeReveal";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
@@ -1236,5 +1240,27 @@ describe("pendingSidebarRouteReveal", () => {
     pendingSidebarRouteReveal(reveal, "env:a1");
     expect(pendingSidebarRouteReveal(reveal, null)).toBeNull();
     expect(pendingSidebarRouteReveal(reveal, "env:a1")).toBe("env:a1");
+  });
+
+  it("skips a thread the sidebar opened itself, and reveals it again from history", () => {
+    const reveal = { observedKey: null, pendingKey: null };
+    pendingSidebarRouteReveal(reveal, "env:a1");
+    completeSidebarRouteReveal(reveal);
+
+    // A task row opens its worker thread.
+    claimSidebarRouteReveal(reveal, "env:b1");
+    expect(pendingSidebarRouteReveal(reveal, "env:b1")).toBeNull();
+
+    // Back, then forward.
+    expect(pendingSidebarRouteReveal(reveal, "env:a1")).toBe("env:a1");
+    completeSidebarRouteReveal(reveal);
+    expect(pendingSidebarRouteReveal(reveal, "env:b1")).toBe("env:b1");
+  });
+
+  it("drops a reveal still pending when the sidebar opens another thread", () => {
+    const reveal = { observedKey: null, pendingKey: null };
+    expect(pendingSidebarRouteReveal(reveal, "env:a1")).toBe("env:a1");
+    claimSidebarRouteReveal(reveal, "env:b1");
+    expect(pendingSidebarRouteReveal(reveal, "env:b1")).toBeNull();
   });
 });
