@@ -88,6 +88,32 @@ describe("standup", () => {
     }).pipe(Effect.provide(layerFirstmate)),
   );
 
+  it.effect("closes items whose task finished before the service started", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const { task } = yield* service.create(FM, {
+        title: "Shipped earlier",
+        intent: "Ship it",
+        definitionOfDone: "Live",
+        status: "in_progress",
+      });
+      yield* service.update(FM, { taskId: task.id, summary: "Live", status: "monitoring" });
+      // A row written before finishes were tracked: linked to a finished task, still open.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO firstmate_standup_item(item_id, text, agent_id, task_id, started_at)
+        VALUES ('standup:old', 'shipped earlier', ${FM}, ${task.id}, '2026-10-26T16:00:00.000Z')
+      `;
+      const restarted = yield* FirstmateService.FirstmateService.pipe(
+        Effect.provide(Layer.fresh(FirstmateService.layer)),
+      );
+      expect(yield* openStandup(restarted)).toEqual([]);
+      const [finished] = (yield* restarted.listStandup({ includeFinished: true })).items;
+      expect(finished).toMatchObject({ id: "standup:old", archivedAt: null });
+      expect(finished?.finishedAt).not.toBeNull();
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
   it.effect("archives an item, keeping its dates for the finished list", () =>
     Effect.gen(function* () {
       const service = yield* FirstmateService.FirstmateService;

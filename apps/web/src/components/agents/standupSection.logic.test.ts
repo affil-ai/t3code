@@ -62,6 +62,25 @@ describe("standupTarget", () => {
   });
 });
 
+describe("standupTarget with an archived owner", () => {
+  // The active list leaves archived agents out; their open tasks stay on the standup.
+  const active = [agent(FIRSTMATE_AGENT_ID, "firstmate-chat")];
+
+  it("still opens the worker chat", () => {
+    const worker = ThreadId.make("joan-worker");
+    expect(
+      standupTarget(item({ agentId: JOAN, task: task({ workerThreadId: worker }) }), active),
+    ).toEqual({ kind: "thread", threadId: worker });
+  });
+
+  it("opens Firstmate's chat when the task has no worker", () => {
+    expect(standupTarget(item({ agentId: JOAN, task: task({}) }), active)).toEqual({
+      kind: "thread",
+      threadId: ThreadId.make("firstmate-chat"),
+    });
+  });
+});
+
 describe("standupNeedsYouCount", () => {
   it("counts tasks waiting on the user and ready to deploy, not parked ones", () => {
     expect(

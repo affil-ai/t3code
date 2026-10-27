@@ -319,6 +319,11 @@ export const layer = Layer.effect(
 
     const now = () => Effect.map(isoNow, (at) => DateTime.formatIso(DateTime.toUtc(at)));
     // Standup items follow their tasks, so record finishes before anyone re-reads.
+    // Items linked to tasks that finished before this build, or while it was down.
+    yield* now().pipe(
+      Effect.flatMap(Standup.syncStandupFinished),
+      Effect.catchCause((cause) => Effect.logWarning("Could not sync the standup.", { cause })),
+    );
     const notify = now().pipe(
       Effect.flatMap(Standup.syncStandupFinished),
       Effect.provideService(SqlClient.SqlClient, sql),

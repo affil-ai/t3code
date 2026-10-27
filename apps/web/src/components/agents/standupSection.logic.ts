@@ -18,7 +18,8 @@ export type StandupTarget =
 
 /**
  * The task's worker chat; else the owner's chat with the task open in its
- * Tasks panel; an item without a task opens Firstmate, who keeps the list.
+ * Tasks panel. An item without a task, or whose owner is archived, opens
+ * Firstmate, who keeps the list.
  */
 export function standupTarget(
   item: StandupItem,
@@ -27,13 +28,14 @@ export function standupTarget(
   if (item.task?.workerThreadId != null) {
     return { kind: "thread", threadId: item.task.workerThreadId };
   }
-  const ownerId = item.task === null ? FIRSTMATE_AGENT_ID : item.agentId;
-  const coordinatorThreadId =
-    agents.find((agent) => agent.id === ownerId)?.coordinatorThreadId ?? null;
-  if (coordinatorThreadId === null) return null;
-  return item.task === null
-    ? { kind: "thread", threadId: coordinatorThreadId }
-    : { kind: "task", coordinatorThreadId, taskId: item.task.id };
+  const chatOf = (agentId: string | null) =>
+    agents.find((agent) => agent.id === agentId)?.coordinatorThreadId ?? null;
+  const ownerChat = item.task === null ? null : chatOf(item.agentId);
+  if (item.task !== null && ownerChat !== null) {
+    return { kind: "task", coordinatorThreadId: ownerChat, taskId: item.task.id };
+  }
+  const firstmateChat = chatOf(FIRSTMATE_AGENT_ID);
+  return firstmateChat === null ? null : { kind: "thread", threadId: firstmateChat };
 }
 
 /** Items whose task waits on the user; a worker's pending approval shows on its row. */
