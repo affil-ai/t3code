@@ -57,6 +57,17 @@ function DetailSection({
   );
 }
 
+const standupDate = (iso: string) =>
+  new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
+/** "Started Oct 27, 2026 · Finished Oct 28, 2026"; open standup tasks have no finish yet. */
+function standupDatesLabel(standup: NonNullable<FirstmateTask["standup"]>): string {
+  const started = `Started ${standupDate(standup.startedAt)}`;
+  return standup.finishedAt === null
+    ? started
+    : `${started} · Finished ${standupDate(standup.finishedAt)}`;
+}
+
 function DetailText({ children }: { readonly children: string }) {
   return <p className="text-sm leading-5 whitespace-pre-wrap text-foreground">{children}</p>;
 }
@@ -280,6 +291,11 @@ export function TaskDetail({
           </DetailSection>
         ) : null}
         <DoneCriteria text={task.definitionOfDone} />
+        {task.standup != null ? (
+          <DetailSection title="Standup">
+            <DetailText>{standupDatesLabel(task.standup)}</DetailText>
+          </DetailSection>
+        ) : null}
         {hasArtifacts || hasLinks ? (
           <DetailSection title="Artifacts">
             <div className="space-y-1.5">

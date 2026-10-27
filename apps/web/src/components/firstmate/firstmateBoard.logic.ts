@@ -1,7 +1,8 @@
-import { firstmateTaskStatus, type FirstmateTask } from "@t3tools/contracts";
+import { firstmateTaskStatus, standupTaskOpen, type FirstmateTask } from "@t3tools/contracts";
 
 export const FIRSTMATE_COLUMN_IDS = [
   "needs-you",
+  "standup",
   "backlog",
   "planning",
   "ready",
@@ -18,6 +19,7 @@ export type FirstmateColumnId = (typeof FIRSTMATE_COLUMN_IDS)[number];
  * panel so the two cannot drift. The sidebar leaves out Done.
  */
 export const FIRSTMATE_SECTION_ORDER = [
+  "standup",
   "monitoring",
   "ready",
   "planning",
@@ -33,8 +35,12 @@ export type FirstmateBoardColumns = Readonly<Record<FirstmateColumnId, readonly 
 /** The board keeps this many closed tasks, matching what the server sends. */
 export const FIRSTMATE_DONE_LIMIT = 20;
 
-/** Maps explicit status to a lifecycle column, with legacy fallback. */
+/**
+ * Maps explicit status to a lifecycle column, with legacy fallback. An open
+ * standup task sits in Standup instead of its status column until it finishes.
+ */
 export function firstmateColumnForTask(task: FirstmateTask): FirstmateColumnId {
+  if (standupTaskOpen(task)) return "standup";
   switch (firstmateTaskStatus(task)) {
     case "backlog":
       return "backlog";
@@ -86,6 +92,7 @@ function newestFirst(left: FirstmateTask, right: FirstmateTask): number {
 /** Groups tasks into columns, newest activity first, keeping the latest closed tasks. */
 export function mapFirstmateBoard(tasks: readonly FirstmateTask[]): FirstmateBoardColumns {
   const columns: Record<FirstmateColumnId, FirstmateTask[]> = {
+    standup: [],
     backlog: [],
     planning: [],
     ready: [],

@@ -89,6 +89,18 @@ describe("firstmateColumnForTask", () => {
     expect(firstmateColumnForTask(task("t", state, actor))).toBe(column);
   });
 
+  it("keeps an open standup task in Standup until it is done or live", () => {
+    const standup = { startedAt: "2026-10-27T16:00:00.000Z", finishedAt: null };
+    const open = { ...task("t", "waiting", "user", undefined, null, null, "in_review"), standup };
+    expect(firstmateColumnForTask(open)).toBe("standup");
+    expect(mapFirstmateBoard([open])["in-review"]).toHaveLength(0);
+    expect(mapFirstmateBoard([open])["needs-you"]).toHaveLength(1);
+    expect(firstmateColumnForTask({ ...open, status: "monitoring", state: "open" })).toBe(
+      "monitoring",
+    );
+    expect(firstmateColumnForTask({ ...open, status: "done", state: "done" })).toBe("done");
+  });
+
   it("lets a closed task leave Needs you", () => {
     expect(firstmateColumnForTask(task("t", "done", "user"))).toBe("done");
   });
@@ -251,6 +263,7 @@ describe("isSlackUrl", () => {
 describe("FIRSTMATE_SECTION_ORDER", () => {
   it("lists every lifecycle column once, in Vivek's order", () => {
     expect(FIRSTMATE_SECTION_ORDER).toEqual([
+      "standup",
       "monitoring",
       "ready",
       "planning",

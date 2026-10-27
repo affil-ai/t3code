@@ -210,6 +210,17 @@ export const FirstmateTaskProgress = Schema.Struct({
 });
 export type FirstmateTaskProgress = typeof FirstmateTaskProgress.Type;
 
+/**
+ * A standup task's dates. `finishedAt` is set when the task becomes done,
+ * monitoring, or canceled, and cleared if it reopens; the dates never filter
+ * what the Standup section shows.
+ */
+export const FirstmateTaskStandup = Schema.Struct({
+  startedAt: IsoDateTime,
+  finishedAt: Schema.NullOr(IsoDateTime),
+});
+export type FirstmateTaskStandup = typeof FirstmateTaskStandup.Type;
+
 /** Public task model; reactor bookkeeping stays on the server. */
 export const FirstmateTask = Schema.Struct({
   id: FirstmateTaskId,
@@ -233,6 +244,8 @@ export const FirstmateTask = Schema.Struct({
   closeEvidence: Schema.NullOr(TrimmedNonEmptyString),
   /** Older servers omit it; read it as none. */
   progress: Schema.optional(Schema.NullOr(FirstmateTaskProgress)),
+  /** Set while the task is, or was, one of the user's standup to-dos. Older servers omit it. */
+  standup: Schema.optional(Schema.NullOr(FirstmateTaskStandup)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   closedAt: Schema.NullOr(IsoDateTime),
@@ -718,6 +731,95 @@ export const AgentStartResult = Schema.Struct({
 });
 export type AgentStartResult = typeof AgentStartResult.Type;
 
+/** Done and live-in-production work both count as finished for the standup. */
+export function standupTaskFinished(task: FirstmateTask): boolean {
+  const status = firstmateTaskStatus(task);
+  return status === "done" || status === "monitoring" || status === "canceled";
+}
+
+/** A standup task that is still open: it shows in the Standup section, not its status section. */
+export function standupTaskOpen(task: FirstmateTask): boolean {
+  return task.standup != null && !standupTaskFinished(task);
+}
+
+export const StandupProgress = Schema.Literals(["needs_you", "running", "waiting", "not_started"]);
+export type StandupProgress = typeof StandupProgress.Type;
+
+/** What an open standup task is doing, from the task and, when it has one, its worker's activity. */
+export function standupProgress(
+  task: FirstmateTask,
+  worker: { readonly active: boolean; readonly needsInput: boolean } | null,
+): StandupProgress {
+  const status = firstmateTaskStatus(task);
+  if (
+    worker?.needsInput === true ||
+    status === "ready_for_deployment" ||
+    (task.nextActor === "user" && status !== "backlog")
+  ) {
+    return "needs_you";
+  }
+  if (worker?.active === true) return "running";
+  if (status === "backlog" || (status === "planning" && task.workerThreadId === null)) {
+    return "not_started";
+  }
+  return "waiting";
+}
+
+export const StandupMarkInput = Schema.Struct({
+  agentId: Schema.optional(AgentProfileId).annotate({
+    description: "The agent whose board holds the task. Omit for your own board.",
+  }),
+  taskId: FirstmateTaskId,
+  onStandup: Schema.Boolean.annotate({
+    description:
+      "true adds the task to the user's standup (its start date is now); false takes it off and clears its dates.",
+  }),
+});
+export type StandupMarkInput = typeof StandupMarkInput.Type;
+
+export const StandupListInput = Schema.Struct({
+  includeFinished: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Also return the 50 most recently finished standup tasks, with their dates. Omit for open ones only.",
+  }),
+});
+export type StandupListInput = typeof StandupListInput.Type;
+
+/** A standup task and its owner, who may be archived; their open tasks stay on the standup. */
+export const StandupTaskEntry = Schema.Struct({
+  agent: AgentProfile,
+  task: FirstmateTask,
+});
+export type StandupTaskEntry = typeof StandupTaskEntry.Type;
+
+/** Open standup tasks oldest first, then any requested finished ones, newest first. */
+export const StandupListResult = Schema.Struct({
+  tasks: ForwardCompatibleArray(StandupTaskEntry),
+});
+export type StandupListResult = typeof StandupListResult.Type;
+
+export const StandupSubscribeInput = Schema.Struct({});
+export type StandupSubscribeInput = typeof StandupSubscribeInput.Type;
+
+/** The small read-only summary the phone widget fetches over HTTP. */
+export const STANDUP_SUMMARY_PATH = "/api/firstmate/standup";
+
+export const StandupSummary = Schema.Struct({
+  open: NonNegativeInt,
+  needsYou: NonNegativeInt,
+  running: NonNegativeInt,
+  tasks: Schema.Array(
+    Schema.Struct({
+      taskId: FirstmateTaskId,
+      title: Schema.String,
+      progress: StandupProgress,
+      agentName: Schema.String,
+    }),
+  ),
+  generatedAt: IsoDateTime,
+});
+export type StandupSummary = typeof StandupSummary.Type;
+
 export class FirstmateError extends Schema.TaggedError<FirstmateError>()("FirstmateError", {
   message: Schema.String,
   taskId: Schema.optional(FirstmateTaskId),
@@ -738,6 +840,7 @@ export const FIRSTMATE_WS_METHODS = {
   agentUpdate: "agents.update",
   agentArchive: "agents.archive",
   agentStart: "agents.start",
+  standupSubscribe: "standup.subscribe",
 } as const;
 
 /** Spread into the server's authorization table without duplicating feature policy. */
@@ -754,6 +857,7 @@ export const FIRSTMATE_RPC_REQUIRED_SCOPES = {
   [FIRSTMATE_WS_METHODS.agentUpdate]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.agentArchive]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.agentStart]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.standupSubscribe]: AuthOrchestrationReadScope,
 } as const;
 
 /** Incremental client guards for mutations; the server authorizes every RPC independently. */
@@ -834,5 +938,12 @@ export const FirstmateRpcs = [
     payload: AgentStartInput,
     success: AgentStartResult,
     error: FirstmateRpcError,
+  }),
+  /** Open standup tasks across every board, archived owners included. */
+  Rpc.make(FIRSTMATE_WS_METHODS.standupSubscribe, {
+    payload: StandupSubscribeInput,
+    success: StandupListResult,
+    error: FirstmateRpcError,
+    stream: true,
   }),
 ] as const;

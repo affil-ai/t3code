@@ -34,12 +34,23 @@ describe("task sidebar navigation", () => {
     expect(sidebarNavigationTasks([review, second])).toEqual([second, review]);
   });
 
-  it("uses the Tasks panel's section order without Done", () => {
-    expect(OPEN_TASK_COLUMNS).toEqual(FIRSTMATE_SECTION_ORDER.filter((c) => c !== "done"));
+  it("uses the Tasks panel's section order without Done or Standup", () => {
+    expect(OPEN_TASK_COLUMNS).toEqual(
+      FIRSTMATE_SECTION_ORDER.filter((c) => c !== "done" && c !== "standup"),
+    );
     const monitoring = { ...task("monitoring"), status: "monitoring" as const };
     const ready = { ...task("ready"), status: "ready_for_deployment" as const };
     const work = task("work");
     expect(sidebarNavigationTasks([work, ready, monitoring])).toEqual([monitoring, ready, work]);
+  });
+
+  it("leaves standup tasks to the Standup rows above the tree", () => {
+    const standup = {
+      ...task("standup"),
+      standup: { startedAt: "2026-10-27T16:00:00.000Z", finishedAt: null },
+    };
+    const work = task("work");
+    expect(sidebarNavigationTasks([standup, work])).toEqual([work]);
   });
 
   it("wraps at both ends", () => {

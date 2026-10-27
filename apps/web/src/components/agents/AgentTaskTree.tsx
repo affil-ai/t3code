@@ -149,7 +149,7 @@ function BacklogActivity({
   return <time dateTime={shell.updatedAt}>{label}</time>;
 }
 
-function WorkerStatusDot({
+export function WorkerStatusDot({
   environmentId,
   workerThreadId,
 }: {
@@ -245,11 +245,14 @@ export function AgentTaskTree({
   coordinatorThreadId,
   tasks,
   activeRouteKey,
+  hasStandup = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly coordinatorThreadId: ThreadId;
   readonly tasks: readonly FirstmateTask[];
   readonly activeRouteKey: string | null;
+  /** The Standup section above lists the agent's standup tasks, so they are not repeated here. */
+  readonly hasStandup?: boolean;
 }) {
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -305,6 +308,7 @@ export function AgentTaskTree({
   const columns = mapFirstmateBoard(tasks);
   const sections = OPEN_TASK_COLUMNS.filter((column) => columns[column].length > 0);
   if (sections.length === 0) {
+    if (hasStandup) return null;
     return <p className="px-2 py-1 text-sm text-sidebar-muted-foreground/70">No open tasks</p>;
   }
   return (
