@@ -723,11 +723,12 @@ function TaskForm({
       );
       return;
     }
+    const boundThreadId = draft.task?.threadId ?? null; // fork: scheduled-task-inherit-model
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
       !draft.projectId ||
-      !draft.modelSelection ||
+      (boundThreadId === null && !draft.modelSelection) ||
       !schedule ||
       (draft.workspace === "existing_worktree" && !draft.checkoutPath.trim())
     ) {
@@ -746,10 +747,16 @@ function TaskForm({
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
       projectId: draft.projectId,
-      modelSelection: draft.modelSelection,
+      // A bound run uses its chat's current model. The stored one is sent back
+      // because servers that predate optional models still require it.
+      ...(boundThreadId === null
+        ? { modelSelection: draft.modelSelection }
+        : draft.task?.modelSelection
+          ? { modelSelection: draft.task.modelSelection }
+          : {}),
       schedule,
       enabled: draft.enabled,
-      threadId: draft.task?.threadId ?? null,
+      threadId: boundThreadId,
       workspaceStrategy:
         draft.workspace === "root"
           ? { type: "root" }
@@ -834,7 +841,12 @@ function TaskForm({
           {promptField}
         </SettingsSection>
 
-        <SettingsSection title="Context">
+        <SettingsSection
+          title="Context"
+          {...(draft.task?.threadId
+            ? { footer: "Runs use the chat's current model and never change it." }
+            : {})}
+        >
           <SelectRow
             label="Project"
             value={
@@ -868,21 +880,23 @@ function TaskForm({
               });
             }}
           />
-          <PickerRow
-            label="Model"
-            borderTop
-            value={
-              modelOptions.find(
-                (option) =>
-                  option.selection.instanceId === draft.modelSelection?.instanceId &&
-                  option.selection.model === draft.modelSelection?.model,
-              )?.label ??
-              draft.modelSelection?.model ??
-              (modelOptions.length ? "Choose model" : "No models available")
-            }
-            onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
-            disabled={saving || dictationPending || environmentUnavailable}
-          />
+          {draft.task?.threadId ? null : (
+            <PickerRow
+              label="Model"
+              borderTop
+              value={
+                modelOptions.find(
+                  (option) =>
+                    option.selection.instanceId === draft.modelSelection?.instanceId &&
+                    option.selection.model === draft.modelSelection?.model,
+                )?.label ??
+                draft.modelSelection?.model ??
+                (modelOptions.length ? "Choose model" : "No models available")
+              }
+              onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
+              disabled={saving || dictationPending || environmentUnavailable}
+            />
+          )}
         </SettingsSection>
 
         <SettingsSection title="Workspace">

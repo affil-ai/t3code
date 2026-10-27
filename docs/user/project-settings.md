@@ -68,6 +68,10 @@ list by environment or project. Each task runs on the environment you choose,
 using its project, model, and workspace settings. Fixed-time schedules use that
 environment's time zone, which may differ from your phone's.
 
+A task that posts into a chat uses that chat's current model on every run and
+never changes it, so it has no model of its own. A task that starts a new thread
+on each run needs a model.
+
 Deleting a thread also deletes tasks that post into that thread. Tasks that start
 a new thread on each run survive deletion of their previous threads.
 
