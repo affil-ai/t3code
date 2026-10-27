@@ -1525,16 +1525,18 @@ async function main(): Promise<void> {
       await NodeFSP.mkdir(workspaceRoot, { recursive: true });
       const shellPath = await createShowcaseShell(baseDir);
       const labelProbeDirectory = await createShowcaseLabelProbe(baseDir, environment.label);
-      const server = startShowcaseServer(
-        baseDir,
-        workspaceRoot,
-        port,
-        shellPath,
-        labelProbeDirectory,
-      );
-      showcaseServers.push(server);
+      const start = () =>
+        startShowcaseServer(baseDir, workspaceRoot, port, shellPath, labelProbeDirectory);
+      const migrating = start();
+      showcaseServers.push(migrating);
       await waitForPort(port, `${environment.label} server`);
       await seedShowcaseEnvironment({ baseDir, projectIds: environment.projectIds });
+      // The seed writes V1 projection rows, which the V2 server imports only at
+      // startup; without a restart the app pairs with an empty thread list.
+      await stopProcess(migrating);
+      showcaseServers.splice(showcaseServers.indexOf(migrating), 1);
+      showcaseServers.push(start());
+      await waitForPort(port, `${environment.label} server`);
       // The server begins listening before the ServerEnvironment layer
       // persists the environment id, so poll rather than read once.
       const environmentId = await waitForFileContent(
