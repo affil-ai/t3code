@@ -6,6 +6,9 @@ export const BRAND_ASSET_PATHS = {
   productionIconComposerProject: "assets/prod/app-icon.icon",
   productionIosIconPng: "assets/prod/black-ios-1024.png",
   productionMacIconPng: "assets/fork/office-vo-macos-1024.png",
+  // fork: brand. The desktop's VO mark, square and opaque for iOS to mask.
+  forkIosIconPng: "assets/fork/office-vo-ios-1024.png",
+  forkAndroidAdaptiveForegroundPng: "assets/fork/office-vo-android-foreground.png",
   productionLinuxIconPng: "assets/prod/black-universal-1024.png",
   productionWindowsIconIco: "assets/prod/t3-black-windows.ico",
   productionWebFaviconIco: "assets/prod/t3-black-web-favicon.ico",

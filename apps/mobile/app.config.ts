@@ -43,13 +43,18 @@ const DEVELOPMENT_ASSETS = {
   androidNotificationColor: "#00639B",
 } as const;
 
+// fork: brand. Preview and release use the T3 Work desktop's VO icon.
+const VO_ICON = fromRepoRoot(BRAND_ASSET_PATHS.forkIosIconPng);
+const VO_ANDROID_FOREGROUND = fromRepoRoot(BRAND_ASSET_PATHS.forkAndroidAdaptiveForegroundPng);
+const VO_BACKGROUND_COLOR = "#1f1f1f";
+
 const PREVIEW_ASSETS = {
-  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
-  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIconComposerProject),
-  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
-  androidAdaptiveForeground,
-  androidAdaptiveBackgroundColor: "#111533",
-  androidAdaptiveBackgroundImage: "./assets/android-icon-background-nightly.png",
+  appIcon: VO_ICON,
+  iosIcon: VO_ICON,
+  splashIcon: VO_ICON,
+  androidAdaptiveForeground: VO_ANDROID_FOREGROUND,
+  androidAdaptiveBackgroundColor: VO_BACKGROUND_COLOR,
+  androidAdaptiveBackgroundImage: undefined,
   androidSplashIcon: "./assets/android-splash-icon-nightly.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
@@ -57,11 +62,11 @@ const PREVIEW_ASSETS = {
 } as const;
 
 const RELEASE_ASSETS = {
-  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
-  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIconComposerProject),
-  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
-  androidAdaptiveForeground,
-  androidAdaptiveBackgroundColor: "#000000",
+  appIcon: VO_ICON,
+  iosIcon: VO_ICON,
+  splashIcon: VO_ICON,
+  androidAdaptiveForeground: VO_ANDROID_FOREGROUND,
+  androidAdaptiveBackgroundColor: VO_BACKGROUND_COLOR,
   androidAdaptiveBackgroundImage: undefined,
   androidSplashIcon: "./assets/android-splash-icon-prod.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
