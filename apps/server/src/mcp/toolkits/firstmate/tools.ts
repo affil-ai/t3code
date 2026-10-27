@@ -25,6 +25,9 @@ import {
   FirstmateTaskReportProgressInput,
   FirstmateTaskUpdateInput,
   OrchestratorMcpFailure,
+  StandupListInput,
+  StandupListResult,
+  StandupMarkInput,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/ai/Tool";
@@ -197,6 +200,27 @@ const AgentUpdateTool = Tool.make("agent_update", {
   .annotate(Tool.Title, "Update agent")
   .annotate(Tool.Destructive, true);
 
+const StandupMarkTool = Tool.make("standup_mark", {
+  ...shared,
+  description:
+    "Put a task on the user's standup, or take it off. The task may be on any agent's board (pass agentId); this changes only its standup mark and dates, never the owner's other fields. A standup task shows in the Standup section until it is done, monitoring, or canceled. For a to-do with no task yet, create one on your board first (backlog if no one is working on it). Only Firstmate's coordinator chat may call it.",
+  parameters: StandupMarkInput,
+  success: FirstmateTaskMutationResult,
+})
+  .annotate(Tool.Title, "Mark standup task")
+  .annotate(Tool.Destructive, false);
+
+const StandupListTool = Tool.make("standup_list", {
+  ...shared,
+  description:
+    "List the user's open standup tasks across every agent's board, oldest first, each with its owner. includeFinished adds recently finished ones with their standup start and finish dates, for drafting what the user did.",
+  parameters: StandupListInput,
+  success: StandupListResult,
+})
+  .annotate(Tool.Title, "List standup tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
 export const FirstmateToolkit = Toolkit.make(
   FirstmateTaskListTool,
   FirstmateTaskGetTool,
@@ -212,4 +236,6 @@ export const FirstmateToolkit = Toolkit.make(
   AgentAutomationDeleteTool,
   AgentCreateTool,
   AgentUpdateTool,
+  StandupMarkTool,
+  StandupListTool,
 );

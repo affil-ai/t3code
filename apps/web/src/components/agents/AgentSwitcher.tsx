@@ -301,7 +301,8 @@ export function AgentSwitcher() {
     () => orderAgents(agentsHome?.agents ?? [], agentOrder),
     [agentsHome, agentOrder],
   );
-  const compact = orderedAgents.length > 4;
+  // Firstmate and one other agent keep their names; a third switches to icons.
+  const compact = orderedAgents.length >= 3;
   const tabSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );

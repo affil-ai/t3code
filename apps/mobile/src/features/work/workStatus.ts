@@ -9,6 +9,7 @@ import type { ThreadListV2Status } from "../threads/threadListV2";
 
 /** A small dot per section; it is the board's only color, as on web. */
 export const COLUMN_DOT_CLASS: Record<FirstmateColumnId, string> = {
+  standup: "bg-primary",
   backlog: "bg-foreground-muted/40",
   "needs-you": "bg-warning-foreground",
   ready: "bg-adaptive-emerald-600-400",

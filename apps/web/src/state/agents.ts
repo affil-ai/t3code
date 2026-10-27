@@ -9,7 +9,13 @@ import {
   createAgentsEnvironmentAtoms,
   createAgentsHomeAtoms,
 } from "@t3tools/client-runtime/state/agents";
-import type { AgentProfileId, EnvironmentId, FirstmateTask } from "@t3tools/contracts";
+import type {
+  AgentProfileId,
+  EnvironmentId,
+  FirstmateTask,
+  StandupTaskEntry,
+} from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -42,6 +48,27 @@ export function useAgentTasks(environmentId: EnvironmentId | null, agentId: Agen
       ? null
       : agentsEnvironment.tasks({ environmentId, input: { agentId } }),
   );
+}
+
+/** A standup task and its owner, who may be archived. */
+export type StandupTaskRow = StandupTaskEntry;
+
+const NO_STANDUP_TASKS: ReadonlyArray<StandupTaskRow> = [];
+
+/**
+ * Every open standup task across boards, oldest standup first, from the same
+ * server list the MCP tools and the widget read, so an archived owner's tasks
+ * stay. Firstmate's sidebar shows all of them; another agent's shows its own.
+ */
+const standupTasksAtom = Atom.make((get): ReadonlyArray<StandupTaskRow> => {
+  const home = get(agentsHome.homeAtom);
+  if (home === null) return NO_STANDUP_TASKS;
+  const result = get(agentsEnvironment.standup({ environmentId: home.environmentId, input: {} }));
+  return AsyncResult.isSuccess(result) ? result.value.tasks : NO_STANDUP_TASKS;
+}).pipe(Atom.withLabel("agents:standup-tasks"));
+
+export function useStandupTasks(): ReadonlyArray<StandupTaskRow> {
+  return useAtomValue(standupTasksAtom);
 }
 
 /**

@@ -13,6 +13,7 @@ import {
 import type { FirstmateColumnId } from "./board.ts";
 
 export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
+  standup: "Standup",
   backlog: "Backlog",
   "needs-you": "Needs you",
   ready: "Ready for deployment",
@@ -25,6 +26,7 @@ export const COLUMN_LABELS: Record<FirstmateColumnId, string> = {
 };
 
 export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = {
+  standup: "Nothing on the standup",
   backlog: "Nothing in backlog",
   "needs-you": "Nothing needs you",
   ready: "Nothing ready to deploy",

@@ -62,6 +62,8 @@ export interface TaskRow {
   readonly artifacts_json: string;
   readonly close_evidence: string | null;
   readonly progress_json: string | null;
+  readonly standup_started_at?: string | null;
+  readonly standup_finished_at?: string | null;
   readonly created_at: string;
   readonly updated_at: string;
   readonly closed_at: string | null;
@@ -134,6 +136,10 @@ export function taskFromRow(row: TaskRow): StoredTask {
     closeEvidence: row.close_evidence,
     progress:
       row.progress_json == null ? null : Option.getOrNull(decodeProgress(row.progress_json)),
+    standup:
+      row.standup_started_at == null
+        ? null
+        : { startedAt: row.standup_started_at, finishedAt: row.standup_finished_at ?? null },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     closedAt: row.closed_at,
@@ -234,6 +240,13 @@ export const ensureSchema = Effect.gen(function* () {
   // columns, still succeeds and its UPDATE leaves the progress alone.
   if (!taskColumns.has("progress_json")) {
     yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN progress_json TEXT`);
+  }
+  // A standup task's dates; the start marks it as one. Nullable for older builds' writes.
+  if (!taskColumns.has("standup_started_at")) {
+    yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN standup_started_at TEXT`);
+  }
+  if (!taskColumns.has("standup_finished_at")) {
+    yield* sql.unsafe(`ALTER TABLE firstmate_task ADD COLUMN standup_finished_at TEXT`);
   }
   // Freeze the legacy classification once. A next-actor change after startup
   // must not move an existing task to another lifecycle section.

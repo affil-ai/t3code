@@ -92,6 +92,18 @@ describe("firstmateColumnForTask", () => {
     expect(firstmateColumnForTask(task("t", state, actor))).toBe(column);
   });
 
+  it("keeps an open standup task in Standup until it is done or live", () => {
+    const standup = { startedAt: "2026-10-27T16:00:00.000Z", finishedAt: null };
+    const open = { ...task("t", "waiting", "user", undefined, null, null, "in_review"), standup };
+    expect(firstmateColumnForTask(open)).toBe("standup");
+    expect(mapFirstmateBoard([open])["in-review"]).toHaveLength(0);
+    expect(mapFirstmateBoard([open])["needs-you"]).toHaveLength(1);
+    expect(firstmateColumnForTask({ ...open, status: "monitoring", state: "open" })).toBe(
+      "monitoring",
+    );
+    expect(firstmateColumnForTask({ ...open, status: "done", state: "done" })).toBe("done");
+  });
+
   it("lets a closed task leave Needs you", () => {
     expect(firstmateColumnForTask(task("t", "done", "user"))).toBe("done");
   });
@@ -254,6 +266,7 @@ describe("isSlackUrl", () => {
 describe("FIRSTMATE_SECTION_ORDER", () => {
   it("lists every lifecycle column once, in Vivek's order", () => {
     expect(FIRSTMATE_SECTION_ORDER).toEqual([
+      "standup",
       "monitoring",
       "ready",
       "planning",
@@ -299,12 +312,23 @@ describe("task sidebar navigation", () => {
     expect(sidebarNavigationTasks([review, second])).toEqual([second, review]);
   });
 
-  it("uses the Tasks panel's section order without Done", () => {
-    expect(OPEN_TASK_COLUMNS).toEqual(FIRSTMATE_SECTION_ORDER.filter((c) => c !== "done"));
+  it("uses the Tasks panel's section order without Done or Standup", () => {
+    expect(OPEN_TASK_COLUMNS).toEqual(
+      FIRSTMATE_SECTION_ORDER.filter((c) => c !== "done" && c !== "standup"),
+    );
     const monitoring = { ...navTask("monitoring"), status: "monitoring" as const };
     const ready = { ...navTask("ready"), status: "ready_for_deployment" as const };
     const work = navTask("work");
     expect(sidebarNavigationTasks([work, ready, monitoring])).toEqual([monitoring, ready, work]);
+  });
+
+  it("leaves standup tasks to the Standup rows above the tree", () => {
+    const standup = {
+      ...navTask("standup"),
+      standup: { startedAt: "2026-10-27T16:00:00.000Z", finishedAt: null },
+    };
+    const work = navTask("work");
+    expect(sidebarNavigationTasks([standup, work])).toEqual([work]);
   });
 
   it("wraps at both ends", () => {

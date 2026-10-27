@@ -170,19 +170,17 @@ async function pointer(element: Element, type: string, pointerType: string) {
 }
 
 describe("agent switcher navigation", () => {
-  it("keeps names at four agents and switches to an accessible grid at five", async () => {
-    mocks.extraAgents = [
-      { ...research, id: "money", name: "Money Maker", icon: "dollar-sign" },
-      { ...research, id: "writer", name: "Writer" },
-    ] as AgentProfile[];
+  it("keeps names at two agents and switches to an accessible grid at three", async () => {
     await renderSwitcher();
     expect(container.querySelector('[data-testid="agent-tabs"]')?.getAttribute("data-layout")).toBe(
       "rows",
     );
-    expect(container.querySelector('[aria-label="Switch to Money Maker"]')?.textContent).toBe(
-      "Money Maker",
+    expect(container.querySelector('[aria-label="Switch to Research"]')?.textContent).toBe(
+      "Research",
     );
-    mocks.extraAgents.push({ ...research, id: "builder", name: "Builder" } as AgentProfile);
+    mocks.extraAgents = [
+      { ...research, id: "money", name: "Money Maker", icon: "dollar-sign" },
+    ] as AgentProfile[];
     mocks.researchTasks = [{ state: "open", nextActor: "user", workerThreadId: null }];
     try {
       await renderSwitcher();

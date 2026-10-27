@@ -45,6 +45,10 @@ export function createAgentsEnvironmentAtoms<R, E>(
       label: "environment-data:agents:tasks",
       tag: FIRSTMATE_WS_METHODS.agentTasksSubscribe,
     }),
+    standup: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:agents:standup",
+      tag: FIRSTMATE_WS_METHODS.standupSubscribe,
+    }),
     create: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:agents:create",
       tag: FIRSTMATE_WS_METHODS.agentCreate,

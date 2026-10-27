@@ -17,6 +17,7 @@ export const CoordinatorThreadContext = createContext<ThreadId | null>(null);
 
 /** A small dot per column; it is the board's only color. */
 export const COLUMN_DOT: Record<FirstmateColumnId, string> = {
+  standup: "bg-primary",
   backlog: "bg-muted-foreground/40",
   "needs-you": "bg-warning",
   ready: "bg-success",

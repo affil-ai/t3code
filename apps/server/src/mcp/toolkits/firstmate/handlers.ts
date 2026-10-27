@@ -1,4 +1,5 @@
 import {
+  FIRSTMATE_AGENT_ID,
   AGENT_DEFAULT_COLOR,
   AGENT_DEFAULT_ICON,
   OrchestratorMcpFailure,
@@ -16,6 +17,7 @@ const notAnAgent =
 const coordinatorRequired = "Only an agent's coordinator chat may create or update its tasks.";
 const workerRequired = "Only a task's worker chat may report its progress.";
 const agentToolsRequireCoordinator = "Only an agent's coordinator chat may use the agent tools.";
+const firstmateRequired = "Only Firstmate's coordinator chat may change the standup list.";
 const modelRequired =
   "The calling agent has no recorded model to copy. Pass modelSelection, as orchestrator_capabilities lists it.";
 
@@ -57,7 +59,24 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  /** The standup is the user's one list; only Firstmate's coordinator keeps it. */
+  const requireFirstmateCoordinator = requireCoordinator.pipe(
+    Effect.flatMap((agent) =>
+      agent.id === FIRSTMATE_AGENT_ID
+        ? Effect.succeed(agent)
+        : new OrchestratorMcpFailure({ code: "capability_denied", message: firstmateRequired }),
+    ),
+  );
+
   return {
+    standup_mark: McpToolAccess.writes((input) =>
+      requireFirstmateCoordinator.pipe(
+        Effect.flatMap((agent) => firstmate.markStandup(agent.id, input)),
+      ),
+    ),
+    standup_list: McpToolAccess.reads((input) =>
+      callingAgent.pipe(Effect.andThen(firstmate.listStandup(input))),
+    ),
     agent_list: McpToolAccess.reads((input) =>
       McpInvocationContext.McpInvocationContext.pipe(
         Effect.flatMap((scope) => agents.list(scope, input)),
