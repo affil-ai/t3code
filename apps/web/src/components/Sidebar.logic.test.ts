@@ -48,6 +48,8 @@ import {
   claimSidebarRouteReveal,
   completeSidebarRouteReveal,
   pendingSidebarRouteReveal,
+  type SidebarRouteReveal,
+  sidebarRouteRevealKey,
 } from "./sidebar/routeReveal";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
@@ -1224,7 +1226,7 @@ describe("Working shelf (beta)", () => {
 
 describe("pendingSidebarRouteReveal", () => {
   it("keeps a revealed thread settled across a mount that reads no route params", () => {
-    const reveal = { observedKey: null, pendingKey: null };
+    const reveal: SidebarRouteReveal = { observedKey: null, pendingKey: null, claimedKey: null };
     expect(pendingSidebarRouteReveal(reveal, "env:a1")).toBe("env:a1");
     completeSidebarRouteReveal(reveal);
 
@@ -1236,14 +1238,14 @@ describe("pendingSidebarRouteReveal", () => {
   });
 
   it("keeps a pending reveal through a render without route params", () => {
-    const reveal = { observedKey: null, pendingKey: null };
+    const reveal: SidebarRouteReveal = { observedKey: null, pendingKey: null, claimedKey: null };
     pendingSidebarRouteReveal(reveal, "env:a1");
     expect(pendingSidebarRouteReveal(reveal, null)).toBeNull();
     expect(pendingSidebarRouteReveal(reveal, "env:a1")).toBe("env:a1");
   });
 
   it("skips a thread the sidebar opened itself, and reveals it again from history", () => {
-    const reveal = { observedKey: null, pendingKey: null };
+    const reveal: SidebarRouteReveal = { observedKey: null, pendingKey: null, claimedKey: null };
     pendingSidebarRouteReveal(reveal, "env:a1");
     completeSidebarRouteReveal(reveal);
 
@@ -1257,8 +1259,41 @@ describe("pendingSidebarRouteReveal", () => {
     expect(pendingSidebarRouteReveal(reveal, "env:b1")).toBe("env:b1");
   });
 
+  it("drops the mount's reveal when the sidebar opens a thread before it settles", () => {
+    // Work's coordinator renders no thread row, so its mount reveal stays owed.
+    const reveal: SidebarRouteReveal = { observedKey: null, pendingKey: null, claimedKey: null };
+    const mountRevealOwed = { current: true };
+    expect(sidebarRouteRevealKey(reveal, mountRevealOwed, "env:coordinator")).toBe(
+      "env:coordinator",
+    );
+
+    claimSidebarRouteReveal(reveal, "env:worker");
+    expect(sidebarRouteRevealKey(reveal, mountRevealOwed, "env:worker")).toBeNull();
+    expect(mountRevealOwed.current).toBe(false);
+
+    // History still reveals.
+    expect(sidebarRouteRevealKey(reveal, mountRevealOwed, "env:coordinator")).toBe(
+      "env:coordinator",
+    );
+  });
+
+  it("drops the mount's reveal when a mount on a route without a thread opens one", () => {
+    const reveal: SidebarRouteReveal = { observedKey: null, pendingKey: null, claimedKey: null };
+    const mountRevealOwed = { current: true };
+    expect(sidebarRouteRevealKey(reveal, mountRevealOwed, null)).toBeNull();
+    claimSidebarRouteReveal(reveal, "env:worker");
+    expect(sidebarRouteRevealKey(reveal, mountRevealOwed, "env:worker")).toBeNull();
+  });
+
+  it("reveals the open thread once per mount when the sidebar did not open it", () => {
+    const reveal: SidebarRouteReveal = { observedKey: null, pendingKey: null, claimedKey: null };
+    sidebarRouteRevealKey(reveal, { current: false }, "env:a1");
+    completeSidebarRouteReveal(reveal);
+    expect(sidebarRouteRevealKey(reveal, { current: true }, "env:a1")).toBe("env:a1");
+  });
+
   it("drops a reveal still pending when the sidebar opens another thread", () => {
-    const reveal = { observedKey: null, pendingKey: null };
+    const reveal: SidebarRouteReveal = { observedKey: null, pendingKey: null, claimedKey: null };
     expect(pendingSidebarRouteReveal(reveal, "env:a1")).toBe("env:a1");
     claimSidebarRouteReveal(reveal, "env:b1");
     expect(pendingSidebarRouteReveal(reveal, "env:b1")).toBeNull();

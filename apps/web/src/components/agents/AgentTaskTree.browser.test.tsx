@@ -37,7 +37,11 @@ const task: FirstmateTask = {
 };
 
 it("opens a worker thread without asking the sidebar to reveal its project row", async () => {
-  const reveal: SidebarRouteReveal = { observedKey: "test:coordinator", pendingKey: null };
+  const reveal: SidebarRouteReveal = {
+    observedKey: "test:coordinator",
+    pendingKey: null,
+    claimedKey: null,
+  };
   await using screen = await render(
     <SidebarRouteRevealContext value={reveal}>
       <AgentTaskTree

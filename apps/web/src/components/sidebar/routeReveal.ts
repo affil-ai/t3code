@@ -11,6 +11,8 @@ import { createContext, use } from "react";
 export interface SidebarRouteReveal {
   observedKey: string | null;
   pendingKey: string | null;
+  /** The observed route, when the sidebar navigated to it itself. */
+  claimedKey: string | null;
 }
 
 export const SidebarRouteRevealContext = createContext<SidebarRouteReveal | null>(null);
@@ -23,6 +25,7 @@ export function pendingSidebarRouteReveal(
   if (reveal.observedKey !== routeKey) {
     reveal.observedKey = routeKey;
     reveal.pendingKey = routeKey;
+    reveal.claimedKey = null;
   }
   return reveal.pendingKey;
 }
@@ -38,6 +41,25 @@ export function completeSidebarRouteReveal(reveal: SidebarRouteReveal): void {
 export function claimSidebarRouteReveal(reveal: SidebarRouteReveal, routeKey: string): void {
   reveal.observedKey = routeKey;
   reveal.pendingKey = null;
+  reveal.claimedKey = routeKey;
+}
+
+// A remount starts the list at the top, so a mount owes one reveal of the open
+// thread, without widening the scope. Work's coordinator has no row to reveal,
+// so that debt can outlive the mount's own route; a claimed route cancels it.
+export function sidebarRouteRevealKey(
+  reveal: SidebarRouteReveal,
+  mountRevealOwed: { current: boolean },
+  routeKey: string | null,
+): string | null {
+  const pendingKey = pendingSidebarRouteReveal(reveal, routeKey);
+  if (pendingKey !== null) return pendingKey;
+  if (routeKey === null || !mountRevealOwed.current) return null;
+  if (routeKey === reveal.claimedKey) {
+    mountRevealOwed.current = false;
+    return null;
+  }
+  return routeKey;
 }
 
 export function useClaimSidebarRouteReveal(): (routeKey: string) => void {
