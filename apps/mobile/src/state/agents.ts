@@ -41,6 +41,13 @@ export function useAgentTasks(environmentId: EnvironmentId | null, agentId: Agen
   );
 }
 
+/** The user's open standup items, from the environment that serves agents. */
+export function useStandup(environmentId: EnvironmentId | null) {
+  return useEnvironmentQuery(
+    environmentId === null ? null : agentsEnvironment.standup({ environmentId, input: {} }),
+  );
+}
+
 /** Every agent's coordinator chat, Firstmate's included, as scoped thread keys. */
 export function useAgentCoordinatorThreadKeys(): ReadonlySet<string> {
   return useAtomValue(agentsHome.coordinatorThreadKeysAtom);
