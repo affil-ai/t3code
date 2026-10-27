@@ -477,7 +477,16 @@ async function queue() {
   return requests.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
 }
 
-async function macPull(host, remoteRepo) {
+// One obsolete request that no longer builds must not block the release in hand.
+export function selectPullRequests(requests, version) {
+  if (!version) return requests;
+  const selected = requests.filter((item) => item.version === version);
+  if (selected.length === 0) throw new Error(`${version} is not in the Ubuntu release queue`);
+  return selected;
+}
+
+async function macPull(host, remoteRepo, version) {
+  if (version) jobPath(version); // rejects a malformed version before contacting Ubuntu
   if (
     process.platform !== "darwin" ||
     !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(host ?? "") ||
@@ -489,8 +498,7 @@ async function macPull(host, remoteRepo) {
     run("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, remote]),
   );
   const results = [];
-  for (const item of requests) {
-    validateRequest(item);
+  for (const item of selectPullRequests(requests.map(validateRequest), version)) {
     await request(item.commit, item.version);
     results.push(await build(item.version));
   }
@@ -505,7 +513,7 @@ async function main() {
   else if (command === "manifest") result = await manifest(a, b === "--linux-only");
   else if (command === "check-deploy") result = await checkDeploy(a);
   else if (command === "queue") result = await queue();
-  else if (command === "mac-pull") result = await macPull(a, b);
+  else if (command === "mac-pull") result = await macPull(a, b, process.argv[5]);
   else if (command === "exchange") {
     const { exchange } = await import("./transport.mjs");
     result = await exchange(a, b, process.argv[5]);
@@ -530,7 +538,7 @@ async function main() {
     result = await importArtifact(a, b);
   } else
     throw new Error(
-      "Usage: release.mjs request COMMIT VERSION | build VERSION | manifest VERSION [--linux-only] | check-deploy VERSION | queue | mac-pull SSH_ALIAS REMOTE_REPO",
+      "Usage: release.mjs request COMMIT VERSION | build VERSION | manifest VERSION [--linux-only] | check-deploy VERSION | queue | mac-pull SSH_ALIAS REMOTE_REPO [VERSION]",
     );
   console.log(JSON.stringify(result));
 }

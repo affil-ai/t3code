@@ -17,7 +17,7 @@ node scripts/fork-release/release.mjs request <full-canonical-commit> <fork-vers
 node scripts/fork-release/release.mjs build <fork-version>
 node scripts/fork-release/release.mjs queue
 # On the Mac, using an existing SSH alias and the Ubuntu checkout:
-node scripts/fork-release/release.mjs mac-pull <ssh-alias> <absolute-ubuntu-checkout>
+node scripts/fork-release/release.mjs mac-pull <ssh-alias> <absolute-ubuntu-checkout> <fork-version>
 node --test scripts/fork-release/release-check.test.mjs
 node scripts/fork-release/release-check.mjs preflight
 node scripts/fork-release/release-check.mjs cutover-time
@@ -36,7 +36,10 @@ described under Ubuntu activation) and Cargo for the resource monitor. macOS bui
 in `FORK.md`. The driver uses the source's exact pnpm version and builds its own
 resource monitor; it does not reuse unproven installed binaries.
 
-The Mac pull command is one bounded queue pass, not an installed daemon.
+The Mac pull command is one bounded pass, not an installed daemon. With a
+version it requests and builds only that queued release. Without one it builds
+every queued request oldest first and stops at the first failure, so an
+obsolete request that no longer builds blocks every newer one. Pass the version.
 It uses outbound SSH from the Mac; it does not require an inbound Mac port.
 Mac builds are signed with the local Apple Development identity before hashing.
 That identity must already exist in the Mac keychain.
@@ -196,7 +199,8 @@ Ubuntu. The following manual sequence remains useful for diagnosis or hosts
 without the worker:
 
 Initiate the release on Ubuntu with `request` and `build`. Use the full commit
-from canonical Affil main and a new version. On the Mac, run `mac-pull`, then:
+from canonical Affil main and a new version. On the Mac, run `mac-pull` with
+that version, then:
 
 ```sh
 node scripts/fork-release/release.mjs exchange VERSION SSH_ALIAS REMOTE_CHECKOUT
