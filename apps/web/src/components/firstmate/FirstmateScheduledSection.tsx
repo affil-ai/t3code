@@ -15,8 +15,8 @@ import { useThreadShell } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import {
+  ScheduledRelativeLabel,
   ScheduledTaskEditorDialog,
-  relativeLabel,
   scheduleLabel,
 } from "../settings/ScheduledTasksSettings";
 import { SettingsScopeProvider } from "../settings/SettingsScopeContext";
@@ -92,11 +92,16 @@ export function ScheduledSection({
                 <p className="truncate text-sm leading-5 font-medium">{task.title}</p>
                 <p className="truncate text-2xs text-muted-foreground/80">
                   {scheduleLabel(task.schedule)}
-                  {task.enabled && task.nextRunAt !== null
-                    ? ` · next ${relativeLabel(task.nextRunAt)}`
-                    : task.enabled
-                      ? ""
-                      : " · paused"}
+                  {task.enabled && task.nextRunAt !== null ? (
+                    <>
+                      {" · next "}
+                      <ScheduledRelativeLabel value={task.nextRunAt} />
+                    </>
+                  ) : task.enabled ? (
+                    ""
+                  ) : (
+                    " · paused"
+                  )}
                 </p>
               </div>
               <Tooltip>

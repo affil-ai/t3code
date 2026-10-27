@@ -1,6 +1,4 @@
 /**
- * SecretRequests - secrets an agent asks the user for.
- *
  * The user's answer goes straight to the server's secret store under a
  * SecretRef; orchestration only records the request and its status. A tool
  * that needs the value takes the ref and reads it server-side, so the value
@@ -9,8 +7,6 @@
  * A ref works only for the thread that asked, as often as it likes, until
  * SECRET_REF_TTL_MS after the user saved it. A card with several fields
  * saves one ref per field.
- *
- * @module SecretRequests
  */
 import {
   CommandId,
@@ -37,7 +33,6 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 
 const SECRET_REF_PREFIX = "secret-ref:";
-/** Store name for a ref's value; refs are fixed-length hex, so names stay short and safe. */
 const storeName = (ref: SecretRef) => `secret-request-${ref.slice(SECRET_REF_PREFIX.length)}`;
 const REF_PATTERN = /^secret-ref:[0-9a-f]{32}$/;
 /** How long after the user saves it a ref works; the agent can ask again after. */
@@ -94,10 +89,6 @@ const answerValues = (
 export class SecretRequests extends Context.Service<
   SecretRequests,
   {
-    /**
-     * Answers a pending request in a thread. Saving stores the value under a
-     * new ref that the requesting tool reads from the request's status.
-     */
     readonly answer: (input: SecretRequestAnswerInput) => Effect.Effect<void, SecretRequestError>;
     /**
      * The ref minted when this request was saved, for the tool that asked.
@@ -128,8 +119,8 @@ const make = Effect.gen(function* () {
     yield* store.getOrCreateRandom("secret-request-salt", 32).pipe(Effect.orDie),
   ).toString("hex");
 
-  const answer: SecretRequests["Service"]["answer"] = (input) =>
-    Effect.gen(function* () {
+  const answer: SecretRequests["Service"]["answer"] = Effect.fn("SecretRequests.answer")(
+    function* (input) {
       yield* Effect.annotateCurrentSpan({
         "orchestration_v2.thread_id": input.threadId,
         "secret_request.answer": input.answer.type,
@@ -147,8 +138,6 @@ const make = Effect.gen(function* () {
       if (item.secretStatus !== "pending") {
         return yield* new SecretRequestError({ reason: "already_answered" });
       }
-      // The agent is waiting inside the run that asked; once it has ended,
-      // nobody will ever receive the ref, so a value saved now would be lost.
       const run = records.runs.find((candidate) => candidate.id === item.runId);
       if (run === undefined || ThreadManagementService.isTerminalRunStatus(run.status)) {
         return yield* new SecretRequestError({ reason: "agent_stopped" });
@@ -225,16 +214,17 @@ const make = Effect.gen(function* () {
         yield* removeAll;
         return yield* new SecretRequestError({ reason: "agent_stopped" });
       }
-    }).pipe(Effect.withSpan("SecretRequests.answer"));
+    },
+  );
 
-  const savedRef: SecretRequests["Service"]["savedRef"] = (input) =>
-    Effect.gen(function* () {
+  const savedRef: SecretRequests["Service"]["savedRef"] = Effect.fn("SecretRequests.savedRef")(
+    function* (input) {
       const ref = refFor(salt, input.threadId, input.turnItemId, input.field);
       const stored = yield* store.get(storeName(ref)).pipe(Effect.orElseSucceed(Option.none));
       return Option.map(stored, () => ref);
-    });
+    },
+  );
 
-  /** Removes a stored value; a failure is logged, since the value is still on disk. */
   const removeLogged = (name: string) =>
     store.remove(name).pipe(
       Effect.as(true),
@@ -254,33 +244,30 @@ const make = Effect.gen(function* () {
       Effect.withSpan("SecretRequests.use"),
     );
 
-  const useRef = (input: { readonly ref: SecretRef; readonly threadId: ThreadId }) =>
-    Effect.gen(function* () {
-      if (!REF_PATTERN.test(input.ref))
-        return yield* new SecretRequestError({ reason: "invalid_ref" });
-      const stored = yield* store
-        .get(storeName(input.ref))
-        .pipe(Effect.mapError((cause) => new SecretRequestError({ reason: "read_failed", cause })));
-      const decoded = Option.flatMap(stored, (bytes) =>
-        decodeStored(new TextDecoder().decode(bytes)),
-      );
-      // Another thread's ref reads as missing, so a ref leaks nothing about
-      // whether it exists elsewhere.
-      if (Option.isNone(decoded) || decoded.value.threadId !== input.threadId) {
-        return yield* new SecretRequestError({ reason: "ref_unavailable" });
-      }
-      if ((yield* Clock.currentTimeMillis) - decoded.value.savedAt > SECRET_REF_TTL_MS) {
-        // The sweep retries a removal that fails here.
-        yield* removeLogged(storeName(input.ref));
-        return yield* new SecretRequestError({ reason: "ref_expired" });
-      }
-      return decoded.value.value;
-    });
+  const useRef = Effect.fn("SecretRequests.useRef")(function* (input: {
+    readonly ref: SecretRef;
+    readonly threadId: ThreadId;
+  }) {
+    if (!REF_PATTERN.test(input.ref))
+      return yield* new SecretRequestError({ reason: "invalid_ref" });
+    const stored = yield* store
+      .get(storeName(input.ref))
+      .pipe(Effect.mapError((cause) => new SecretRequestError({ reason: "read_failed", cause })));
+    const decoded = Option.flatMap(stored, (bytes) =>
+      decodeStored(new TextDecoder().decode(bytes)),
+    );
+    // Another thread's ref reads as missing, so a ref leaks nothing about
+    // whether it exists elsewhere.
+    if (Option.isNone(decoded) || decoded.value.threadId !== input.threadId) {
+      return yield* new SecretRequestError({ reason: "ref_unavailable" });
+    }
+    if ((yield* Clock.currentTimeMillis) - decoded.value.savedAt > SECRET_REF_TTL_MS) {
+      yield* removeLogged(storeName(input.ref));
+      return yield* new SecretRequestError({ reason: "ref_expired" });
+    }
+    return decoded.value.value;
+  });
 
-  /**
-   * Drops values nobody used before they expired, so an agent that never
-   * consumed its ref does not leave the user's secret on disk.
-   */
   const sweepExpired = Effect.gen(function* () {
     if (store.directory === undefined) return;
     const now = yield* Clock.currentTimeMillis;
@@ -302,7 +289,6 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Could not sweep expired secret refs", cause)),
     Effect.withSpan("SecretRequests.sweepExpired"),
   );
-  // Once at startup, then every minute; a value lingers at most a minute past expiry.
   yield* sweepExpired;
   yield* sweepExpired.pipe(
     Effect.delay("1 minute"),

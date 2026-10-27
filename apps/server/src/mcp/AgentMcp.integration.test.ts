@@ -24,6 +24,7 @@ import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
@@ -66,6 +67,10 @@ const layerDomains = Layer.mergeAll(FirstmateService.layer, ScheduledTasks.layer
       }),
       // Any accidental schedule dispatch would fail on these absent methods.
       Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
+      }),
       Layer.mock(SecretRequests.SecretRequests)({}),
       Layer.mock(ThreadManagement.ThreadManagementService)({
         getThreadShell: (id) =>

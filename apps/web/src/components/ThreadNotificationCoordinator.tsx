@@ -14,7 +14,7 @@ import {
   MessageCircleQuestionIcon,
   ShieldQuestionIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import { getClientSettings, useClientSettings } from "../hooks/useSettings";
 import { useEnvironmentIds } from "../state/environments";
@@ -24,6 +24,7 @@ import {
   hasNotificationSound,
   playNotificationSound,
   setNotificationBadge,
+  threadNotificationTag,
   unlockNotificationAudio,
 } from "../threadNotifications";
 import { readCompletionSnippet } from "./notificationSnippet";
@@ -39,18 +40,18 @@ export function ThreadNotificationCoordinator() {
   const pending = useRef(
     new Map<string, { environmentId: EnvironmentId; notification: Notification }>(),
   );
-  const onNotification = useCallback((environmentId: EnvironmentId, notification: Notification) => {
+  const onNotification = (environmentId: EnvironmentId, notification: Notification) => {
     pending.current.get(notification.tag)?.notification.close();
     pending.current.set(notification.tag, { environmentId, notification });
     setNotificationBadge(pending.current.size);
-  }, []);
+  };
 
   useEffect(() => {
     const activeIds = new Set(environmentIds);
     const count = pending.current.size;
-    for (const [tag, { environmentId, notification }] of pending.current) {
-      if (activeIds.has(environmentId)) continue;
-      notification.close();
+    for (const [tag, entry] of pending.current) {
+      if (activeIds.has(entry.environmentId)) continue;
+      entry.notification.close();
       pending.current.delete(tag);
     }
     if (count !== pending.current.size) setNotificationBadge(pending.current.size);
@@ -109,8 +110,6 @@ function EnvironmentNotifications({
   onNotification: (environmentId: EnvironmentId, notification: Notification) => void;
 }) {
   const shell = useAtomValue(environmentShell.stateValueAtom(environmentId));
-  // The shell reducer keeps the thread list and unchanged thread objects
-  // stable, so this only rescans when a thread actually changed.
   const threads =
     shell.status === "live" && Option.isSome(shell.snapshot) ? shell.snapshot.value.threads : null;
   const mode = useClientSettings((settings) => settings.notificationMode);
@@ -129,13 +128,11 @@ function EnvironmentNotifications({
       return;
     }
     const next = new Map<ThreadId, NotificationState>();
-    // Subagents are skipped below, so their requests notify through the thread above them.
     const subagentRequests = pendingSubagentRequestsByThread(threads);
     for (const rawThread of threads) {
       if (rawThread.lineage.relationshipToParent === "subagent") continue;
       const prior = previous.current.get(rawThread.id);
       const subagentRequest = subagentRequests.get(rawThread.id) ?? null;
-      // The same object cannot produce a new notification.
       if (prior?.raw === rawThread && prior.subagentRequest === subagentRequest) {
         next.set(rawThread.id, prior);
         continue;
@@ -148,7 +145,6 @@ function EnvironmentNotifications({
           ? `${thread.latestRun?.runId ?? ""}:${status}`
           : null;
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");
-      // Commands left running (a dev server) read as ready; subagents and monitors wait.
       const completion =
         status === "ready" &&
         thread.latestRun?.status === "completed" &&
@@ -160,7 +156,9 @@ function EnvironmentNotifications({
       const kind =
         attention && attention !== prior.attention
           ? "input"
-          : completion !== null && (prior.completion === null || completion > prior.completion)
+          : !rawThread.latestRunStopRequested &&
+              completion !== null &&
+              (prior.completion === null || completion > prior.completion)
             ? "completion"
             : null;
       if (!kind) continue;
@@ -241,13 +239,14 @@ function EnvironmentNotifications({
         try {
           const notification = new Notification(notificationTitle, {
             body,
-            tag: `${environmentId}:${notificationThreadId}`,
+            tag: threadNotificationTag(environmentId, notificationThreadId),
             silent: true,
           });
           onNotification(environmentId, notification);
           notification.addEventListener("click", () => {
             notification.close();
             window.focus();
+            void window.desktopBridge?.revealWindow?.().catch(() => undefined);
             void navigate({
               to: "/$environmentId/$threadId",
               params: { environmentId, threadId: notificationThreadId },

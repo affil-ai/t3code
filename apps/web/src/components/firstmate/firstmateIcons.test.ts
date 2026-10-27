@@ -12,7 +12,7 @@ describe("resolveFirstmateIconKey", () => {
   });
 
   it("keeps every icon the picker offers", () => {
-    expect(FIRSTMATE_ICON_KEYS).toHaveLength(12);
+    expect(FIRSTMATE_ICON_KEYS).toHaveLength(24);
     for (const key of FIRSTMATE_ICON_KEYS) expect(resolveFirstmateIconKey(key)).toBe(key);
   });
 

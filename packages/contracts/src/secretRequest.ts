@@ -22,9 +22,9 @@ export const SECRET_REQUEST_MAX_FIELDS = 8;
 const SecretValue = TrimmedNonEmptyString.check(Schema.isMaxLength(64 * 1024));
 
 /**
- * The user's answer to an agent's request for a secret. A saved value is kept
- * by the server under a SecretRef bound to the asking thread; the thread
- * learns only the status. A card with fields is saved with one value per field.
+ * A saved value is kept by the server under a SecretRef bound to the asking
+ * thread; the thread learns only the status. A card with fields is saved with
+ * one value per field.
  */
 export const SecretRequestAnswerInput = Schema.Struct({
   threadId: ThreadId,
@@ -62,7 +62,6 @@ export const SecretRequestFailureReason = Schema.Literals(
 );
 export type SecretRequestFailureReason = typeof SecretRequestFailureReason.Type;
 
-/** Answering a request or using its ref failed; the message is shown to users and agents. */
 export class SecretRequestError extends Schema.TaggedError<SecretRequestError>()(
   "SecretRequestError",
   {

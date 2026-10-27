@@ -8,7 +8,6 @@ import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 
 import { sortThreads } from "../../lib/threadSort";
-import { getSidebarForkParentThreadId, isSidebarSubagentThread } from "../Sidebar.logic";
 import type { SidebarThreadSummary } from "../../types";
 import {
   buildWorkFolderTree,
@@ -18,6 +17,23 @@ import {
   type WorkFolderNode,
   type WorkModeData,
 } from "../../workModeStore";
+
+// Upstream dropped these Sidebar.logic helpers; Work mode still files forks
+// under their parent and keeps subagent threads out of the Chats list.
+export function getSidebarForkParentThreadId(
+  thread: Pick<SidebarThreadSummary, "forkedFrom" | "lineage">,
+) {
+  if (thread.lineage.relationshipToParent !== "fork") {
+    return null;
+  }
+  return thread.forkedFrom?.type === "run"
+    ? thread.forkedFrom.threadId
+    : thread.lineage.parentThreadId;
+}
+
+function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "lineage">): boolean {
+  return thread.lineage.relationshipToParent === "subagent";
+}
 
 /**
  * The repository project a new Work chat runs in, without asking: the open

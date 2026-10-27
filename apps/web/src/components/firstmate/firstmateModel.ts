@@ -26,6 +26,7 @@ import {
   sortProviderInstanceEntries,
 } from "~/providerInstances";
 import { useProjects, useServerConfigs } from "~/state/entities";
+import { useEnvironmentProviders } from "~/state/environments";
 import { resolveComposerProviderSelection } from "../ChatView.logic";
 import { getComposerProviderState } from "../chat/composerProviderState";
 
@@ -121,7 +122,7 @@ export function useFirstmateModelSelection(environmentId: EnvironmentId): ModelS
       ) ?? null,
     [environmentId, projects, scratchWorkspaceRoot],
   );
-  const providers = serverConfig?.providers;
+  const providers = useEnvironmentProviders().get(environmentId);
   return useMemo(
     () =>
       providers === undefined

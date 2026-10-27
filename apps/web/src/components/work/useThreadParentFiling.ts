@@ -15,7 +15,7 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { useThreadShells } from "../../state/entities";
 import { environmentThreadDetails } from "../../state/threads";
 import { useWorkModeStore } from "../../workModeStore";
-import { getSidebarForkParentThreadId } from "../Sidebar.logic";
+import { getSidebarForkParentThreadId } from "./workChats.logic";
 import {
   parseThreadParentMarker,
   resolveParentWorkProjectId,

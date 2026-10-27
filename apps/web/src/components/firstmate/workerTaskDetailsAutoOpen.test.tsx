@@ -1,6 +1,7 @@
+// @vitest-environment jsdom
 import type { FirstmateTaskId, ScopedThreadRef } from "@t3tools/contracts";
 import { act } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const { open } = vi.hoisted(() => ({ open: vi.fn() }));
@@ -29,7 +30,7 @@ function Probe({
   return null;
 }
 
-let renderer: ReactTestRenderer | null = null;
+let root: Root | null = null;
 
 async function render(
   task: { readonly id: FirstmateTaskId; readonly revision: number } | null,
@@ -37,8 +38,8 @@ async function render(
 ) {
   await act(() => {
     const next = <Probe task={task} shouldUsePlanSidebarSheet={shouldUsePlanSidebarSheet} />;
-    if (renderer) renderer.update(next);
-    else renderer = create(next);
+    root ??= createRoot(document.createElement("div"));
+    root.render(next);
   });
 }
 
@@ -48,8 +49,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(() => renderer?.unmount());
-  renderer = null;
+  await act(() => root?.unmount());
+  root = null;
 });
 
 describe("useAutoOpenWorkerTaskDetails", () => {

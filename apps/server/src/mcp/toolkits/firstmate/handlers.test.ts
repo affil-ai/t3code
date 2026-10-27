@@ -14,6 +14,7 @@ import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../../secrets/SecretRequests.ts";
+import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as AgentMcpService from "../../AgentMcpService.ts";
 
 import * as FirstmateHome from "../../../firstmate/FirstmateHome.ts";
@@ -95,6 +96,10 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
         }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         threadsLayer,
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/projects",
+          isScratchProject: () => Effect.succeed(false),
+        }),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Scheduler.layer,
         NodeCrypto.layer,
