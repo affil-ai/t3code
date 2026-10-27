@@ -5,6 +5,15 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 
+import {
+  SHOWCASE_COORDINATOR_THREAD,
+  SHOWCASE_WORK_TABLES,
+  SHOWCASE_WORK_WORKER_THREADS,
+  seedShowcaseWork,
+  showcaseAgentsHome,
+  writeShowcaseWorkArtifacts,
+} from "./mobile-showcase-work.ts";
+
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
 export const SHOWCASE_PROJECT_ID = "t3code";
@@ -18,6 +27,9 @@ export const SHOWCASE_SCENES = [
   "review",
   "environments",
   "agent-activity",
+  // fork: work
+  "work",
+  "work-task",
 ] as const;
 export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
 
@@ -249,6 +261,20 @@ export const SHOWCASE_THREADS = [
   },
 ] as const;
 
+/** A seeded thread with its single request and optional answer. */
+export interface ShowcaseSeedThread {
+  readonly id: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly branch: string;
+  readonly minutesAgo: number;
+  readonly state?: "working" | "approval" | "plan";
+  readonly settled?: boolean;
+  readonly snoozeMinutes?: number;
+  readonly request: string;
+  readonly response: string | null;
+}
+
 function minutesBefore(now: number, minutes: number): string {
   return new Date(now - minutes * 60_000).toISOString();
 }
@@ -328,17 +354,7 @@ async function seedCompanionWorkspace(input: {
 function insertThread(
   database: NodeSqlite.DatabaseSync,
   now: number,
-  input: {
-    readonly id: string;
-    readonly projectId: string;
-    readonly title: string;
-    readonly branch: string;
-    readonly minutesAgo: number;
-    readonly state?: "working" | "approval" | "plan";
-    readonly settled?: boolean;
-    readonly snoozeMinutes?: number;
-    readonly workspaceRoot: string;
-  },
+  input: ShowcaseSeedThread & { readonly workspaceRoot: string },
 ): void {
   const turnId = `${input.id}-turn`;
   const updatedAt = minutesBefore(now, input.minutesAgo);
@@ -404,6 +420,10 @@ const SEEDED_PROJECTION_TABLES = [...SEEDED_V1_TABLES, "projection_projects"] as
 
 const SEEDED_THREAD_COLUMNS = ["snoozed_until", "snoozed_at"] as const;
 
+// The agent tables are created by the fork's services as they start, after the
+// numbered migrations, so the seed waits for them too.
+const SEEDED_TABLES = [...SEEDED_PROJECTION_TABLES, ...SHOWCASE_WORK_TABLES] as const;
+
 function hasSeedableSchema(dbPath: string): boolean {
   let database: NodeSqlite.DatabaseSync;
   try {
@@ -414,10 +434,10 @@ function hasSeedableSchema(dbPath: string): boolean {
   try {
     const tableCount = database
       .prepare(
-        `SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN (${SEEDED_PROJECTION_TABLES.map(() => "?").join(", ")})`,
+        `SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN (${SEEDED_TABLES.map(() => "?").join(", ")})`,
       )
-      .get(...SEEDED_PROJECTION_TABLES) as { count: number };
-    if (tableCount.count !== SEEDED_PROJECTION_TABLES.length) return false;
+      .get(...SEEDED_TABLES) as { count: number };
+    if (tableCount.count !== SEEDED_TABLES.length) return false;
 
     const threadColumns = database.prepare("PRAGMA table_info(projection_threads)").all() as Array<{
       name: string;
@@ -444,8 +464,9 @@ function seedDatabase(
   dbPath: string,
   workspaceRoots: ReadonlyMap<string, string>,
   projects: ReadonlyArray<(typeof SHOWCASE_PROJECTS)[number]>,
-  threads: ReadonlyArray<(typeof SHOWCASE_THREADS)[number]>,
+  threads: ReadonlyArray<ShowcaseSeedThread>,
   now: number,
+  work: { readonly projectId: string; readonly artifactsRoot: string },
 ): void {
   // The environment server is already running against this file and keeps
   // writing (migrations, projections) while we seed, so the write lock is
@@ -485,11 +506,7 @@ function seedDatabase(
     for (const thread of threads) {
       const workspaceRoot = workspaceRoots.get(thread.projectId);
       if (!workspaceRoot) throw new Error(`Missing workspace root for ${thread.projectId}.`);
-      insertThread(database, now, {
-        ...thread,
-        ...("state" in thread ? { state: thread.state } : {}),
-        workspaceRoot,
-      });
+      insertThread(database, now, { ...thread, workspaceRoot });
     }
 
     const insertMessage = database.prepare(
@@ -524,6 +541,12 @@ function seedDatabase(
       }
     }
 
+    seedShowcaseWork(database, now, {
+      projectId: work.projectId,
+      workerThreadIds: SHOWCASE_WORK_WORKER_THREADS[work.projectId] ?? [],
+      artifactsRoot: work.artifactsRoot,
+    });
+
     database.exec("COMMIT");
   } catch (error) {
     // A failed BEGIN (or an error SQLite already auto-rolled back) leaves no
@@ -549,15 +572,23 @@ export async function seedShowcaseEnvironment(input: {
   );
   const projects = SHOWCASE_PROJECTS.filter((project) => selectedProjectIds.has(project.id));
   if (projects.length === 0) throw new Error("At least one showcase project must be selected.");
-  const threads = SHOWCASE_THREADS.filter((thread) => selectedProjectIds.has(thread.projectId));
+  const primaryProjectId =
+    projects.find((project) => project.id === SHOWCASE_PROJECT_ID)?.id ?? projects[0]?.id;
+  if (!primaryProjectId) throw new Error("The primary showcase project is not configured.");
+  // Every environment gets the same agent boards: the app picks whichever
+  // connects first as its Firstmate home, so each one must be able to serve
+  // the Work scenes.
+  const threads: ReadonlyArray<ShowcaseSeedThread> = [
+    ...SHOWCASE_THREADS.filter((thread) => selectedProjectIds.has(thread.projectId)),
+    { ...SHOWCASE_COORDINATOR_THREAD, projectId: primaryProjectId },
+  ];
   const workspaceBase = NodePath.join(input.baseDir, "workspace");
   const workspaceRoots = new Map(
     projects.map(
       (project) => [project.id, NodePath.join(workspaceBase, project.directory)] as const,
     ),
   );
-  const primaryProject =
-    projects.find((project) => project.id === SHOWCASE_PROJECT_ID) ?? projects[0];
+  const primaryProject = projects.find((project) => project.id === primaryProjectId);
   if (!primaryProject) throw new Error("The primary showcase workspace is not configured.");
   const workspaceRoot = workspaceRoots.get(primaryProject.id);
   if (!workspaceRoot) throw new Error("The primary showcase workspace is not configured.");
@@ -582,7 +613,12 @@ export async function seedShowcaseEnvironment(input: {
   // The environment server begins listening before it finishes migrating the
   // database, so wait for the schema before deleting from and reseeding it.
   await waitForSeedableSchema(dbPath);
-  seedDatabase(dbPath, workspaceRoots, projects, threads, now);
+  const artifactsRoot = showcaseAgentsHome(input.baseDir).artifactsRoot;
+  await writeShowcaseWorkArtifacts(artifactsRoot);
+  seedDatabase(dbPath, workspaceRoots, projects, threads, now, {
+    projectId: primaryProjectId,
+    artifactsRoot,
+  });
 
   const terminalDirectory = NodePath.join(input.baseDir, "userdata", "logs", "terminals");
   if (selectedProjectIds.has(SHOWCASE_PROJECT_ID)) {

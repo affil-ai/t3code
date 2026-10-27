@@ -820,6 +820,8 @@ describe("FirstmateService", () => {
       expect((yield* service.get(growth, { taskId: theirs.task.id })).task.title).toBe(
         "Growth task",
       );
+      // Clients read any board's task history (firstmate.getTask passes no agent).
+      expect((yield* service.get(null, { taskId: theirs.task.id })).task.title).toBe("Growth task");
       // Boards carry their own name and coordinator.
       yield* service.setCoordinator(growth, { threadId: ThreadId.make("growth-chat") });
       const board = yield* service

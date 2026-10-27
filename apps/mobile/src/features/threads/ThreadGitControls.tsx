@@ -410,14 +410,15 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
   };
 }
 
+// fork: work. T3 Work chats keep only Files in the header; terminal and git stay off it.
 export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
-  return [actionItems.git, actionItems.files, actionItems.terminal] as HeaderItems;
+  return [actionItems.files] as HeaderItems;
 }
 
 export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
-  return [actionItems.files, actionItems.git, actionItems.terminal] as HeaderItems;
+  return [actionItems.files] as HeaderItems;
 }
 
 export function ThreadGitControls(props: ThreadGitControlsProps) {
@@ -438,63 +439,7 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
           separateBackground
         />
       ) : null}
-      {showActionControls ? (
-        <Toolbar.Menu
-          accessibilityLabel="Open terminal"
-          icon="terminal"
-          disabled={!props.canOpenTerminal}
-          separateBackground
-        >
-          {props.projectScripts.length > 0 ? (
-            props.projectScripts.map((script) => (
-              <Toolbar.MenuAction
-                key={script.id}
-                icon={projectScriptMenuIcon(script.icon)}
-                disabled={!props.canOperateTerminal}
-                onPress={() => void props.onRunProjectScript(script)}
-                subtitle={script.command}
-              >
-                <Toolbar.Label>{projectScriptMenuLabel(script)}</Toolbar.Label>
-              </Toolbar.MenuAction>
-            ))
-          ) : (
-            <Toolbar.MenuAction
-              icon="play"
-              disabled
-              onPress={() => {}}
-              subtitle="This project has no saved scripts yet"
-            >
-              <Toolbar.Label>No project scripts</Toolbar.Label>
-            </Toolbar.MenuAction>
-          )}
-          {props.terminalSessions.map((session) => (
-            <Toolbar.MenuAction
-              key={session.terminalId}
-              icon="terminal"
-              onPress={() => props.onOpenTerminal(session.terminalId)}
-              subtitle={[
-                getTerminalStatusLabel({
-                  status: session.status,
-                  hasRunningSubprocess: session.hasRunningSubprocess,
-                }),
-                basename(session.cwd),
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            >
-              <Toolbar.Label>{session.displayLabel}</Toolbar.Label>
-            </Toolbar.MenuAction>
-          ))}
-          <Toolbar.MenuAction
-            icon="plus"
-            disabled={!props.canOperateTerminal}
-            onPress={props.onOpenNewTerminal}
-            subtitle="Start another shell for this thread"
-          >
-            <Toolbar.Label>Open new terminal</Toolbar.Label>
-          </Toolbar.MenuAction>
-        </Toolbar.Menu>
-      ) : null}
+      {/* fork: work. No terminal or git menu in T3 Work chats. */}
       {showActionControls && props.showDirectFileControl ? (
         <Toolbar.Button
           accessibilityLabel="Open files"
@@ -504,7 +449,6 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
           separateBackground
         />
       ) : null}
-      {showActionControls ? createNativeHeaderMenu(threadGitMenuDefinition(props, model)) : null}
     </Toolbar>
   );
 }

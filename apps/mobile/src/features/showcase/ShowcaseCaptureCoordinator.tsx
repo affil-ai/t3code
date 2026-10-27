@@ -7,6 +7,7 @@ import {
   StackActions,
   useNavigation,
 } from "@react-navigation/native";
+import { FIRSTMATE_AGENT_ID, FirstmateTaskId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
 import { useConnectionController } from "../connection/useConnectionController";
@@ -16,6 +17,9 @@ import { useProjects, useThreadShells } from "../../state/entities";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
 import { holdEditingQueuedMessage } from "../../state/use-thread-outbox";
 import { useWorkspaceState } from "../../state/workspace";
+import { useAgentsHome } from "../../state/agents";
+import { useFirstmateHome, useFirstmateTask } from "../../state/firstmate";
+import { useSelectedAgent } from "../work/useSelectedAgent";
 import {
   applyNativeShowcaseOrientation,
   getNativeShowcaseOrientation,
@@ -37,24 +41,25 @@ import {
   isShowcaseNativeContentReady,
   subscribeToShowcaseRenderSignal,
 } from "./showcaseRenderSignal";
+import {
+  isShowcaseWorkspaceRoot,
+  isWorkShowcaseScene,
+  isWorkspaceRootShowcaseScene,
+  resolveShowcaseScene,
+  SHOWCASE_WORK_AGENT_COUNT,
+  SHOWCASE_WORK_TASK_ID,
+  showcaseWorkspaceTab,
+} from "./showcaseScenes";
+import {
+  requestShowcaseWorkspaceTab,
+  useShowcaseSelectedWorkspaceTab,
+} from "./showcaseWorkspaceTab";
 import { stageShowcaseAgentActivity } from "./stageShowcaseAgentActivity";
 
 const SHOWCASE_ENABLED = process.env.EXPO_PUBLIC_SHOWCASE === "1";
 const SHOWCASE_THREAD_ID = "remote-command-center";
 
 type ShowcaseResetRoute = PartialState<NavigationState>["routes"][number];
-
-function sceneFromPathname(pathname: string): ShowcaseScene | null {
-  const routePath = pathname.split(/[?#]/u, 1)[0] ?? pathname;
-  if (routePath === "/settings" || routePath.endsWith("/settings/environments")) {
-    return "environments";
-  }
-  if (routePath.endsWith("/terminal")) return "terminal";
-  if (routePath.endsWith("/review")) return "review";
-  if (routePath.startsWith("/threads/")) return "thread";
-  if (routePath === "/") return "threads";
-  return null;
-}
 
 export function ShowcaseCaptureCoordinator(props: { readonly pathname: string }) {
   if (!SHOWCASE_ENABLED) return null;
@@ -73,6 +78,11 @@ function EnabledShowcaseCaptureCoordinator(props: { readonly pathname: string })
   const workspace = useWorkspaceState();
   const projects = useProjects();
   const threads = useThreadShells();
+  // fork: work
+  const firstmateHome = useFirstmateHome();
+  const agentsHome = useAgentsHome();
+  const { isFirstmate, selectAgent } = useSelectedAgent();
+  const selectedTab = useShowcaseSelectedWorkspaceTab();
   const attemptedPairingRef = useRef(new Set<string>());
   const seededPendingTaskIdsRef = useRef(new Set<string>());
   const [pairingUrls, setPairingUrls] = useState<ReadonlyArray<string>>([]);
@@ -179,9 +189,25 @@ function EnabledShowcaseCaptureCoordinator(props: { readonly pathname: string })
     };
   }, [connectPairingUrl, pairingUrls]);
 
-  const routeScene = sceneFromPathname(props.pathname);
-  const scene =
-    requestedScene === "agent-activity" && routeScene === "threads" ? "agent-activity" : routeScene;
+  const scene = resolveShowcaseScene({ pathname: props.pathname, requestedScene, selectedTab });
+  // fork: work. Every seeded environment carries the same boards; the scenes
+  // use whichever one the app picked as its Firstmate home.
+  const workEnvironmentId = firstmateHome?.environmentId ?? null;
+  const workTask = useFirstmateTask(
+    requestedScene === "work-task" ? workEnvironmentId : null,
+    FirstmateTaskId.make(SHOWCASE_WORK_TASK_ID),
+  );
+  const tabApplied =
+    requestedScene === null || (selectedTab ?? "threads") === showcaseWorkspaceTab(requestedScene);
+  const workReady =
+    requestedScene === null ||
+    !isWorkShowcaseScene(requestedScene) ||
+    (firstmateHome !== null &&
+      firstmateHome.snapshot.coordinatorThreadId !== null &&
+      firstmateHome.snapshot.tasks.some((task) => String(task.id) === SHOWCASE_WORK_TASK_ID) &&
+      (agentsHome?.agents.length ?? 0) >= SHOWCASE_WORK_AGENT_COUNT &&
+      isFirstmate &&
+      (requestedScene !== "work-task" || workTask.isSuccess));
   const hasServerFixture =
     workspace.state.hasReadyEnvironment &&
     workspace.environments.length >= 3 &&
@@ -222,8 +248,24 @@ function EnabledShowcaseCaptureCoordinator(props: { readonly pathname: string })
   }, [hasServerFixture, pendingTasksReady, projects]);
 
   useEffect(() => {
+    if (requestedScene === null) return;
+    requestShowcaseWorkspaceTab(showcaseWorkspaceTab(requestedScene));
+  }, [requestedScene]);
+
+  useEffect(() => {
+    if (requestedScene === null || !isWorkShowcaseScene(requestedScene)) return;
+    if (agentsHome === null || isFirstmate) return;
+    void selectAgent(FIRSTMATE_AGENT_ID);
+  }, [agentsHome, isFirstmate, requestedScene, selectAgent]);
+
+  useEffect(() => {
     if (requestedScene === null || !hasFixture || !showcaseThread) return;
     if (scene === requestedScene) return;
+    // The root's scenes differ only by workspace tab, which the tab request
+    // switches; resetting here would remount the workspace and its tab state.
+    if (isWorkspaceRootShowcaseScene(requestedScene) && isShowcaseWorkspaceRoot(props.pathname)) {
+      return;
+    }
 
     const params = {
       environmentId: String(showcaseThread.environmentId),
@@ -233,12 +275,22 @@ function EnabledShowcaseCaptureCoordinator(props: { readonly pathname: string })
       navigation.dispatch(StackActions.popToTop());
       return;
     }
-    if (requestedScene === "agent-activity") {
+    if (requestedScene === "agent-activity" || requestedScene === "work") {
       navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: "Home" }] }));
       return;
     }
     const routes: ShowcaseResetRoute[] = [{ name: "Home" }];
-    if (requestedScene === "environments") {
+    if (requestedScene === "work-task") {
+      if (workEnvironmentId === null) return;
+      routes.push({
+        name: "WorkTask",
+        params: {
+          environmentId: String(workEnvironmentId),
+          taskId: SHOWCASE_WORK_TASK_ID,
+          agentId: FIRSTMATE_AGENT_ID,
+        },
+      });
+    } else if (requestedScene === "environments") {
       routes.push({
         name: "SettingsSheet",
         state: {
@@ -271,7 +323,15 @@ function EnabledShowcaseCaptureCoordinator(props: { readonly pathname: string })
         routes,
       }),
     );
-  }, [hasFixture, navigation, requestedScene, scene, showcaseThread]);
+  }, [
+    hasFixture,
+    navigation,
+    props.pathname,
+    requestedScene,
+    scene,
+    showcaseThread,
+    workEnvironmentId,
+  ]);
 
   useEffect(() => {
     if (scene !== "agent-activity" || !hasFixture || agentActivityStaged) {
@@ -309,6 +369,8 @@ function EnabledShowcaseCaptureCoordinator(props: { readonly pathname: string })
       requestedScene === null ||
       scene !== requestedScene ||
       !hasFixture ||
+      !tabApplied ||
+      !workReady ||
       !orientationSettled ||
       !themeApplied ||
       (scene === "agent-activity" && !agentActivityStaged) ||
@@ -343,6 +405,8 @@ function EnabledShowcaseCaptureCoordinator(props: { readonly pathname: string })
     scene,
     themeApplied,
     themeId,
+    workReady,
+    tabApplied,
   ]);
 
   if (readyScene === null) return null;

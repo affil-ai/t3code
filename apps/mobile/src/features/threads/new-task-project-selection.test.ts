@@ -2,7 +2,9 @@ import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { HomeProjectScope } from "../home/homeThreadList";
+import { withoutAgentHomeProjects } from "./agent-chats";
 import {
   newTaskDestination,
   resolveDraftProjectSelection,
@@ -124,6 +126,17 @@ describe("newTaskDestination", () => {
   it("uses an available project when split view has no current project", () => {
     expect(newTaskDestination(true, [makeProject("first")], undefined, "request")).toEqual({
       draft: { requestId: "request", environmentId: "environment", projectId: "first" },
+    });
+  });
+  it("skips an agent's home project, from it or as the fallback", () => {
+    // fork: agents. The layout passes the user's projects, without home projects.
+    const home = makeProject("agent-home");
+    const projects = withoutAgentHomeProjects(
+      [home, makeProject("app")],
+      new Set([scopedProjectKey(home.environmentId, home.id)]),
+    );
+    expect(newTaskDestination(true, projects, home, "request")).toEqual({
+      draft: { requestId: "request", environmentId: "environment", projectId: "app" },
     });
   });
   it("keeps the picker when there are no projects", () => {

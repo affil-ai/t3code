@@ -64,6 +64,7 @@ import { ThreadPullRequestsSheet } from "./features/threads/ThreadPullRequestsSh
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { ThreadBackgroundWorkSheet } from "./features/threads/ThreadBackgroundWorkSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
+import { WorkTaskScreen } from "./features/work/WorkTaskScreen"; // fork: work
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
@@ -703,6 +704,12 @@ const RootStackConfig = createWorkspaceStackNavigator({
         sheetAllowedDetents: formSheetDetents(0.75),
         sheetGrabberVisible: true,
       },
+    }),
+    // fork: work
+    WorkTask: createNativeStackScreen({
+      screen: WorkTaskScreen,
+      linking: "work/:environmentId/tasks/:taskId",
+      options: DETAIL_HEADER_OPTIONS,
     }),
     Thread: createNativeStackScreen({
       screen: ThreadRouteScreen,

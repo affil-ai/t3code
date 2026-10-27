@@ -5,6 +5,7 @@ import type { AppBarAction } from "../../components/ui/AppBar.types";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import type { ThreadInspectorMode } from "./thread-inspector-content-stack";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
+import { useThreadWorkspaceTab } from "./use-agent-chats"; // fork: agents
 import { useWorkspaceBackNavigation } from "../workspace/useAndroidWorkspaceNavigation";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 
@@ -19,10 +20,16 @@ export function ThreadHeader(
     readonly onOpenFilesInspector: () => void;
   },
 ) {
-  const goBack = useWorkspaceBackNavigation("threads");
+  // fork: agents. Agent chats opened from Work go back to Work.
+  const goBack = useWorkspaceBackNavigation(
+    useThreadWorkspaceTab(
+      String(props.gitControls.environmentId),
+      String(props.gitControls.threadId),
+    ),
+  );
   const { layout, panes, toggleAuxiliaryPane, composerKeyboardActive } =
     useAdaptiveWorkspaceLayout();
-  const { onOpenTerminal, onMergeBack } = props.gitControls;
+  const { onMergeBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
   const androidHeaderActions = useMemo<ReadonlyArray<AppBarAction>>(() => {
     const actions: AppBarAction[] = [];
@@ -31,6 +38,14 @@ export function ThreadHeader(
         accessibilityLabel: "Return to chat",
         icon: "chevron.left",
         onPress: props.onReturnToThread,
+      });
+    }
+    // fork: agents. A worker chat opens its task's details from the header, never the timeline.
+    if (props.onOpenTask) {
+      actions.push({
+        accessibilityLabel: "Task details",
+        icon: "info.circle",
+        onPress: props.onOpenTask,
       });
     }
     if (props.hasThreadCwd) {
@@ -42,18 +57,7 @@ export function ThreadHeader(
         onPress: filesVisible ? toggleAuxiliaryPane : props.onOpenFilesInspector,
       });
     }
-    if (props.hasWorkspaceRoot && props.gitControls.canOpenTerminal) {
-      actions.push({
-        accessibilityLabel: "Open terminal",
-        icon: "terminal",
-        onPress: () => onOpenTerminal(null),
-      });
-    }
-    actions.push({
-      accessibilityLabel: "Open git controls",
-      icon: "point.topleft.down.curvedto.point.bottomright.up",
-      onPress: props.onOpenGitInspector,
-    });
+    // fork: work. No terminal or git controls in T3 Work chats.
     if (onMergeBack) {
       actions.push({
         accessibilityLabel: "Merge back to source",
@@ -66,14 +70,11 @@ export function ThreadHeader(
     props.inspectorMode,
     panes.auxiliaryPaneVisible,
     props.onOpenFilesInspector,
-    onOpenTerminal,
     onMergeBack,
-    props.onOpenGitInspector,
     toggleAuxiliaryPane,
     props.onReturnToThread,
+    props.onOpenTask, // fork: agents
     props.hasThreadCwd,
-    props.hasWorkspaceRoot,
-    props.gitControls.canOpenTerminal,
   ]);
 
   return (

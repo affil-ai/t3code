@@ -17,23 +17,22 @@ import { Button, InlineButton } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
-import { firstmateColumnForTask } from "./firstmateBoard.logic";
+import { firstmateColumnForTask } from "@t3tools/client-runtime/firstmate/board";
 import { FirstmateArtifactList } from "./FirstmateTaskArtifacts";
 import { TaskPriorityToggle } from "./TaskPriority";
 import { TaskProgressLine } from "./FirstmateTaskProgress";
 import { ExternalTaskLink, WorkerThreadLink } from "./FirstmateTaskLinks";
+import { COLUMN_DOT, CoordinatorThreadContext, relativeAge } from "./firstmateTasksShared";
 import {
-  COLUMN_DOT,
   COLUMN_LABELS,
-  CoordinatorThreadContext,
+  approvalMessage,
   doneCriteria,
   EVENT_ACTOR_LABELS,
   nextActorLabel,
   readableTaskEvents,
-  relativeAge,
   taskNextStep,
   taskStatusLabel,
-} from "./firstmateTasksShared";
+} from "@t3tools/client-runtime/firstmate/tasks";
 
 function DetailSection({
   title,
@@ -106,7 +105,7 @@ function draftApproval(environmentId: EnvironmentId, threadId: ThreadId, nextSte
   const target = scopeThreadRef(environmentId, threadId);
   const store = useComposerDraftStore.getState();
   const existing = store.getComposerDraft(target)?.prompt.trimEnd() ?? "";
-  const approval = `Approved: ${nextStep}`;
+  const approval = approvalMessage(nextStep);
   store.setPrompt(target, existing.length > 0 ? `${existing}\n\n${approval}` : approval);
   toastManager.add({
     type: "info",

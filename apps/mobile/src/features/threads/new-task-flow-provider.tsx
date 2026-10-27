@@ -33,7 +33,6 @@ import { pipe } from "effect/Function";
 
 import {
   useEnvironmentServerConfig,
-  useProjects,
   useServerConfigs,
   useThreadShells,
 } from "../../state/entities";
@@ -123,6 +122,7 @@ import {
   resolveNewTaskWorkspaceSelection,
 } from "./new-task-context-presentation";
 import { resolveEnvironmentProjectMatch } from "./new-task-project-selection";
+import { useUserProjects } from "./use-agent-chats"; // fork: agents
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
 
 type WorkspaceMode = "local" | "worktree";
@@ -264,7 +264,7 @@ export function NewTaskFlowProvider(
     routePendingTaskId?: string;
   }>,
 ) {
-  const projects = useProjects();
+  const projects = useUserProjects(); // fork: agents. Home projects run only their coordinator.
   const threads = useThreadShells();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const groupingSettings = useMobileProjectGroupingSettings();

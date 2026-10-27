@@ -6,6 +6,10 @@ import { PullRequestsScreen } from "../pull-requests/PullRequestsScreen";
 import { PullRequestToolbar } from "../pull-requests/PullRequestToolbar.android";
 import { WorkspaceTabsContext, useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { WorkspaceTabPanes } from "./WorkspaceTabPanes";
+import { AndroidScreenHeader } from "../../components/ui/AndroidScreenHeader"; // fork: work
+import { WorkScreen } from "../work/WorkScreen"; // fork: work
+import { useVisibleWorkspaceTabs } from "../work/WorkTabState"; // fork: work
+import { useAndroidWorkspaceSelection } from "./useAndroidWorkspaceSelection"; // fork: work
 
 export function AndroidWorkspaceSidebar(props: {
   readonly children: ReactNode;
@@ -14,13 +18,27 @@ export function AndroidWorkspaceSidebar(props: {
 }) {
   const workspace = useWorkspaceTabs()!;
   const context = useMemo(() => ({ ...workspace, bottomClearance: 16 }), [workspace]);
+  const tabs = useVisibleWorkspaceTabs(); // fork: work
+  const selectAndroidWorkspace = useAndroidWorkspaceSelection(); // fork: work
   return (
     <WorkspaceTabPanes
-      tabs={["threads", "pullRequests"]}
+      tabs={tabs}
       selected={workspace.state.selectedTab}
       renderTab={(tab) =>
         tab === "threads" ? (
           props.children
+        ) : tab === "work" ? ( // fork: work
+          <WorkspaceTabsContext value={context}>
+            <View className="flex-1 bg-header">
+              <AndroidScreenHeader title="Work" />
+              <ScreenContent insetHorizontal>
+                <WorkScreen
+                  sidebar
+                  onOpenChat={(params) => selectAndroidWorkspace({ name: "Thread", params })}
+                />
+              </ScreenContent>
+            </View>
+          </WorkspaceTabsContext>
         ) : (
           <WorkspaceTabsContext value={context}>
             <PullRequestFilterMenuProvider>

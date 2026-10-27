@@ -64,4 +64,16 @@ describe("workspace root navigation", () => {
     expect(state.tabs.pullRequests.searchMode).toBe("resting");
     expect(workspaceTabsReducer(state, { type: "select", tab: "pullRequests" })).toBe(state);
   });
+
+  it("keeps the Work tab's search and position apart from the other tabs", () => {
+    let state = workspaceTabsReducer(initialWorkspaceTabsState(), { type: "select", tab: "work" });
+    expect(state.selectedTab).toBe("work");
+    state = workspaceTabsReducer(state, { type: "scroll", tab: "work", offset: 120 });
+    state = workspaceTabsReducer(state, { type: "search" });
+    state = workspaceTabsReducer(state, { type: "query", query: "deploy" });
+    expect(state.tabs.work).toMatchObject({ query: "deploy", searchMode: "active" });
+    expect(state.tabs.threads.query).toBe("");
+    state = workspaceTabsReducer(state, { type: "cancel" });
+    expect(state.tabs.work).toMatchObject({ query: "", scrollOffset: 120, searchMode: "resting" });
+  });
 });

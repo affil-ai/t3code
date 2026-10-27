@@ -20,6 +20,7 @@ import { dispatchHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCom
 import { WorkspaceConnectionTitle } from "../home/WorkspaceConnectionTitle";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { PullRequestsScreen } from "../pull-requests/PullRequestsScreen";
+import { WorkScreen } from "../work/WorkScreen"; // fork: work
 import {
   WorkspaceTabsContext,
   WorkspaceTabsProvider,
@@ -33,6 +34,7 @@ import { useSidebarWorkspaceTabs, useSystemWorkspaceTabBar } from "./useSystemWo
 const TAB_TITLES = {
   threads: "Threads",
   pullRequests: "Pull requests",
+  work: "Work", // fork: work
 };
 
 function WorkspaceRootTitle(props: {
@@ -44,7 +46,8 @@ function WorkspaceRootTitle(props: {
     <View style={{ width: props.maxWidth, minHeight: 32, justifyContent: "center" }}>
       <WorkspaceConnectionTitle
         brand={
-          <CompactBrandTitle accessibilityLabel={`T3 Code, ${TAB_TITLES[state.selectedTab]}`} />
+          // fork: brand
+          <CompactBrandTitle accessibilityLabel={`T3 Work, ${TAB_TITLES[state.selectedTab]}`} />
         }
         maxWidth={props.maxWidth}
         onPress={props.onOpenEnvironments}
@@ -56,7 +59,7 @@ function WorkspaceRootTitle(props: {
 function WorkspaceRootContent() {
   const navigation = useNavigation();
   const { width: windowWidth } = useWindowDimensions();
-  const { layout, startNewTask } = useAdaptiveWorkspaceLayout();
+  const { layout, startNewTask, selectThreadRoute } = useAdaptiveWorkspaceLayout();
   const primaryColumn = use(NativePrimaryColumnContext);
   const columnMetrics = useNativeColumnLayoutMetrics();
   const nativeMetrics = useNativeLayoutMetrics();
@@ -125,12 +128,12 @@ function WorkspaceRootContent() {
           />
         ) : (
           <AndroidScreenHeader
-            title="T3 Code"
+            title="T3 Work" // fork: brand
             titleContent={renderHeaderTitle()}
             actions={[
               {
                 accessibilityLabel:
-                  state.selectedTab === "threads" ? "Search threads" : "Search pull requests",
+                  state.selectedTab === "pullRequests" ? "Search pull requests" : "Search threads",
                 icon: "magnifyingglass",
                 onPress: () => {
                   dispatchHardwareKeyboardCommand("focusSearch");
@@ -149,7 +152,13 @@ function WorkspaceRootContent() {
           />
         )}
         <SafeAreaInsetsContext value={sidebarPicker ? { ...insets, top: 0 } : insets}>
-          {state.selectedTab === "threads" ? <HomeRouteScreen /> : <PullRequestsScreen />}
+          {state.selectedTab === "threads" ? (
+            <HomeRouteScreen />
+          ) : state.selectedTab === "work" ? ( // fork: work
+            <WorkScreen onOpenChat={selectThreadRoute} />
+          ) : (
+            <PullRequestsScreen />
+          )}
         </SafeAreaInsetsContext>
         {sidebarPicker ? <WorkspaceSidebarTabs /> : null}
         <WorkspaceToolbar sidebar={sidebarNavigation} onNewTask={startNewTask} />

@@ -31,7 +31,9 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
-import { useProjects, useNavigationThreadShells } from "../../state/entities";
+import { useNavigationThreadShells } from "../../state/entities";
+import { withoutAgentChats } from "./agent-chats"; // fork: agents
+import { useHiddenAgentChatKeys, useUserProjects } from "./use-agent-chats"; // fork: agents
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { usePendingThreadOrder } from "../../state/thread-order";
@@ -135,8 +137,9 @@ function ThreadNavigationSidebarPane(
 
   const insets = useSafeAreaInsets();
   const { fabClearance } = useAndroidControlSizing();
-  const projects = useProjects();
-  const threads = useNavigationThreadShells();
+  const projects = useUserProjects(); // fork: agents. Home projects run only their coordinator.
+  // fork: agents. Agent coordinator chats and custom agents' worker chats live in Work.
+  const threads = withoutAgentChats(useNavigationThreadShells(), useHiddenAgentChatKeys());
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInputInstance>(null);

@@ -92,11 +92,23 @@ service start when `PRAGMA table_info` shows them missing.
 | `coordinatorPrompt.ts`                  | The coordinator chat's first message                                            |
 | `rpc.ts`, `runtimeLayer.ts`, `index.ts` | Wiring into the server's RPC and runtime                                        |
 
-The web side follows the same split in `apps/web/src/components/firstmate/`:
-`firstmateBoard.logic.ts` (columns, pure), `FirstmateTasksPanel.tsx` (the
-list), `FirstmateTaskDetail.tsx`, `FirstmateTaskLinks.tsx`,
-`FirstmateTaskArtifacts.tsx`, and `firstmateTasksShared.ts` (labels and the
-coordinator context they share).
+The board rules web and mobile share are pure modules in
+`packages/client-runtime/src/firstmate/`: `board.ts` (columns and sidebar
+order), `tasks.ts` (labels and next steps), `progress.ts`, `agents.ts` (the
+selected agent), `chatLists.ts`, and `icons.ts` (icon keys; each client draws
+its own glyphs). The agent and board atoms are in
+`packages/client-runtime/src/state/agents.ts` and `state/firstmate.ts`. The
+web side follows the same split in `apps/web/src/components/firstmate/`:
+`FirstmateTasksPanel.tsx` (the list), `FirstmateTaskDetail.tsx`,
+`FirstmateTaskLinks.tsx`, `FirstmateTaskArtifacts.tsx`, and
+`firstmateTasksShared.ts` (column colors and the coordinator context they
+share).
+
+Mobile's Work tab (`apps/mobile/src/features/work/`) differs from web's
+sidebar in one deliberate way: tapping a task opens its detail, even when it
+has a worker, rather than the worker's chat. On the phone the detail is where
+the user acts on a task (priority, and the requests sent to the coordinator),
+and it links to the worker chat; the worker chat links back with Open task.
 
 `FirstmateReactor` uses no model. It is woken by orchestration events where
 possible and otherwise sweeps every 30 seconds. It collects wake reasons:

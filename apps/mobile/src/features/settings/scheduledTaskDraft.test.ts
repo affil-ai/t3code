@@ -5,8 +5,11 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
+  draftBoundThreadId,
+  draftModelSelectionInput,
   scheduledTaskDefaultModel,
   DEFAULT_SCHEDULE,
   scheduleDraftForTask,
@@ -195,4 +198,47 @@ it("rejects dedupe keys without valid request placeholders", () => {
   expect(
     scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "webhook", coalesceKey: "{{body.bad" }),
   ).toBeNull();
+});
+
+describe("draftBoundThreadId", () => {
+  const chat = ThreadId.make("agent-chat");
+  const own = ThreadId.make("task-chat");
+  it("keeps an edited task's own chat", () => {
+    expect(draftBoundThreadId({ task: { threadId: own }, boundThreadId: chat })).toBe(own);
+    expect(draftBoundThreadId({ task: { threadId: null }, boundThreadId: chat })).toBeNull();
+  });
+  it("binds a new task to the chat it was opened for", () => {
+    expect(draftBoundThreadId({ task: null, boundThreadId: chat })).toBe(chat);
+    expect(draftBoundThreadId({ task: null })).toBeNull();
+  });
+});
+
+describe("draftModelSelectionInput", () => {
+  const seeded = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-seeded" };
+  const stored = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-stored" };
+  const chat = ThreadId.make("agent-chat");
+  it("sends a new bound task's seeded model for servers that still require one", () => {
+    expect(
+      draftModelSelectionInput({ task: null, boundThreadId: chat, modelSelection: seeded }),
+    ).toEqual({ modelSelection: seeded });
+  });
+  it("sends an edited bound task's stored model back, not the draft's", () => {
+    expect(
+      draftModelSelectionInput({
+        task: { threadId: chat, modelSelection: stored },
+        modelSelection: seeded,
+      }),
+    ).toEqual({ modelSelection: stored });
+    expect(
+      draftModelSelectionInput({
+        task: { threadId: chat, modelSelection: null },
+        modelSelection: seeded,
+      }),
+    ).toEqual({});
+  });
+  it("sends the chosen model for an unbound task", () => {
+    expect(draftModelSelectionInput({ task: null, modelSelection: seeded })).toEqual({
+      modelSelection: seeded,
+    });
+  });
 });

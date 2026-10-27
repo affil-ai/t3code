@@ -2,6 +2,8 @@
  * Which agent the Work sidebar shows, from the saved choice and the live
  * agent list. A saved id that no longer exists (archived, or another
  * server) falls back the same way as no choice.
+ *
+ * @module firstmate/agents
  */
 import { type AgentProfile, FIRSTMATE_AGENT_ID } from "@t3tools/contracts";
 
@@ -59,4 +61,38 @@ export function reorderAgentIds(
   next.splice(from, 1);
   next.splice(to, 0, activeId);
   return next;
+}
+
+/** Where a client keeps its selected agent and tab order. Each client keeps its own. */
+export const SELECTED_AGENT_STORAGE_KEY = "t3work:selected-agent:v1";
+
+export interface SelectedAgentData {
+  /** The chosen agent id, or null for Firstmate (or the hosted preference). */
+  selectedAgentId: string | null;
+  /** Without an explicit choice, open the first custom agent instead of Firstmate. */
+  preferCustomAgent: boolean;
+  /** Agent ids in the user's tab order; empty keeps the server's order. */
+  agentOrder: string[];
+}
+
+/** Reads a stored selection defensively: anything malformed falls back to the defaults. */
+export function sanitizeSelectedAgentData(value: unknown): SelectedAgentData {
+  const raw =
+    value && typeof value === "object"
+      ? (value as { selectedAgentId?: unknown; preferCustomAgent?: unknown; agentOrder?: unknown })
+      : {};
+  return {
+    selectedAgentId:
+      typeof raw.selectedAgentId === "string" && raw.selectedAgentId !== ""
+        ? raw.selectedAgentId
+        : null,
+    preferCustomAgent: raw.preferCustomAgent === true,
+    agentOrder: Array.isArray(raw.agentOrder)
+      ? [
+          ...new Set(
+            raw.agentOrder.filter((id): id is string => typeof id === "string" && id !== ""),
+          ),
+        ]
+      : [],
+  };
 }

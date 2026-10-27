@@ -21,6 +21,11 @@ function loadRouters() {
 
 vi.mock("react-native", () => ({ Platform: { OS: "ios" }, Keyboard: { dismiss: vi.fn() } }));
 
+// fork: work. The workspace tab provider now reads the agents state, which loads Expo.
+vi.mock("../workspace/useAndroidWorkspaceSelection", () => ({
+  useAndroidWorkspaceSelection: vi.fn(),
+}));
+
 vi.mock("@react-navigation/native", () => {
   const { CommonActions, StackActions } = loadRouters();
   return { CommonActions, StackActions };

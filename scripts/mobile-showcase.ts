@@ -29,6 +29,7 @@ import {
   SHOWCASE_THREADS,
   seedShowcaseEnvironment,
 } from "./mobile-showcase-environment.ts";
+import { showcaseAgentsHomeEnv } from "./mobile-showcase-work.ts";
 
 const REPO_ROOT = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const MOBILE_ROOT = NodePath.join(REPO_ROOT, "apps/mobile");
@@ -37,6 +38,10 @@ const APP_SCHEME = "t3code";
 // expo-dev-launcher reads these off the manifest URL and updates the dev menu
 // preferences before the app loads, keeping captures free of dev chrome.
 const DEV_CLIENT_LAUNCH_FLAGS = "disableOnboarding=1&disableFab=1&disableAutoLaunch=1";
+// The iOS dev menu reads only `__expo_`-prefixed flags off a Metro URL; without
+// them it opens over the app at launch and covers every capture.
+const IOS_DEV_CLIENT_LAUNCH_FLAGS =
+  "__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1";
 const IOS_READY_FILENAME = "T3ShowcaseReadyScene";
 const SERVER_HOST = "0.0.0.0";
 const IOS_SIMULATOR_ARCH = NodeProcess.arch === "arm64" ? "arm64" : "x86_64";
@@ -631,6 +636,7 @@ function startShowcaseServer(
     {
       env: {
         ...NodeProcess.env,
+        ...showcaseAgentsHomeEnv(baseDir), // fork: agents
         PATH: `${labelProbeDirectory}:${NodeProcess.env.PATH ?? ""}`,
         SHELL: shellPath,
       },
@@ -657,7 +663,7 @@ async function issuePairingCredential(baseDir: string): Promise<string> {
   const output = await commandOutput(
     "node",
     ["apps/server/src/bin.ts", "auth", "pairing", "create", "--base-dir", baseDir, "--json"],
-    { env: { ...NodeProcess.env, NO_COLOR: "1" } },
+    { env: { ...NodeProcess.env, ...showcaseAgentsHomeEnv(baseDir), NO_COLOR: "1" } },
   );
   return parsePairingCredentialOutput(output);
 }
@@ -1097,7 +1103,7 @@ async function captureIos(
     await runCommand("xcrun", ["simctl", "install", simulator.udid, appPath]);
   }
 
-  const metroUrl = `http://${metroHost}:${config.metroPort}?${DEV_CLIENT_LAUNCH_FLAGS}`;
+  const metroUrl = `http://${metroHost}:${config.metroPort}?${IOS_DEV_CLIENT_LAUNCH_FLAGS}`;
   const scenePath = NodePath.join(
     await iosAppContainer(simulator.udid),
     "Library/Caches/T3ShowcaseScene",
@@ -1523,16 +1529,18 @@ async function main(): Promise<void> {
       await NodeFSP.mkdir(workspaceRoot, { recursive: true });
       const shellPath = await createShowcaseShell(baseDir);
       const labelProbeDirectory = await createShowcaseLabelProbe(baseDir, environment.label);
-      const server = startShowcaseServer(
-        baseDir,
-        workspaceRoot,
-        port,
-        shellPath,
-        labelProbeDirectory,
-      );
-      showcaseServers.push(server);
+      const start = () =>
+        startShowcaseServer(baseDir, workspaceRoot, port, shellPath, labelProbeDirectory);
+      const migrating = start();
+      showcaseServers.push(migrating);
       await waitForPort(port, `${environment.label} server`);
       await seedShowcaseEnvironment({ baseDir, projectIds: environment.projectIds });
+      // The seed writes V1 projection rows, which the V2 server imports only at
+      // startup; without a restart the app pairs with an empty thread list.
+      await stopProcess(migrating);
+      showcaseServers.splice(showcaseServers.indexOf(migrating), 1);
+      showcaseServers.push(start());
+      await waitForPort(port, `${environment.label} server`);
       // The server begins listening before the ServerEnvironment layer
       // persists the environment id, so poll rather than read once.
       const environmentId = await waitForFileContent(

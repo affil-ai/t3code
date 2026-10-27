@@ -1,7 +1,7 @@
 import { FIRSTMATE_DEFAULT_ICON } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { FIRSTMATE_ICON_KEYS, resolveFirstmateIconKey } from "./firstmateIcons";
+import { FIRSTMATE_ICON_KEYS, resolveFirstmateIconKey } from "./icons.ts";
 
 describe("resolveFirstmateIconKey", () => {
   it("defaults to the compass, which is in the picker", () => {

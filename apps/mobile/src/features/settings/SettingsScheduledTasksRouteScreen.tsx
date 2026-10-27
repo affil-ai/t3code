@@ -10,6 +10,7 @@ import type {
   ProjectId,
   ScheduledTask,
   ScheduledTaskUpsertInput,
+  ThreadId, // fork: work
 } from "@t3tools/contracts";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
@@ -33,7 +34,12 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { useFocusEffect, useNavigation, usePreventRemove } from "@react-navigation/native";
+import {
+  type StaticScreenProps, // fork: work
+  useFocusEffect,
+  useNavigation,
+  usePreventRemove,
+} from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { AppState, Platform, Pressable, TextInput as RNTextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -71,6 +77,8 @@ import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 import {
+  draftBoundThreadId,
+  draftModelSelectionInput,
   editDraft,
   scheduledTaskDefaultModel,
   scheduleFromDraft,
@@ -84,6 +92,13 @@ import {
   formatNextScheduledTaskRun,
   formatScheduledTaskInterval,
 } from "./scheduledTaskPresentation";
+
+/** A new task opened for one chat, such as an agent's Automations. */
+export type ScheduledTaskNewTarget = {
+  readonly environmentId: string;
+  readonly projectId: string;
+  readonly threadId: string;
+}; // fork: work
 
 type ScheduledTaskRoutes = {
   SettingsScheduledTaskNew: undefined;
@@ -449,15 +464,42 @@ export function SettingsScheduledTasksRouteScreen() {
   );
 }
 
-export function SettingsScheduledTaskNewRouteScreen() {
-  const { resetEditor } = useScheduledTaskEditor();
+export function SettingsScheduledTaskNewRouteScreen({
+  route,
+}: StaticScreenProps<ScheduledTaskNewTarget | undefined>) {
+  const { resetEditor, startEditor, draftForEnvironment } = useScheduledTaskEditor();
   const { availableTargets } = useSettingsEnvironmentFilter();
   const initialized = useRef(false);
+  const target = route.params; // fork: work
   useLayoutEffect(() => {
     if (initialized.current || availableTargets.length === 0) return;
     initialized.current = true;
+    // fork: work: a new automation for an agent opens in its project, posting into its chat.
+    const environment = target
+      ? availableTargets.find((candidate) => candidate.environmentId === target.environmentId)
+      : undefined;
+    if (target && environment) {
+      const draft = draftForEnvironment(environment.environmentId);
+      startEditor({
+        environmentId: environment.environmentId,
+        environmentLabel: environment.label,
+        draft: {
+          ...draft,
+          projectId: target.projectId as ProjectId,
+          boundThreadId: target.threadId as ThreadId,
+        },
+      });
+      return;
+    }
+    if (target) {
+      // The agent's environment isn't connected, so the task can't be saved there.
+      Dialog.alert(
+        "Agent's environment isn't connected",
+        "This automation won't post into the agent's chat. Reconnect that environment to bind it.",
+      );
+    }
     resetEditor();
-  }, [availableTargets.length, resetEditor]);
+  }, [availableTargets, resetEditor, startEditor, draftForEnvironment, target]);
   return <SettingsScheduledTaskEditorScreen title="New scheduled task" />;
 }
 
@@ -723,7 +765,7 @@ function TaskForm({
       );
       return;
     }
-    const boundThreadId = draft.task?.threadId ?? null; // fork: scheduled-task-inherit-model
+    const boundThreadId = draftBoundThreadId(draft); // fork: scheduled-task-inherit-model, work
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
@@ -747,13 +789,7 @@ function TaskForm({
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
       projectId: draft.projectId,
-      // A bound run uses its chat's current model. The stored one is sent back
-      // because servers that predate optional models still require it.
-      ...(boundThreadId === null
-        ? { modelSelection: draft.modelSelection }
-        : draft.task?.modelSelection
-          ? { modelSelection: draft.task.modelSelection }
-          : {}),
+      ...draftModelSelectionInput(draft), // fork: scheduled-task-inherit-model, work
       schedule,
       enabled: draft.enabled,
       threadId: boundThreadId,
@@ -843,7 +879,7 @@ function TaskForm({
 
         <SettingsSection
           title="Context"
-          {...(draft.task?.threadId
+          {...(draftBoundThreadId(draft)
             ? { footer: "Runs use the chat's current model and never change it." }
             : {})}
         >
@@ -880,7 +916,7 @@ function TaskForm({
               });
             }}
           />
-          {draft.task?.threadId ? null : (
+          {draftBoundThreadId(draft) ? null : (
             <PickerRow
               label="Model"
               borderTop

@@ -12,9 +12,12 @@ import { WorkspaceTabsContext, useWorkspaceTabs } from "./WorkspaceTabsContext";
 import type { WorkspaceTab } from "./workspace-tabs-state";
 import { NativeWorkspaceTabActivityContext } from "../../native/v5-workspace-context";
 import { useSystemWorkspaceTabBar } from "./useSystemWorkspaceTabBar";
+import { useVisibleWorkspaceTabs } from "../work/WorkTabState"; // fork: work
 
 const PULL_REQUEST_ICON = require("../../../assets/icons/pull-request.png");
 const COMPOSE_TAB = "compose";
+const NATIVE_TAB_TITLES = { threads: "Threads", pullRequests: "Pulls", work: "Work" }; // fork: work
+const NATIVE_TAB_LABELS = { threads: "Threads", pullRequests: "Pull requests", work: "Work" }; // fork: work
 
 /** Retain each native controller tree; removing its root can leave RNS's stack empty. */
 function RetainedWorkspaceTab(props: {
@@ -60,6 +63,7 @@ export function WorkspaceNativeTabs(props: {
   const [provenance, setProvenance] = useState(0);
   const systemTabBar = useSystemWorkspaceTabBar();
   const selectedTab = workspace.state.selectedTab;
+  const tabs = useVisibleWorkspaceTabs(); // fork: work
   const request = useMemo(
     () => ({ selectedScreenKey: selectedTab, baseProvenance: provenance }),
     [selectedTab, provenance],
@@ -82,7 +86,7 @@ export function WorkspaceNativeTabs(props: {
         }}
         onTabSelected={({ nativeEvent }: NativeSyntheticEvent<TabSelectedEvent>) => {
           const tab = nativeEvent.selectedScreenKey;
-          if (tab !== "threads" && tab !== "pullRequests") return;
+          if (tab !== "threads" && tab !== "pullRequests" && tab !== "work") return; // fork: work
           setProvenance(nativeEvent.provenance);
           if (nativeEvent.actionOrigin === "programmatic-js" || tab === selectedTab) return;
           Keyboard.dismiss();
@@ -90,19 +94,25 @@ export function WorkspaceNativeTabs(props: {
           workspace.dispatch({ type: "select", tab });
         }}
       >
-        {(["threads", "pullRequests"] as const).map((tab: WorkspaceTab) => (
+        {tabs.map((tab: WorkspaceTab) => (
           <Tabs.Screen
             key={tab}
             screenKey={tab}
-            title={tab === "threads" ? "Threads" : "Pulls"}
-            tabBarItemAccessibilityLabel={tab === "threads" ? "Threads" : "Pull requests"}
+            title={NATIVE_TAB_TITLES[tab]}
+            tabBarItemAccessibilityLabel={NATIVE_TAB_LABELS[tab]}
             ios={{
               icon:
                 tab === "threads"
                   ? { type: "sfSymbol", name: "text.bubble" }
-                  : { type: "templateSource", templateSource: PULL_REQUEST_ICON },
+                  : tab === "work" // fork: work
+                    ? { type: "sfSymbol", name: "person.2" }
+                    : { type: "templateSource", templateSource: PULL_REQUEST_ICON },
               selectedIcon:
-                tab === "threads" ? { type: "sfSymbol", name: "text.bubble.fill" } : undefined,
+                tab === "threads"
+                  ? { type: "sfSymbol", name: "text.bubble.fill" }
+                  : tab === "work" // fork: work
+                    ? { type: "sfSymbol", name: "person.2.fill" }
+                    : undefined,
               overrideScrollViewContentInsetAdjustmentBehavior: false,
             }}
           >

@@ -29,10 +29,10 @@ import { AgentAvatar } from "../agents/AgentAvatar";
 import { AgentAvatarUpload } from "../agents/AgentAvatarUpload";
 import {
   FIRSTMATE_ICON_KEYS,
-  FIRSTMATE_ICONS,
   type FirstmateIconKey,
   resolveFirstmateIconKey,
-} from "./firstmateIcons";
+} from "@t3tools/client-runtime/firstmate/icons";
+import { FIRSTMATE_ICONS } from "./firstmateIcons";
 
 const NAME_MAX_LENGTH = 60;
 

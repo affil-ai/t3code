@@ -93,6 +93,8 @@ import {
 import { threadRouteIsHydrating } from "./thread-route-hydration";
 import { useThreadPromptLink } from "../prompt-links/useThreadPromptLink";
 import { ThreadHeader } from "./ThreadHeader";
+import { useThreadAgentContext, useThreadWorkspaceTab } from "./use-agent-chats"; // fork: agents
+import { useWorkNavigation } from "../work/WorkNavigation"; // fork: agents
 import {
   useAndroidWorkspaceBack,
   useWorkspaceBackNavigation,
@@ -200,13 +202,13 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
 }
 
 function LiveThreadRouteController(props: ThreadRouteScreenProps) {
-  useAndroidWorkspaceBack("threads");
-  const connectionsReady = useConnectionsReady();
-  const { connectionState } = useRemoteConnectionStatus();
-  const { selectedThread } = useThreadSelection();
   const params = props.route.params ?? {};
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const threadIdRaw = firstRouteParam(params.threadId);
+  useAndroidWorkspaceBack(useThreadWorkspaceTab(environmentIdRaw, threadIdRaw)); // fork: agents
+  const connectionsReady = useConnectionsReady();
+  const { connectionState } = useRemoteConnectionStatus();
+  const { selectedThread } = useThreadSelection();
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
   const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
   const routeEnvironmentShellState = useEnvironmentShellReadiness(environmentId);
@@ -434,8 +436,24 @@ function ThreadRouteContent(
     : null;
 
   const usesNativeHeaderGlass = NATIVE_LIQUID_GLASS_SUPPORTED;
+  // fork: agents. A coordinator chat names its agent; a worker chat links to its task.
+  const agentContext = useThreadAgentContext(
+    selectedThread?.environmentId ?? null,
+    selectedThread?.id ?? null,
+  );
+  const agentTask = agentContext.task;
+  const workNavigation = useWorkNavigation();
+  const openAgentTask =
+    selectedThread !== null && agentTask !== null
+      ? () =>
+          workNavigation.openTask({
+            environmentId: selectedThread.environmentId,
+            taskId: agentTask.id,
+            ...(agentContext.agentId === null ? {} : { agentId: agentContext.agentId }),
+          })
+      : undefined;
   const headerSubtitle = [
-    selectedThreadProject?.title ?? null,
+    agentContext.coordinatorAgent?.name ?? selectedThreadProject?.title ?? null, // fork: agents
     selectedEnvironmentConnection?.environmentLabel ?? null,
   ]
     .filter(Boolean)
@@ -914,6 +932,7 @@ function ThreadRouteContent(
               onOpenGitInspector={handleOpenGitInspector}
               onOpenFilesInspector={handleOpenFilesInspector}
               onReturnToThread={props.onReturnToThread}
+              onOpenTask={openAgentTask} // fork: agents
             />
           }
           canOperateThread={canOperateThread}

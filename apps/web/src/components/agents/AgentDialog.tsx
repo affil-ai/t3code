@@ -13,10 +13,10 @@ import { PROJECT_ICON_COLORS } from "~/projectIconColors";
 import { useFirstmateModelSelection } from "../firstmate/firstmateModel";
 import {
   FIRSTMATE_ICON_KEYS,
-  FIRSTMATE_ICONS,
   type FirstmateIconKey,
   resolveFirstmateIconKey,
-} from "../firstmate/firstmateIcons";
+} from "@t3tools/client-runtime/firstmate/icons";
+import { FIRSTMATE_ICONS } from "../firstmate/firstmateIcons";
 import { Button } from "../ui/button";
 import {
   Dialog,

@@ -12,12 +12,13 @@ import {
   type EnvironmentId,
   standupProgress,
 } from "@t3tools/contracts";
+import { COLUMN_LABELS } from "@t3tools/client-runtime/firstmate/tasks";
 import { useNavigate } from "@tanstack/react-router";
 
 import { cn } from "~/lib/utils";
 import { useRightPanelStore } from "~/rightPanelStore";
 import type { StandupTaskRow } from "~/state/agents";
-import { COLUMN_DOT, COLUMN_LABELS } from "../firstmate/firstmateTasksShared";
+import { COLUMN_DOT } from "../firstmate/firstmateTasksShared";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { useClaimSidebarRouteReveal } from "../sidebar/routeReveal";
 import { useSidebar } from "../ui/sidebar";

@@ -23,6 +23,8 @@ export function useThreadHeaderOptions(props: {
   readonly usesNativeHeaderGlass: boolean;
   readonly gitControls: Parameters<typeof ThreadGitControls>[0];
   readonly onReturnToThread?: () => void;
+  /** fork: agents. Opens the task this worker chat runs; omitted on other chats. */
+  readonly onOpenTask?: () => void;
   readonly draft?: boolean;
 }) {
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
@@ -70,6 +72,22 @@ export function useThreadHeaderOptions(props: {
     ],
     [sidebarHeaderItem, props.onReturnToThread, props.draft, startNewTask, usesDuoHeader],
   );
+  // fork: agents. A worker chat opens its task's details from the header, never the timeline.
+  const taskHeaderItems = useMemo<NativeHeaderItems>(
+    () =>
+      props.onOpenTask
+        ? [
+            withNativeGlassHeaderItem({
+              accessibilityLabel: "Task details",
+              icon: { name: "info.circle", type: "sfSymbol" as const },
+              identifier: "thread-right-open-task",
+              onPress: props.onOpenTask,
+              type: "button" as const,
+            }),
+          ]
+        : [],
+    [props.onOpenTask],
+  );
   const canGoBack = navigation.canGoBack();
   const compactHomeHeaderItems = useMemo<NativeHeaderItems>(
     () => [
@@ -95,8 +113,12 @@ export function useThreadHeaderOptions(props: {
         ? undefined
         : () => compactHomeHeaderItems,
     // The workspace navigator adds compose to the Duo detail column's bar.
-    unstable_headerRightItems: () =>
-      usesDuoHeader || layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems,
+    unstable_headerRightItems: () => [
+      ...taskHeaderItems, // fork: agents
+      ...(usesDuoHeader || layout.usesSplitView
+        ? threadCenterHeaderItems
+        : compactRightHeaderItems),
+    ],
     unstable_headerToolbarItems: () => [],
     unstable_headerSubtitle: props.usesNativeHeaderGlass ? props.subtitle : undefined,
     contentStyle: undefined,
@@ -112,6 +134,7 @@ export function useThreadHeaderOptions(props: {
       splitLeftHeaderItems,
       threadCenterHeaderItems,
       compactRightHeaderItems,
+      taskHeaderItems, // fork: agents
       usesDuoHeader,
       environmentId,
       threadId,

@@ -4,7 +4,13 @@ import UIKit
 final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   let onSelectionChange = EventDispatcher()
   private let tabBar = UITabBar()
+  /** The selected item's tag: 0 Threads, 1 Pulls, 2 Work. */
   var selectedIndex = 0 { didSet { updateSelection() } }
+  // fork: work: the Work tab leads the bar on servers that run agents.
+  var showsWork = false {
+    didSet { if showsWork != oldValue { configureItems() } }
+  }
+  private var pullRequestIcon: UIImage?
   var selectedColor: UIColor = .systemBlue { didSet { tabBar.tintColor = selectedColor } }
   var appearance = "light" {
     didSet { overrideUserInterfaceStyle = appearance == "dark" ? .dark : .light }
@@ -13,16 +19,25 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
     let iconBundle = Bundle(for: Self.self).url(forResource: "T3NativeControlIcons", withExtension: "bundle").flatMap(Bundle.init(url:))
-    let pullRequestIcon = UIImage(named: "pull-request", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
-    tabBar.items = [
-      UITabBarItem(title: "Threads", image: tabIcon(UIImage(systemName: "text.bubble")), tag: 0),
-      UITabBarItem(title: "Pulls", image: tabIcon(pullRequestIcon), tag: 1),
-    ]
-    tabBar.items?.last?.accessibilityLabel = "Pull requests"
-    tabBar.items?.first?.selectedImage = tabIcon(UIImage(systemName: "text.bubble.fill"))
+    pullRequestIcon = UIImage(named: "pull-request", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
     tabBar.itemPositioning = .fill
     tabBar.delegate = self
     addSubview(tabBar)
+    configureItems()
+  }
+
+  private func configureItems() {
+    let threads = UITabBarItem(title: "Threads", image: tabIcon(UIImage(systemName: "text.bubble")), tag: 0)
+    threads.selectedImage = tabIcon(UIImage(systemName: "text.bubble.fill"))
+    let pulls = UITabBarItem(title: "Pulls", image: tabIcon(pullRequestIcon), tag: 1)
+    pulls.accessibilityLabel = "Pull requests"
+    var items = [threads, pulls]
+    if showsWork {
+      let work = UITabBarItem(title: "Work", image: tabIcon(UIImage(systemName: "person.2")), tag: 2)
+      work.selectedImage = tabIcon(UIImage(systemName: "person.2.fill"))
+      items.insert(work, at: 0)
+    }
+    tabBar.items = items
     updateSelection()
   }
 
@@ -49,9 +64,9 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   }
 
   private func updateSelection() {
-    guard let items = tabBar.items, items.indices.contains(selectedIndex) else { return }
-    guard tabBar.selectedItem !== items[selectedIndex] else { return }
-    tabBar.selectedItem = items[selectedIndex]
+    guard let item = tabBar.items?.first(where: { $0.tag == selectedIndex }) else { return }
+    guard tabBar.selectedItem !== item else { return }
+    tabBar.selectedItem = item
   }
 
   func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {

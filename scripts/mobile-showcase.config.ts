@@ -62,6 +62,10 @@ export interface ShowcaseConfig {
   readonly devices: ReadonlyArray<ShowcaseDevice>;
 }
 
+// fork: work. iOS sets only: all three would push a Google Play set past its
+// 8-image limit, so add Android's chosen Work scenes once its Work tab is verified.
+const WORK_SCENES = ["work", "work-task"] as const satisfies ReadonlyArray<ShowcaseScene>;
+
 const ANDROID_ABIS = ["arm64-v8a", "x86_64", "x86", "armeabi-v7a"] as const;
 
 export function resolveShowcaseAndroidAbi(
@@ -90,7 +94,15 @@ const config: ShowcaseConfig = {
       simulatorDeviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro-Max",
       appearance: "dark",
       theme: DEFAULT_SHOWCASE_THEME,
-      scenes: ["thread", "terminal", "review", "threads", "environments", "agent-activity"],
+      scenes: [
+        "thread",
+        "terminal",
+        "review",
+        "threads",
+        "environments",
+        "agent-activity",
+        ...WORK_SCENES,
+      ],
       storeAsset: {
         store: "apple",
         directory: "apple/iphone-6.9",
@@ -107,7 +119,15 @@ const config: ShowcaseConfig = {
       simulatorDeviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-14-Plus",
       appearance: "dark",
       theme: DEFAULT_SHOWCASE_THEME,
-      scenes: ["thread", "terminal", "review", "threads", "environments", "agent-activity"],
+      scenes: [
+        "thread",
+        "terminal",
+        "review",
+        "threads",
+        "environments",
+        "agent-activity",
+        ...WORK_SCENES,
+      ],
       storeAsset: {
         store: "apple",
         directory: "apple/iphone-6.5",
@@ -127,7 +147,7 @@ const config: ShowcaseConfig = {
       orientation: "landscape",
       // The lock screen does not follow the app's self-rotation, so a
       // headless landscape capture of it would come out sideways.
-      scenes: ["thread", "terminal", "review", "threads", "environments"],
+      scenes: ["thread", "terminal", "review", "threads", "environments", ...WORK_SCENES],
       storeAsset: {
         store: "apple",
         directory: "apple/ipad-13",

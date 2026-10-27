@@ -252,7 +252,7 @@ import {
 } from "./sidebar/routeReveal";
 import { AgentSwitcher, useSelectedAgent } from "./agents/AgentSwitcher"; // fork: agents
 import { AgentSidebarSections } from "./agents/AgentSidebarSections"; // fork: agents
-import { isFirstmateAgent } from "./agents/selectedAgent.logic"; // fork: agents
+import { isFirstmateAgent } from "@t3tools/client-runtime/firstmate/agents"; // fork: agents
 import { useCustomAgentWorkerThreadKeys } from "~/state/agents"; // fork: agents
 import { Separator } from "./ui/separator"; // fork: agents
 import { useFirstmateCoordinatorThreadKeys } from "./firstmate/useFirstmateCoordinatorThreadKeys"; // fork: firstmate

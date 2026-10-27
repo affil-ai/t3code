@@ -1,7 +1,6 @@
-import { useMemo } from "react";
+import { firstmateCoordinatorThreadKeys } from "@t3tools/client-runtime/firstmate/chat-lists";
 
 import { useFirstmateHome } from "~/state/firstmate";
-import { firstmateCoordinatorThreadKeys } from "./firstmateChatLists.logic";
 
 /**
  * The coordinator chat's scoped key, for the sidebar lists to leave out. It
@@ -9,10 +8,8 @@ import { firstmateCoordinatorThreadKeys } from "./firstmateChatLists.logic";
  */
 export function useFirstmateCoordinatorThreadKeys(): ReadonlySet<string> {
   const home = useFirstmateHome();
-  const environmentId = home?.environmentId ?? null;
-  const coordinatorThreadId = home?.snapshot.coordinatorThreadId ?? null;
-  return useMemo(
-    () => firstmateCoordinatorThreadKeys(environmentId, coordinatorThreadId),
-    [environmentId, coordinatorThreadId],
+  return firstmateCoordinatorThreadKeys(
+    home?.environmentId ?? null,
+    home?.snapshot.coordinatorThreadId ?? null,
   );
 }

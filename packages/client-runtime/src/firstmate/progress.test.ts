@@ -1,7 +1,7 @@
 import type { FirstmateTask } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { firstmateProgressView, sparklinePoints } from "./firstmateProgress";
+import { firstmateProgressView, sparklinePoints } from "./progress.ts";
 
 const AT = "2026-10-24T10:00:00.000Z";
 

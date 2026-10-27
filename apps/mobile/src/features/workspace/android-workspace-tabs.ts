@@ -5,7 +5,7 @@ import type { WorkspaceTab } from "./workspace-tabs-state";
 /** Settings joins the two list tabs as a top-level Android destination. */
 export type AndroidWorkspaceNavigationTab = WorkspaceTab | "settings";
 
-const WORKSPACE_ROUTES = new Set(["Home", "Thread", "PullRequest", "SettingsSheet"]);
+const WORKSPACE_ROUTES = new Set(["Home", "Thread", "PullRequest", "WorkTask", "SettingsSheet"]); // fork: work
 
 /**
  * The Settings tab reuses the settings navigator, reset over Home alone so stale chat and

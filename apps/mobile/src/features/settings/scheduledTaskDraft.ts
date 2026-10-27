@@ -7,6 +7,7 @@ import type {
   ScheduledTask,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskWebhookSignature,
+  ThreadId, // fork: work
 } from "@t3tools/contracts";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
@@ -197,7 +198,41 @@ export type ScheduledTaskDraft = {
   readonly enabled: boolean;
   readonly startFromOrigin: boolean;
   readonly runtimeMode: RuntimeMode;
+  /** The chat a new task posts into, such as an agent's; edits keep the task's own. */
+  readonly boundThreadId?: ThreadId | null; // fork: work
 };
+
+/**
+ * The chat a task posts into: an edited task keeps its own, a new one may be
+ * bound to an agent's chat. A bound run uses that chat's current model.
+ */
+export function draftBoundThreadId(
+  draft: Pick<ScheduledTaskDraft, "boundThreadId"> & {
+    readonly task: { readonly threadId: ThreadId | null } | null;
+  },
+): ThreadId | null {
+  return draft.task ? draft.task.threadId : (draft.boundThreadId ?? null);
+}
+
+/**
+ * The model a save sends. A bound run uses its chat's current model, so the
+ * value only matters to servers that predate optional models and still require
+ * one: an edited task sends its stored model back, a new one its seeded default.
+ */
+export function draftModelSelectionInput(
+  draft: Pick<ScheduledTaskDraft, "boundThreadId" | "modelSelection"> & {
+    readonly task: {
+      readonly threadId: ThreadId | null;
+      readonly modelSelection?: ModelSelection | null | undefined;
+    } | null;
+  },
+): { readonly modelSelection?: ModelSelection } {
+  if (draftBoundThreadId(draft) === null) {
+    return draft.modelSelection ? { modelSelection: draft.modelSelection } : {};
+  }
+  const modelSelection = draft.task ? draft.task.modelSelection : draft.modelSelection;
+  return modelSelection ? { modelSelection } : {};
+}
 
 function draftSignature(draft: ScheduledTaskDraft): string {
   return JSON.stringify([

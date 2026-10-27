@@ -36,6 +36,7 @@ public final class T3NativeControlsModule: Module {
       ViewName("SidebarTabBar")
       Events("onSelectionChange")
       Prop("selectedIndex") { (view: T3SidebarTabBarView, value: Int) in view.selectedIndex = value }
+      Prop("showsWork") { (view: T3SidebarTabBarView, value: Bool) in view.showsWork = value } // fork: work
       Prop("selectedColor") { (view: T3SidebarTabBarView, value: UIColor) in view.selectedColor = value }
       Prop("appearance") { (view: T3SidebarTabBarView, value: String) in view.appearance = value }
     }

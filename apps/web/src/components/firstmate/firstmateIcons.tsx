@@ -1,9 +1,13 @@
 /**
- * The icons a user can pick for Firstmate. The server stores the key; a key
- * this client does not know, such as one from a newer client, draws as the
- * default compass.
+ * The lucide glyph for each agent icon key. The keys, labels, and the
+ * unknown-key fallback live in `@t3tools/client-runtime/firstmate/icons`,
+ * shared with mobile.
  */
-import { FIRSTMATE_DEFAULT_ICON } from "@t3tools/contracts";
+import {
+  FIRSTMATE_ICON_LABELS,
+  type FirstmateIconKey,
+  resolveFirstmateIconKey,
+} from "@t3tools/client-runtime/firstmate/icons";
 import {
   AnchorIcon,
   BotIcon,
@@ -33,45 +37,40 @@ import {
 } from "lucide-react";
 
 export const FIRSTMATE_ICONS = {
-  compass: { label: "Compass", Icon: CompassIcon },
-  "ship-wheel": { label: "Ship wheel", Icon: ShipWheelIcon },
-  anchor: { label: "Anchor", Icon: AnchorIcon },
-  sparkles: { label: "Sparkles", Icon: SparklesIcon },
-  bot: { label: "Bot", Icon: BotIcon },
-  rocket: { label: "Rocket", Icon: RocketIcon },
-  star: { label: "Star", Icon: StarIcon },
-  zap: { label: "Lightning", Icon: ZapIcon },
-  brain: { label: "Brain", Icon: BrainIcon },
-  heart: { label: "Heart", Icon: HeartIcon },
-  flag: { label: "Flag", Icon: FlagIcon },
-  crown: { label: "Crown", Icon: CrownIcon },
-  "dollar-sign": { label: "Dollar sign", Icon: DollarSignIcon },
-  wallet: { label: "Wallet", Icon: WalletIcon },
-  "chart-no-axes-combined": { label: "Growth chart", Icon: ChartNoAxesCombinedIcon },
-  "briefcase-business": { label: "Business", Icon: BriefcaseBusinessIcon },
-  code: { label: "Code", Icon: CodeIcon },
-  search: { label: "Search", Icon: SearchIcon },
-  "book-open": { label: "Book", Icon: BookOpenIcon },
-  "graduation-cap": { label: "Learning", Icon: GraduationCapIcon },
-  palette: { label: "Palette", Icon: PaletteIcon },
-  camera: { label: "Camera", Icon: CameraIcon },
-  "shield-check": { label: "Shield", Icon: ShieldCheckIcon },
-  globe: { label: "Globe", Icon: GlobeIcon },
-} as const satisfies Record<string, { readonly label: string; readonly Icon: LucideIcon }>;
-
-export type FirstmateIconKey = keyof typeof FIRSTMATE_ICONS;
-
-export const FIRSTMATE_ICON_KEYS = Object.keys(FIRSTMATE_ICONS) as FirstmateIconKey[];
-
-function isFirstmateIconKey(value: string): value is FirstmateIconKey {
-  return Object.hasOwn(FIRSTMATE_ICONS, value);
-}
-
-/** The stored key when this client knows it, otherwise the default compass. */
-export function resolveFirstmateIconKey(value: string | null | undefined): FirstmateIconKey {
-  if (value != null && isFirstmateIconKey(value)) return value;
-  return FIRSTMATE_DEFAULT_ICON as FirstmateIconKey;
-}
+  compass: { label: FIRSTMATE_ICON_LABELS.compass, Icon: CompassIcon },
+  "ship-wheel": { label: FIRSTMATE_ICON_LABELS["ship-wheel"], Icon: ShipWheelIcon },
+  anchor: { label: FIRSTMATE_ICON_LABELS.anchor, Icon: AnchorIcon },
+  sparkles: { label: FIRSTMATE_ICON_LABELS.sparkles, Icon: SparklesIcon },
+  bot: { label: FIRSTMATE_ICON_LABELS.bot, Icon: BotIcon },
+  rocket: { label: FIRSTMATE_ICON_LABELS.rocket, Icon: RocketIcon },
+  star: { label: FIRSTMATE_ICON_LABELS.star, Icon: StarIcon },
+  zap: { label: FIRSTMATE_ICON_LABELS.zap, Icon: ZapIcon },
+  brain: { label: FIRSTMATE_ICON_LABELS.brain, Icon: BrainIcon },
+  heart: { label: FIRSTMATE_ICON_LABELS.heart, Icon: HeartIcon },
+  flag: { label: FIRSTMATE_ICON_LABELS.flag, Icon: FlagIcon },
+  crown: { label: FIRSTMATE_ICON_LABELS.crown, Icon: CrownIcon },
+  "dollar-sign": { label: FIRSTMATE_ICON_LABELS["dollar-sign"], Icon: DollarSignIcon },
+  wallet: { label: FIRSTMATE_ICON_LABELS.wallet, Icon: WalletIcon },
+  "chart-no-axes-combined": {
+    label: FIRSTMATE_ICON_LABELS["chart-no-axes-combined"],
+    Icon: ChartNoAxesCombinedIcon,
+  },
+  "briefcase-business": {
+    label: FIRSTMATE_ICON_LABELS["briefcase-business"],
+    Icon: BriefcaseBusinessIcon,
+  },
+  code: { label: FIRSTMATE_ICON_LABELS.code, Icon: CodeIcon },
+  search: { label: FIRSTMATE_ICON_LABELS.search, Icon: SearchIcon },
+  "book-open": { label: FIRSTMATE_ICON_LABELS["book-open"], Icon: BookOpenIcon },
+  "graduation-cap": { label: FIRSTMATE_ICON_LABELS["graduation-cap"], Icon: GraduationCapIcon },
+  palette: { label: FIRSTMATE_ICON_LABELS.palette, Icon: PaletteIcon },
+  camera: { label: FIRSTMATE_ICON_LABELS.camera, Icon: CameraIcon },
+  "shield-check": { label: FIRSTMATE_ICON_LABELS["shield-check"], Icon: ShieldCheckIcon },
+  globe: { label: FIRSTMATE_ICON_LABELS.globe, Icon: GlobeIcon },
+} as const satisfies Record<
+  FirstmateIconKey,
+  { readonly label: string; readonly Icon: LucideIcon }
+>;
 
 export function FirstmateIcon({
   icon,

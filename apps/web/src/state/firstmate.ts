@@ -1,66 +1,19 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  createAtomCommandScheduler,
-  createEnvironmentRpcCommand,
-  createEnvironmentRpcQueryAtomFamily,
-  createEnvironmentRpcSubscriptionAtomFamily,
-} from "@t3tools/client-runtime/state/runtime";
-import {
-  FIRSTMATE_WS_METHODS,
-  type EnvironmentId,
-  type FirstmateSnapshot,
-  type FirstmateTaskId,
-} from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/reactivity";
+  createFirstmateEnvironmentAtoms,
+  createFirstmateHomeAtom,
+  type FirstmateHome,
+} from "@t3tools/client-runtime/state/firstmate";
+import type { EnvironmentId, FirstmateTaskId } from "@t3tools/contracts";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { useEnvironmentQuery } from "./query";
 
-/** Fork-only Firstmate atoms, kept out of the upstream environment state. */
-function createFirstmateEnvironmentAtoms(runtime: typeof connectionAtomRuntime) {
-  const scheduler = createAtomCommandScheduler();
-  const concurrency = {
-    mode: "serial" as const,
-    key: ({ environmentId }: { readonly environmentId: string }) => environmentId,
-  };
-  return {
-    setTaskPriority: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:firstmate:set-task-priority",
-      tag: FIRSTMATE_WS_METHODS.firstmateSetTaskPriority,
-      scheduler,
-      concurrency,
-    }),
-    live: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:firstmate:live",
-      tag: FIRSTMATE_WS_METHODS.firstmateSubscribe,
-    }),
-    getTask: createEnvironmentRpcQueryAtomFamily(runtime, {
-      label: "environment-data:firstmate:get-task",
-      tag: FIRSTMATE_WS_METHODS.firstmateGetTask,
-    }),
-    setCoordinator: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:firstmate:set-coordinator",
-      tag: FIRSTMATE_WS_METHODS.firstmateSetCoordinator,
-      scheduler,
-      concurrency,
-    }),
-    start: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:firstmate:start",
-      tag: FIRSTMATE_WS_METHODS.firstmateStart,
-      scheduler,
-      concurrency,
-    }),
-    setAppearance: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:firstmate:set-appearance",
-      tag: FIRSTMATE_WS_METHODS.firstmateSetAppearance,
-      scheduler,
-      concurrency,
-    }),
-  };
-}
+export type { FirstmateHome };
 
+/** Fork-only Firstmate atoms, kept out of the upstream environment state. */
 export const firstmateEnvironment = createFirstmateEnvironmentAtoms(connectionAtomRuntime);
 
 export function useFirstmateSnapshot(environmentId: EnvironmentId | null) {
@@ -80,33 +33,11 @@ export function useFirstmateTask(
   );
 }
 
-export interface FirstmateHome {
-  readonly environmentId: EnvironmentId;
-  readonly snapshot: FirstmateSnapshot;
-}
-
-/**
- * The first connected environment, in catalog order, whose server answers
- * `firstmate.subscribe`. An environment that is still answering holds the
- * place, so a slow fork server is not skipped for a later one. Servers without
- * Firstmate fail the subscription and are passed over; null means none has it.
- */
-const firstmateHomeAtom = Atom.make((get): FirstmateHome | null => {
-  // Open board streams in parallel, without waiting for provider/config discovery.
-  // Selection still respects catalog order, including a pending earlier host.
-  const candidates = [...get(environmentPresentations.presentationsAtom)]
-    .filter(([, presentation]) => presentation.connection.phase === "connected")
-    .map(([environmentId]) => ({
-      environmentId,
-      result: get(firstmateEnvironment.live({ environmentId, input: {} })),
-    }));
-  for (const { environmentId, result } of candidates) {
-    if (AsyncResult.isSuccess(result)) return { environmentId, snapshot: result.value };
-    if (AsyncResult.isFailure(result)) continue;
-    return null;
-  }
-  return null;
-}).pipe(Atom.withLabel("firstmate:home"));
+/** The first connected environment that serves Firstmate; see `createHomeEnvironmentAtom`. */
+const firstmateHomeAtom = createFirstmateHomeAtom({
+  presentationsAtom: environmentPresentations.presentationsAtom,
+  live: firstmateEnvironment.live,
+});
 
 export function useFirstmateHome(): FirstmateHome | null {
   return useAtomValue(firstmateHomeAtom);

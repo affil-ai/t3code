@@ -23,6 +23,7 @@ import { WORKSPACE_TOOLBAR } from "./workspace-tabs-state";
 import { useSidebarWorkspaceTabs } from "./useSystemWorkspaceTabBar";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
 import { useMobileNavigationTheme } from "../../lib/useMobileNavigationTheme";
+import { useWorkTabAvailable } from "../work/WorkTabState"; // fork: work
 
 // Tabler's git-pull-request geometry, shared with the UIKit tab bar.
 const PULL_REQUEST_ICON = require("../../../assets/icons/pull-request.png");
@@ -75,7 +76,10 @@ export function WorkspaceToolbar(props: {
   // The Duo searches from a field at the bottom of the list in every pose. UIKit has no such
   // placement once the vertical bar holds the toolbar, and re-placing its search controller on
   // each fold replaces the search field.
-  const listSearch = isDuoDevice(deviceType);
+  const workAvailable = useWorkTabAvailable(); // fork: work
+  // fork: work: the Work tab has no search; its list is one agent's board.
+  const listSearch = isDuoDevice(deviceType) && workspace.state.selectedTab !== "work";
+  const searchable = workspace.state.selectedTab !== "work";
   const insets = useSafeAreaInsets();
   const bottomBarInset = useDuoBottomBarInset();
   const { isTabActive } = workspace;
@@ -95,7 +99,7 @@ export function WorkspaceToolbar(props: {
     if (props.sidebar && !panes.primarySidebarVisible) togglePrimarySidebar();
   }, [workspace, selectedTab, props.sidebar, panes.primarySidebarVisible, togglePrimarySidebar]);
   const focusSearch = useCallback(() => {
-    if (!workspace.isTabActive(selectedTab)) return false;
+    if (!workspace.isTabActive(selectedTab) || selectedTab === "work") return false; // fork: work
     if (listSearch) {
       fieldRef.current?.focus();
       return true;
@@ -139,7 +143,9 @@ export function WorkspaceToolbar(props: {
           // Liquid Glass keeps search mounted as UIKit's own header button, which
           // morphs into the field; swapping a stacked bar in and out cannot animate.
           headerSearchBarOptions:
-            !listSearch && (NATIVE_LIQUID_GLASS_SUPPORTED || tab.searchMode !== "resting")
+            searchable &&
+            !listSearch &&
+            (NATIVE_LIQUID_GLASS_SUPPORTED || tab.searchMode !== "resting")
               ? {
                   ref: searchRef,
                   autoFocus: tab.searchMode === "active",
@@ -178,7 +184,7 @@ export function WorkspaceToolbar(props: {
             })
           }
         />
-        {NATIVE_LIQUID_GLASS_SUPPORTED ? null : (
+        {NATIVE_LIQUID_GLASS_SUPPORTED || !searchable ? null : (
           <Toolbar.Button
             accessibilityLabel={
               selectedTab === "pullRequests" ? "Search pull requests" : "Search threads"
@@ -189,6 +195,15 @@ export function WorkspaceToolbar(props: {
         )}
       </Toolbar>
       <Toolbar placement="bottom">
+        {sidebarTabs === "toolbar" && workAvailable ? ( // fork: work
+          <Toolbar.Button
+            identifier="workspace-tab-work"
+            accessibilityLabel="Work"
+            icon={selectedTab === "work" ? "person.2.fill" : "person.2"}
+            tintColor={selectedTab === "work" ? selectedTint : undefined}
+            onPress={() => selectTab("work")}
+          />
+        ) : null}
         {sidebarTabs === "toolbar" ? (
           <Toolbar.Button
             identifier="workspace-tab-threads"

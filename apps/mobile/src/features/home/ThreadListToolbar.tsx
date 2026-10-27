@@ -112,7 +112,7 @@ export function ThreadListToolbar(props: {
         onCloseSearch={closeSearch}
         onOpenSearch={openSearch}
         searchAccessibilityLabel="Search threads"
-        titleAccessibilityLabel="T3 Code, Threads"
+        titleAccessibilityLabel="T3 Work, Threads" // fork: brand
         onOpenEnvironments={props.onOpenEnvironments}
         filter={filterButton}
       />
