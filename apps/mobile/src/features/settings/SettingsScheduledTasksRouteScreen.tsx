@@ -77,6 +77,7 @@ import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 import {
+  draftBoundThreadId,
   editDraft,
   scheduledTaskDefaultModel,
   scheduleFromDraft,
@@ -489,6 +490,13 @@ export function SettingsScheduledTaskNewRouteScreen({
       });
       return;
     }
+    if (target) {
+      // The agent's environment isn't connected, so the task can't be saved there.
+      Dialog.alert(
+        "Agent's environment isn't connected",
+        "This automation won't post into the agent's chat. Reconnect that environment to bind it.",
+      );
+    }
     resetEditor();
   }, [availableTargets, resetEditor, startEditor, draftForEnvironment, target]);
   return <SettingsScheduledTaskEditorScreen title="New scheduled task" />;
@@ -756,11 +764,12 @@ function TaskForm({
       );
       return;
     }
+    const boundThreadId = draftBoundThreadId(draft); // fork: scheduled-task-inherit-model, work
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
       !draft.projectId ||
-      !draft.modelSelection ||
+      (boundThreadId === null && !draft.modelSelection) ||
       !schedule ||
       (draft.workspace === "existing_worktree" && !draft.checkoutPath.trim())
     ) {
@@ -779,10 +788,16 @@ function TaskForm({
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
       projectId: draft.projectId,
-      modelSelection: draft.modelSelection,
+      // A bound run uses its chat's current model. The stored one is sent back
+      // because servers that predate optional models still require it.
+      ...(boundThreadId === null
+        ? { modelSelection: draft.modelSelection }
+        : draft.task?.modelSelection
+          ? { modelSelection: draft.task.modelSelection }
+          : {}),
       schedule,
       enabled: draft.enabled,
-      threadId: draft.task ? draft.task.threadId : (draft.boundThreadId ?? null), // fork: work
+      threadId: boundThreadId,
       workspaceStrategy:
         draft.workspace === "root"
           ? { type: "root" }
@@ -867,7 +882,12 @@ function TaskForm({
           {promptField}
         </SettingsSection>
 
-        <SettingsSection title="Context">
+        <SettingsSection
+          title="Context"
+          {...(draftBoundThreadId(draft)
+            ? { footer: "Runs use the chat's current model and never change it." }
+            : {})}
+        >
           <SelectRow
             label="Project"
             value={
@@ -901,21 +921,23 @@ function TaskForm({
               });
             }}
           />
-          <PickerRow
-            label="Model"
-            borderTop
-            value={
-              modelOptions.find(
-                (option) =>
-                  option.selection.instanceId === draft.modelSelection?.instanceId &&
-                  option.selection.model === draft.modelSelection?.model,
-              )?.label ??
-              draft.modelSelection?.model ??
-              (modelOptions.length ? "Choose model" : "No models available")
-            }
-            onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
-            disabled={saving || dictationPending || environmentUnavailable}
-          />
+          {draftBoundThreadId(draft) ? null : (
+            <PickerRow
+              label="Model"
+              borderTop
+              value={
+                modelOptions.find(
+                  (option) =>
+                    option.selection.instanceId === draft.modelSelection?.instanceId &&
+                    option.selection.model === draft.modelSelection?.model,
+                )?.label ??
+                draft.modelSelection?.model ??
+                (modelOptions.length ? "Choose model" : "No models available")
+              }
+              onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
+              disabled={saving || dictationPending || environmentUnavailable}
+            />
+          )}
         </SettingsSection>
 
         <SettingsSection title="Workspace">

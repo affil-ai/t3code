@@ -2,6 +2,8 @@
  * fork: agents. Hooks over the agents home for the Threads lists, the
  * project choices, and the chat header; the rules live in `agent-chats.ts`.
  */
+import { useMemo } from "react";
+
 import { agentHomeProjectKeys } from "@t3tools/client-runtime/firstmate/chat-lists";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
@@ -28,7 +30,13 @@ import {
 
 /** The scoped thread keys of agent chats the Threads lists leave out. */
 export function useHiddenAgentChatKeys(): ReadonlySet<string> {
-  return hiddenAgentChatKeys(useAgentCoordinatorThreadKeys(), useCustomAgentWorkerThreadKeys());
+  const coordinators = useAgentCoordinatorThreadKeys();
+  const customWorkers = useCustomAgentWorkerThreadKeys();
+  // One set until either input changes, so the Threads lists don't re-filter.
+  return useMemo(
+    () => hiddenAgentChatKeys(coordinators, customWorkers),
+    [coordinators, customWorkers],
+  );
 }
 
 function threadKeyOf(environmentId: string | null, threadId: string | null): string | null {

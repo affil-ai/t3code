@@ -1216,13 +1216,17 @@ function ScheduledTaskEditorForm({
     )
       return;
     const selection = activeSelection;
+    const bound = draft.threadId !== ""; // fork: scheduled-task-inherit-model
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
       !projects.some((project) => project.id === selectedProjectId) ||
-      selection === null
+      (!bound && selection === null)
     ) {
-      reportFailure("Scheduled task is incomplete", "Add a title, prompt, project, and model.");
+      reportFailure(
+        "Scheduled task is incomplete",
+        bound ? "Add a title, prompt, and project." : "Add a title, prompt, project, and model.",
+      );
       return;
     }
     const parsedFilters = parseWebhookFilterDrafts(draft.filters);
@@ -1256,12 +1260,17 @@ function ScheduledTaskEditorForm({
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
-    const modelSelection =
-      draft.baseModelSelection !== null &&
-      draft.baseModelSelection.instanceId === selection.instanceId &&
-      draft.baseModelSelection.model === selection.model
-        ? draft.baseModelSelection
-        : selection;
+    // A bound run uses its chat's current model. The stored one is sent back
+    // because servers that predate optional models still require it.
+    const modelSelection = bound
+      ? (draft.baseModelSelection ?? undefined)
+      : selection === null
+        ? undefined
+        : draft.baseModelSelection !== null &&
+            draft.baseModelSelection.instanceId === selection.instanceId &&
+            draft.baseModelSelection.model === selection.model
+          ? draft.baseModelSelection
+          : selection;
     const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
       draft.workspaceMode === "root"
         ? { type: "root" }
@@ -1281,7 +1290,7 @@ function ScheduledTaskEditorForm({
       projectId: selectedProjectId as ProjectId,
       threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
       workspaceStrategy,
-      modelSelection,
+      ...(modelSelection === undefined ? {} : { modelSelection }),
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.interactionMode,
       deliveryMode: draft.deliveryMode, // fork: scheduled-task-delivery-mode
@@ -1495,24 +1504,32 @@ function ScheduledTaskEditorForm({
             />
           </Field>
 
-          <Field label="Model">
-            <div>
-              <ProviderModelPicker
-                environmentId={environmentId}
-                disabled={saving || !connected}
-                activeInstanceId={activeInstanceId}
-                model={activeModel}
-                lockedProvider={null}
-                instanceEntries={instanceEntries}
-                modelOptionsByInstance={modelOptionsByInstance}
-                isComposerOwned={false}
-                triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                onInstanceModelChange={(instanceId, model) =>
-                  setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
-                }
-              />
-            </div>
-          </Field>
+          {draft.threadId ? (
+            <Field label="Model">
+              <p className="text-sm text-muted-foreground">
+                Runs use the chat's current model and never change it.
+              </p>
+            </Field>
+          ) : (
+            <Field label="Model">
+              <div>
+                <ProviderModelPicker
+                  environmentId={environmentId}
+                  disabled={saving || !connected}
+                  activeInstanceId={activeInstanceId}
+                  model={activeModel}
+                  lockedProvider={null}
+                  instanceEntries={instanceEntries}
+                  modelOptionsByInstance={modelOptionsByInstance}
+                  isComposerOwned={false}
+                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                  onInstanceModelChange={(instanceId, model) =>
+                    setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
+                  }
+                />
+              </div>
+            </Field>
+          )}
 
           {/* fork: scheduled-task-delivery-mode */}
           {draft.threadId ? (

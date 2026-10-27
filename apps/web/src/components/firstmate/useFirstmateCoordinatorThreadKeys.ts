@@ -8,8 +8,9 @@ import { useFirstmateHome } from "~/state/firstmate";
  */
 export function useFirstmateCoordinatorThreadKeys(): ReadonlySet<string> {
   const home = useFirstmateHome();
-  return firstmateCoordinatorThreadKeys(
-    home?.environmentId ?? null,
-    home?.snapshot.coordinatorThreadId ?? null,
-  );
+  // Read the two ids first so the React Compiler keys the set on them, not on
+  // the snapshot: a new set on every board update re-renders the lists.
+  const environmentId = home?.environmentId ?? null;
+  const coordinatorThreadId = home?.snapshot.coordinatorThreadId ?? null;
+  return firstmateCoordinatorThreadKeys(environmentId, coordinatorThreadId);
 }

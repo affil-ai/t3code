@@ -34,6 +34,7 @@ import {
 import { COLUMN_LABELS } from "@t3tools/client-runtime/firstmate/tasks";
 import { useFirstmateTaskFocusStore } from "../firstmate/firstmateTaskFocusStore";
 import { COLUMN_DOT } from "../firstmate/firstmateTasksShared";
+import { useClaimSidebarRouteReveal } from "../sidebar/routeReveal";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useSidebar } from "../ui/sidebar";
 import { useWorkSidebarShortcut } from "./WorkSidebarShortcuts";
@@ -261,16 +262,19 @@ export function AgentTaskTree({
   readonly hasStandup?: boolean;
 }) {
   const navigate = useNavigate();
+  const claimRouteReveal = useClaimSidebarRouteReveal();
   const { isMobile, setOpenMobile } = useSidebar();
   const selected = useRef<{ id: string; routeKey: string } | null>(null);
   const tree = useRef<HTMLDivElement>(null);
   const [backlogOpen, setBacklogOpen] = useState(false);
   const backlogPanelId = useId();
+  // Every way the tree opens a task passes through here before navigating.
   const rememberTask = (task: FirstmateTask) => {
-    selected.current = {
-      id: task.id,
-      routeKey: `${environmentId}:${task.workerThreadId ?? coordinatorThreadId}`,
-    };
+    const routeKey = scopedThreadKey(
+      scopeThreadRef(environmentId, task.workerThreadId ?? coordinatorThreadId),
+    );
+    selected.current = { id: task.id, routeKey };
+    claimRouteReveal(routeKey);
   };
   useWorkSidebarShortcut((command) => {
     if (command !== "task.previous" && command !== "task.next") return false;

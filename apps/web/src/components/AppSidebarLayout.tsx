@@ -47,7 +47,7 @@ import { useWorkStateSync } from "./work/workStateSync";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { MainAppLocationTracker } from "./sidebar/mainAppLocation";
-import type { SidebarRouteReveal } from "./sidebar/routeReveal";
+import { type SidebarRouteReveal, SidebarRouteRevealContext } from "./sidebar/routeReveal";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
 import { useProjects } from "../state/entities";
 import {
@@ -344,6 +344,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
     observedKey: null,
     pendingKey: null,
+    claimedKey: null,
   }));
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
@@ -438,7 +439,10 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             </>
           ) : isWorkMode || legacySidebarEnabled ? (
             // fork: Work mode always uses the legacy sidebar, which adds its Chats section.
-            <LegacyThreadSidebar routeReveal={sidebarRouteReveal} />
+            // Its agent task rows claim their navigation through the context.
+            <SidebarRouteRevealContext value={sidebarRouteReveal}>
+              <LegacyThreadSidebar routeReveal={sidebarRouteReveal} />
+            </SidebarRouteRevealContext>
           ) : (
             <ThreadSidebar routeReveal={sidebarRouteReveal} />
           )}

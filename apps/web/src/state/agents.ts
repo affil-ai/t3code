@@ -72,6 +72,15 @@ export function useStandupTasks(): ReadonlyArray<StandupTaskRow> {
 }
 
 /**
+ * Every agent's coordinator chat, Firstmate's included, as scoped keys. The
+ * shared atom keeps one set until the coordinators change, so a board update
+ * does not re-render the lists that filter by it.
+ */
+export function useAgentCoordinatorThreadKeys(): ReadonlySet<string> {
+  return useAtomValue(agentsHome.coordinatorThreadKeysAtom);
+}
+
+/**
  * The worker chats of every custom agent's tasks, as scoped keys. Those chats
  * are reached from the agent's task list in the sidebar, so Firstmate's
  * Pinned, Projects, and Chats leave them out.

@@ -5,8 +5,10 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
+  draftBoundThreadId,
   scheduledTaskDefaultModel,
   DEFAULT_SCHEDULE,
   scheduleDraftForTask,
@@ -195,4 +197,17 @@ it("rejects dedupe keys without valid request placeholders", () => {
   expect(
     scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "webhook", coalesceKey: "{{body.bad" }),
   ).toBeNull();
+});
+
+describe("draftBoundThreadId", () => {
+  const chat = ThreadId.make("agent-chat");
+  const own = ThreadId.make("task-chat");
+  it("keeps an edited task's own chat", () => {
+    expect(draftBoundThreadId({ task: { threadId: own }, boundThreadId: chat })).toBe(own);
+    expect(draftBoundThreadId({ task: { threadId: null }, boundThreadId: chat })).toBeNull();
+  });
+  it("binds a new task to the chat it was opened for", () => {
+    expect(draftBoundThreadId({ task: null, boundThreadId: chat })).toBe(chat);
+    expect(draftBoundThreadId({ task: null })).toBeNull();
+  });
 });

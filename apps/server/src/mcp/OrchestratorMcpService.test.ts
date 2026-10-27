@@ -9,6 +9,7 @@ import {
   OrchestratorMcpTarget,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
+  type ScheduledTaskUpsertInput,
   ScheduledTaskId,
   ProjectId,
   ProviderDriverKind,
@@ -23,6 +24,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
@@ -2265,6 +2267,70 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.equal(yield* Ref.get(upserted), 1);
         assert.equal(updated.scheduledTaskId, bound.id);
         assert.equal(updated.webhookUrl, undefined);
+      }),
+    );
+
+    // fork: scheduled-task-inherit-model
+    it.effect("gives an unbound task the project default when it had no model", () =>
+      Effect.gen(function* () {
+        const projectDefault = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+        const bound = task({
+          threadId: boundThreadId,
+          modelSelection: null,
+          schedule: { type: "interval", everyMs: 3_600_000 },
+          webhook: undefined,
+        });
+        const saved = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            layerOrchestratorService.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  NodeServices.layer,
+                  Layer.mock(ThreadManagementService.ThreadManagementService)({
+                    getThreadShell: (threadId) =>
+                      Effect.succeed(
+                        liveThreadShell(threadId, { runtimeMode: "approval-required" }),
+                      ),
+                  }),
+                  ServerSettings.layerTest(),
+                  Layer.mock(ProviderRegistry.ProviderRegistry)({
+                    getProviders: Effect.succeed([]),
+                  }),
+                  Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+                    list: () => Effect.succeed([]),
+                  }),
+                  Layer.mock(ProjectService.ProjectService)({
+                    getById: () =>
+                      Effect.succeed(
+                        Option.some({ id: projectId, defaultModelSelection: projectDefault }),
+                      ) as never,
+                  }),
+                  Layer.mock(SecretRequests.SecretRequests)({}),
+                  Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                    list: () => Effect.succeed({ tasks: [bound] }),
+                    upsert: (input) =>
+                      Ref.update(saved, (inputs) => [...inputs, input]).pipe(
+                        Effect.as({ task: bound }),
+                      ),
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        yield* mcp.updateScheduledTask(supervisedClient, {
+          scheduledTaskId: bound.id,
+          prompt: "Still bound",
+        });
+        yield* mcp.updateScheduledTask(supervisedClient, {
+          scheduledTaskId: bound.id,
+          bindToCurrentThread: false,
+        });
+        const [kept, unbound] = yield* Ref.get(saved);
+        assert.equal(kept?.modelSelection, null);
+        assert.equal(unbound?.threadId, null);
+        assert.deepEqual(unbound?.modelSelection, projectDefault);
       }),
     );
   });

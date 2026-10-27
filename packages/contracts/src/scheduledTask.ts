@@ -254,7 +254,9 @@ export const ScheduledTask = Schema.Struct({
   projectId: ProjectId,
   threadId: Schema.NullOr(ThreadId),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
-  modelSelection: ModelSelection,
+  // A bound run always uses its thread's current model, so a bound task may
+  // have none. This only seeds the thread a fresh-thread run launches.
+  modelSelection: Schema.NullOr(ModelSelection), // fork: scheduled-task-inherit-model
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   // Servers without this setting omit it; they always queue.
@@ -297,7 +299,10 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   projectId: ProjectId,
   threadId: Schema.optional(Schema.NullOr(ThreadId)),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
-  modelSelection: ModelSelection,
+  modelSelection: Schema.optional(Schema.NullOr(ModelSelection)).annotate({
+    description:
+      "Model for the thread each fresh-thread run launches; required for those tasks. A task bound to a thread may omit it: its runs use the thread's current model and never change it. Omit to keep the task's current model.",
+  }),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   deliveryMode: Schema.optional(ScheduledTaskDeliveryMode).annotate({

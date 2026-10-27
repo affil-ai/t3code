@@ -202,6 +202,18 @@ export type ScheduledTaskDraft = {
   readonly boundThreadId?: ThreadId | null; // fork: work
 };
 
+/**
+ * The chat a task posts into: an edited task keeps its own, a new one may be
+ * bound to an agent's chat. A bound run uses that chat's current model.
+ */
+export function draftBoundThreadId(
+  draft: Pick<ScheduledTaskDraft, "boundThreadId"> & {
+    readonly task: { readonly threadId: ThreadId | null } | null;
+  },
+): ThreadId | null {
+  return draft.task ? draft.task.threadId : (draft.boundThreadId ?? null);
+}
+
 function draftSignature(draft: ScheduledTaskDraft): string {
   return JSON.stringify([
     draft.title,

@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   ScheduledTaskId,
   type ScheduledTask,
+  ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -149,6 +150,17 @@ describe("editing scheduled task branch settings", () => {
     const draft = taskToDraft(legacyTask);
     expect(draft.baseRef).toBe("release");
     expect(draft.startFromOrigin).toBe(false);
+  });
+
+  // fork: scheduled-task-inherit-model
+  it("opens a chat-bound task without a model", () => {
+    const draft = taskToDraft({
+      ...legacyTask,
+      threadId: ThreadId.make("thread-bound"),
+      modelSelection: null,
+    });
+    expect(draft.modelKey).toBe("");
+    expect(draft.baseModelSelection).toBeNull();
   });
 });
 
