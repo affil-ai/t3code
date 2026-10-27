@@ -712,6 +712,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAttachmentUploadRoute,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    Firstmate.standupRouteLayer, // fork: standup
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),

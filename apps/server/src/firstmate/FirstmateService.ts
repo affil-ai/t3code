@@ -36,6 +36,14 @@ import {
   type ModelSelection,
   type OrchestrationV2ThreadShell,
   ProjectId,
+  type StandupAddInput,
+  type StandupArchiveInput,
+  type StandupItemResult,
+  type StandupListInput,
+  type StandupListResult,
+  type StandupSnapshot,
+  type StandupSummary,
+  type StandupUpdateInput,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -53,6 +61,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import { coordinatorKickoff } from "./coordinatorPrompt.ts";
 import * as FirstmateHome from "./FirstmateHome.ts";
 import { applyProgressReport } from "./progress.ts";
+import * as Standup from "./standup.ts";
 import * as Store from "./store.ts";
 import {
   type AgentRow,
@@ -252,6 +261,24 @@ export class FirstmateService extends Context.Service<
     readonly startAgent: (
       input: AgentStartInput,
     ) => Effect.Effect<AgentStartResult, ContractFirstmateError>;
+    /** Adds a standup item; a linked task may be on any agent's board. */
+    readonly addStandupItem: (
+      callerAgentId: AgentProfileId,
+      input: StandupAddInput,
+    ) => Effect.Effect<StandupItemResult, ContractFirstmateError>;
+    readonly updateStandupItem: (
+      callerAgentId: AgentProfileId,
+      input: StandupUpdateInput,
+    ) => Effect.Effect<StandupItemResult, ContractFirstmateError>;
+    readonly archiveStandupItem: (
+      input: StandupArchiveInput,
+    ) => Effect.Effect<StandupItemResult, ContractFirstmateError>;
+    readonly listStandup: (
+      input: StandupListInput,
+    ) => Effect.Effect<StandupListResult, ContractFirstmateError>;
+    /** Open standup items now and after every change to any board. */
+    readonly subscribeStandup: () => Stream.Stream<StandupSnapshot, ContractFirstmateError>;
+    readonly standupSummary: () => Effect.Effect<StandupSummary, ContractFirstmateError>;
   }
 >()("t3/firstmate/FirstmateService") {}
 
@@ -292,7 +319,14 @@ export const layer = Layer.effect(
     }
 
     const now = () => Effect.map(isoNow, (at) => DateTime.formatIso(DateTime.toUtc(at)));
-    const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
+    // Standup items follow their tasks, so record finishes before anyone re-reads.
+    const notify = now().pipe(
+      Effect.flatMap(Standup.syncStandupFinished),
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchCause((cause) => Effect.logWarning("Could not sync the standup.", { cause })),
+      Effect.andThen(PubSub.publish(changes, undefined)),
+      Effect.asVoid,
+    );
     const dbError = (message: string, taskId?: FirstmateTask["id"]) => (cause: unknown) =>
       isFirstmateError(cause) ? cause : error(message, taskId, cause);
 
@@ -976,7 +1010,33 @@ export const layer = Layer.effect(
           Effect.tap(() => notify),
         );
 
+    const standup = yield* Standup.makeStandup({
+      now,
+      notify,
+      threads,
+      agentNames: () =>
+        listAgents().pipe(
+          Effect.map((agents) => new Map(agents.map((agent) => [agent.id, agent.name]))),
+        ),
+    });
+    const subscribeStandup: FirstmateService["Service"]["subscribeStandup"] = () =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const subscription = yield* PubSub.subscribe(changes);
+          return Stream.concat(
+            Stream.fromEffect(standup.snapshot()),
+            Stream.fromSubscription(subscription).pipe(Stream.mapEffect(standup.snapshot)),
+          );
+        }),
+      );
+
     return {
+      addStandupItem: standup.add,
+      updateStandupItem: standup.update,
+      archiveStandupItem: standup.archive,
+      listStandup: standup.list,
+      subscribeStandup,
+      standupSummary: standup.summary,
       setTaskPriority,
       list,
       subscribe,

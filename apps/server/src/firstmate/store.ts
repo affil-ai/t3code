@@ -313,4 +313,17 @@ export const ensureSchema = Effect.gen(function* () {
   if (!agentColumns.has("avatar_attachment_id")) {
     yield* sql.unsafe(`ALTER TABLE firstmate_agent ADD COLUMN avatar_attachment_id TEXT`);
   }
+  // Standup items point at a task on any agent's board; `agent_id` is the task's owner.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS firstmate_standup_item (
+      item_id TEXT PRIMARY KEY,
+      text TEXT NOT NULL,
+      agent_id TEXT,
+      task_id TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      archived_at TEXT
+    )
+  `;
+  yield* sql`CREATE INDEX IF NOT EXISTS firstmate_standup_item_task ON firstmate_standup_item(task_id)`;
 });

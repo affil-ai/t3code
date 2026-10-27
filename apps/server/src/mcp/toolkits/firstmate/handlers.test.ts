@@ -217,6 +217,20 @@ describe("Firstmate toolkit handlers", () => {
       ),
   );
 
+  it.effect("lets only Firstmate's coordinator change the standup list", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const added = yield* harness.call("standup_add", { text: "resubmit ios app" }, COORDINATOR);
+        expect(added.isFailure).toBe(false);
+        const denied = yield* harness.call("standup_add", { text: "from a worker" }, WORKER);
+        expect(denied.result).toMatchObject({ code: "capability_denied" });
+        const listed = yield* harness.call("standup_list", {}, COORDINATOR);
+        expect(listed.result).toMatchObject({ items: [{ text: "resubmit ios app" }] });
+      }),
+    ),
+  );
+
   it.effect("refuses task creation from a thread that is not the coordinator", () =>
     Effect.scoped(
       Effect.gen(function* () {

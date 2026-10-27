@@ -346,3 +346,26 @@ write skills on request.
   selected it shows the chosen name and icon with a badge counting Needs-you
   tasks. It targets the first connected environment whose server answers
   `agents.subscribe`, and it is hidden when none does, as with a stock server.
+
+## Standup
+
+The user's standup to-dos are one list, not a dated record: `firstmate_standup_item`
+holds the bullet text, an optional task on any agent's board (`agent_id` is the
+task's owner), and `started_at`, `finished_at`, `archived_at`. The tag lives on the
+item, not the task, because only a board's own coordinator may write its tasks, and
+an item may have no task yet.
+
+- An item is listed until it is archived or its task is `done`, `monitoring`, or
+  `canceled`. The dates are a record; they never filter the list.
+- `finished_at` follows the task: the service records it before publishing any
+  board change and clears it if the task reopens (`standup.ts`,
+  `syncStandupFinished`). Archiving sets it too.
+- Only Firstmate's coordinator writes the list (`standup_add`, `standup_update`,
+  `standup_archive`); any coordinator may call `standup_list`.
+- Clients read `standup.subscribe`. The Work sidebar shows a Standup section above
+  the selected agent's task sections, for every agent. A row opens the task's
+  worker chat, which switches the sidebar to the owning agent; without a worker it
+  opens the owner's chat on the task; without a task, Firstmate's chat.
+- `GET /api/firstmate/standup` serves the phone widget a small summary. It takes the
+  app's normal sign-in with `orchestration:read`, so the widget shares the phone's
+  credential.

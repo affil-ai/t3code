@@ -44,6 +44,13 @@ export function useAgentTasks(environmentId: EnvironmentId | null, agentId: Agen
   );
 }
 
+/** The user's open standup items, from the environment that serves agents. */
+export function useStandup(environmentId: EnvironmentId | null) {
+  return useEnvironmentQuery(
+    environmentId === null ? null : agentsEnvironment.standup({ environmentId, input: {} }),
+  );
+}
+
 /**
  * The worker chats of every custom agent's tasks, as scoped keys. Those chats
  * are reached from the agent's task list in the sidebar, so Firstmate's

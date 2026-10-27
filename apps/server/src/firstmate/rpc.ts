@@ -13,6 +13,7 @@ import {
   type FirstmateSetCoordinatorInput,
   type FirstmateStartInput,
   type FirstmateSubscribeInput,
+  type StandupSubscribeInput,
 } from "@t3tools/contracts";
 
 import type { FirstmateService } from "./FirstmateService.ts";
@@ -41,6 +42,8 @@ export const rpcHandlers = (service: FirstmateService["Service"]) => ({
   [FIRSTMATE_WS_METHODS.agentUpdate]: (input: AgentUpdateInput) => service.updateAgent(input),
   [FIRSTMATE_WS_METHODS.agentArchive]: (input: AgentArchiveInput) => service.archiveAgent(input),
   [FIRSTMATE_WS_METHODS.agentStart]: (input: AgentStartInput) => service.startAgent(input),
+  [FIRSTMATE_WS_METHODS.standupSubscribe]: (_input: StandupSubscribeInput) =>
+    service.subscribeStandup(),
 });
 
 /** `rpc.aggregate` span labels, spread into the server's RpcInstrumentation table. */
@@ -57,4 +60,5 @@ export const FIRSTMATE_RPC_AGGREGATES = {
   [FIRSTMATE_WS_METHODS.agentUpdate]: "agents",
   [FIRSTMATE_WS_METHODS.agentArchive]: "agents",
   [FIRSTMATE_WS_METHODS.agentStart]: "agents",
+  [FIRSTMATE_WS_METHODS.standupSubscribe]: "standup",
 } as const;

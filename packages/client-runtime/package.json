@@ -451,6 +451,10 @@
       "types": "./src/firstmate/tasks.ts",
       "default": "./src/firstmate/tasks.ts"
     },
+    "./firstmate/standup": {
+      "types": "./src/firstmate/standup.ts",
+      "default": "./src/firstmate/standup.ts"
+    },
     "./firstmate/progress": {
       "types": "./src/firstmate/progress.ts",
       "default": "./src/firstmate/progress.ts"

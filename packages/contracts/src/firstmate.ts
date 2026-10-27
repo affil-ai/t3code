@@ -718,6 +718,137 @@ export const AgentStartResult = Schema.Struct({
 });
 export type AgentStartResult = typeof AgentStartResult.Type;
 
+export const StandupItemId = TrimmedNonEmptyString.pipe(Schema.brand("StandupItemId"));
+export type StandupItemId = typeof StandupItemId.Type;
+
+const StandupText = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
+
+/**
+ * One of the user's standup to-dos. It may point at a task on any agent's
+ * board, or at none. It is listed until it is archived or its task finishes;
+ * the dates are a record and never filter the list.
+ */
+export const StandupItem = Schema.Struct({
+  id: StandupItemId,
+  text: StandupText,
+  /** The owner of `task`; null when the item has no task. */
+  agentId: Schema.NullOr(AgentProfileId),
+  task: Schema.NullOr(FirstmateTask),
+  startedAt: IsoDateTime,
+  /** When its task finished or the item was archived; cleared if the task reopens. */
+  finishedAt: Schema.NullOr(IsoDateTime),
+  archivedAt: Schema.NullOr(IsoDateTime),
+});
+export type StandupItem = typeof StandupItem.Type;
+
+/** The open items, oldest first. */
+export const StandupSnapshot = Schema.Struct({
+  items: ForwardCompatibleArray(StandupItem),
+});
+export type StandupSnapshot = typeof StandupSnapshot.Type;
+
+/** Done and live-in-production work both count as finished for the standup. */
+export function standupTaskFinished(task: FirstmateTask): boolean {
+  const status = firstmateTaskStatus(task);
+  return status === "done" || status === "monitoring" || status === "canceled";
+}
+
+export const StandupProgress = Schema.Literals(["needs_you", "running", "waiting", "not_started"]);
+export type StandupProgress = typeof StandupProgress.Type;
+
+/** What an open item is doing, from its task and, when it has one, the worker's activity. */
+export function standupProgress(
+  task: FirstmateTask | null,
+  worker: { readonly active: boolean; readonly needsInput: boolean } | null,
+): StandupProgress {
+  if (task === null) return "not_started";
+  const status = firstmateTaskStatus(task);
+  if (
+    worker?.needsInput === true ||
+    status === "ready_for_deployment" ||
+    (task.nextActor === "user" && status !== "backlog")
+  ) {
+    return "needs_you";
+  }
+  if (worker?.active === true) return "running";
+  if (status === "backlog" || (status === "planning" && task.workerThreadId === null)) {
+    return "not_started";
+  }
+  return "waiting";
+}
+
+const standupTaskRef = {
+  agentId: Schema.optional(AgentProfileId).annotate({
+    description: "The agent whose board holds taskId. Omit for your own board.",
+  }),
+};
+
+export const StandupAddInput = Schema.Struct({
+  text: StandupText.annotate({ description: "The to-do as the user wrote it." }),
+  ...standupTaskRef,
+  taskId: Schema.optional(FirstmateTaskId).annotate({
+    description: "The task doing the work, on any agent's board. Omit when there is none yet.",
+  }),
+});
+export type StandupAddInput = typeof StandupAddInput.Type;
+
+/** Omitted fields are unchanged; a null taskId unlinks the task. */
+export const StandupUpdateInput = Schema.Struct({
+  itemId: StandupItemId,
+  text: Schema.optional(StandupText),
+  ...standupTaskRef,
+  taskId: Schema.optional(Schema.NullOr(FirstmateTaskId)).annotate({
+    description: "Links the item to a task on any agent's board. Null unlinks it.",
+  }),
+});
+export type StandupUpdateInput = typeof StandupUpdateInput.Type;
+
+export const StandupArchiveInput = Schema.Struct({
+  itemId: StandupItemId,
+});
+export type StandupArchiveInput = typeof StandupArchiveInput.Type;
+
+export const StandupListInput = Schema.Struct({
+  includeFinished: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Also return the 50 most recently finished or archived items, with their dates. Omit for open items only.",
+  }),
+});
+export type StandupListInput = typeof StandupListInput.Type;
+
+export const StandupListResult = Schema.Struct({
+  items: ForwardCompatibleArray(StandupItem),
+});
+export type StandupListResult = typeof StandupListResult.Type;
+
+export const StandupItemResult = Schema.Struct({
+  item: StandupItem,
+});
+export type StandupItemResult = typeof StandupItemResult.Type;
+
+/** The small read-only summary the phone widget fetches over HTTP. */
+export const STANDUP_SUMMARY_PATH = "/api/firstmate/standup";
+
+export const StandupSummary = Schema.Struct({
+  open: NonNegativeInt,
+  needsYou: NonNegativeInt,
+  running: NonNegativeInt,
+  items: Schema.Array(
+    Schema.Struct({
+      id: StandupItemId,
+      text: Schema.String,
+      progress: StandupProgress,
+      agentName: Schema.NullOr(Schema.String),
+      startedAt: IsoDateTime,
+    }),
+  ),
+  generatedAt: IsoDateTime,
+});
+export type StandupSummary = typeof StandupSummary.Type;
+
+export const StandupSubscribeInput = Schema.Struct({});
+export type StandupSubscribeInput = typeof StandupSubscribeInput.Type;
+
 export class FirstmateError extends Schema.TaggedError<FirstmateError>()("FirstmateError", {
   message: Schema.String,
   taskId: Schema.optional(FirstmateTaskId),
@@ -738,6 +869,7 @@ export const FIRSTMATE_WS_METHODS = {
   agentUpdate: "agents.update",
   agentArchive: "agents.archive",
   agentStart: "agents.start",
+  standupSubscribe: "standup.subscribe",
 } as const;
 
 /** Spread into the server's authorization table without duplicating feature policy. */
@@ -754,6 +886,7 @@ export const FIRSTMATE_RPC_REQUIRED_SCOPES = {
   [FIRSTMATE_WS_METHODS.agentUpdate]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.agentArchive]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.agentStart]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.standupSubscribe]: AuthOrchestrationReadScope,
 } as const;
 
 /** Incremental client guards for mutations; the server authorizes every RPC independently. */
@@ -834,5 +967,11 @@ export const FirstmateRpcs = [
     payload: AgentStartInput,
     success: AgentStartResult,
     error: FirstmateRpcError,
+  }),
+  Rpc.make(FIRSTMATE_WS_METHODS.standupSubscribe, {
+    payload: StandupSubscribeInput,
+    success: StandupSnapshot,
+    error: FirstmateRpcError,
+    stream: true,
   }),
 ] as const;
