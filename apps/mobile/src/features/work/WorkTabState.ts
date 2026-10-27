@@ -1,8 +1,10 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { Atom } from "effect/reactivity";
+import { EnvironmentId } from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useRef, type Dispatch } from "react";
 
-import { useAgentsHome } from "../../state/agents";
+import { agentsEnvironment, useAgentsHome } from "../../state/agents";
+import { environmentPresentations } from "../../state/presentation";
 import { useWorkspaceEnvironments } from "../../state/workspace";
 import type { WorkspaceTabsAction, WorkspaceTabsState } from "../workspace/workspace-tabs-state";
 import { visibleWorkspaceTabs, workTabAvailable, workTabSelection } from "./WorkTab.logic";
@@ -12,6 +14,20 @@ const rememberedWorkEnvironmentAtom = Atom.make<string | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("work:remembered-environment"),
 );
+
+/**
+ * The remembered environment is connected and answered `agents.subscribe`
+ * with a failure: it now runs a server without agents (a stock server), so the
+ * tab must go. A reconnect that has not answered yet is not a failure.
+ */
+const rememberedWorkUnsupportedAtom = Atom.make((get) => {
+  const remembered = get(rememberedWorkEnvironmentAtom);
+  if (remembered === null) return false;
+  const environmentId = EnvironmentId.make(remembered);
+  const presentation = get(environmentPresentations.presentationsAtom).get(environmentId);
+  if (presentation?.connection.phase !== "connected") return false;
+  return AsyncResult.isFailure(get(agentsEnvironment.live({ environmentId, input: {} })));
+}).pipe(Atom.withLabel("work:remembered-environment-unsupported"));
 
 /**
  * Work needs the agents stream: the screen is built on the agent list, so a
@@ -26,10 +42,12 @@ function useLiveWorkEnvironmentId(): string | null {
 export function useWorkTabAvailable(): boolean {
   const liveEnvironmentId = useLiveWorkEnvironmentId();
   const rememberedEnvironmentId = useAtomValue(rememberedWorkEnvironmentAtom);
+  const rememberedUnsupported = useAtomValue(rememberedWorkUnsupportedAtom);
   const environments = useWorkspaceEnvironments();
   return workTabAvailable({
     liveEnvironmentId,
     rememberedEnvironmentId,
+    rememberedUnsupported,
     savedEnvironmentIds: environments.map((environment) => String(environment.environmentId)),
   });
 }

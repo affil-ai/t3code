@@ -44,10 +44,9 @@ export function useFirstmateHomeProjectKey(): string | null {
 }
 
 /**
- * One of Firstmate's own tasks with its event history. The server resolves
- * `firstmate.getTask` on Firstmate's board only, so a custom agent's task
- * fails with "Task was not found": leave those out, or read their fields
- * from `useAgentTasks`.
+ * Any agent's task with its event history. Servers before this fork version
+ * resolve `firstmate.getTask` on Firstmate's board only, so a custom agent's
+ * task can fail with "Task was not found"; callers hide history on error.
  */
 export function useFirstmateTask(
   environmentId: EnvironmentId | null,

@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore, type Dispatch } from "react";
 
 import type { WorkspaceTab, WorkspaceTabsAction } from "../workspace/workspace-tabs-state";
+import { useWorkTabAvailable } from "../work/WorkTabState";
 
 /**
  * Lets the showcase coordinator, which renders above the workspace, choose the
@@ -47,14 +48,18 @@ export function useShowcaseWorkspaceTab(
   dispatch: Dispatch<WorkspaceTabsAction>,
 ): void {
   const requested = useSyncExternalStore(subscribe, getRequestedTab, getRequestedTab);
+  const workAvailable = useWorkTabAvailable();
   useEffect(() => {
     if (!SHOWCASE_ENABLED) return;
     if (selectedTab !== currentTab) {
       selectedTab = currentTab;
       emit();
     }
+    // Work hides until a server answers agents; selecting it earlier would
+    // fight the Work tab's own fallback to Threads, one switch per render.
+    if (requested === "work" && !workAvailable) return;
     if (requested !== null && requested !== currentTab) {
       dispatch({ type: "select", tab: requested });
     }
-  }, [currentTab, dispatch, requested]);
+  }, [currentTab, dispatch, requested, workAvailable]);
 }

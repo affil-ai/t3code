@@ -165,8 +165,9 @@ export class FirstmateService extends Context.Service<
     readonly subscribe: (
       agentId: AgentProfileId,
     ) => Stream.Stream<FirstmateSnapshot, ContractFirstmateError>;
+    /** One task with its events. `null` reads any agent's board (client RPC); MCP passes its own agent. */
     readonly get: (
-      agentId: AgentProfileId,
+      agentId: AgentProfileId | null,
       input: FirstmateTaskGetInput,
     ) => Effect.Effect<FirstmateTaskDetail, ContractFirstmateError>;
     readonly create: (
@@ -506,9 +507,16 @@ export const layer = Layer.effect(
           );
         }),
       );
+    const readAnyTask = (taskId: FirstmateTask["id"]) =>
+      sql<TaskRow>`SELECT * FROM firstmate_task WHERE task_id = ${taskId}`.pipe(
+        Effect.map((rows) => (rows[0] === undefined ? undefined : taskFromRow(rows[0]))),
+      );
     const get: FirstmateService["Service"]["get"] = (agentId, input) =>
       Effect.gen(function* () {
-        const task = yield* readOwnTask(agentId, input.taskId);
+        const task =
+          agentId === null
+            ? yield* readAnyTask(input.taskId)
+            : yield* readOwnTask(agentId, input.taskId);
         if (task === undefined) return yield* error("Task was not found.", input.taskId);
         return { task: publicTask(task), events: yield* eventsFor(input.taskId) };
       }).pipe(Effect.mapError(dbError("Could not get the task.", input.taskId)));

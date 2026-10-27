@@ -463,9 +463,8 @@ export function WorkTaskArtifacts(props: {
 }
 
 /**
- * The task's history, newest first. The server only resolves Firstmate's
- * tasks here, so the caller leaves it out for custom agents; a failure hides
- * the section rather than showing an error for a view that cannot load.
+ * The task's history, newest first. A failure (an older server that resolves
+ * only Firstmate's tasks) hides the section rather than showing an error.
  */
 export function WorkTaskHistory(props: {
   readonly environmentId: EnvironmentId;

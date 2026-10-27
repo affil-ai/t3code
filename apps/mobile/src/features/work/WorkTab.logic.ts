@@ -8,14 +8,18 @@ import type { WorkspaceTab } from "../workspace/workspace-tabs-state";
 /**
  * Work shows while a connected environment serves agents. Once
  * one has this session, the tab stays while that environment is still
- * saved, so a reconnect does not pull the tab out from under the user.
+ * saved, so a reconnect does not pull the tab out from under the user,
+ * until that environment connects and refuses agents (a stock server).
  */
 export function workTabAvailable(input: {
   readonly liveEnvironmentId: string | null;
   readonly rememberedEnvironmentId: string | null;
+  /** The remembered environment is connected and its agents stream failed. */
+  readonly rememberedUnsupported: boolean;
   readonly savedEnvironmentIds: ReadonlyArray<string>;
 }): boolean {
   if (input.liveEnvironmentId !== null) return true;
+  if (input.rememberedUnsupported) return false;
   return (
     input.rememberedEnvironmentId !== null &&
     input.savedEnvironmentIds.includes(input.rememberedEnvironmentId)

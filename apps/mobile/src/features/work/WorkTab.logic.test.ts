@@ -8,15 +8,31 @@ describe("workTabAvailable", () => {
       workTabAvailable({
         liveEnvironmentId: "env-a",
         rememberedEnvironmentId: null,
+        rememberedUnsupported: false,
         savedEnvironmentIds: [],
       }),
     ).toBe(true);
   });
 
   it("keeps Work through a reconnect while its environment is still saved", () => {
-    const input = { liveEnvironmentId: null, rememberedEnvironmentId: "env-a" };
+    const input = {
+      liveEnvironmentId: null,
+      rememberedEnvironmentId: "env-a",
+      rememberedUnsupported: false,
+    };
     expect(workTabAvailable({ ...input, savedEnvironmentIds: ["env-a", "env-b"] })).toBe(true);
     expect(workTabAvailable({ ...input, savedEnvironmentIds: ["env-b"] })).toBe(false);
+  });
+
+  it("hides Work once the remembered environment comes back as a stock server", () => {
+    expect(
+      workTabAvailable({
+        liveEnvironmentId: null,
+        rememberedEnvironmentId: "env-a",
+        rememberedUnsupported: true,
+        savedEnvironmentIds: ["env-a"],
+      }),
+    ).toBe(false);
   });
 
   it("hides Work when only stock servers are connected", () => {
@@ -24,6 +40,7 @@ describe("workTabAvailable", () => {
       workTabAvailable({
         liveEnvironmentId: null,
         rememberedEnvironmentId: null,
+        rememberedUnsupported: false,
         savedEnvironmentIds: ["env-a"],
       }),
     ).toBe(false);

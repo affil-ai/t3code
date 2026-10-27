@@ -8,7 +8,6 @@ import {
 import {
   AuthOrchestrationOperateScope,
   EnvironmentId,
-  FIRSTMATE_AGENT_ID,
   type FirstmateTask,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -93,7 +92,6 @@ export function WorkTaskScreen({ route }: StaticScreenProps<WorkTaskParams>) {
           task={lookup.task}
           agentName={lookup.agentName}
           coordinatorThreadId={lookup.coordinatorThreadId}
-          showsHistory={lookup.agent === null || lookup.agent.id === FIRSTMATE_AGENT_ID}
         />
       )}
     </View>
@@ -150,7 +148,6 @@ function TaskDetail(props: {
   readonly task: FirstmateTask;
   readonly agentName: string;
   readonly coordinatorThreadId: ThreadId | null;
-  readonly showsHistory: boolean;
 }) {
   const { environmentId, task, agentName, coordinatorThreadId } = props;
   const { selectThreadRoute } = useAdaptiveWorkspaceLayout();
@@ -277,9 +274,7 @@ function TaskDetail(props: {
 
           <WorkTaskRequest intent={task.intent} />
 
-          {props.showsHistory ? (
-            <WorkTaskHistory environmentId={environmentId} taskId={task.id} />
-          ) : null}
+          <WorkTaskHistory environmentId={environmentId} taskId={task.id} />
 
           <AppText textRole="caption" className="text-foreground-muted">
             Opened {relativeTime(task.createdAt)} ago
