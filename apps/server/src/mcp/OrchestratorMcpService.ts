@@ -1824,8 +1824,11 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
-      const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+      // A bound run always uses this thread's current model, so only a
+      // fresh-thread task stores one.
+      const modelSelection = bindToCurrentThread // fork: scheduled-task-inherit-model
+        ? null
+        : (parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project)));
       const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -1916,6 +1919,13 @@ const make = Effect.gen(function* () {
           input.bindToCurrentThread === undefined
             ? existing.workspaceStrategy
             : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread);
+        // A bound task may have no model; unbinding it needs one for the
+        // fresh threads its runs will launch.
+        const modelSelection = // fork: scheduled-task-inherit-model
+          threadId !== null || existing.modelSelection !== null
+            ? existing.modelSelection
+            : (parent?.thread.modelSelection ??
+              (yield* projectDefaultModelSelection(yield* requireProject(existing.projectId))));
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,
@@ -1925,7 +1935,7 @@ const make = Effect.gen(function* () {
           projectId: existing.projectId,
           threadId,
           workspaceStrategy,
-          modelSelection: existing.modelSelection,
+          modelSelection,
           runtimeMode: existing.runtimeMode,
           interactionMode: existing.interactionMode,
           deliveryMode: input.deliveryMode ?? existing.deliveryMode, // fork: scheduled-task-delivery-mode

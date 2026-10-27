@@ -149,7 +149,7 @@ const AgentAutomationsTool = Tool.make("agent_automations", {
 const AgentAutomationUpdateTool = Tool.make("agent_automation_update", {
   ...shared,
   description:
-    "Update an automation explicitly targeted to an agent. Requires write approval covering both the automation's saved modes and its coordinator's current modes. Read-only clients are denied. The automation must be bound to that agent's coordinator chat; this tool cannot rebind it. Omit fields to preserve them; enabled=false pauses future triggers without canceling work already dispatched.",
+    "Update an automation explicitly targeted to an agent. Requires write approval covering both the automation's saved modes and its coordinator's current modes. Read-only clients are denied. The automation must be bound to that agent's coordinator chat; this tool cannot rebind it. Runs use the coordinator chat's current model and never change it, so there is no model to set. Omit fields to preserve them; enabled=false pauses future triggers without canceling work already dispatched.",
   parameters: AgentAutomationUpdateToolInput,
   success: AgentAutomationMutationResult,
 })

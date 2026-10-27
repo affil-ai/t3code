@@ -865,8 +865,15 @@ export const layer = Layer.effect(
         const result =
           boundThreadId === null
             ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
+                Effect.gen(function* () {
+                  // fork: scheduled-task-inherit-model
+                  if (active.modelSelection === null) {
+                    return yield* taskError(
+                      "A task that starts a new thread for each run needs a model.",
+                      { taskId: active.id },
+                    );
+                  }
+                  const launched = yield* threadLaunch.launch({
                     commandId,
                     projectId: active.projectId,
                     title: active.title,
@@ -882,8 +889,9 @@ export const layer = Layer.effect(
                     },
                     createdBy: active.createdBy,
                     creationSource: active.creationSource,
-                  })
-                  .pipe(Effect.map((launched) => launched.threadId)),
+                  });
+                  return launched.threadId;
+                }),
               )
             : yield* Effect.exit(
                 Effect.gen(function* () {
@@ -903,7 +911,7 @@ export const layer = Layer.effect(
                           ),
                         );
                   // The stored selection only seeds fresh threads. A bound run
-                  // follows the thread's current provider, so it passes none.
+                  // keeps the thread's current model, so it passes none.
                   yield* threadManagement.sendToThread({
                     ...target,
                     commandId,
@@ -1135,6 +1143,18 @@ export const layer = Layer.effect(
       ) {
         return yield* taskError("Schedule task not found.", { taskId: id });
       }
+      const threadId = input.threadId ?? null;
+      const modelSelection =
+        input.modelSelection === undefined
+          ? (existingTask?.modelSelection ?? null)
+          : input.modelSelection;
+      // Checked before a webhook secretRef is consumed, so a rejected save can be retried.
+      if (threadId === null && modelSelection === null) {
+        // fork: scheduled-task-inherit-model
+        return yield* taskError("A task that starts a new thread for each run needs a model.", {
+          taskId: id,
+        });
+      }
       // Keep the existing next_run_at when the schedule itself is untouched:
       // editing a title or prompt must not postpone (or resurrect) a due
       // run — only schedule/enabled changes restart the clock.
@@ -1225,9 +1245,9 @@ export const layer = Layer.effect(
         enabled: input.enabled,
         schedule,
         projectId: input.projectId,
-        threadId: input.threadId ?? null,
+        threadId,
         workspaceStrategy,
-        modelSelection: input.modelSelection,
+        modelSelection,
         runtimeMode: input.runtimeMode,
         interactionMode: input.interactionMode,
         deliveryMode:
