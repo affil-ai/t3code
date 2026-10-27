@@ -38,6 +38,10 @@ const APP_SCHEME = "t3code";
 // expo-dev-launcher reads these off the manifest URL and updates the dev menu
 // preferences before the app loads, keeping captures free of dev chrome.
 const DEV_CLIENT_LAUNCH_FLAGS = "disableOnboarding=1&disableFab=1&disableAutoLaunch=1";
+// The iOS dev menu reads only `__expo_`-prefixed flags off a Metro URL; without
+// them it opens over the app at launch and covers every capture.
+const IOS_DEV_CLIENT_LAUNCH_FLAGS =
+  "__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1";
 const IOS_READY_FILENAME = "T3ShowcaseReadyScene";
 const SERVER_HOST = "0.0.0.0";
 const IOS_SIMULATOR_ARCH = NodeProcess.arch === "arm64" ? "arm64" : "x86_64";
@@ -1099,7 +1103,7 @@ async function captureIos(
     await runCommand("xcrun", ["simctl", "install", simulator.udid, appPath]);
   }
 
-  const metroUrl = `http://${metroHost}:${config.metroPort}?${DEV_CLIENT_LAUNCH_FLAGS}`;
+  const metroUrl = `http://${metroHost}:${config.metroPort}?${IOS_DEV_CLIENT_LAUNCH_FLAGS}`;
   const scenePath = NodePath.join(
     await iosAppContainer(simulator.udid),
     "Library/Caches/T3ShowcaseScene",
