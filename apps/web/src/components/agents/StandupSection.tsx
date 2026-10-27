@@ -23,7 +23,7 @@ import { useSidebar } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AgentAvatar } from "./AgentAvatar";
 import { WorkerStatusDot } from "./AgentTaskTree";
-import { standupNeedsYouCount, standupTarget } from "./standupSection.logic";
+import { standupTarget } from "./standupSection.logic";
 
 function StandupRow({
   environmentId,
@@ -114,16 +114,12 @@ export function StandupSection({
   readonly activeRouteKey: string | null;
 }) {
   if (rows.length === 0) return null;
-  const needsYou = standupNeedsYouCount(rows.map((row) => row.task));
   return (
     <section aria-label={COLUMN_LABELS.standup} className="mb-3">
       <h3 className="mb-1 flex h-6 items-center gap-1.5 pr-1.5 pl-2 text-xs font-medium text-sidebar-muted-foreground/80">
         <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", COLUMN_DOT.standup)} />
         <span className="truncate">{COLUMN_LABELS.standup}</span>
         <span className="tabular-nums">{rows.length}</span>
-        {needsYou > 0 ? (
-          <span className="ml-auto text-destructive tabular-nums">{needsYou} need you</span>
-        ) : null}
       </h3>
       <ul className="flex flex-col">
         {rows.map((row) => (

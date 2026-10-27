@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { standupNeedsYouCount, standupTarget } from "./standupSection.logic";
+import { standupTarget } from "./standupSection.logic";
 
 const JOAN = AgentProfileId.make("agent:joan");
 const agent = (id: AgentProfileId, chat: string | null) =>
@@ -56,18 +56,5 @@ describe("standupTarget", () => {
       threadId: worker,
     });
     expect(standupTarget(task({}), JOAN, [agent(FIRSTMATE_AGENT_ID, null)])).toBeNull();
-  });
-});
-
-describe("standupNeedsYouCount", () => {
-  it("counts tasks waiting on the user and ready to deploy, not parked ones", () => {
-    expect(
-      standupNeedsYouCount([
-        task({ nextActor: "user" }),
-        task({ status: "ready_for_deployment", nextActor: "coordinator" }),
-        task({ status: "backlog", nextActor: "user" }),
-        task({}),
-      ]),
-    ).toBe(2);
   });
 });

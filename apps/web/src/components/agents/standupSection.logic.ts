@@ -4,7 +4,6 @@ import {
   type AgentProfileId,
   type FirstmateTask,
   type FirstmateTaskId,
-  standupProgress,
   type ThreadId,
 } from "@t3tools/contracts";
 
@@ -34,9 +33,4 @@ export function standupTarget(
   if (ownerChat !== null) return { kind: "task", coordinatorThreadId: ownerChat, taskId: task.id };
   const firstmateChat = chatOf(FIRSTMATE_AGENT_ID);
   return firstmateChat === null ? null : { kind: "thread", threadId: firstmateChat };
-}
-
-/** Tasks waiting on the user; a worker's pending approval shows on its row. */
-export function standupNeedsYouCount(tasks: ReadonlyArray<FirstmateTask>): number {
-  return tasks.filter((task) => standupProgress(task, null) === "needs_you").length;
 }
