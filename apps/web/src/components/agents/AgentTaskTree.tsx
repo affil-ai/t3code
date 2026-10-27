@@ -149,7 +149,7 @@ function BacklogActivity({
   return <time dateTime={shell.updatedAt}>{label}</time>;
 }
 
-function WorkerStatusDot({
+export function WorkerStatusDot({
   environmentId,
   workerThreadId,
 }: {

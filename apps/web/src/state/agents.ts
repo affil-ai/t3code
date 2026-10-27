@@ -40,6 +40,10 @@ function createAgentsEnvironmentAtoms(runtime: typeof connectionAtomRuntime) {
       label: "environment-data:agents:tasks",
       tag: FIRSTMATE_WS_METHODS.agentTasksSubscribe,
     }),
+    standup: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:agents:standup",
+      tag: FIRSTMATE_WS_METHODS.standupSubscribe,
+    }),
     create: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:agents:create",
       tag: FIRSTMATE_WS_METHODS.agentCreate,
@@ -112,6 +116,13 @@ export function useAgentTasks(environmentId: EnvironmentId | null, agentId: Agen
     environmentId === null || agentId === null
       ? null
       : agentsEnvironment.tasks({ environmentId, input: { agentId } }),
+  );
+}
+
+/** The user's open standup items, from the environment that serves agents. */
+export function useStandup(environmentId: EnvironmentId | null) {
+  return useEnvironmentQuery(
+    environmentId === null ? null : agentsEnvironment.standup({ environmentId, input: {} }),
   );
 }
 

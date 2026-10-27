@@ -25,6 +25,12 @@ import {
   FirstmateTaskReportProgressInput,
   FirstmateTaskUpdateInput,
   OrchestratorMcpFailure,
+  StandupAddInput,
+  StandupArchiveInput,
+  StandupItemResult,
+  StandupListInput,
+  StandupListResult,
+  StandupUpdateInput,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/ai/Tool";
@@ -197,6 +203,47 @@ const AgentUpdateTool = Tool.make("agent_update", {
   .annotate(Tool.Title, "Update agent")
   .annotate(Tool.Destructive, true);
 
+const StandupAddTool = Tool.make("standup_add", {
+  ...shared,
+  description:
+    "Add one of the user's standup to-dos to their Standup list, in their words. Link the task doing the work with taskId, on your board or, with agentId, on another agent's; omit taskId when there is none yet. The item stays listed until its task is done, monitoring, or canceled, or you archive it. Only Firstmate's coordinator chat may call it.",
+  parameters: StandupAddInput,
+  success: StandupItemResult,
+})
+  .annotate(Tool.Title, "Add standup item")
+  .annotate(Tool.Destructive, false);
+
+const StandupUpdateTool = Tool.make("standup_update", {
+  ...shared,
+  description:
+    "Change a standup item's text or the task it links to (taskId with agentId for another agent's board; null unlinks). Only Firstmate's coordinator chat may call it.",
+  parameters: StandupUpdateInput,
+  success: StandupItemResult,
+})
+  .annotate(Tool.Title, "Update standup item")
+  .annotate(Tool.Destructive, true);
+
+const StandupArchiveTool = Tool.make("standup_archive", {
+  ...shared,
+  description:
+    "Remove a standup item from the list when the user drops it or it is finished without its task closing. Only Firstmate's coordinator chat may call it.",
+  parameters: StandupArchiveInput,
+  success: StandupItemResult,
+})
+  .annotate(Tool.Title, "Archive standup item")
+  .annotate(Tool.Destructive, true);
+
+const StandupListTool = Tool.make("standup_list", {
+  ...shared,
+  description:
+    "List the user's open standup items, oldest first, each with its linked task and owning agent. includeFinished adds recently finished or archived items with their started and finished dates, for drafting what the user did.",
+  parameters: StandupListInput,
+  success: StandupListResult,
+})
+  .annotate(Tool.Title, "List standup items")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
 export const FirstmateToolkit = Toolkit.make(
   FirstmateTaskListTool,
   FirstmateTaskGetTool,
@@ -212,4 +259,8 @@ export const FirstmateToolkit = Toolkit.make(
   AgentAutomationDeleteTool,
   AgentCreateTool,
   AgentUpdateTool,
+  StandupAddTool,
+  StandupUpdateTool,
+  StandupArchiveTool,
+  StandupListTool,
 );

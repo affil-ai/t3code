@@ -27,6 +27,8 @@ export type T3McpToolSummaryAction =
   | "firstmate-task-create"
   | "firstmate-task-update"
   | "firstmate-task-progress"
+  | "standup-read"
+  | "standup-write"
   | "agent-create"
   | "agent-update"
   | "thread-create"
@@ -186,6 +188,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Report", "Reporting", "Reported", "task progress"],
     "firstmate-task-progress",
   ),
+  standup_add: tool(["Add", "Adding", "Added", "a standup item"], "standup-write"),
+  standup_update: tool(["Update", "Updating", "Updated", "a standup item"], "standup-write"),
+  standup_archive: tool(["Archive", "Archiving", "Archived", "a standup item"], "standup-write"),
+  standup_list: tool(["Read", "Reading", "Read", "the standup"], "standup-read"),
   agent_create: tool(["Create", "Creating", "Created", "an agent"], "agent-create"),
   agent_update: tool(["Update", "Updating", "Updated", "an agent"], "agent-update"),
   update_scheduled_task: tool(
