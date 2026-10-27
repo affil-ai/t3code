@@ -17,7 +17,7 @@ import {
   type AgentProfileId,
   type EnvironmentId,
   type FirstmateTask,
-  standupTaskOpen,
+  type StandupTaskEntry,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 
@@ -40,6 +40,10 @@ function createAgentsEnvironmentAtoms(runtime: typeof connectionAtomRuntime) {
     tasks: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:agents:tasks",
       tag: FIRSTMATE_WS_METHODS.agentTasksSubscribe,
+    }),
+    standup: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:agents:standup",
+      tag: FIRSTMATE_WS_METHODS.standupSubscribe,
     }),
     create: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:agents:create",
@@ -116,37 +120,21 @@ export function useAgentTasks(environmentId: EnvironmentId | null, agentId: Agen
   );
 }
 
-export interface StandupTaskRow {
-  readonly agent: AgentProfile;
-  readonly task: FirstmateTask;
-}
+/** A standup task and its owner, who may be archived. */
+export type StandupTaskRow = StandupTaskEntry;
 
 const NO_STANDUP_TASKS: ReadonlyArray<StandupTaskRow> = [];
 
 /**
- * Every agent's open standup tasks, oldest standup first. Firstmate's sidebar
- * shows all of them; another agent's shows its own. Boards still loading add
- * nothing yet.
+ * Every open standup task across boards, oldest standup first, from the same
+ * server list the MCP tools and the widget read, so an archived owner's tasks
+ * stay. Firstmate's sidebar shows all of them; another agent's shows its own.
  */
 const standupTasksAtom = Atom.make((get): ReadonlyArray<StandupTaskRow> => {
   const home = get(agentsHomeAtom);
   if (home === null) return NO_STANDUP_TASKS;
-  const rows: StandupTaskRow[] = [];
-  for (const agent of home.agents) {
-    const result = get(
-      agentsEnvironment.tasks({ environmentId: home.environmentId, input: { agentId: agent.id } }),
-    );
-    if (!AsyncResult.isSuccess(result)) continue;
-    for (const task of result.value.tasks) {
-      if (standupTaskOpen(task)) rows.push({ agent, task });
-    }
-  }
-  if (rows.length === 0) return NO_STANDUP_TASKS;
-  return rows.sort(
-    (left, right) =>
-      (left.task.standup?.startedAt ?? "").localeCompare(right.task.standup?.startedAt ?? "") ||
-      left.task.id.localeCompare(right.task.id),
-  );
+  const result = get(agentsEnvironment.standup({ environmentId: home.environmentId, input: {} }));
+  return AsyncResult.isSuccess(result) ? result.value.tasks : NO_STANDUP_TASKS;
 }).pipe(Atom.withLabel("agents:standup-tasks"));
 
 export function useStandupTasks(): ReadonlyArray<StandupTaskRow> {

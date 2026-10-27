@@ -352,7 +352,9 @@ A standup task is an ordinary task marked as one of the user's standup to-dos:
   before publishing any board change, and clears it if the task reopens
   (`standup.ts`, `syncStandupFinished`).
 - In the Work sidebar, Firstmate's Standup section lists every agent's standup
-  tasks, each with its owner's icon; another agent's lists its own. A row opens the
+  tasks, each with its owner's icon; another agent's lists its own. Both read
+  `standup.subscribe`, the same server list as `standup_list` and the widget, so an
+  archived owner's open standup tasks stay listed with its icon and name. A row opens the
   worker chat, which switches the sidebar to the owner; without a worker, the
   owner's chat on the task; with an archived owner, Firstmate's chat.
 - `GET /api/firstmate/standup` serves the phone widget a small summary. It takes the

@@ -291,7 +291,10 @@ function TaskSections({
           onOpen={onOpen}
         />
         <p className="px-1.5 text-xs text-muted-foreground">All work · grouped by status</p>
-        {FIRSTMATE_SECTION_ORDER.map((column) =>
+        {FIRSTMATE_SECTION_ORDER.filter(
+          // Most boards have no standup task; an empty Standup section is only noise.
+          (column) => column !== "standup" || columns.standup.length > 0,
+        ).map((column) =>
           column === "backlog" || column === "done" ? (
             <FoldedSection
               key={column}

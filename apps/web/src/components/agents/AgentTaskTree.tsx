@@ -306,9 +306,7 @@ export function AgentTaskTree({
     return true;
   });
   const columns = mapFirstmateBoard(tasks);
-  const sections = OPEN_TASK_COLUMNS.filter(
-    (column) => column !== "standup" && columns[column].length > 0,
-  );
+  const sections = OPEN_TASK_COLUMNS.filter((column) => columns[column].length > 0);
   if (sections.length === 0) {
     if (hasStandup) return null;
     return <p className="px-2 py-1 text-sm text-sidebar-muted-foreground/70">No open tasks</p>;

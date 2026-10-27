@@ -235,7 +235,9 @@ describe("Firstmate toolkit handlers", () => {
         );
         expect(denied.result).toMatchObject({ code: "capability_denied" });
         const listed = yield* harness.call("standup_list", {}, COORDINATOR);
-        expect(listed.result).toMatchObject({ tasks: [{ agentId: FM, task: { id: task.id } }] });
+        expect(listed.result).toMatchObject({
+          tasks: [{ agent: { id: FM }, task: { id: task.id } }],
+        });
       }),
     ),
   );

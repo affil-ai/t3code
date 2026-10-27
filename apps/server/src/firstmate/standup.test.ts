@@ -52,7 +52,7 @@ const joanTask = (service: FirstmateService.FirstmateService["Service"]) =>
 const openStandup = (service: FirstmateService.FirstmateService["Service"]) =>
   service
     .listStandup({})
-    .pipe(Effect.map(({ tasks }) => tasks.map(({ agentId, task }) => [agentId, task.title])));
+    .pipe(Effect.map(({ tasks }) => tasks.map(({ agent, task }) => [agent.id, task.title])));
 
 describe("standup", () => {
   it.effect("marks another agent's task without changing its other fields", () =>
@@ -108,6 +108,33 @@ describe("standup", () => {
       });
       expect(off.standup).toBeNull();
       expect((yield* service.listStandup({ includeFinished: true })).tasks).toEqual([]);
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
+  it.effect("keeps an archived owner's standup task, named, on every view", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      yield* addJoan;
+      const { task } = yield* joanTask(service);
+      yield* service.markStandup(FM, { agentId: JOAN, taskId: task.id, onStandup: true });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE firstmate_agent SET archived_at = '2026-10-27T18:00:00.000Z' WHERE agent_id = ${JOAN}`;
+
+      // The sidebar's stream, the MCP list, and the widget all see the same task and owner.
+      const streamed = yield* service
+        .subscribeStandup()
+        .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+      const listed = yield* service.listStandup({});
+      expect(streamed).toEqual(listed);
+      expect(listed.tasks).toMatchObject([
+        {
+          agent: { id: JOAN, name: "Joan of Affil", archivedAt: "2026-10-27T18:00:00.000Z" },
+          task: { id: task.id },
+        },
+      ]);
+      expect((yield* service.standupSummary()).tasks).toMatchObject([
+        { taskId: task.id, agentName: "Joan of Affil" },
+      ]);
     }).pipe(Effect.provide(layerFirstmate)),
   );
 

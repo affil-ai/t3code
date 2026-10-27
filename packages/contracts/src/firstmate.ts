@@ -785,8 +785,9 @@ export const StandupListInput = Schema.Struct({
 });
 export type StandupListInput = typeof StandupListInput.Type;
 
+/** A standup task and its owner, who may be archived; their open tasks stay on the standup. */
 export const StandupTaskEntry = Schema.Struct({
-  agentId: AgentProfileId,
+  agent: AgentProfile,
   task: FirstmateTask,
 });
 export type StandupTaskEntry = typeof StandupTaskEntry.Type;
@@ -796,6 +797,9 @@ export const StandupListResult = Schema.Struct({
   tasks: ForwardCompatibleArray(StandupTaskEntry),
 });
 export type StandupListResult = typeof StandupListResult.Type;
+
+export const StandupSubscribeInput = Schema.Struct({});
+export type StandupSubscribeInput = typeof StandupSubscribeInput.Type;
 
 /** The small read-only summary the phone widget fetches over HTTP. */
 export const STANDUP_SUMMARY_PATH = "/api/firstmate/standup";
@@ -836,6 +840,7 @@ export const FIRSTMATE_WS_METHODS = {
   agentUpdate: "agents.update",
   agentArchive: "agents.archive",
   agentStart: "agents.start",
+  standupSubscribe: "standup.subscribe",
 } as const;
 
 /** Spread into the server's authorization table without duplicating feature policy. */
@@ -852,6 +857,7 @@ export const FIRSTMATE_RPC_REQUIRED_SCOPES = {
   [FIRSTMATE_WS_METHODS.agentUpdate]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.agentArchive]: AuthOrchestrationOperateScope,
   [FIRSTMATE_WS_METHODS.agentStart]: AuthOrchestrationOperateScope,
+  [FIRSTMATE_WS_METHODS.standupSubscribe]: AuthOrchestrationReadScope,
 } as const;
 
 /** Incremental client guards for mutations; the server authorizes every RPC independently. */
@@ -932,5 +938,12 @@ export const FirstmateRpcs = [
     payload: AgentStartInput,
     success: AgentStartResult,
     error: FirstmateRpcError,
+  }),
+  /** Open standup tasks across every board, archived owners included. */
+  Rpc.make(FIRSTMATE_WS_METHODS.standupSubscribe, {
+    payload: StandupSubscribeInput,
+    success: StandupListResult,
+    error: FirstmateRpcError,
+    stream: true,
   }),
 ] as const;

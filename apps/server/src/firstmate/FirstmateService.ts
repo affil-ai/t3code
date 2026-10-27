@@ -265,6 +265,8 @@ export class FirstmateService extends Context.Service<
     readonly listStandup: (
       input: StandupListInput,
     ) => Effect.Effect<StandupListResult, ContractFirstmateError>;
+    /** Open standup tasks now and after every change to any board. */
+    readonly subscribeStandup: () => Stream.Stream<StandupListResult, ContractFirstmateError>;
     readonly standupSummary: () => Effect.Effect<StandupSummary, ContractFirstmateError>;
   }
 >()("t3/firstmate/FirstmateService") {}
@@ -1001,15 +1003,22 @@ export const layer = Layer.effect(
       notify,
       appendEvent: (taskId, summary, at) => appendEvent(taskId, summary, "coordinator", at),
       threads,
-      agentNames: () =>
-        listAgents().pipe(
-          Effect.map((agents) => new Map(agents.map((agent) => [agent.id, agent.name]))),
-        ),
     });
+    const subscribeStandup: FirstmateService["Service"]["subscribeStandup"] = () =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const subscription = yield* PubSub.subscribe(changes);
+          return Stream.concat(
+            Stream.fromEffect(standup.open()),
+            Stream.fromSubscription(subscription).pipe(Stream.mapEffect(standup.open)),
+          );
+        }),
+      );
 
     return {
       markStandup: standup.mark,
       listStandup: standup.list,
+      subscribeStandup,
       standupSummary: standup.summary,
       setTaskPriority,
       list,

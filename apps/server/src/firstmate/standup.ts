@@ -24,7 +24,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import { publicTask, type TaskRow, taskFromRow } from "./store.ts";
+import { agentFromRow, type AgentRow, publicTask, type TaskRow, taskFromRow } from "./store.ts";
 
 const FINISHED_STATUSES = ["done", "monitoring", "canceled"] as const;
 const SUMMARY_TASK_LIMIT = 5;
@@ -32,11 +32,6 @@ const SUMMARY_TASK_LIMIT = 5;
 const isFirstmateError = Schema.is(FirstmateError);
 const fail = (message: string, cause?: unknown) =>
   new FirstmateError({ message, ...(cause === undefined ? {} : { cause }) });
-
-const entry = (row: TaskRow): StandupTaskEntry => {
-  const task = taskFromRow(row);
-  return { agentId: task.agentId, task: publicTask(task) };
-};
 
 /**
  * Records when standup tasks finish, and clears it when one reopens. Runs at
@@ -67,18 +62,29 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
     at: string,
   ) => Effect.Effect<void, FirstmateError>;
   readonly threads: ThreadManagementService.ThreadManagementService["Service"];
-  readonly agentNames: () => Effect.Effect<ReadonlyMap<string, string>, FirstmateError>;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const dbError = (message: string) => (cause: unknown) =>
     isFirstmateError(cause) ? cause : fail(message, cause);
 
+  /** Pairs tasks with their owners, archived ones included, so every client names the same owner. */
+  const withOwners = (rows: ReadonlyArray<TaskRow>) =>
+    sql<AgentRow>`SELECT * FROM firstmate_agent`.pipe(
+      Effect.map((agentRows) => {
+        const agents = new Map(agentRows.map((row) => [row.agent_id, agentFromRow(row)]));
+        return rows.flatMap((row): StandupTaskEntry[] => {
+          const task = taskFromRow(row);
+          const agent = agents.get(task.agentId);
+          return agent === undefined ? [] : [{ agent, task: publicTask(task) }];
+        });
+      }),
+    );
   const openTasks = () =>
     sql<TaskRow>`
       SELECT * FROM firstmate_task
       WHERE standup_started_at IS NOT NULL AND status NOT IN ${sql.in(FINISHED_STATUSES)}
       ORDER BY standup_started_at ASC, rowid ASC
-    `.pipe(Effect.map((rows) => rows.map(entry)));
+    `.pipe(Effect.flatMap(withOwners));
 
   /** Adds a task on any agent's board to the standup, or takes it off. */
   const mark = Effect.fn("Firstmate.standupMark")(
@@ -126,7 +132,7 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
             SELECT * FROM firstmate_task
             WHERE standup_started_at IS NOT NULL AND status IN ${sql.in(FINISHED_STATUSES)}
             ORDER BY standup_finished_at DESC, rowid DESC LIMIT 50
-          `.pipe(Effect.map((rows) => rows.map(entry)))
+          `.pipe(Effect.flatMap(withOwners))
         : Effect.succeed([]),
     ]).pipe(
       Effect.map(([open, finished]) => ({ tasks: [...open, ...finished] })),
@@ -138,7 +144,6 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
     const entries = yield* openTasks().pipe(
       Effect.mapError(dbError("Could not read the standup.")),
     );
-    const names = yield* deps.agentNames();
     const progress = yield* Effect.forEach(entries, ({ task }) =>
       Effect.gen(function* () {
         const shell =
@@ -167,15 +172,21 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
       open: entries.length,
       needsYou: progress.filter((value) => value === "needs_you").length,
       running: progress.filter((value) => value === "running").length,
-      tasks: entries.slice(0, SUMMARY_TASK_LIMIT).map(({ agentId, task }, index) => ({
+      tasks: entries.slice(0, SUMMARY_TASK_LIMIT).map(({ agent, task }, index) => ({
         taskId: task.id,
         title: task.title,
         progress: progress[index] ?? "not_started",
-        agentName: names.get(agentId) ?? "",
+        agentName: agent.name,
       })),
       generatedAt: yield* deps.now(),
     } satisfies StandupSummary;
   });
 
-  return { mark, list, summary };
+  const open = () =>
+    openTasks().pipe(
+      Effect.map((tasks) => ({ tasks })),
+      Effect.mapError(dbError("Could not read the standup.")),
+    );
+
+  return { mark, list, open, summary };
 });
