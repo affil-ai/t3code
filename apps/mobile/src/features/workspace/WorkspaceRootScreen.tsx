@@ -26,6 +26,7 @@ import {
   WorkspaceTabsProvider,
   useWorkspaceTabs,
 } from "./WorkspaceTabsContext";
+import { useWorkTabLink } from "../work/WorkTabLink";
 import { WorkspaceToolbar } from "./WorkspaceToolbar";
 import { WORKSPACE_DOCK, WORKSPACE_TOOLBAR, workspaceToolbarHeight } from "./workspace-tabs-state";
 import { WorkspaceSidebarTabs } from "./WorkspaceSidebarTabs";
@@ -58,6 +59,7 @@ function WorkspaceRootTitle(props: {
 
 function WorkspaceRootContent() {
   const navigation = useNavigation();
+  useWorkTabLink(); // fork: work
   const { width: windowWidth } = useWindowDimensions();
   const { layout, startNewTask, selectThreadRoute } = useAdaptiveWorkspaceLayout();
   const primaryColumn = use(NativePrimaryColumnContext);
