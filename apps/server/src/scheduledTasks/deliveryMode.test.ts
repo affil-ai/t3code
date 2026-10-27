@@ -24,6 +24,7 @@ import { runMigrations } from "../persistence/Migrations.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import { ensureDeliveryModeColumn } from "./deliveryModeColumn.ts";
 import { steerSendMode } from "./deliveryMode.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -146,6 +147,10 @@ it.effect("defaults to steer and sends each mode to the bound thread", () =>
           Ref.update(sends, (values) => [...values, input]).pipe(
             Effect.as({} as ThreadManagementService.ThreadManagementSendResult),
           ),
+      }),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
       }),
       Layer.mock(SecretRequests.SecretRequests)({}),
     );

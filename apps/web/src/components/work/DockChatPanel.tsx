@@ -30,12 +30,8 @@ import { composerDraftHasUserContent, useComposerDraftStore } from "~/composerDr
 import { useArchivedThreadSnapshots } from "~/lib/archivedThreadsState";
 import { newThreadId } from "~/lib/utils";
 import { type ChatSurface, useRightPanelStore } from "~/rightPanelStore";
-import {
-  useServerConfigs,
-  useThreadProjection,
-  useThreadShell,
-  useThreadShells,
-} from "~/state/entities";
+import { useThreadProjection, useThreadShell, useThreadShells } from "~/state/entities";
+import { useEnvironmentProviders } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { environmentShell } from "~/state/shell";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -268,7 +264,7 @@ function DockChatPicker(props: {
   onSelect: (thread: EnvironmentThreadShell) => void;
 }) {
   const { sections, projectTitle, onNewChat, onSelect } = props;
-  const serverConfigs = useServerConfigs();
+  const providersByEnvironment = useEnvironmentProviders();
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-3 pb-3">
       <button
@@ -297,7 +293,7 @@ function DockChatPicker(props: {
               >
                 <DockChatThreadIcon
                   thread={thread}
-                  providers={serverConfigs.get(thread.environmentId)?.providers}
+                  providers={providersByEnvironment.get(thread.environmentId)}
                 />
                 <span className="min-w-0 flex-1 truncate">{thread.title}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">

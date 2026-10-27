@@ -14,8 +14,8 @@ import { useThreadShell } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import {
+  ScheduledRelativeLabel,
   ScheduledTaskEditorDialog,
-  relativeLabel,
   scheduleLabel,
 } from "../settings/ScheduledTasksSettings";
 import { SettingsScopeProvider } from "../settings/SettingsScopeContext";
@@ -103,11 +103,16 @@ export function AgentAutomationsSection({
                     <span className="truncate text-sm leading-4">{task.title}</span>
                     <span className="truncate text-2xs text-sidebar-muted-foreground/80">
                       {scheduleLabel(task.schedule)}
-                      {task.enabled && task.nextRunAt !== null
-                        ? ` · next ${relativeLabel(task.nextRunAt)}`
-                        : task.enabled
-                          ? ""
-                          : " · paused"}
+                      {task.enabled && task.nextRunAt !== null ? (
+                        <>
+                          {" · next "}
+                          <ScheduledRelativeLabel value={task.nextRunAt} />
+                        </>
+                      ) : task.enabled ? (
+                        ""
+                      ) : (
+                        " · paused"
+                      )}
                     </span>
                   </span>
                 </button>

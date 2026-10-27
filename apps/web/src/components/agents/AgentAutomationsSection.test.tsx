@@ -31,7 +31,7 @@ vi.mock("~/state/server", () => ({
 }));
 vi.mock("../settings/ScheduledTasksSettings", () => ({
   scheduleLabel: () => "Every minute",
-  relativeLabel: () => "",
+  ScheduledRelativeLabel: () => null,
   ScheduledTaskEditorDialog: () => <div role="dialog">Automation editor</div>,
 }));
 vi.mock("../settings/SettingsScopeContext", () => ({

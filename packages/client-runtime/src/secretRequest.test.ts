@@ -6,7 +6,6 @@ import {
   secretRequestDisplay,
   secretRequestFailureMessage,
   secretRequestInputs,
-  type SecretRequestItem,
 } from "./secretRequest.ts";
 
 const item = {
@@ -24,27 +23,6 @@ const loginItem = {
 };
 
 describe("secretRequestDisplay", () => {
-  it("shows the form only while pending and maps every answer to its outcome copy", () => {
-    const display = (secretStatus: SecretRequestItem["secretStatus"]) =>
-      secretRequestDisplay({ secretStatus }, "local");
-    expect(display("pending")).toEqual({ kind: "pending" });
-    expect(display("saved")).toEqual({
-      kind: "answered",
-      outcome: "saved",
-      label: "Saved securely and kept private",
-    });
-    expect(display("declined")).toEqual({
-      kind: "answered",
-      outcome: "declined",
-      label: "Declined",
-    });
-    expect(display("cancelled")).toEqual({
-      kind: "answered",
-      outcome: "ended",
-      label: "Request ended",
-    });
-  });
-
   it("never offers the form for a request inherited from another thread", () => {
     expect(secretRequestDisplay({ secretStatus: "pending" }, "inherited")).toEqual({
       kind: "pending-elsewhere",

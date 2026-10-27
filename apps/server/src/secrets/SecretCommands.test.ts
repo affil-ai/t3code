@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { SecretRef, SecretRequestError, ThreadId } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -294,7 +295,7 @@ it.live("keeps values out of logs and traces", () =>
 it.live("kills a command that ignores the stop signal", () =>
   withService(({ commands }) =>
     Effect.gen(function* () {
-      const started = Date.now();
+      const started = yield* Clock.currentTimeMillis;
       const result = yield* commands.run({
         threadId,
         secrets: [{ secretRef: tokenRef, name: "TOKEN" }],
@@ -302,7 +303,7 @@ it.live("kills a command that ignores the stop signal", () =>
         timeoutMs: 1_000,
       });
       assert.deepInclude(result, { exitCode: null, timedOut: true });
-      assert.isBelow(Date.now() - started, 15_000);
+      assert.isBelow((yield* Clock.currentTimeMillis) - started, 15_000);
     }),
   ),
 );
