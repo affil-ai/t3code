@@ -121,6 +121,14 @@ struct StandupEntry: TimelineEntry {
       ("Draft the Q4 partner brief", "not_started", "Firstmate", "compass", "sky"),
       ("Mobile standup widget", "needs_you", "Firstmate", "compass", "sky"),
       ("Review Chase affiliate terms", "waiting", "Ledger", "wallet", "emerald"),
+      ("Refresh the Amex card art", "running", "Joan", "bot", "violet"),
+      ("Merge the credit history PR", "needs_you", "Firstmate", "compass", "sky"),
+      ("Head-to-head dark mode", "running", "Money Maker", "dollar-sign", "amber"),
+      ("Explore credit pages", "waiting", "Money Maker", "dollar-sign", "amber"),
+      ("Backfill Vercel env names", "not_started", "Firstmate", "compass", "sky"),
+      ("Weekly link analytics digest", "waiting", "Ledger", "wallet", "emerald"),
+      ("Retire the old offer table", "not_started", "Joan", "bot", "violet"),
+      ("Office review rules update", "waiting", "Firstmate", "compass", "sky"),
     ]
     let tasks = rows.enumerated().map { index, row in
       StandupSummary.Row(
@@ -256,9 +264,9 @@ private func agentColor(_ name: String?) -> Color {
 /// How many rows each size draws, the "+N more" line included when tasks overflow.
 private func rowCapacity(_ family: WidgetFamily) -> Int {
   switch family {
-  case .systemLarge: return 13
+  case .systemLarge: return 14
   case .accessoryRectangular: return 3
-  default: return 6
+  default: return 7
   }
 }
 
