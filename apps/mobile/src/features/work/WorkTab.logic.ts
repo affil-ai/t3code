@@ -26,9 +26,26 @@ export function workTabAvailable(input: {
   );
 }
 
-/** The workspace tabs in display order. Work leads when the server has it. */
-export function visibleWorkspaceTabs(workAvailable: boolean): ReadonlyArray<WorkspaceTab> {
-  return workAvailable ? ["work", "threads", "pullRequests"] : ["threads", "pullRequests"];
+/**
+ * The workspace tabs in display order: the user's enabled navigation tabs, led
+ * by Work when the server has it. Work is not one of the customizable
+ * navigation tabs, so it is never hidden or reordered with them.
+ */
+export function visibleWorkspaceTabs<Tab extends WorkspaceTab>(
+  workAvailable: boolean,
+  navigationTabs: ReadonlyArray<Tab>,
+): ReadonlyArray<Tab | "work"> {
+  return workAvailable
+    ? ["work", ...navigationTabs.filter((tab) => tab !== "work")]
+    : navigationTabs;
+}
+
+/**
+ * How many navigation tabs fit beside Work in a bar that holds `capacity`
+ * navigation tabs (Settings comes on top of either).
+ */
+export function navigationTabCapacity(capacity: number, workAvailable: boolean): number {
+  return workAvailable ? Math.max(1, capacity - 1) : capacity;
 }
 
 /**

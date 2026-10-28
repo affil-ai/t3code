@@ -25,6 +25,8 @@ import { SubagentRow } from "./SubagentRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 
+import { useOpenThreadInspector } from "./thread-inspector-navigation";
+
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
 type AgentsTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
@@ -45,6 +47,7 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const { layout, hideAuxiliaryPane } = useAdaptiveWorkspaceLayout();
   const target = route.params;
   const navigation = useNavigation();
+  const openInspector = useOpenThreadInspector();
   const insets = useSafeAreaInsets();
   const turn = useThreadTurnSubagents(target);
   const subagents = turn?.subagents ?? [];
@@ -52,12 +55,19 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
 
   const openChildThread = (childThreadId: ThreadId) => {
     void Haptics.selectionAsync();
-    // Agent rows replace the workspace thread directly instead of going
+    if (
+      openInspector(target, {
+        type: "thread",
+        environmentId: target.environmentId,
+        threadId: childThreadId,
+      })
+    )
+      return;
+    // fork: agents. Agent rows replace the workspace thread directly instead of going
     // through the sidebar's selection handler. Match that path by closing
     // auxiliary panes before showing the child thread.
     hideAuxiliaryPane();
-    // Replace rather than push: the sheet is a leaf, and the child thread
-    // belongs in the workspace stack where Home's back button expects it.
+    // Replace this leaf sheet so the child enters the workspace stack expected by Home's Back button.
     navigation.dispatch(
       StackActions.replace("Thread", {
         environmentId: target.environmentId,
@@ -70,8 +80,7 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
     <ScrollView
       nestedScrollEnabled
       className="flex-1"
-      // The iOS header is translucent and floats over this view; UIKit has to
-      // inset the content or the first row sits underneath the title.
+      // UIKit must inset content beneath the floating translucent iOS header.
       contentInsetAdjustmentBehavior={Platform.OS === "ios" ? "automatic" : "never"}
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
@@ -95,8 +104,7 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   );
 
   if (Platform.OS === "ios") {
-    // A plain formSheet screen never renders a stack header, so it comes from
-    // a nested native stack inside the sheet (same shape as the git sheet).
+    // Plain formSheets lack stack headers; host one in a nested native stack.
     return (
       <View collapsable={false} className="flex-1 bg-sheet">
         <ScreenStack style={{ flex: 1 }}>

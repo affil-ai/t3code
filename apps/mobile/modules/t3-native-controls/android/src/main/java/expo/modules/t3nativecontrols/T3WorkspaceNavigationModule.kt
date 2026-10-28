@@ -63,21 +63,15 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 
-private val TABS = listOf("threads", "pullRequests", "settings")
-// fork: work: the Work tab leads on servers that run agents.
-private val TABS_WITH_WORK = listOf("work", "threads", "pullRequests", "settings")
-
 class T3WorkspaceNavigationModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3WorkspaceNavigation")
     View(T3WorkspaceNavigationView::class) {
+      Prop("tabs") { view: T3WorkspaceNavigationView, value: List<String> -> view.tabs = value }
       Prop("selectedTab") { view: T3WorkspaceNavigationView, value: String ->
         view.selectedTab = value
       }
       Prop("rail") { view: T3WorkspaceNavigationView, value: Boolean -> view.rail = value }
-      Prop("workAvailable") { view: T3WorkspaceNavigationView, value: Boolean -> // fork: work
-        view.workAvailable = value
-      }
       Prop("dark") { view: T3WorkspaceNavigationView, value: Boolean -> view.dark = value }
       Prop("textScale") { view: T3WorkspaceNavigationView, value: Float -> view.textScale = value }
       Prop("newEnabled") { view: T3WorkspaceNavigationView, value: Boolean ->
@@ -126,9 +120,9 @@ class T3WorkspaceNavigationView(
   private val onTabSelected by EventDispatcher()
   private val onNewThread by EventDispatcher()
   private val onOverlayChange by EventDispatcher()
+  var tabs by mutableStateOf(listOf("threads", "pullRequests", "usage", "settings"))
   var selectedTab by mutableStateOf("threads")
   var rail by mutableStateOf(false)
-  var workAvailable by mutableStateOf(false) // fork: work
   var dark by mutableStateOf(false)
   var textScale by mutableStateOf(1f)
   var newEnabled by mutableStateOf(false)
@@ -181,7 +175,7 @@ class T3WorkspaceNavigationView(
                 tonalElevation = androidx.compose.ui.unit.Dp(0f),
                 windowInsets = WindowInsets(0),
               ) {
-                (if (workAvailable) TABS_WITH_WORK else TABS).forEach { tab ->
+                tabs.forEach { tab ->
                   NavigationBarItem(
                     selected = selectedTab == tab,
                     onClick = { onTabSelected(mapOf("tab" to tab)) },
@@ -273,12 +267,14 @@ class T3WorkspaceNavigationView(
             )
           }
         }
-        newThreadButton(fraction) {
-          expanded = false
-          onNewThread(emptyMap<String, Any>())
+        if (selectedTab == "threads") {
+          newThreadButton(fraction) {
+            expanded = false
+            onNewThread(emptyMap<String, Any>())
+          }
         }
         Spacer(Modifier.weight(1f))
-        (if (workAvailable) TABS_WITH_WORK else TABS).forEach { tab ->
+        tabs.forEach { tab ->
           railItem(tab, fraction) {
             expanded = false
             onTabSelected(mapOf("tab" to tab))
@@ -362,8 +358,9 @@ class T3WorkspaceNavigationView(
 
   private fun tabTitle(tab: String) = when (tab) {
     "threads" -> "Chats"
-    "pullRequests" -> "PRs"
+    "pullRequests" -> "Pulls"
     "work" -> "Work" // fork: work
+    "usage" -> "Usage"
     else -> "Settings"
   }
 
@@ -376,6 +373,7 @@ class T3WorkspaceNavigationView(
       "threads" -> R.drawable.t3_chats
       "pullRequests" -> R.drawable.t3_pull_requests
       "work" -> R.drawable.t3_work // fork: work
+      "usage" -> R.drawable.t3_usage
       else -> R.drawable.t3_settings
     }
   )

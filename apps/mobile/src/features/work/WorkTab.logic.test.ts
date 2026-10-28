@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { visibleWorkspaceTabs, workTabAvailable, workTabSelection } from "./WorkTab.logic";
+import {
+  navigationTabCapacity,
+  visibleWorkspaceTabs,
+  workTabAvailable,
+  workTabSelection,
+} from "./WorkTab.logic";
 
 describe("workTabAvailable", () => {
   it("shows Work while a connected server serves it", () => {
@@ -49,8 +54,19 @@ describe("workTabAvailable", () => {
 
 describe("visibleWorkspaceTabs", () => {
   it("leads with Work only when it is available", () => {
-    expect(visibleWorkspaceTabs(true)).toEqual(["work", "threads", "pullRequests"]);
-    expect(visibleWorkspaceTabs(false)).toEqual(["threads", "pullRequests"]);
+    const enabled = ["threads", "pullRequests", "usage"] as const;
+    expect(visibleWorkspaceTabs(true, enabled)).toEqual([
+      "work",
+      "threads",
+      "pullRequests",
+      "usage",
+    ]);
+    expect(visibleWorkspaceTabs(false, enabled)).toEqual(enabled);
+  });
+
+  it("leaves one bar slot to Work", () => {
+    expect(navigationTabCapacity(4, true)).toBe(3);
+    expect(navigationTabCapacity(4, false)).toBe(4);
   });
 });
 

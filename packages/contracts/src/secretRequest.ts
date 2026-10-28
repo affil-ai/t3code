@@ -24,7 +24,8 @@ const SecretValue = TrimmedNonEmptyString.check(Schema.isMaxLength(64 * 1024));
 /**
  * A saved value is kept by the server under a SecretRef bound to the asking
  * thread; the thread learns only the status. A card with fields is saved with
- * one value per field.
+ * one value per field. A `delivery: "file"` request moves the value into an
+ * owner-only file the agent's commands read.
  */
 export const SecretRequestAnswerInput = Schema.Struct({
   threadId: ThreadId,
@@ -53,6 +54,9 @@ const SECRET_REQUEST_FAILURE_MESSAGES = {
   ref_unavailable:
     "That secretRef does not exist or belongs to another thread. Ask the user with request_secret from this thread.",
   ref_expired: "That secretRef expired. Ask the user again with request_secret.",
+  consume_failed: "Could not use that secretRef. Try again.",
+  not_a_file_request:
+    'The user did not save this secret for shell use. Ask again with request_secret and delivery: "file".',
 } as const;
 
 export const SecretRequestFailureReason = Schema.Literals(

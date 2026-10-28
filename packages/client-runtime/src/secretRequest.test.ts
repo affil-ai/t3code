@@ -6,6 +6,7 @@ import {
   secretRequestDisplay,
   secretRequestFailureMessage,
   secretRequestInputs,
+  secretRequestPrivacyNote,
 } from "./secretRequest.ts";
 
 const item = {
@@ -75,6 +76,13 @@ describe("secretRequestAnswerInput", () => {
       turnItemId: item.id,
       answer: { type: "save", fields: { username: "bot", password: "hunter2" } },
     });
+  });
+});
+
+describe("secretRequestPrivacyNote", () => {
+  it("does not promise to hide a value that the agent's commands can read", () => {
+    expect(secretRequestPrivacyNote({})).toBe("Stored securely, never shown to the agent");
+    expect(secretRequestPrivacyNote({ delivery: "file" })).not.toContain("never shown");
   });
 });
 

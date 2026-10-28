@@ -14,7 +14,7 @@ import { shouldTypeToFocusComposer } from "./composerFocusRedirect";
 import { composerShortcutCommands } from "./composerShortcuts";
 import { FOCUS_SCOPED_COMPOSER_COMMANDS } from "./composerEventScope"; // fork: chat dock
 
-/** Runs a command. Returning false lets the key event through untouched. */
+/** Returning false lets the key event through untouched. */
 export type ChatShortcutHandler = (context: {
   readonly event: KeyboardEvent;
   readonly terminalFocusOwner: TerminalFocusOwner | null;
