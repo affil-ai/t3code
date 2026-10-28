@@ -10,6 +10,7 @@ import * as HttpTraceContext from "effect/http/HttpTraceContext";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
+import * as ChatBridge from "../chatBridge/index.ts"; // fork: chat-bridge
 import * as Metrics from "../observability/Metrics.ts";
 import * as RelayDeliveryProof from "./RelayDeliveryProof.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -29,6 +30,7 @@ export const layer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
     const relayDeliveryProof = yield* RelayDeliveryProof.RelayDeliveryProof;
+    const chatBridge = yield* ChatBridge.ChatBridgeService; // fork: chat-bridge
     /**
      * The endpoint is raw so the signature is checked over the exact body
      * bytes; the service checks the token and signature.
@@ -68,6 +70,13 @@ export const layer = HttpApiBuilder.group(
       for (const [name, value] of Object.entries(request.headers)) {
         if (typeof value === "string") headers[name.toLowerCase()] = value;
       }
+      const chatHook = yield* ChatBridge.slackHookResponse(chatBridge, {
+        ...params,
+        method: request.method,
+        headers,
+        body: body.value,
+      }); // fork: chat-bridge
+      if (Option.isSome(chatHook)) return chatHook.value; // fork: chat-bridge
       const queryIndex = request.url.indexOf("?");
       // The relay's delivery id and receive time count only with its signed
       // proof; the URL can also be called directly. The receive time matters

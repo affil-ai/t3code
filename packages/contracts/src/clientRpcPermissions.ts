@@ -10,6 +10,7 @@ import {
 } from "./auth.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES } from "./firstmate.ts"; // fork: firstmate
+import { CHAT_BRIDGE_CLIENT_GUARDED_RPC_SCOPES } from "./chatBridge.ts"; // fork: chat-bridge
 import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
@@ -51,6 +52,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   ...FIRSTMATE_CLIENT_GUARDED_RPC_SCOPES, // fork: firstmate
+  ...CHAT_BRIDGE_CLIENT_GUARDED_RPC_SCOPES, // fork: chat-bridge
   [ORCHESTRATION_V2_WS_METHODS.releaseThreadWorktree]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
