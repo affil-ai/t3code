@@ -133,8 +133,30 @@ describe("standup", () => {
         },
       ]);
       expect((yield* service.standupSummary()).tasks).toMatchObject([
-        { taskId: task.id, agentName: "Joan of Affil" },
+        { taskId: task.id, agentName: "Joan of Affil", agentIcon: "bot", agentColor: "sky" },
       ]);
+    }).pipe(Effect.provide(layerFirstmate)),
+  );
+
+  it.effect("gives the widget more open tasks than it can show, in standup order", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const titles = Array.from({ length: 22 }, (_, index) => `Task ${index + 1}`);
+      for (const title of titles) {
+        const { task } = yield* service.create(FM, {
+          title,
+          intent: "Do it",
+          definitionOfDone: "Done",
+          status: "in_progress",
+          nextActor: "worker",
+        });
+        yield* service.markStandup(FM, { taskId: task.id, onStandup: true });
+      }
+
+      const summary = yield* service.standupSummary();
+      expect(summary.open).toBe(22);
+      // The widget ends with "+N more" from `open`, so it needs only the rows it can draw.
+      expect(summary.tasks.map((row) => row.title)).toEqual(titles.slice(0, 20));
     }).pipe(Effect.provide(layerFirstmate)),
   );
 

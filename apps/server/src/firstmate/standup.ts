@@ -28,7 +28,8 @@ import type * as ThreadManagementService from "../orchestration-v2/ThreadManagem
 import { agentFromRow, type AgentRow, publicTask, type TaskRow, taskFromRow } from "./store.ts";
 
 const FINISHED_STATUSES = ["done", "monitoring", "canceled"] as const;
-const SUMMARY_TASK_LIMIT = 5;
+/** More rows than the largest widget shows, so it can say how many are left. */
+const SUMMARY_TASK_LIMIT = 20;
 /** Long enough to cover the phone's whole today in any time zone. */
 const SUMMARY_DONE_WINDOW_HOURS = 48;
 
@@ -142,7 +143,7 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
       Effect.mapError(dbError("Could not list the standup.")),
     );
 
-  /** The widget's view: counts and the first open tasks, with live worker activity. */
+  /** The widget's view: the first open tasks with live worker activity. The counts beyond `open` serve widgets from older app builds. */
   const summary = Effect.fn("Firstmate.standupSummary")(function* () {
     const entries = yield* openTasks().pipe(
       Effect.mapError(dbError("Could not read the standup.")),
@@ -190,6 +191,8 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
         title: task.title,
         progress: progress[index] ?? "not_started",
         agentName: agent.name,
+        agentIcon: agent.icon,
+        agentColor: agent.color,
       })),
       doneAt: done.map((row) => row.standup_finished_at),
       generatedAt,
