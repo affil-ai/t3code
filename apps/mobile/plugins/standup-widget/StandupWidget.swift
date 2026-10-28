@@ -32,7 +32,7 @@ struct StandupSummary: Codable {
     let agentColor: String?
   }
 
-  /// Every open task; `tasks` holds only the first of them.
+  /// Every open task; `tasks` holds the first 20 (5 from servers older than the list widget).
   let open: Int
   let tasks: [Row]
   let generatedAt: String
@@ -191,18 +191,18 @@ struct StandupProvider: TimelineProvider {
 private struct Status {
   let label: String
   let symbol: String
-  let color: Color
+  let style: AnyShapeStyle
 
   init(_ progress: String) {
     switch progress {
     case "needs_you":
-      (label, symbol, color) = ("Needs you", "exclamationmark.circle.fill", .red)
+      (label, symbol, style) = ("Needs you", "exclamationmark.circle.fill", AnyShapeStyle(.red))
     case "running":
-      (label, symbol, color) = ("Working", "play.circle.fill", .cyan)
+      (label, symbol, style) = ("Working", "play.circle.fill", AnyShapeStyle(.cyan))
     case "not_started":
-      (label, symbol, color) = ("Not started", "circle.dashed", .secondary)
+      (label, symbol, style) = ("Not started", "circle.dashed", AnyShapeStyle(.secondary))
     default:
-      (label, symbol, color) = ("Waiting", "pause.circle", .secondary)
+      (label, symbol, style) = ("Waiting", "pause.circle", AnyShapeStyle(.secondary))
     }
   }
 }
@@ -275,11 +275,13 @@ private struct TaskLine: View {
   let font: Font
   let showsOwner: Bool
   let showsLabel: Bool
+  /// Read before the first row's label, since the widget shows no header.
+  var spokenPrefix: String? = nil
 
   var body: some View {
     let status = Status(task.progress)
     HStack(spacing: 5) {
-      Image(systemName: status.symbol).foregroundStyle(status.color).widgetAccentable()
+      Image(systemName: status.symbol).foregroundStyle(status.style).widgetAccentable()
       if showsOwner {
         Image(systemName: agentSymbol(task.agentIcon)).foregroundStyle(agentColor(task.agentColor))
           .frame(minWidth: 14)
@@ -287,14 +289,15 @@ private struct TaskLine: View {
       Text(task.title).lineLimit(1)
       if showsLabel {
         Spacer(minLength: 4)
-        Text(status.label).foregroundStyle(status.color == .secondary ? .secondary : status.color)
-          .lineLimit(1).layoutPriority(1)
+        Text(status.label).foregroundStyle(status.style).lineLimit(1).layoutPriority(1)
       }
     }
     .font(font)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(task.title), \(task.agentName), \(status.label)")
+    .accessibilityLabel(
+      [spokenPrefix, "\(task.title), \(task.agentName), \(status.label)"]
+        .compactMap { $0 }.joined(separator: ". "))
   }
 }
 
@@ -307,20 +310,23 @@ private struct TaskList: View {
   var body: some View {
     let capacity = rowCapacity(family)
     let lockScreen = family == .accessoryRectangular
-    // The Lock Screen can't spare a line for the overflow count.
-    let overflows = !lockScreen && summary.open > capacity
+    // Overflow is judged against the rows actually sent: an older server sends at most five.
+    // The Lock Screen can't spare a line for the count.
+    let overflows = !lockScreen && summary.open > min(capacity, summary.tasks.count)
     let shown = Array(summary.tasks.prefix(overflows ? capacity - 1 : capacity))
+    let stalePrefix = stale ? staleDescription(summary.generatedAt) : nil
     let font: Font = family == .systemLarge ? .subheadline : .caption
     VStack(alignment: .leading, spacing: lockScreen ? 1 : (family == .systemLarge ? 6 : 4)) {
       if shown.isEmpty {
         Text("Nothing on the standup").font(font).foregroundStyle(.secondary)
       }
-      ForEach(shown, id: \.taskId) { task in
+      ForEach(Array(shown.enumerated()), id: \.element.taskId) { index, task in
         TaskLine(
           task: task,
           font: font,
           showsOwner: family != .systemSmall,
-          showsLabel: family == .systemMedium || family == .systemLarge
+          showsLabel: family == .systemMedium || family == .systemLarge,
+          spokenPrefix: index == 0 ? stalePrefix : nil
         )
       }
       if overflows {
@@ -331,6 +337,14 @@ private struct TaskList: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     // An answer kept from before the server went out of reach, shown dimmed rather than as current.
     .opacity(stale ? 0.55 : 1)
+    // Row counts are fitted at the default text size; larger text would clip the last rows and "+N more".
+    .dynamicTypeSize(...DynamicTypeSize.large)
+  }
+
+  private func staleDescription(_ generatedAt: String) -> String {
+    guard let date = isoFormatter.date(from: generatedAt) ?? ISO8601DateFormatter().date(from: generatedAt)
+    else { return "Not current" }
+    return "Last updated \(date.formatted(date: .omitted, time: .shortened))"
   }
 }
 

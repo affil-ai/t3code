@@ -143,7 +143,7 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
       Effect.mapError(dbError("Could not list the standup.")),
     );
 
-  /** The widget's view: the first open tasks with live worker activity, and counts. */
+  /** The widget's view: the first open tasks with live worker activity. The counts beyond `open` serve widgets from older app builds. */
   const summary = Effect.fn("Firstmate.standupSummary")(function* () {
     const entries = yield* openTasks().pipe(
       Effect.mapError(dbError("Could not read the standup.")),
