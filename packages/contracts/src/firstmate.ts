@@ -831,6 +831,11 @@ export type StandupSubscribeInput = typeof StandupSubscribeInput.Type;
 /** The small read-only summary the phone widget fetches over HTTP. */
 export const STANDUP_SUMMARY_PATH = "/api/firstmate/standup";
 
+/**
+ * The widget's view of the standup. `open` counts every open task; `tasks`
+ * holds the first of them in the Standup section's order. `needsYou` and
+ * `running` stay for widgets from older app builds, which require them.
+ */
 export const StandupSummary = Schema.Struct({
   open: NonNegativeInt,
   needsYou: NonNegativeInt,
@@ -841,6 +846,9 @@ export const StandupSummary = Schema.Struct({
       title: Schema.String,
       progress: ForwardCompatibleLiteral(StandupProgress, "waiting"),
       agentName: Schema.String,
+      /** The owner's icon key and color, for the widget's owner glyph. Older servers omit them. */
+      agentIcon: Schema.optional(FirstmateIcon),
+      agentColor: Schema.optional(Schema.String),
     }),
   ),
   /**

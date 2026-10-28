@@ -1,5 +1,5 @@
-// The Standup widget: the user's open standup tasks and how many finished
-// today, for the Home Screen, StandBy and the Lock Screen. It fetches
+// The Standup widget: every open standup task with its status, in the Work
+// tab's Standup order, for the Home Screen, StandBy and the Lock Screen. It fetches
 // GET /api/firstmate/standup itself on a 15-minute timeline, so it needs no
 // push notifications and no running app.
 //
@@ -28,13 +28,13 @@ struct StandupSummary: Codable {
     let title: String
     let progress: String
     let agentName: String
+    let agentIcon: String?
+    let agentColor: String?
   }
 
+  /// Every open task; `tasks` holds only the first of them.
   let open: Int
-  let needsYou: Int
-  let running: Int
   let tasks: [Row]
-  let doneAt: [String]?
   let generatedAt: String
 }
 
@@ -98,10 +98,6 @@ private let isoFormatter: ISO8601DateFormatter = {
   return formatter
 }()
 
-private func parseDate(_ value: String) -> Date? {
-  isoFormatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
-}
-
 // MARK: - Timeline
 
 struct StandupEntry: TimelineEntry {
@@ -115,37 +111,29 @@ struct StandupEntry: TimelineEntry {
   let content: Content
   let openURL: URL?
 
-  /// Done or live today, in the phone's time zone. Nil when the server does not say.
-  var doneToday: Int? {
-    guard case .summary(let summary, _) = content, let doneAt = summary.doneAt else { return nil }
-    let startOfDay = Calendar.current.startOfDay(for: date)
-    return doneAt.compactMap(parseDate).filter { $0 >= startOfDay }.count
-  }
-
-  var updatedAt: Date? {
-    guard case .summary(let summary, _) = content else { return nil }
-    return parseDate(summary.generatedAt)
-  }
-
-  static let sample = StandupEntry(
-    date: .now,
-    content: .summary(
-      StandupSummary(
-        open: 3,
-        needsYou: 1,
-        running: 1,
-        tasks: [
-          .init(taskId: "1", title: "Ship the offer history", progress: "needs_you", agentName: "Firstmate"),
-          .init(taskId: "2", title: "Page and link system", progress: "running", agentName: "Joan"),
-          .init(taskId: "3", title: "Upload Hilton prices", progress: "not_started", agentName: "Firstmate"),
-        ],
-        doneAt: [isoFormatter.string(from: .now)],
-        generatedAt: isoFormatter.string(from: .now)
-      ),
-      stale: false
-    ),
-    openURL: nil
-  )
+  static let sample: StandupEntry = {
+    let rows: [(String, String, String, String, String)] = [
+      ("Ship the offer history page", "needs_you", "Firstmate", "compass", "sky"),
+      ("Page and link system cleanup", "running", "Joan", "bot", "violet"),
+      ("Upload Hilton prices", "running", "Firstmate", "compass", "sky"),
+      ("Card benefits audit", "waiting", "Ledger", "wallet", "emerald"),
+      ("Fix the mockup capture retries", "running", "Joan", "bot", "violet"),
+      ("Draft the Q4 partner brief", "not_started", "Firstmate", "compass", "sky"),
+      ("Mobile standup widget", "needs_you", "Firstmate", "compass", "sky"),
+      ("Review Chase affiliate terms", "waiting", "Ledger", "wallet", "emerald"),
+    ]
+    let tasks = rows.enumerated().map { index, row in
+      StandupSummary.Row(
+        taskId: "\(index)", title: row.0, progress: row.1, agentName: row.2, agentIcon: row.3,
+        agentColor: row.4)
+    }
+    return StandupEntry(
+      date: .now,
+      content: .summary(
+        StandupSummary(open: tasks.count, tasks: tasks, generatedAt: isoFormatter.string(from: .now)),
+        stale: false),
+      openURL: nil)
+  }()
 }
 
 struct StandupProvider: TimelineProvider {
@@ -190,82 +178,151 @@ struct StandupProvider: TimelineProvider {
 
 // MARK: - Views
 
-private func progressColor(_ progress: String) -> Color {
-  switch progress {
-  case "needs_you": return .red
-  case "running": return .blue
-  case "waiting": return .orange
-  default: return .secondary
-  }
-}
+/// The worker status the app's Standup rows show, as a symbol so it still reads
+/// in one tint (Lock Screen, StandBy at night).
+private struct Status {
+  let label: String
+  let symbol: String
+  let color: Color
 
-private func progressLabel(_ progress: String) -> String {
-  switch progress {
-  case "needs_you": return "Needs you"
-  case "running": return "Running"
-  case "waiting": return "Waiting"
-  case "not_started": return "Not started"
-  default: return "Open"
-  }
-}
-
-private struct Header: View {
-  let entry: StandupEntry
-
-  var body: some View {
-    HStack(spacing: 4) {
-      Text("Standup").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-      Spacer(minLength: 0)
-      if case .summary(_, let stale) = entry.content, stale, let updatedAt = entry.updatedAt {
-        Text(updatedAt, style: .time).font(.caption2).foregroundStyle(.secondary)
-      }
+  init(_ progress: String) {
+    switch progress {
+    case "needs_you":
+      (label, symbol, color) = ("Needs you", "exclamationmark.circle.fill", .red)
+    case "running":
+      (label, symbol, color) = ("Working", "play.circle.fill", .cyan)
+    case "not_started":
+      (label, symbol, color) = ("Not started", "circle.dashed", .secondary)
+    default:
+      (label, symbol, color) = ("Waiting", "pause.circle", .secondary)
     }
   }
 }
 
-private struct Counts: View {
-  let summary: StandupSummary
-  let doneToday: Int?
+/// The app's agent icon keys (client-runtime `firstmate/icons`) as SF Symbols; unknown keys draw the compass.
+private func agentSymbol(_ icon: String?) -> String {
+  switch icon {
+  case "ship-wheel": return "steeringwheel"
+  case "anchor": return "ferry"
+  case "sparkles": return "sparkles"
+  case "bot": return "cpu"
+  case "rocket": return "airplane.departure"
+  case "star": return "star.fill"
+  case "zap": return "bolt.fill"
+  case "brain": return "brain"
+  case "heart": return "heart.fill"
+  case "flag": return "flag.fill"
+  case "crown": return "crown.fill"
+  case "dollar-sign": return "dollarsign"
+  case "wallet": return "wallet.pass.fill"
+  case "chart-no-axes-combined": return "chart.line.uptrend.xyaxis"
+  case "briefcase-business": return "briefcase.fill"
+  case "code": return "chevron.left.forwardslash.chevron.right"
+  case "search": return "magnifyingglass"
+  case "book-open": return "book.fill"
+  case "graduation-cap": return "graduationcap.fill"
+  case "palette": return "paintpalette.fill"
+  case "camera": return "camera.fill"
+  case "shield-check": return "checkmark.shield.fill"
+  case "globe": return "globe"
+  default: return "safari"
+  }
+}
 
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
-      Text("\(summary.open)").font(.system(.title, design: .rounded).weight(.semibold))
-        .contentTransition(.numericText())
-      VStack(alignment: .leading, spacing: 0) {
-        Text("open").font(.caption2).foregroundStyle(.secondary)
-        if let doneToday {
-          Text("\(doneToday) done today").font(.caption2).foregroundStyle(.secondary)
-        }
-      }
-      Spacer(minLength: 0)
-      if summary.needsYou > 0 {
-        Label("\(summary.needsYou)", systemImage: "exclamationmark.circle.fill")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.red)
-          .accessibilityLabel("\(summary.needsYou) need you")
-      }
-    }
+/// The project icon palette's 500 shades, as the app tints agent icons.
+private func agentColor(_ name: String?) -> Color {
+  switch name {
+  case "gray": return Color(red: 0.42, green: 0.45, blue: 0.50)
+  case "red": return Color(red: 0.94, green: 0.27, blue: 0.27)
+  case "orange": return Color(red: 0.98, green: 0.45, blue: 0.09)
+  case "amber": return Color(red: 0.96, green: 0.62, blue: 0.04)
+  case "yellow": return Color(red: 0.92, green: 0.70, blue: 0.03)
+  case "lime": return Color(red: 0.52, green: 0.80, blue: 0.09)
+  case "green": return Color(red: 0.13, green: 0.77, blue: 0.37)
+  case "emerald": return Color(red: 0.06, green: 0.73, blue: 0.51)
+  case "teal": return Color(red: 0.08, green: 0.72, blue: 0.65)
+  case "cyan": return Color(red: 0.02, green: 0.71, blue: 0.83)
+  case "blue": return Color(red: 0.23, green: 0.51, blue: 0.96)
+  case "indigo": return Color(red: 0.39, green: 0.40, blue: 0.95)
+  case "violet": return Color(red: 0.55, green: 0.36, blue: 0.96)
+  case "purple": return Color(red: 0.66, green: 0.33, blue: 0.97)
+  case "fuchsia": return Color(red: 0.85, green: 0.27, blue: 0.94)
+  case "pink": return Color(red: 0.93, green: 0.28, blue: 0.60)
+  case "rose": return Color(red: 0.96, green: 0.25, blue: 0.37)
+  default: return Color(red: 0.05, green: 0.65, blue: 0.91)  // sky, the agent default
+  }
+}
+
+/// How many rows each size draws, the "+N more" line included when tasks overflow.
+private func rowCapacity(_ family: WidgetFamily) -> Int {
+  switch family {
+  case .systemLarge: return 13
+  case .accessoryRectangular: return 3
+  default: return 6
   }
 }
 
 private struct TaskLine: View {
   let task: StandupSummary.Row
+  let font: Font
   let showsOwner: Bool
+  let showsLabel: Bool
 
   var body: some View {
-    HStack(spacing: 6) {
-      Circle().fill(progressColor(task.progress)).frame(width: 7, height: 7)
-        .widgetAccentable()
-      VStack(alignment: .leading, spacing: 0) {
-        Text(task.title).font(.caption).lineLimit(1)
-        if showsOwner {
-          Text("\(task.agentName) · \(progressLabel(task.progress))")
-            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-        }
+    let status = Status(task.progress)
+    HStack(spacing: 5) {
+      Image(systemName: status.symbol).foregroundStyle(status.color).widgetAccentable()
+      if showsOwner {
+        Image(systemName: agentSymbol(task.agentIcon)).foregroundStyle(agentColor(task.agentColor))
+          .frame(minWidth: 14)
+      }
+      Text(task.title).lineLimit(1)
+      if showsLabel {
+        Spacer(minLength: 4)
+        Text(status.label).foregroundStyle(status.color == .secondary ? .secondary : status.color)
+          .lineLimit(1).layoutPriority(1)
       }
     }
+    .font(font)
+    .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(task.title), \(task.agentName), \(progressLabel(task.progress))")
+    .accessibilityLabel("\(task.title), \(task.agentName), \(status.label)")
+  }
+}
+
+/// Every open task, top to bottom, ending with "+N more" when they don't fit.
+private struct TaskList: View {
+  @Environment(\.widgetFamily) private var family
+  let summary: StandupSummary
+  let stale: Bool
+
+  var body: some View {
+    let capacity = rowCapacity(family)
+    let lockScreen = family == .accessoryRectangular
+    // The Lock Screen can't spare a line for the overflow count.
+    let overflows = !lockScreen && summary.open > capacity
+    let shown = Array(summary.tasks.prefix(overflows ? capacity - 1 : capacity))
+    let font: Font = family == .systemLarge ? .subheadline : .caption
+    VStack(alignment: .leading, spacing: lockScreen ? 1 : (family == .systemLarge ? 6 : 4)) {
+      if shown.isEmpty {
+        Text("Nothing on the standup").font(font).foregroundStyle(.secondary)
+      }
+      ForEach(shown, id: \.taskId) { task in
+        TaskLine(
+          task: task,
+          font: font,
+          showsOwner: family != .systemSmall,
+          showsLabel: family == .systemMedium || family == .systemLarge
+        )
+      }
+      if overflows {
+        Text("+\(summary.open - shown.count) more").font(.caption2).foregroundStyle(.secondary)
+      }
+      if !lockScreen { Spacer(minLength: 0) }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    // An answer kept from before the server went out of reach, shown dimmed rather than as current.
+    .opacity(stale ? 0.55 : 1)
   }
 }
 
@@ -278,7 +335,7 @@ private struct Message: View {
       Text(title).font(.subheadline.weight(.semibold))
       Text(detail).font(.caption).foregroundStyle(.secondary)
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
   }
 }
 
@@ -293,87 +350,20 @@ struct StandupWidgetView: View {
   }
 
   @ViewBuilder private var content: some View {
-    switch family {
-    case .accessoryInline: inline
-    case .accessoryCircular: circular
-    case .accessoryRectangular: rectangular
-    default: system
-    }
-  }
-
-  @ViewBuilder private var system: some View {
     switch entry.content {
+    case .summary(let summary, let stale):
+      TaskList(summary: summary, stale: stale)
     case .signedOut:
-      VStack(alignment: .leading) {
-        Header(entry: entry)
+      if family == .accessoryRectangular {
+        Text("Open T3 Work to see your standup").font(.caption)
+      } else {
         Message(title: "Open T3 Work", detail: "Connect to your T3 Work server to see your standup.")
       }
     case .unavailable:
-      VStack(alignment: .leading) {
-        Header(entry: entry)
-        Message(title: "Can't reach T3 Work", detail: "Tries again in a few minutes.")
-      }
-    case .summary(let summary, _):
-      let limit = family == .systemSmall ? 2 : (family == .systemMedium ? 3 : 8)
-      VStack(alignment: .leading, spacing: 6) {
-        Header(entry: entry)
-        Counts(summary: summary, doneToday: entry.doneToday)
-        if summary.tasks.isEmpty {
-          Text("Nothing open").font(.caption).foregroundStyle(.secondary)
-        } else {
-          VStack(alignment: .leading, spacing: family == .systemSmall ? 3 : 5) {
-            ForEach(summary.tasks.prefix(limit), id: \.taskId) { task in
-              TaskLine(task: task, showsOwner: family != .systemSmall)
-            }
-          }
-        }
-        Spacer(minLength: 0)
-      }
-    }
-  }
-
-  @ViewBuilder private var rectangular: some View {
-    switch entry.content {
-    case .summary(let summary, _):
-      VStack(alignment: .leading, spacing: 1) {
-        Text(rectangularHeadline(summary)).font(.headline).widgetAccentable()
-        ForEach(summary.tasks.prefix(2), id: \.taskId) { task in
-          Text(task.title).font(.caption).lineLimit(1)
-        }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-    case .signedOut:
-      Text("Open T3 Work to see your standup").font(.caption)
-    case .unavailable:
-      Text("Standup unavailable").font(.caption)
-    }
-  }
-
-  private func rectangularHeadline(_ summary: StandupSummary) -> String {
-    var parts = ["\(summary.open) open"]
-    if summary.needsYou > 0 { parts.append("\(summary.needsYou) need you") }
-    if let done = entry.doneToday, done > 0 { parts.append("\(done) done") }
-    return parts.joined(separator: " · ")
-  }
-
-  @ViewBuilder private var inline: some View {
-    if case .summary(let summary, _) = entry.content {
-      Text("Standup: \(rectangularHeadline(summary))")
-    } else {
-      Text("Standup")
-    }
-  }
-
-  @ViewBuilder private var circular: some View {
-    ZStack {
-      AccessoryWidgetBackground()
-      if case .summary(let summary, _) = entry.content {
-        VStack(spacing: 0) {
-          Text("\(summary.open)").font(.title3.weight(.semibold))
-          Text(summary.needsYou > 0 ? "\(summary.needsYou)!" : "open").font(.caption2)
-        }
+      if family == .accessoryRectangular {
+        Text("Standup unavailable").font(.caption)
       } else {
-        Image(systemName: "checklist")
+        Message(title: "Can't reach T3 Work", detail: "Tries again in a few minutes.")
       }
     }
   }
@@ -388,9 +378,7 @@ struct StandupWidget: Widget {
       StandupWidgetView(entry: entry)
     }
     .configurationDisplayName("Standup")
-    .description("Your open standup tasks and what finished today.")
-    .supportedFamilies([
-      .systemSmall, .systemMedium, .accessoryRectangular, .accessoryInline, .accessoryCircular,
-    ])
+    .description("Every open standup task and its status.")
+    .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryRectangular])
   }
 }
