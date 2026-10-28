@@ -311,8 +311,9 @@ const makeChildProcessClient = Effect.fn(
     Effect.ignore,
     Effect.forkIn(scope, { startImmediately: true }),
   );
-  const reportTermination = (error: CodexError.CodexAppServerError) =>
-    Effect.gen(function* () {
+  const reportTermination = Effect.fn("reportTermination")(function* (
+    error: CodexError.CodexAppServerError,
+  ) {
       const tail = stderr.read();
       // Disk failures (including defects) and stalled writes must not hold
       // pending RPCs or process recovery, nor log a cause containing stderr.
@@ -341,7 +342,7 @@ const makeChildProcessClient = Effect.fn(
         stderrBytes: tail.byteLength,
         diagnosticPath,
       });
-    });
+  });
 
   const termination = makeTerminationError(handle).pipe(
     // Wait briefly for the final stderr chunk without allowing diagnostics to
