@@ -157,6 +157,14 @@ export const make = Effect.gen(function* () {
                 ),
             ),
           onError: logFailure("Chat message handling failed"),
+          log: (level, line) =>
+            void runPromise(
+              level === "info"
+                ? Effect.logInfo(`Slack: ${line}`)
+                : level === "warn"
+                  ? Effect.logWarning(`Slack: ${line}`)
+                  : Effect.logError(`Slack: ${line}`),
+            ),
         }),
       ).pipe(Effect.result);
       if (started._tag === "Failure") {

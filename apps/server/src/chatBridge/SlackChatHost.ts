@@ -5,7 +5,14 @@
  */
 import { createSlackAdapter, type SlackAdapter } from "@chat-adapter/slack";
 import type { ChatBridgeSlackTransport } from "@t3tools/contracts";
-import { Chat, type Message, type MessageContext, type StateAdapter, type Thread } from "chat";
+import {
+  Chat,
+  type Logger,
+  type Message,
+  type MessageContext,
+  type StateAdapter,
+  type Thread,
+} from "chat";
 
 import type { ChatInboundEvent, ChatInboundOutcome, ChatOutboundReply } from "./ChatBridgeCore.ts";
 
@@ -21,6 +28,11 @@ export interface SlackChatHostOptions {
   readonly onError: (error: unknown) => void;
   /** Tests point the Web API at an address that refuses connections. */
   readonly apiUrl?: string | undefined;
+  /**
+   * Receives the adapter's info, warning and error lines, with credentials
+   * redacted. Debug lines are dropped because they carry request bodies.
+   */
+  readonly log?: ((level: "info" | "warn" | "error", line: string) => void) | undefined;
   /** Tests supply the bot's user id, which `auth.test` would otherwise return. */
   readonly botUserId?: string | undefined;
 }
@@ -90,7 +102,7 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     ...(options.apiUrl
       ? { apiUrl: options.apiUrl, webClientOptions: { retryConfig: { retries: 0 } } }
       : {}),
-    logger: quietLogger,
+    logger: options.log ? redactingLogger(options.log) : quietLogger,
   });
   const chat = new Chat({
     userName: "t3",
@@ -165,6 +177,45 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
       await chat.shutdown();
     },
   };
+}
+
+const LOG_LINE_LIMIT = 500;
+
+/** Removes Slack tokens and Socket Mode connection tickets from a log line. */
+export function redactSlackSecrets(text: string): string {
+  return text
+    .replace(/\b(?:xox[a-z]|xapp)-[A-Za-z0-9-]+/g, "<redacted>")
+    .replace(/ticket=[^&\s"']+/g, "ticket=<redacted>");
+}
+
+const describe = (value: unknown): string => {
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, (_key, inner: unknown) =>
+      inner instanceof Error ? `${inner.name}: ${inner.message}` : inner,
+    );
+  } catch {
+    return String(value);
+  }
+};
+
+function redactingLogger(log: NonNullable<SlackChatHostOptions["log"]>): Logger {
+  const line =
+    (level: "info" | "warn" | "error") =>
+    (message: string, ...args: Array<unknown>) =>
+      log(
+        level,
+        redactSlackSecrets([message, ...args.map(describe)].join(" ")).slice(0, LOG_LINE_LIMIT),
+      );
+  const logger: Logger = {
+    debug: () => {},
+    info: line("info"),
+    warn: line("warn"),
+    error: line("error"),
+    child: () => logger,
+  };
+  return logger;
 }
 
 const noop = () => {};

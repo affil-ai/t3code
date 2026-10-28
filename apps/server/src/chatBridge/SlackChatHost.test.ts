@@ -251,3 +251,12 @@ it("maps a Chat SDK message to an inbound event", () => {
     fileNames: ["trace.log", "image"],
   });
 });
+
+it("redacts Slack tokens and socket tickets from adapter log lines", () => {
+  assert.strictEqual(
+    SlackChatHost.redactSlackSecrets(
+      "auth failed for xoxb-123-456-abcDEF and xapp-1-A0-789-ff; url wss://wss.slack.com/link/?ticket=abc-123&app_id=A0",
+    ),
+    "auth failed for <redacted> and <redacted>; url wss://wss.slack.com/link/?ticket=<redacted>&app_id=A0",
+  );
+});
