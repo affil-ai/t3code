@@ -31,6 +31,48 @@ const appMention = (eventId: string, text: string, user = "U0ALLOWED") => ({
   },
 });
 
+/** Slack renders `<@U…>` as a `user` element in the message's rich_text block. */
+const mentionBlocks = (botUserId: string, text: string) => [
+  {
+    type: "rich_text",
+    block_id: "b1",
+    elements: [
+      {
+        type: "rich_text_section",
+        elements: [
+          { type: "user", user_id: botUserId },
+          { type: "text", text: ` ${text}` },
+        ],
+      },
+    ],
+  },
+];
+
+/**
+ * What Slack delivers for one `@bot …` in a channel the bot is in: an
+ * `app_mention` and a `message.channels` event for the same message.
+ */
+const realMentionPair = (text: string) =>
+  (["app_mention", "message"] as const).map((type, index) => ({
+    token: "unused",
+    team_id: "T0TEAM",
+    api_app_id: "A0APP",
+    type: "event_callback",
+    event_id: `Ev2${index}`,
+    event_time: 1_700_000_000,
+    authorizations: [{ user_id: "U0BOT", is_bot: true }],
+    event: {
+      type,
+      ...(type === "message" ? { channel_type: "channel" } : {}),
+      user: "U0ALLOWED",
+      text: `<@U0BOT> ${text}`,
+      blocks: mentionBlocks("U0BOT", text),
+      ts: "1700000000.000300",
+      channel: "C0MAPPED",
+      event_ts: "1700000000.000300",
+    },
+  }));
+
 const signed = (body: string, nowMs: number, secret = SIGNING_SECRET) => {
   const timestamp = Math.floor(nowMs / 1000).toString();
   const signature = `v0=${NodeCrypto.createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex")}`;
@@ -63,6 +105,7 @@ const startHost = Effect.gen(function* () {
       signingSecret: SIGNING_SECRET,
       state,
       apiUrl: "http://127.0.0.1:9/",
+      botUserId: "U0BOT",
       onEvent: async (event) => {
         events.push(event);
         delivered();
@@ -140,12 +183,49 @@ live(
   ),
 );
 
+live(
+  "delivers one mention, without the bot's name, for Slack's app_mention and message pair",
+  withHost(({ host, events }, now) =>
+    Effect.promise(async () => {
+      // Either event may reach the SDK first; the message copy must still count as a mention.
+      for (const payload of realMentionPair("what is 2+2?").toReversed()) {
+        const response = await host.handleWebhook(signed(JSON.stringify(payload), now));
+        assert.strictEqual(response.status, 200);
+      }
+      await host.idle();
+      assert.strictEqual(events.length, 1);
+      assert.strictEqual(events[0]?.kind, "mention");
+      assert.strictEqual(events[0]?.text, "what is 2+2?");
+    }),
+  ),
+);
+
 it("strips only the leading bot mention", () => {
-  assert.strictEqual(SlackChatHost.stripBotMention("@t3 fix it", "t3"), "fix it");
-  assert.strictEqual(SlackChatHost.stripBotMention("@T3: fix it", "t3"), "fix it");
-  assert.strictEqual(SlackChatHost.stripBotMention("ask @t3 later", "t3"), "ask @t3 later");
-  assert.strictEqual(SlackChatHost.stripBotMention("@t3bot hi", "t3"), "@t3bot hi");
-  assert.strictEqual(SlackChatHost.stripBotMention("  hi  ", undefined), "hi");
+  assert.strictEqual(SlackChatHost.stripBotMention("@t3 fix it", ["t3"]), "fix it");
+  assert.strictEqual(SlackChatHost.stripBotMention("@T3: fix it", ["t3"]), "fix it");
+  assert.strictEqual(SlackChatHost.stripBotMention("ask @t3 later", ["t3"]), "ask @t3 later");
+  assert.strictEqual(SlackChatHost.stripBotMention("@t3bot hi", ["t3"]), "@t3bot hi");
+  assert.strictEqual(SlackChatHost.stripBotMention("  hi  ", []), "hi");
+});
+
+it("strips a mention rendered with the bot's display name", () => {
+  // Real Slack: username `dev-affil`, display name `[Dev] Affil`; the text renders the display name.
+  const names = ["[Dev] Affil", "dev-affil"];
+  assert.strictEqual(
+    SlackChatHost.stripBotMention("@[Dev] Affil what is 2+2?", names),
+    "what is 2+2?",
+  );
+  assert.strictEqual(
+    SlackChatHost.stripBotMention("@dev-affil what is 2+2?", names),
+    "what is 2+2?",
+  );
+  assert.strictEqual(SlackChatHost.stripBotMention("@[Dev] Affil", names), "");
+  assert.strictEqual(
+    SlackChatHost.stripBotMention("@[Dev] Affiliate hi", names),
+    "@[Dev] Affiliate hi",
+  );
+  // The user lookup failed, so Slack's mention rendered as the bot's user id.
+  assert.strictEqual(SlackChatHost.stripBotMention("@U0BOT hi", ["", "t3", "U0BOT"]), "hi");
 });
 
 it("maps a Chat SDK message to an inbound event", () => {
@@ -158,7 +238,7 @@ it("maps a Chat SDK message to an inbound event", () => {
       attachments: [{ type: "file", name: "trace.log" }, { type: "image" }],
     },
     "follow_up",
-    "t3",
+    ["t3"],
   );
   assert.deepStrictEqual(event, {
     eventId: "slack:C0MAPPED:1700000000.000200",
