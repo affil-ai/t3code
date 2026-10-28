@@ -1496,10 +1496,9 @@ export const make = Effect.gen(function* () {
               ),
           ),
           // fork: checks without Checks access
-          Effect.flatMap((core) =>
-            checkContextsForbidden
-              ? readCheckFallback(input, allowReserve, core)
-              : Effect.succeed(core),
+          Effect.filterOrElse(
+            () => !checkContextsForbidden,
+            (core) => readCheckFallback(input, allowReserve, core),
           ),
         ),
       ),
