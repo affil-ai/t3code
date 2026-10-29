@@ -59,7 +59,10 @@ vi.mock("@tanstack/react-router", () => ({
     </a>
   ),
 }));
-vi.mock("~/hooks/useMediaQuery", () => ({ useIsMobile: () => mocks.mobile }));
+vi.mock("~/hooks/useMediaQuery", () => ({
+  useIsMobile: () => mocks.mobile,
+  useMediaQuery: () => false,
+}));
 vi.mock("~/state/agents", () => ({
   useAgentsHome: () => ({ environmentId, agents: [...agents, ...mocks.extraAgents] }),
   useAgentByThreadKey: () => new Map(),
