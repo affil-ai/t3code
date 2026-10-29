@@ -390,10 +390,12 @@ export const make = Effect.gen(function* () {
         yield* Effect.gen(function* () {
           // The sweep only catches pull requests opened outside a turn, which
           // nobody sees without a client. Thread events still refresh headless work.
+          // Fork: every 10 minutes, not every minute. On a server with hundreds of
+          // unsettled branch threads the one-minute sweep spawned most of its git work.
           if (!(yield* backgroundPolicy.shouldRunOpportunisticWork)) return;
           yield* worker.enqueue({ threadId: null, refresh: false });
           yield* worker.drain;
-        }).pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.delay("1 minute"));
+        }).pipe(Effect.repeat(Schedule.spaced("10 minutes")), Effect.delay("1 minute"));
       }).pipe(Effect.asVoid),
     );
   });
