@@ -68,7 +68,7 @@ it("redacts Slack tokens and socket tickets", () => {
 it("reads the thread before a message, oldest first, with names", async () => {
   const earlier = await toEarlierMessages(
     [
-      { ts: "100.3", user: "U0GRACE", text: "second" },
+      { ts: "100.3", user: "U0GRACE", text: "if a &lt; b &amp;&amp; c &gt; d" },
       { ts: "100.1", user: "U0ADA", text: "first <@U0GRACE>", files: [{ name: "a.png" }] },
       { ts: "100.2", bot_id: "B1", bot_profile: { name: "CI" }, text: "build failed" },
       { ts: "100.4", user: "U0ADA", text: "" },
@@ -81,6 +81,12 @@ it("reads the thread before a message, oldest first, with names", async () => {
   assert.deepStrictEqual(earlier, [
     { userId: "U0ADA", name: "Ada", isBot: false, text: "first <@U0GRACE>", fileNames: ["a.png"] },
     { userId: "", name: "CI", isBot: true, text: "build failed", fileNames: [] },
-    { userId: "U0GRACE", name: "Grace", isBot: false, text: "second", fileNames: [] },
+    {
+      userId: "U0GRACE",
+      name: "Grace",
+      isBot: false,
+      text: "if a < b && c > d",
+      fileNames: [],
+    },
   ]);
 });

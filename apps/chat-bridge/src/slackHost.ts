@@ -114,6 +114,10 @@ export interface SlackRawMessage {
   readonly files?: ReadonlyArray<{ readonly name?: string | undefined }> | undefined;
 }
 
+/** Slack escapes only these three in message text; mention tokens keep their real angle brackets. */
+const unescapeSlack = (text: string) =>
+  text.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+
 /** Slack `ts` values are decimal seconds; they compare as numbers. */
 const tsBefore = (ts: string | undefined, before: string) =>
   ts !== undefined && Number(ts) < Number(before);
@@ -142,7 +146,7 @@ export async function toEarlierMessages(
         userId,
         name,
         isBot,
-        text: (message.text ?? "").trim(),
+        text: unescapeSlack((message.text ?? "").trim()),
         fileNames: (message.files ?? []).map((file) => file.name ?? "file"),
       };
     }),
