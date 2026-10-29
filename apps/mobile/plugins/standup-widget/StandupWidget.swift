@@ -106,13 +106,20 @@ private func parseDate(_ value: String) -> Date? {
 }
 
 /// "just now", "12 min ago", "3 h ago", "yesterday", "Mon", then "Oct 3", read against the entry's own time.
-private func activityLabel(_ date: Date, now: Date, calendar: Calendar = .current) -> String {
+/// `spoken` spells out the units VoiceOver would read as letters.
+private func activityLabel(
+  _ date: Date, now: Date, spoken: Bool = false, calendar: Calendar = .current
+) -> String {
   let seconds = max(0, now.timeIntervalSince(date))
   if seconds < 60 { return "just now" }
-  if seconds < 3600 { return "\(Int(seconds / 60)) min ago" }
+  if seconds < 3600 {
+    let minutes = Int(seconds / 60)
+    return spoken ? "\(minutes) minute\(minutes == 1 ? "" : "s") ago" : "\(minutes) min ago"
+  }
   // Late last night still reads as hours ago in the small hours.
   if calendar.isDate(date, inSameDayAs: now) || seconds < 6 * 3600 {
-    return "\(Int(seconds / 3600)) h ago"
+    let hours = Int(seconds / 3600)
+    return spoken ? "\(hours) hour\(hours == 1 ? "" : "s") ago" : "\(hours) h ago"
   }
   let days = calendar.dateComponents(
     [.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)
@@ -183,12 +190,15 @@ struct StandupProvider: TimelineProvider {
   func getTimeline(in context: Context, completion: @escaping (Timeline<StandupEntry>) -> Void) {
     Task {
       let entry = await entry()
-      // The large size says how long ago each task moved; an entry a minute keeps that current between fetches.
-      let minutes = context.family == .systemLarge ? Int(refreshInterval / 60) : 1
-      let entries = (0..<minutes).map { minute in
+      // The large size says how long ago each task moved. iOS often reloads well after the
+      // requested time, so entries run on past it: each minute for an hour, then each hour.
+      let offsets: [TimeInterval] =
+        context.family == .systemLarge
+        ? (0..<60).map { TimeInterval($0 * 60) } + (1...12).map { TimeInterval($0 * 3600) }
+        : [0]
+      let entries = offsets.map { offset in
         StandupEntry(
-          date: entry.date.addingTimeInterval(TimeInterval(minute * 60)), content: entry.content,
-          openURL: entry.openURL)
+          date: entry.date.addingTimeInterval(offset), content: entry.content, openURL: entry.openURL)
       }
       completion(Timeline(entries: entries, policy: .after(entry.date.addingTimeInterval(refreshInterval))))
     }
@@ -313,8 +323,10 @@ private struct TaskLine: View {
 
   var body: some View {
     let status = Status(task.progress)
-    let activity = now.flatMap { now in
-      task.lastActivityAt.flatMap(parseDate).map { activityLabel($0, now: now) }
+    let activityDate = task.lastActivityAt.flatMap(parseDate)
+    let activity = now.flatMap { now in activityDate.map { activityLabel($0, now: now) } }
+    let spokenActivity = now.flatMap { now in
+      activityDate.map { activityLabel($0, now: now, spoken: true) }
     }
     let detail = now == nil ? nil : task.detail
     VStack(alignment: .leading, spacing: 1) {
@@ -344,7 +356,7 @@ private struct TaskLine: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(
-      [spokenPrefix, "\(task.title), \(task.agentName), \(status.label)", detail, activity]
+      [spokenPrefix, "\(task.title), \(task.agentName), \(status.label)", detail, spokenActivity]
         .compactMap { $0 }.joined(separator: ". "))
   }
 }

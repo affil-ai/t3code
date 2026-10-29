@@ -150,7 +150,7 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
     const entries = yield* openTasks().pipe(
       Effect.mapError(dbError("Could not read the standup.")),
     );
-    const rows = yield* Effect.forEach(entries, ({ task }) =>
+    const rows = yield* Effect.forEach(entries, ({ agent, task }) =>
       Effect.gen(function* () {
         const shell =
           task.workerThreadId === null
@@ -186,7 +186,7 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
             ),
           ),
         );
-        return { progress, lastActivityAt };
+        return { agent, task, progress, lastActivityAt };
       }),
     );
     const progress = rows.map((row) => row.progress);
@@ -204,15 +204,15 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
       open: entries.length,
       needsYou: progress.filter((value) => value === "needs_you").length,
       running: progress.filter((value) => value === "running").length,
-      tasks: entries.slice(0, SUMMARY_TASK_LIMIT).map(({ agent, task }, index) => ({
+      tasks: rows.slice(0, SUMMARY_TASK_LIMIT).map(({ agent, task, progress, lastActivityAt }) => ({
         taskId: task.id,
         title: task.title,
-        progress: progress[index] ?? "not_started",
+        progress,
         agentName: agent.name,
         agentIcon: agent.icon,
         agentColor: agent.color,
         detail: firstmateTaskNextStep(task) ?? firstmateTaskStatusLabel(task),
-        ...(rows[index] === undefined ? {} : { lastActivityAt: rows[index].lastActivityAt }),
+        lastActivityAt,
       })),
       doneAt: done.map((row) => row.standup_finished_at),
       generatedAt,
