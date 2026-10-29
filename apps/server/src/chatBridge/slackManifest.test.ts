@@ -26,3 +26,10 @@ it("points webhook delivery at the relay hook URL, or a placeholder until there 
   );
   assert.strictEqual(without.settings.event_subscriptions.request_url, WEBHOOK_URL_PLACEHOLDER);
 });
+
+it("asks for the file scopes the bridge uses to import and send files", () => {
+  const manifest = JSON.parse(
+    slackAppManifest({ appName: "T3", transport: "socket", webhookUrl: null }),
+  );
+  assert.includeMembers(manifest.oauth_config.scopes.bot, ["files:read", "files:write"]);
+});

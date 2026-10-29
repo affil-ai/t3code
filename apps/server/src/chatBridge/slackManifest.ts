@@ -24,6 +24,9 @@ export function slackAppManifest(input: {
             "channels:history",
             "groups:history",
             "chat:write",
+            // Read the files people attach, and upload the files the agent sends.
+            "files:read",
+            "files:write",
             "reactions:write",
             "users:read",
           ],

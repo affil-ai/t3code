@@ -219,6 +219,29 @@ function ChatBridgeSlackControls({ environmentId }: { readonly environmentId: En
         ) : null}
       </SettingsRow>
       <SettingsRow
+        title="Replies while a run is going"
+        description="Steer adds a Slack reply to the run in flight, and that run's answer covers both. Queue runs it after the current run ends."
+        control={
+          <Select
+            value={draft.followUpMode ?? "steer"}
+            onValueChange={(value) => {
+              if (value === "steer" || value === "queue")
+                setDraft({ ...draft, followUpMode: value });
+            }}
+          >
+            <SelectTrigger aria-label="Slack follow-ups" className="min-w-40" size="xs">
+              <SelectValue>
+                {(draft.followUpMode ?? "steer") === "steer" ? "Steer" : "Queue"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="steer">Steer</SelectItem>
+              <SelectItem value="queue">Queue</SelectItem>
+            </SelectPopup>
+          </Select>
+        }
+      />
+      <SettingsRow
         title="Slack app manifest"
         description="Create the app at api.slack.com/apps → From a manifest, then install it to your workspace. Save the connection choice first so the manifest matches it."
         control={

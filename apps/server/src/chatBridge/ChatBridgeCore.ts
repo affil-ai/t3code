@@ -5,6 +5,8 @@
  * and which run answers which chat thread.
  */
 import {
+  type ChatAttachment,
+  type ChatBridgeFollowUpMode,
   CommandId,
   MessageId,
   type OrchestrationV2Run,
@@ -27,6 +29,26 @@ export interface ChatAuthor {
   readonly fullName: string;
 }
 
+/** A file attached to a chat message. `fetch` downloads it with the bot's credentials. */
+export interface ChatInboundFile {
+  readonly name: string;
+  readonly mimeType: string | undefined;
+  readonly sizeBytes: number | undefined;
+  readonly fetch: (() => Promise<Uint8Array>) | undefined;
+}
+
+/** Someone the message mentions, other than the bot. */
+export interface ChatMentionedUser {
+  readonly userId: string;
+  readonly name: string;
+}
+
+/** The files that became T3 attachments, and why the rest did not. */
+export interface ChatImportedFiles {
+  readonly attachments: ReadonlyArray<ChatAttachment>;
+  readonly skipped: ReadonlyArray<{ readonly name: string; readonly reason: string }>;
+}
+
 /** One chat message addressed to the bot, after the host has dropped its own and other bots' messages. */
 export interface ChatInboundEvent {
   /** Unique per chat message; it keys the T3 command, so a redelivery cannot start a second turn. */
@@ -39,13 +61,17 @@ export interface ChatInboundEvent {
   readonly kind: "mention" | "follow_up";
   readonly author: ChatAuthor;
   readonly text: string;
-  /** Step 1 does not import files; their names go into the turn so the agent knows they exist. */
-  readonly fileNames: ReadonlyArray<string>;
+  readonly files: ReadonlyArray<ChatInboundFile>;
+  readonly mentions: ReadonlyArray<ChatMentionedUser>;
 }
 
 export type ChatInboundOutcome =
   | { readonly type: "started"; readonly threadId: ThreadId }
-  | { readonly type: "queued"; readonly threadId: ThreadId }
+  | {
+      readonly type: "followed_up";
+      readonly threadId: ThreadId;
+      readonly delivery: "started" | "queued" | "steered";
+    }
   | {
       readonly type: "ignored";
       readonly reason: "disabled" | "not_allowed" | "unmapped_channel" | "unbound_thread";
@@ -67,15 +93,28 @@ export class ChatThreads extends Context.Service<
       readonly projectId: ProjectId;
       readonly title: string;
       readonly text: string;
+      readonly attachments: ReadonlyArray<ChatAttachment>;
     }) => Effect.Effect<ThreadId, ChatThreadsError>;
-    /** Adds the message behind any run in flight, so chat follow-ups never steer one. */
-    readonly queue: (input: {
+    /**
+     * Sends a follow-up. `steer` joins the run in flight, or starts one when
+     * the thread is idle; `queue` runs after it. Returns the run it joined.
+     */
+    readonly send: (input: {
       readonly commandId: CommandId;
       readonly messageId: MessageId;
       readonly projectId: ProjectId;
       readonly threadId: ThreadId;
       readonly text: string;
-    }) => Effect.Effect<void, ChatThreadsError>;
+      readonly attachments: ReadonlyArray<ChatAttachment>;
+      readonly mode: ChatBridgeFollowUpMode;
+    }) => Effect.Effect<
+      { readonly runId: RunId; readonly delivery: "started" | "queued" | "steered" },
+      ChatThreadsError
+    >;
+    /** Downloads chat files into pending T3 attachments. A file that fails is skipped, not fatal. */
+    readonly importFiles: (
+      files: ReadonlyArray<ChatInboundFile>,
+    ) => Effect.Effect<ChatImportedFiles>;
     /** The root agent's last assistant message in the run. */
     readonly finalAnswer: (input: {
       readonly projectId: ProjectId;
@@ -107,15 +146,32 @@ const TERMINAL_TEXT = {
 
 const TITLE_LIMIT = 80;
 
-export function turnText(event: ChatInboundEvent): string {
+/** Tells the agent how its answer reaches Slack, once per thread. */
+const FIRST_TURN_NOTE = [
+  "Your final message in each run is posted to this Slack thread.",
+  "To mention someone there, write <@USERID>, such as <@U0123ABCD>.",
+  "To send files there, call the chat_post tool with their paths in your workspace.",
+].join(" ");
+
+export function turnText(
+  event: ChatInboundEvent,
+  skipped: ChatImportedFiles["skipped"],
+  first: boolean,
+): string {
   const lines = [
-    `Slack message from ${event.author.fullName || event.author.userName} (${event.author.userId}):`,
+    `Slack message from ${event.author.fullName || event.author.userName} (<@${event.author.userId}>):`,
     "",
     event.text,
   ];
-  if (event.fileNames.length > 0) {
-    lines.push("", `Attached in Slack but not imported: ${event.fileNames.join(", ")}`);
+  if (event.mentions.length > 0) {
+    const people = event.mentions.map((user) => `${user.name} (<@${user.userId}>)`);
+    lines.push("", `Mentioned: ${people.join(", ")}`);
   }
+  if (skipped.length > 0) {
+    const files = skipped.map((file) => `${file.name} (${file.reason})`);
+    lines.push("", `Attached in Slack but not imported: ${files.join(", ")}`);
+  }
+  if (first) lines.push("", FIRST_TURN_NOTE);
   return lines.join("\n");
 }
 
@@ -157,24 +213,33 @@ export const make = Effect.gen(function* () {
     }
     const commandId = CommandId.make(`${CHAT_MESSAGE_PREFIX}${event.eventId}`);
     const messageId = MessageId.make(`${CHAT_MESSAGE_PREFIX}${event.eventId}`);
-    const text = turnText(event);
 
     const existing = yield* bindings.get(event.chatThreadKey);
     if (Option.isSome(existing)) {
       const binding = existing.value;
-      yield* threads.queue({
+      const imported = yield* threads.importFiles(event.files);
+      const sent = yield* threads.send({
         commandId,
         messageId,
         projectId: binding.projectId,
         threadId: binding.threadId,
-        text,
+        text: turnText(event, imported.skipped, false),
+        attachments: imported.attachments,
+        mode: slack.followUpMode ?? "steer",
       });
-      return { type: "queued", threadId: binding.threadId } as const;
+      // A steered message can join a run someone started in T3; its answer is owed here too.
+      yield* bindings.oweReply(sent.runId, binding.chatThreadKey);
+      return {
+        type: "followed_up",
+        threadId: binding.threadId,
+        delivery: sent.delivery,
+      } as const;
     }
     if (event.kind === "follow_up") return { type: "ignored", reason: "unbound_thread" } as const;
 
     const mapping = slack.channelProjects.find((entry) => entry.channelId === event.channelId);
     if (mapping === undefined) return { type: "ignored", reason: "unmapped_channel" } as const;
+    const imported = yield* threads.importFiles(event.files);
     // The command id makes a retried launch replay its receipt, so a crash
     // before the binding is saved yields the same thread on redelivery.
     const threadId = yield* threads.start({
@@ -182,7 +247,8 @@ export const make = Effect.gen(function* () {
       messageId,
       projectId: mapping.projectId,
       title: threadTitle(event.text),
-      text,
+      text: turnText(event, imported.skipped, true),
+      attachments: imported.attachments,
     });
     yield* bindings.insert({
       chatThreadKey: event.chatThreadKey,
@@ -196,7 +262,6 @@ export const make = Effect.gen(function* () {
   });
 
   const claimReply = Effect.fn("ChatBridgeCore.claimReply")(function* (run: OrchestrationV2Run) {
-    if (!run.userMessageId.startsWith(CHAT_MESSAGE_PREFIX)) return Option.none();
     if (
       run.status !== "completed" &&
       run.status !== "failed" &&
@@ -208,6 +273,9 @@ export const make = Effect.gen(function* () {
     }
     const binding = yield* bindings.getByThread(run.threadId);
     if (Option.isNone(binding)) return Option.none();
+    const owed =
+      run.userMessageId.startsWith(CHAT_MESSAGE_PREFIX) || (yield* bindings.isReplyOwed(run.id));
+    if (!owed) return Option.none();
     const claimed = yield* bindings.claimReply(run.id, binding.value.chatThreadKey);
     if (!claimed) return Option.none();
     const text =

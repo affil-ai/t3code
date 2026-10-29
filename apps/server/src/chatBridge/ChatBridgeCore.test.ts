@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  type ChatAttachment,
   type ChatBridgeSlackConfig,
   DEFAULT_CHAT_BRIDGE_SLACK_CONFIG,
   MessageId,
@@ -42,10 +43,12 @@ type Call =
       readonly text: string;
     }
   | {
-      readonly op: "queue";
+      readonly op: "send";
       readonly commandId: string;
       readonly threadId: string;
       readonly text: string;
+      readonly mode: "steer" | "queue";
+      readonly attachments: ReadonlyArray<ChatAttachment>;
     };
 
 const mention = (
@@ -58,22 +61,55 @@ const mention = (
   kind: "mention",
   author: allowed,
   text: "Fix the flaky test\nmore detail",
-  fileNames: [],
+  files: [],
+  mentions: [],
   ...overrides,
 });
+
+const imported: ChatAttachment = {
+  type: "file",
+  id: "pending-file-1",
+  name: "trace.log",
+  mimeType: "text/plain",
+  sizeBytes: 3,
+};
 
 function harness(
   config: ChatBridgeSlackConfig,
   answer: Option.Option<string> = Option.some("Done."),
+  /** The run a follow-up lands in; a steer joins the run in flight. */
+  sentTo: { readonly runId: string; readonly delivery: "started" | "queued" | "steered" } = {
+    runId: "run-2",
+    delivery: "steered",
+  },
 ) {
   return Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<Call>>([]);
     const threads = Layer.succeed(ChatBridgeCore.ChatThreads)({
-      start: (input) =>
+      start: ({ attachments: _attachments, ...input }) =>
         Ref.update(calls, (all) => [...all, { op: "start" as const, ...input }]).pipe(
           Effect.as(ThreadId.make("thread-1")),
         ),
-      queue: (input) => Ref.update(calls, (all) => [...all, { op: "queue" as const, ...input }]),
+      send: (input) =>
+        Ref.update(calls, (all) => [
+          ...all,
+          {
+            op: "send" as const,
+            commandId: input.commandId,
+            threadId: input.threadId,
+            text: input.text,
+            mode: input.mode,
+            attachments: input.attachments,
+          },
+        ]).pipe(Effect.as({ runId: RunId.make(sentTo.runId), delivery: sentTo.delivery })),
+      // A file named `broken` fails to download; the rest import.
+      importFiles: (files) =>
+        Effect.succeed({
+          attachments: files.filter((file) => file.name !== "broken").map(() => imported),
+          skipped: files
+            .filter((file) => file.name === "broken")
+            .map((file) => ({ name: file.name, reason: "download failed" })),
+        }),
       finalAnswer: () => Effect.succeed(answer),
     });
     const stores = Layer.mergeAll(ChatBindingStore.layerSqlite, ChatBridgeConfigStore.layerSqlite);
@@ -152,7 +188,7 @@ it.effect("ignores a mention in a channel with no project", () =>
   ),
 );
 
-it.effect("starts a thread for a mention and queues follow-ups on it", () =>
+it.effect("starts a thread for a mention and steers follow-ups into it", () =>
   withDatabase(
     Effect.gen(function* () {
       const { core, calls } = yield* harness(enabled);
@@ -166,19 +202,48 @@ it.effect("starts a thread for a mention and queues follow-ups on it", () =>
           text: "also the lint",
         }),
       );
-      assert.deepStrictEqual(followUp, { type: "queued", threadId: ThreadId.make("thread-1") });
+      assert.deepStrictEqual(followUp, {
+        type: "followed_up",
+        threadId: ThreadId.make("thread-1"),
+        delivery: "steered",
+      });
 
-      const [start, queue] = yield* Ref.get(calls);
-      assert.deepStrictEqual(start, {
-        op: "start",
+      const [start, send] = yield* Ref.get(calls);
+      assert.strictEqual(start?.op, "start");
+      assert.deepInclude(start, {
         commandId: "chat-bridge:slack:C0MAPPED:1700000000.000100",
         messageId: "chat-bridge:slack:C0MAPPED:1700000000.000100",
         projectId,
         title: "Fix the flaky test",
-        text: "Slack message from Ada Lovelace (U0ALLOWED):\n\nFix the flaky test\nmore detail",
       });
-      assert.strictEqual(queue?.op, "queue");
-      assert.strictEqual(queue?.op === "queue" ? queue.threadId : null, "thread-1");
+      assert.isTrue(
+        start?.text.startsWith(
+          "Slack message from Ada Lovelace (<@U0ALLOWED>):\n\nFix the flaky test\nmore detail",
+        ),
+      );
+      // Only the first turn explains how answers reach Slack.
+      assert.include(start?.text ?? "", "chat_post");
+      assert.deepInclude(send, { op: "send", threadId: "thread-1", mode: "steer" });
+      assert.notInclude(send?.text ?? "", "chat_post");
+    }),
+  ),
+);
+
+it.effect("queues follow-ups when the settings ask for it", () =>
+  withDatabase(
+    Effect.gen(function* () {
+      const { core, calls } = yield* harness(
+        { ...enabled, followUpMode: "queue" },
+        Option.some("Done."),
+        { runId: "run-2", delivery: "queued" },
+      );
+      yield* core.receive(mention());
+      const followUp = yield* core.receive(
+        mention({ kind: "follow_up", eventId: "slack:C0MAPPED:1700000000.000200" }),
+      );
+      assert.deepInclude(followUp, { type: "followed_up", delivery: "queued" });
+      const [, send] = yield* Ref.get(calls);
+      assert.deepInclude(send, { op: "send", mode: "queue" });
     }),
   ),
 );
@@ -196,12 +261,42 @@ it.effect("ignores a follow-up in a chat thread that never started work", () =>
   ),
 );
 
-it.effect("names attachments it did not import", () =>
+it.effect("imports attached files and names the ones it could not", () =>
+  withDatabase(
+    Effect.gen(function* () {
+      const { core, calls } = yield* harness(enabled);
+      const file = (name: string): ChatBridgeCore.ChatInboundFile => ({
+        name,
+        mimeType: "text/plain",
+        sizeBytes: 3,
+        fetch: undefined,
+      });
+      yield* core.receive(mention());
+      yield* core.receive(
+        mention({
+          kind: "follow_up",
+          eventId: "slack:C0MAPPED:1700000000.000200",
+          files: [file("trace.log"), file("broken")],
+        }),
+      );
+      const [, send] = yield* Ref.get(calls);
+      assert.deepStrictEqual(send?.op === "send" ? send.attachments : null, [imported]);
+      assert.include(
+        send?.text ?? "",
+        "Attached in Slack but not imported: broken (download failed)",
+      );
+    }),
+  ),
+);
+
+it.effect("gives the agent the ids of the people a message mentions", () =>
   Effect.sync(() => {
-    assert.include(
-      ChatBridgeCore.turnText(mention({ fileNames: ["trace.log", "image/png"] })),
-      "Attached in Slack but not imported: trace.log, image/png",
+    const text = ChatBridgeCore.turnText(
+      mention({ mentions: [{ userId: "U0GRACE", name: "Grace Hopper" }] }),
+      [],
+      false,
     );
+    assert.include(text, "Mentioned: Grace Hopper (<@U0GRACE>)");
   }),
 );
 
@@ -246,6 +341,26 @@ it.effect("reports runs that end without an answer", () =>
         Option.some("The run failed. Open the thread in T3 Code for details."),
       );
       assert.deepStrictEqual(yield* text("running", "run-c"), Option.none());
+    }),
+  ),
+);
+
+it.effect("answers a run started in T3 that a chat follow-up steered", () =>
+  withDatabase(
+    Effect.gen(function* () {
+      const { core } = yield* harness(enabled, Option.some("Done."), {
+        runId: "run-from-app",
+        delivery: "steered",
+      });
+      yield* core.receive(mention());
+      yield* core.receive(
+        mention({ kind: "follow_up", eventId: "slack:C0MAPPED:1700000000.000200" }),
+      );
+      const steered = run({
+        id: RunId.make("run-from-app"),
+        userMessageId: MessageId.make("message-from-the-app"),
+      });
+      assert.deepInclude(Option.getOrNull(yield* core.claimReply(steered)), { text: "Done." });
     }),
   ),
 );

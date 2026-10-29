@@ -1,16 +1,22 @@
 /**
  * `ChatThreads` over T3 orchestration: new chat threads launch like a
- * scheduled task's fresh thread, and follow-ups queue like a queued send.
+ * scheduled task's fresh thread, and follow-ups steer or queue like a send
+ * from the composer.
  */
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ChatThreads, ChatThreadsError } from "./ChatBridgeCore.ts";
+import { importChatFiles } from "./ChatFileImport.ts";
 
 const threadsError = (message: string) => (cause: unknown) =>
   new ChatThreadsError({ message, cause });
@@ -22,6 +28,14 @@ export const layer = Layer.effect(
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const projects = yield* ProjectService.ProjectService;
     const settings = yield* ServerSettings.ServerSettingsService;
+    const fileServices = Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(ServerConfig.ServerConfig)(yield* ServerConfig.ServerConfig),
+        Layer.succeed(FileSystem.FileSystem)(yield* FileSystem.FileSystem),
+        Layer.succeed(Path.Path)(yield* Path.Path),
+        Layer.succeed(Crypto.Crypto)(yield* Crypto.Crypto),
+      ),
+    );
 
     return ChatThreads.of({
       start: Effect.fn("ChatThreads.start")(function* (input) {
@@ -51,28 +65,38 @@ export const layer = Layer.effect(
             runtimeMode: current.defaultRuntimeMode,
             interactionMode: "default",
             workspaceStrategy: { type: "root" },
-            initialMessage: { messageId: input.messageId, text: input.text, attachments: [] },
+            initialMessage: {
+              messageId: input.messageId,
+              text: input.text,
+              attachments: input.attachments,
+            },
             createdBy: "user",
             creationSource: "server",
           })
           .pipe(Effect.mapError(threadsError("Could not start the thread.")));
         return launched.threadId;
       }),
-      queue: Effect.fn("ChatThreads.queue")(function* (input) {
-        yield* threads
+      send: Effect.fn("ChatThreads.send")(function* (input) {
+        const sent = yield* threads
           .sendToThread({
             projectId: input.projectId,
             commandId: input.commandId,
             threadId: input.threadId,
             messageId: input.messageId,
             text: input.text,
-            attachments: [],
-            mode: "queue",
+            attachments: input.attachments,
+            // `auto` steers the run in flight and starts one when the thread is idle.
+            mode: input.mode === "steer" ? "auto" : "queue",
             createdBy: "user",
             creationSource: "server",
           })
-          .pipe(Effect.mapError(threadsError("Could not queue the message.")));
+          .pipe(Effect.mapError(threadsError("Could not send the message.")));
+        return {
+          runId: sent.run.id,
+          delivery: sent.delivery === "restarted" ? "steered" : sent.delivery,
+        };
       }),
+      importFiles: (files) => importChatFiles(files).pipe(fileServices),
       finalAnswer: Effect.fn("ChatThreads.finalAnswer")(function* (input) {
         const { messages } = yield* threads
           .getProjectThreadRecords(

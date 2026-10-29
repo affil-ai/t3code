@@ -3,7 +3,7 @@
  * the Slack adapter, turns SDK messages into `ChatInboundEvent`s for the core,
  * and posts the core's replies. Nothing here touches T3 threads.
  */
-import { createSlackAdapter, type SlackAdapter } from "@chat-adapter/slack";
+import { createSlackAdapter, type SlackAdapter, SlackFormatConverter } from "@chat-adapter/slack";
 import type { ChatBridgeSlackTransport } from "@t3tools/contracts";
 import {
   Chat,
@@ -14,7 +14,12 @@ import {
   type Thread,
 } from "chat";
 
-import type { ChatInboundEvent, ChatInboundOutcome, ChatOutboundReply } from "./ChatBridgeCore.ts";
+import type {
+  ChatInboundEvent,
+  ChatInboundFile,
+  ChatInboundOutcome,
+  ChatMentionedUser,
+} from "./ChatBridgeCore.ts";
 
 export interface SlackChatHostOptions {
   readonly transport: ChatBridgeSlackTransport;
@@ -37,10 +42,22 @@ export interface SlackChatHostOptions {
   readonly botUserId?: string | undefined;
 }
 
+export interface SlackOutboundFile {
+  readonly data: Buffer;
+  readonly filename: string;
+}
+
+export interface SlackOutboundMessage {
+  readonly chatThreadKey: string;
+  readonly text: string;
+  /** Uploaded with the message; needs the `files:write` scope. */
+  readonly files?: ReadonlyArray<SlackOutboundFile> | undefined;
+}
+
 export interface SlackChatHost {
   /** Webhook transport only: Slack's Events API request, signature checked by the adapter. */
   readonly handleWebhook: (request: Request) => Promise<Response>;
-  readonly post: (reply: ChatOutboundReply) => Promise<void>;
+  readonly post: (message: SlackOutboundMessage) => Promise<void>;
   /** Resolves once every webhook delivery received so far has been handled. */
   readonly idle: () => Promise<void>;
   /** Finishes in-flight deliveries, then disconnects. */
@@ -66,11 +83,34 @@ export function stripBotMention(text: string, botNames: ReadonlyArray<string>): 
   return text.trim();
 }
 
+const USER_MENTION = /<@([UW][A-Z0-9]+)(?:\|[^<>]*)?>/g;
+
+/** User ids the raw Slack text mentions, in order, without repeats. */
+export function mentionedUserIds(rawText: unknown, excludeId: string | undefined): Array<string> {
+  if (typeof rawText !== "string") return [];
+  const ids = [...rawText.matchAll(USER_MENTION)].map((match) => match[1] ?? "");
+  return [...new Set(ids)].filter((id) => id !== "" && id !== excludeId);
+}
+
+function toInboundFile(attachment: Message["attachments"][number]): ChatInboundFile {
+  const fetchData = attachment.fetchData;
+  return {
+    name: attachment.name ?? attachment.type,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.size,
+    fetch:
+      fetchData === undefined
+        ? undefined
+        : async () => new Uint8Array(await fetchData.call(attachment)),
+  };
+}
+
 export function toInboundEvent(
   thread: Pick<Thread, "id">,
   message: Pick<Message, "id" | "text" | "author" | "attachments">,
   kind: ChatInboundEvent["kind"],
   botNames: ReadonlyArray<string>,
+  mentions: ReadonlyArray<ChatMentionedUser> = [],
 ): ChatInboundEvent {
   // Chat SDK Slack thread ids are `slack:<channel>:<thread ts>`.
   const channelId = thread.id.split(":")[1] ?? "";
@@ -86,7 +126,8 @@ export function toInboundEvent(
       fullName: message.author.fullName,
     },
     text: stripBotMention(message.text, botNames),
-    fileNames: message.attachments.map((attachment) => attachment.name ?? attachment.type),
+    files: message.attachments.map(toInboundFile),
+    mentions,
   };
 }
 
@@ -123,6 +164,18 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     return [self?.userName ?? "", slack.userName, botUserId];
   };
 
+  // Slack text names people by display name only; the agent needs their ids to mention them back.
+  const mentionedUsers = async (message: Message): Promise<Array<ChatMentionedUser>> => {
+    const raw = message.raw as { readonly text?: unknown } | undefined;
+    const ids = mentionedUserIds(raw?.text, slack.botUserId);
+    return Promise.all(
+      ids.map(async (userId) => {
+        const user = await slack.getUser(userId).catch(() => null);
+        return { userId, name: user?.fullName || user?.userName || userId };
+      }),
+    );
+  };
+
   const deliver = async (
     thread: Thread,
     message: Message,
@@ -134,8 +187,9 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     // The queue strategy hands over only the latest message; earlier ones arrive as `skipped`.
     for (const each of [...(context?.skipped ?? []), message]) {
       if (each.author.isMe || each.author.isBot === true) continue;
-      const outcome = await options.onEvent(toInboundEvent(thread, each, kind, botNames));
-      if (outcome.type === "started" || outcome.type === "queued") bound = true;
+      const mentions = await mentionedUsers(each);
+      const outcome = await options.onEvent(toInboundEvent(thread, each, kind, botNames, mentions));
+      if (outcome.type === "started" || outcome.type === "followed_up") bound = true;
     }
     if (bound && kind === "mention") await thread.subscribe();
   };
@@ -152,6 +206,7 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
   chat.onSubscribedMessage(guarded("follow_up"));
 
   await chat.initialize();
+  const mrkdwn = new SlackFormatConverter();
 
   const inFlight = new Set<Promise<unknown>>();
   const idle = async () => {
@@ -168,8 +223,23 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
           inFlight.add(tracked);
         },
       }),
-    post: async (reply) => {
-      await chat.thread(reply.chatThreadKey).post({ markdown: reply.text });
+    post: async (message) => {
+      const files = message.files ?? [];
+      if (files.length === 0) {
+        await chat.thread(message.chatThreadKey).post({ markdown: message.text });
+        return;
+      }
+      // The SDK uploads files and posts the text as two messages. Slack's
+      // `initial_comment` puts the text on the file message itself, in mrkdwn.
+      const { channel, threadTs } = slack.decodeThreadId(message.chatThreadKey);
+      const comment =
+        message.text.trim() === "" ? "" : mrkdwn.toResponseUrlText({ markdown: message.text });
+      await slack.webClient.files.uploadV2({
+        channel_id: channel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        ...(comment ? { initial_comment: comment } : {}),
+        file_uploads: files.map((file) => ({ file: file.data, filename: file.filename })),
+      });
     },
     idle,
     shutdown: async () => {

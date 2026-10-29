@@ -42,6 +42,12 @@ export class ChatBindingStore extends Context.Service<
       chatThreadKey: string,
     ) => Effect.Effect<boolean, ChatBindingStoreError>;
     readonly releaseReply: (runId: RunId) => Effect.Effect<void, ChatBindingStoreError>;
+    /** Marks a run whose message did not start it as answering a chat thread. */
+    readonly oweReply: (
+      runId: RunId,
+      chatThreadKey: string,
+    ) => Effect.Effect<void, ChatBindingStoreError>;
+    readonly isReplyOwed: (runId: RunId) => Effect.Effect<boolean, ChatBindingStoreError>;
   }
 >()("t3/chatBridge/ChatBindingStore") {}
 
@@ -108,6 +114,17 @@ export const makeSqlite = Effect.gen(function* () {
       sql`DELETE FROM chat_bridge_reply WHERE run_id = ${runId}`.pipe(
         Effect.asVoid,
         Effect.mapError(storeError("Could not release the chat reply.")),
+      ),
+    oweReply: (runId, chatThreadKey) =>
+      sql`INSERT INTO chat_bridge_owed_reply (run_id, chat_thread_key)
+        VALUES (${runId}, ${chatThreadKey}) ON CONFLICT (run_id) DO NOTHING`.pipe(
+        Effect.asVoid,
+        Effect.mapError(storeError("Could not record the owed chat reply.")),
+      ),
+    isReplyOwed: (runId) =>
+      sql`SELECT 1 FROM chat_bridge_owed_reply WHERE run_id = ${runId}`.pipe(
+        Effect.map((rows) => rows.length > 0),
+        Effect.mapError(storeError("Could not read the owed chat reply.")),
       ),
   });
 });

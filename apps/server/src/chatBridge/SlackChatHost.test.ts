@@ -239,8 +239,10 @@ it("maps a Chat SDK message to an inbound event", () => {
     },
     "follow_up",
     ["t3"],
+    [{ userId: "U2", name: "Grace" }],
   );
-  assert.deepStrictEqual(event, {
+  const { files, ...rest } = event;
+  assert.deepStrictEqual(rest, {
     eventId: "slack:C0MAPPED:1700000000.000200",
     platform: "slack",
     chatThreadKey: "slack:C0MAPPED:1700000000.000100",
@@ -248,8 +250,26 @@ it("maps a Chat SDK message to an inbound event", () => {
     kind: "follow_up",
     author: { userId: "U1", userName: "ada", fullName: "Ada" },
     text: "also the lint",
-    fileNames: ["trace.log", "image"],
+    mentions: [{ userId: "U2", name: "Grace" }],
   });
+  assert.deepStrictEqual(
+    files.map((file) => [file.name, file.fetch === undefined]),
+    [
+      ["trace.log", true],
+      ["image", true],
+    ],
+  );
+});
+
+it("reads mentioned user ids from Slack's raw text, without the bot", () => {
+  assert.deepStrictEqual(
+    SlackChatHost.mentionedUserIds(
+      "<@U0BOT> ask <@U0GRACE|grace> and <@U0ADA>, then <@U0GRACE>",
+      "U0BOT",
+    ),
+    ["U0GRACE", "U0ADA"],
+  );
+  assert.deepStrictEqual(SlackChatHost.mentionedUserIds(undefined, "U0BOT"), []);
 });
 
 it("redacts Slack tokens and socket tickets from adapter log lines", () => {

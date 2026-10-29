@@ -39,6 +39,14 @@ export const ensureSchema = Effect.gen(function* () {
       claimed_at TEXT NOT NULL
     )
   `;
+  // Runs a chat follow-up joined without starting them, such as a steer into
+  // a run started in T3. Runs the bridge started are known by their message id.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS chat_bridge_owed_reply (
+      run_id TEXT PRIMARY KEY,
+      chat_thread_key TEXT NOT NULL
+    )
+  `;
   yield* sql`
     CREATE TABLE IF NOT EXISTS chat_bridge_state_subscription (
       thread_id TEXT PRIMARY KEY

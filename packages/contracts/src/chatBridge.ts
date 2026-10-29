@@ -27,6 +27,13 @@ export const ChatBridgeChannelProject = Schema.Struct({
 });
 export type ChatBridgeChannelProject = typeof ChatBridgeChannelProject.Type;
 
+/**
+ * What a reply in a bound Slack thread does while the T3 thread is running:
+ * `steer` adds it to the run in flight, `queue` runs it after that run ends.
+ */
+export const ChatBridgeFollowUpMode = Schema.Literals(["steer", "queue"]);
+export type ChatBridgeFollowUpMode = typeof ChatBridgeFollowUpMode.Type;
+
 export const ChatBridgeSlackConfig = Schema.Struct({
   enabled: Schema.Boolean,
   transport: ChatBridgeSlackTransport,
@@ -34,6 +41,8 @@ export const ChatBridgeSlackConfig = Schema.Struct({
   channelProjects: Schema.Array(ChatBridgeChannelProject),
   /** Slack user IDs that may start or continue a thread. Everyone else is ignored. */
   allowedUserIds: Schema.Array(SlackId),
+  /** Optional so settings saved before it existed still decode; absent means `steer`. */
+  followUpMode: Schema.optional(ChatBridgeFollowUpMode),
 });
 export type ChatBridgeSlackConfig = typeof ChatBridgeSlackConfig.Type;
 

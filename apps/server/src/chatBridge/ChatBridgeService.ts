@@ -10,6 +10,7 @@ import {
   type ChatBridgeSlackConfig,
   type ChatBridgeSlackSecretName,
   type ChatBridgeStatus,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -26,6 +27,7 @@ import { timingSafeEqualBase64Url } from "../auth/utils.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { ScheduledTaskWebhookOrigin } from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ChatBindingStore from "./ChatBindingStore.ts";
 import * as ChatBridgeConfigStore from "./ChatBridgeConfigStore.ts";
 import * as ChatBridgeCore from "./ChatBridgeCore.ts";
 import * as SlackChatHost from "./SlackChatHost.ts";
@@ -53,6 +55,15 @@ export class ChatBridgeService extends Context.Service<
     readonly setSlackSecret: (
       input: ChatBridgeSetSlackSecretInput,
     ) => Effect.Effect<ChatBridgeStatus, ChatBridgeError>;
+    /**
+     * Posts to the chat thread bound to a T3 thread, for its agent's
+     * `chat_post` tool. None when the thread answers no chat thread.
+     */
+    readonly postFromThread: (input: {
+      readonly threadId: ThreadId;
+      readonly text: string;
+      readonly files: ReadonlyArray<SlackChatHost.SlackOutboundFile>;
+    }) => Effect.Effect<Option.Option<{ readonly chatThreadKey: string }>, ChatBridgeError>;
     /** None when the token does not match, so the route answers 404 like any unknown hook. */
     readonly handleSlackHook: (
       token: string,
@@ -66,6 +77,7 @@ const bridgeError = (message: string) => (cause: unknown) =>
 
 export const make = Effect.gen(function* () {
   const core = yield* ChatBridgeCore.ChatBridgeCore;
+  const bindings = yield* ChatBindingStore.ChatBindingStore;
   const configStore = yield* ChatBridgeConfigStore.ChatBridgeConfigStore;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const threads = yield* ThreadManagementService.ThreadManagementService;
@@ -263,6 +275,30 @@ export const make = Effect.gen(function* () {
       ).pipe(Effect.mapError(bridgeError("Could not save the Slack secret.")));
       yield* reload;
       return yield* getStatus();
+    }),
+    postFromThread: Effect.fn("ChatBridgeService.postFromThread")(function* (input) {
+      const binding = yield* bindings
+        .getByThread(input.threadId)
+        .pipe(Effect.mapError(bridgeError("Could not read the chat binding.")));
+      if (Option.isNone(binding)) return Option.none();
+      const current = yield* Ref.get(host);
+      if (current === null) {
+        return yield* new ChatBridgeError({ message: "The Slack bridge is not running." });
+      }
+      const chatThreadKey = binding.value.chatThreadKey;
+      yield* Effect.tryPromise(() =>
+        current.post({ chatThreadKey, text: input.text, files: input.files }),
+      ).pipe(
+        Effect.mapError(
+          (error) =>
+            new ChatBridgeError({
+              message: SlackChatHost.redactSlackSecrets(
+                `Slack rejected the post: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+              ),
+            }),
+        ),
+      );
+      return Option.some({ chatThreadKey });
     }),
     handleSlackHook: Effect.fn("ChatBridgeService.handleSlackHook")(function* (token, request) {
       const expected = yield* hookToken.pipe(Effect.option);
