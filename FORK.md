@@ -33,6 +33,7 @@ language, and ownership boundaries.
 | Detached service updates                  | **Yes**       | `apps/server/src/cli/managedProcessTree.ts`                         |
 | Release build dependency pinning          | No            | `scripts/lib/pin-patched-dependencies.ts`                           |
 | Chat bridge (Slack)                       | **Yes**       | `apps/server/src/chatBridge/`, [design](docs/chat-bridge/DESIGN.md) |
+| Chat bridge app for stock T3 (Slack)      | No            | `apps/chat-bridge/` (its [README](apps/chat-bridge/README.md))      |
 
 Keep fork code in its own files. When an upstream file must change, limit the
 edit to an import plus one registration line, and mark it with a

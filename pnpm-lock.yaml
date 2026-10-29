@@ -377,6 +377,28 @@ importers:
         specifier: 1.3.0
         version: 1.3.0(@astrojs/compiler-rs@0.5.1)(@tsc-rs/typescript@0.8.0)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(@tsc-rs/typescript@0.8.0))(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.60.0)(terser@5.48.0)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
 
+  apps/chat-bridge:
+    dependencies:
+      '@chat-adapter/slack':
+        specifier: 4.43.0
+        version: 4.43.0(bufferutil@4.1.0)(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1)(utf-8-validate@6.0.6)(zod@4.6.5)
+      '@modelcontextprotocol/sdk':
+        specifier: 1.29.0
+        version: 1.29.0(supports-color@8.1.1)(zod@4.6.5)
+      chat:
+        specifier: 4.43.0
+        version: 4.43.0(supports-color@8.1.1)(zod@4.6.5)
+    devDependencies:
+      '@types/node':
+        specifier: 24.12.4
+        version: 24.12.4
+      typescript:
+        specifier: 'catalog:'
+        version: '@tsc-rs/typescript@0.8.0'
+      vite-plus:
+        specifier: 1.3.0
+        version: 1.3.0(@astrojs/compiler-rs@0.5.1)(@tsc-rs/typescript@0.8.0)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(@tsc-rs/typescript@0.8.0))(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.60.0)(terser@5.48.0)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
+
   apps/desktop:
     dependencies:
       '@clerk/electron':
@@ -9295,9 +9317,6 @@ packages:
   jose@6.2.2:
     resolution: {integrity: sha512-d7kPDd34KO/YnzaDOlikGpOurfF0ByC2sEV4cANCtdqLlTfBlw2p14O/5d/zv40gJPbIQxfES3nSx1/oYNyuZQ==}
 
-  jose@6.2.3:
-    resolution: {integrity: sha512-YYVDInQKFJfR/xa3ojUTl8c2KoTwiL1R5Wg9YCydwH0x0B9grbzlg5HC7mMjCtUJjbQ/YnGEZIhI5tCgfTb4Hw==}
-
   js-base64@3.7.8:
     resolution: {integrity: sha512-hNngCeKxIUQiEUN3GPJOkz4wF/YvdUdbNL9hsBcMQTkKzboD7T/q3OYOuuPZLUE6dBxSGpwhk5mwuDud7JVAow==}
 
@@ -14811,7 +14830,7 @@ snapshots:
       express: 5.2.1(supports-color@8.1.1)
       express-rate-limit: 8.5.2(express@5.2.1(supports-color@8.1.1))
       hono: 4.13.7
-      jose: 6.2.3
+      jose: 6.2.2
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
@@ -19564,8 +19583,6 @@ snapshots:
   jiti@2.7.0: {}
 
   jose@6.2.2: {}
-
-  jose@6.2.3: {}
 
   js-base64@3.7.8: {}
 
