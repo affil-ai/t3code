@@ -323,7 +323,7 @@ it.effect("answers a finished chat run once", () =>
   ),
 );
 
-it.effect("reports runs that end without an answer", () =>
+it.effect("stays quiet when a completed run has no answer, and reports failed runs", () =>
   withDatabase(
     Effect.gen(function* () {
       const { core } = yield* harness(enabled, Option.none());
@@ -332,10 +332,8 @@ it.effect("reports runs that end without an answer", () =>
         core
           .claimReply(run({ id: RunId.make(id), status }))
           .pipe(Effect.map(Option.map((reply) => reply.text)));
-      assert.deepStrictEqual(
-        yield* text("completed", "run-a"),
-        Option.some("The run finished without a reply."),
-      );
+      // A completed run with no final message stays quiet in the chat.
+      assert.deepStrictEqual(yield* text("completed", "run-a"), Option.none());
       assert.deepStrictEqual(
         yield* text("failed", "run-b"),
         Option.some("The run failed. Open the thread in T3 Code for details."),

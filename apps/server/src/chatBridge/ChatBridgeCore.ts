@@ -149,6 +149,7 @@ const TITLE_LIMIT = 80;
 /** Tells the agent how its answer reaches Slack, once per thread. */
 const FIRST_TURN_NOTE = [
   "Your final message in each run is posted to this Slack thread.",
+  "If a message needs no reply, end the run without a final message and nothing is posted.",
   "To mention someone there, write <@USERID>, such as <@U0123ABCD>.",
   "To send files there, call the chat_post tool with their paths in your workspace.",
 ].join(" ");
@@ -278,16 +279,18 @@ export const make = Effect.gen(function* () {
     if (!owed) return Option.none();
     const claimed = yield* bindings.claimReply(run.id, binding.value.chatThreadKey);
     if (!claimed) return Option.none();
+    // A completed run with no final message chose to stay quiet, so nothing is posted.
     const text =
       run.status === "completed"
-        ? Option.getOrElse(
-            yield* threads
-              .finalAnswer({ projectId: binding.value.projectId, threadId: run.threadId, run })
-              .pipe(Effect.tapError(() => bindings.releaseReply(run.id))),
-            () => "The run finished without a reply.",
-          )
-        : TERMINAL_TEXT[run.status];
-    return Option.some({ chatThreadKey: binding.value.chatThreadKey, runId: run.id, text });
+        ? yield* threads
+            .finalAnswer({ projectId: binding.value.projectId, threadId: run.threadId, run })
+            .pipe(Effect.tapError(() => bindings.releaseReply(run.id)))
+        : Option.some(TERMINAL_TEXT[run.status]);
+    return Option.map(text, (text) => ({
+      chatThreadKey: binding.value.chatThreadKey,
+      runId: run.id,
+      text,
+    }));
   });
 
   return ChatBridgeCore.of({

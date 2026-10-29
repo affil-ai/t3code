@@ -106,8 +106,10 @@ message in them, stay out of Slack.
 
 3. **Answer.** `ChatBridgeService` follows `streamDomainEvents`. For each
    terminal `run.updated`, it claims the reply and posts the root node's last
-   assistant message. A failed, cancelled or rolled-back run posts a fixed
-   one-line notice instead. If the post fails, the claim is released.
+   assistant message. A completed run with no final message posts nothing, so
+   the agent can stay quiet when a message needs no reply; the first turn tells
+   it so. A failed, cancelled or rolled-back run posts a fixed one-line notice
+   instead. If the post fails, the claim is released.
 
 ## Ingress: Socket Mode or Events API
 
