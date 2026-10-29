@@ -2,12 +2,16 @@ import { selectedNavigationTab, visibleNavigationTabs } from "./navigation-tab-o
 import { Toolbar } from "../../components/ui/Toolbar";
 import { useControlTheme } from "../../components/ui/useControlTheme";
 import { useDeviceType } from "../../native/native-layout-metrics";
-import { useNavigationTabOrder, useHiddenNavigationTabs } from "./navigation-tabs";
+import {
+  NAVIGATION_TAB_ICONS,
+  useNavigationTabOrder,
+  useHiddenNavigationTabs,
+} from "./navigation-tabs";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
 import { useCompactWorkspaceTabs, useSidebarWorkspaceTabs } from "./useSystemWorkspaceTabBar";
 // fork: work
-import { WORKSPACE_TAB_ICONS, WORKSPACE_TAB_TITLES, useWorkTabAvailable } from "../work/WorkTabState";
+import { WORKSPACE_TAB_TITLES, useWorkTabAvailable } from "../work/WorkTabState";
 import { navigationTabCapacity, visibleWorkspaceTabs } from "../work/WorkTab.logic"; // fork: work
 
 const PULL_REQUEST_ICON = require("../../../assets/icons/pull-request.png");
@@ -39,9 +43,11 @@ export function WorkspaceTabToolbarButtons() {
           icon={
             tab === "pullRequests"
               ? { type: "image", source: PULL_REQUEST_ICON, tinted: true }
-              : tab === "work" && selected === "work"
-                ? "person.2.fill"
-                : WORKSPACE_TAB_ICONS[tab]
+              : tab === "work"
+                ? selected === "work"
+                  ? "person.2.fill"
+                  : "person.2"
+                : NAVIGATION_TAB_ICONS[tab]
           }
           tintColor={selected === tab ? selectedTint : undefined}
           onPress={() => selectTab(tab)}

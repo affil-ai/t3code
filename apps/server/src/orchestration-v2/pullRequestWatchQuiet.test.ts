@@ -43,6 +43,16 @@ const check = (name: string, status: PullRequestCheck["status"]): PullRequestChe
 
 type Detail = Parameters<typeof evaluatePullRequestWatch>[1];
 const green: Detail = {
+  capabilities: {
+    diff: true,
+    comment: true,
+    actions: [],
+    mergeMethods: [],
+    search: false,
+    review: { inlineComment: false, reply: false, resolve: false, verdicts: [] },
+    reviewers: { request: false, listCandidates: false },
+    checksAlwaysReport: true,
+  },
   headSha: "aaaaaaaaaa",
   checks: [check("test", "success")],
   mergeability: "mergeable",

@@ -13,8 +13,6 @@ import {
   type FirstmateSnapshot,
   type ThreadId,
 } from "@t3tools/contracts";
-import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
-import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
@@ -99,7 +97,9 @@ export function useWorkTaskPullRequest(environmentId: EnvironmentId, url: string
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.pullRequests === true,
   );
-  const parsed = pullRequestsEnabled ? parseChangeRequestUrl(url) : null;
+  const parsed = pullRequestsEnabled
+    ? (sourceControlClients.parseChangeRequestUrl(url)?.link ?? null)
+    : null;
   const project =
     parsed === null
       ? undefined
@@ -120,7 +120,7 @@ export function useWorkTaskPullRequest(environmentId: EnvironmentId, url: string
             projectId: project.id,
             host: parsed.authority ?? parsed.host,
             repository:
-              sourceControlRepositorySelector(project.repositoryIdentity) ?? parsed.repository,
+              sourceControlClients.repositorySelector(project.repositoryIdentity) ?? parsed.repository,
             number: parsed.number,
           },
         }),

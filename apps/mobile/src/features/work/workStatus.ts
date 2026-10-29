@@ -40,6 +40,8 @@ export function workerStatusPresentation(
       return { label: "Pending approval", dotClassName: "bg-warning-foreground" };
     case "input":
       return { label: "Awaiting input", dotClassName: "bg-adaptive-indigo-600-300" };
+    case "request":
+      return { label: "Guest request", dotClassName: "bg-adaptive-fuchsia-600-300" };
     case "working":
       return { label: "Working", dotClassName: "bg-adaptive-sky-600-400" };
     case "waiting":
