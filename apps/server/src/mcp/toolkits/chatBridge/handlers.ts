@@ -84,6 +84,23 @@ const make = Effect.gen(function* () {
         };
       }),
     ),
+    chat_react: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { thread } = yield* McpInvocationContext.McpInvocationContext;
+        if (thread === undefined) return yield* denied(notBound);
+        const emoji = input.emoji.replace(/^:|:$/g, "");
+        const reacted = yield* bridge
+          .reactFromThread({ threadId: thread.threadId, messageId: input.messageId, emoji })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+            ),
+          );
+        if (Option.isNone(reacted)) return yield* denied(notBound);
+        return { chatThreadKey: reacted.value.chatThreadKey, emoji };
+      }),
+    ),
   } satisfies McpToolAccess.Handlers<typeof ChatBridgeToolkit.tools>;
 });
 

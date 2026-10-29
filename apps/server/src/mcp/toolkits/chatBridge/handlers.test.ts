@@ -50,6 +50,7 @@ const makeHarness = Effect.fn("chatBridgeToolkitTestHarness")(function* () {
   yield* fileSystem.symlink(path.join(outside, "secret.txt"), path.join(workspace, "link.txt"));
 
   const posted: Array<Posted> = [];
+  const reactions: Array<{ readonly messageId: string; readonly emoji: string }> = [];
   const dependencies = Layer.mergeAll(
     Layer.mock(ThreadManagement.ThreadManagementService)({
       getThreadShell: (threadId) =>
@@ -73,6 +74,12 @@ const makeHarness = Effect.fn("chatBridgeToolkitTestHarness")(function* () {
           });
           return Option.some({ chatThreadKey: "slack:C0MAPPED:1700000000.000100" });
         }),
+      reactFromThread: (input) =>
+        Effect.sync(() => {
+          if (input.threadId !== BOUND) return Option.none();
+          reactions.push({ messageId: input.messageId, emoji: input.emoji });
+          return Option.some({ chatThreadKey: "slack:C0MAPPED:1700000000.000100" });
+        }),
     }),
     NodeServices.layer,
   );
@@ -81,18 +88,23 @@ const makeHarness = Effect.fn("chatBridgeToolkitTestHarness")(function* () {
       McpToolAccess.HandlersLayer.layer(ChatBridgeHandlers.layer).pipe(Layer.provide(dependencies)),
     ),
   );
-  const call = (
-    params: Parameters<typeof toolkit.handle<"chat_post">>[1],
+  const run = <Name extends "chat_post" | "chat_react">(
+    name: Name,
+    params: Parameters<typeof toolkit.handle<Name>>[1],
     caller: ThreadId = BOUND,
   ) =>
-    toolkit.handle("chat_post", params).pipe(
+    toolkit.handle(name, params).pipe(
       Stream.unwrap,
       Stream.runCollect,
       Effect.map((chunk) => chunk.at(-1)!),
       Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(caller)),
       Effect.provide(dependencies),
     );
-  return { call, posted, outside, path };
+  const call = (params: Parameters<typeof toolkit.handle<"chat_post">>[1], caller?: ThreadId) =>
+    run("chat_post", params, caller);
+  const react = (params: Parameters<typeof toolkit.handle<"chat_react">>[1], caller?: ThreadId) =>
+    run("chat_react", params, caller);
+  return { call, react, posted, reactions, outside, path };
 });
 
 describe("chat_post", () => {
@@ -144,6 +156,28 @@ describe("chat_post", () => {
         const result = yield* harness.call({ text: "hello" }, UNBOUND);
         expect(result.isFailure).toBe(true);
         expect(result.result).toMatchObject({ code: "capability_denied" });
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("reacts to a message in the bound chat thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const result = yield* harness.react({ messageId: "1700000000.000200", emoji: ":eyes:" });
+        expect(result.isFailure).toBe(false);
+        expect(result.result).toEqual({
+          chatThreadKey: "slack:C0MAPPED:1700000000.000100",
+          emoji: "eyes",
+        });
+        expect(harness.reactions).toEqual([{ messageId: "1700000000.000200", emoji: "eyes" }]);
+
+        const unbound = yield* harness.react(
+          { messageId: "1700000000.000200", emoji: "eyes" },
+          UNBOUND,
+        );
+        expect(unbound.isFailure).toBe(true);
+        expect(unbound.result).toMatchObject({ code: "capability_denied" });
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

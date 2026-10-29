@@ -64,6 +64,12 @@ export class ChatBridgeService extends Context.Service<
       readonly text: string;
       readonly files: ReadonlyArray<SlackChatHost.SlackOutboundFile>;
     }) => Effect.Effect<Option.Option<{ readonly chatThreadKey: string }>, ChatBridgeError>;
+    /** Reacts to a message in the bound chat thread, for `chat_react`. None when unbound. */
+    readonly reactFromThread: (input: {
+      readonly threadId: ThreadId;
+      readonly messageId: string;
+      readonly emoji: string;
+    }) => Effect.Effect<Option.Option<{ readonly chatThreadKey: string }>, ChatBridgeError>;
     /** None when the token does not match, so the route answers 404 like any unknown hook. */
     readonly handleSlackHook: (
       token: string,
@@ -246,6 +252,34 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  /** Runs a Slack call on the chat thread bound to a T3 thread; none when it has none. */
+  const fromBoundThread = Effect.fn("ChatBridgeService.fromBoundThread")(function* (
+    threadId: ThreadId,
+    what: string,
+    call: (current: SlackChatHost.SlackChatHost, chatThreadKey: string) => Promise<void>,
+  ) {
+    const binding = yield* bindings
+      .getByThread(threadId)
+      .pipe(Effect.mapError(bridgeError("Could not read the chat binding.")));
+    if (Option.isNone(binding)) return Option.none();
+    const current = yield* Ref.get(host);
+    if (current === null) {
+      return yield* new ChatBridgeError({ message: "The Slack bridge is not running." });
+    }
+    const chatThreadKey = binding.value.chatThreadKey;
+    yield* Effect.tryPromise(() => call(current, chatThreadKey)).pipe(
+      Effect.mapError(
+        (error) =>
+          new ChatBridgeError({
+            message: SlackChatHost.redactSlackSecrets(
+              `Slack rejected the ${what}: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+            ),
+          }),
+      ),
+    );
+    return Option.some({ chatThreadKey });
+  });
+
   return ChatBridgeService.of({
     start: Effect.fn("ChatBridgeService.start")(function* () {
       yield* reload.pipe(
@@ -276,30 +310,14 @@ export const make = Effect.gen(function* () {
       yield* reload;
       return yield* getStatus();
     }),
-    postFromThread: Effect.fn("ChatBridgeService.postFromThread")(function* (input) {
-      const binding = yield* bindings
-        .getByThread(input.threadId)
-        .pipe(Effect.mapError(bridgeError("Could not read the chat binding.")));
-      if (Option.isNone(binding)) return Option.none();
-      const current = yield* Ref.get(host);
-      if (current === null) {
-        return yield* new ChatBridgeError({ message: "The Slack bridge is not running." });
-      }
-      const chatThreadKey = binding.value.chatThreadKey;
-      yield* Effect.tryPromise(() =>
+    postFromThread: (input) =>
+      fromBoundThread(input.threadId, "post", (current, chatThreadKey) =>
         current.post({ chatThreadKey, text: input.text, files: input.files }),
-      ).pipe(
-        Effect.mapError(
-          (error) =>
-            new ChatBridgeError({
-              message: SlackChatHost.redactSlackSecrets(
-                `Slack rejected the post: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
-              ),
-            }),
-        ),
-      );
-      return Option.some({ chatThreadKey });
-    }),
+      ),
+    reactFromThread: (input) =>
+      fromBoundThread(input.threadId, "reaction", (current, chatThreadKey) =>
+        current.react({ chatThreadKey, messageId: input.messageId, emoji: input.emoji }),
+      ),
     handleSlackHook: Effect.fn("ChatBridgeService.handleSlackHook")(function* (token, request) {
       const expected = yield* hookToken.pipe(Effect.option);
       if (Option.isNone(expected) || !timingSafeEqualBase64Url(token, expected.value))

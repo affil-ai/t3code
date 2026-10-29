@@ -54,10 +54,20 @@ export interface SlackOutboundMessage {
   readonly files?: ReadonlyArray<SlackOutboundFile> | undefined;
 }
 
+export interface SlackReaction {
+  readonly chatThreadKey: string;
+  /** The message's Slack `ts`; it must be in the chat thread. */
+  readonly messageId: string;
+  /** A Slack emoji name without colons, such as `eyes`. */
+  readonly emoji: string;
+}
+
 export interface SlackChatHost {
   /** Webhook transport only: Slack's Events API request, signature checked by the adapter. */
   readonly handleWebhook: (request: Request) => Promise<Response>;
   readonly post: (message: SlackOutboundMessage) => Promise<void>;
+  /** Adds a reaction; reacting twice with the same emoji is not an error. */
+  readonly react: (reaction: SlackReaction) => Promise<void>;
   /** Resolves once every webhook delivery received so far has been handled. */
   readonly idle: () => Promise<void>;
   /** Finishes in-flight deliveries, then disconnects. */
@@ -119,6 +129,7 @@ export function toInboundEvent(
     platform: "slack",
     chatThreadKey: thread.id,
     channelId,
+    messageId: message.id,
     kind,
     author: {
       userId: message.author.userId,
@@ -240,6 +251,26 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
         ...(comment ? { initial_comment: comment } : {}),
         file_uploads: files.map((file) => ({ file: file.data, filename: file.filename })),
       });
+    },
+    react: async ({ chatThreadKey, messageId, emoji }) => {
+      const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+      // Slack returns the thread's parent plus the reply at `messageId`, if the thread has one.
+      const replies = await slack.webClient.conversations.replies({
+        channel,
+        ts: threadTs,
+        oldest: messageId,
+        latest: messageId,
+        inclusive: true,
+        limit: 2,
+      });
+      if (!replies.messages?.some((reply) => reply.ts === messageId)) {
+        throw new Error(`Message ${messageId} is not in this Slack thread.`);
+      }
+      try {
+        await slack.webClient.reactions.add({ channel, timestamp: messageId, name: emoji });
+      } catch (error) {
+        if ((error as { data?: { error?: string } }).data?.error !== "already_reacted") throw error;
+      }
     },
     idle,
     shutdown: async () => {

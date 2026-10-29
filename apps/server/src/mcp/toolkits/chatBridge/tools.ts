@@ -52,4 +52,33 @@ const ChatPostTool = Tool.make("chat_post", {
   .annotate(Tool.Title, "Post to the chat thread")
   .annotate(Tool.Destructive, false);
 
-export const ChatBridgeToolkit = Toolkit.make(ChatPostTool);
+export const ChatReactInput = Schema.Struct({
+  /** The message id shown in the turn, such as `1700000000.000100`. */
+  messageId: Schema.String.check(Schema.isPattern(/^\d+\.\d+$/)),
+  /** A Slack emoji name, with or without colons, such as `eyes` or `:white_check_mark:`. */
+  emoji: Schema.String.check(Schema.isPattern(/^:?[a-z0-9_+'-]+:?$/), Schema.isMaxLength(100)),
+});
+export type ChatReactInput = typeof ChatReactInput.Type;
+
+export const ChatReactResult = Schema.Struct({
+  chatThreadKey: Schema.String,
+  emoji: Schema.String,
+});
+
+const ChatReactTool = Tool.make("chat_react", {
+  description:
+    "React with an emoji to a message in the Slack thread this T3 thread answers. Pass the message id shown in the turn and a Slack emoji name such as eyes, white_check_mark or thumbsup.",
+  parameters: ChatReactInput,
+  success: ChatReactResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ChatBridgeService,
+    ThreadManagementService.ThreadManagementService,
+  ],
+})
+  .annotate(Tool.Title, "React in the chat thread")
+  .annotate(Tool.Destructive, false);
+
+export const ChatBridgeToolkit = Toolkit.make(ChatPostTool, ChatReactTool);

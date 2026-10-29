@@ -58,6 +58,7 @@ const mention = (
   platform: "slack",
   chatThreadKey: "slack:C0MAPPED:1700000000.000100",
   channelId: "C0MAPPED",
+  messageId: "1700000000.000100",
   kind: "mention",
   author: allowed,
   text: "Fix the flaky test\nmore detail",
@@ -218,11 +219,12 @@ it.effect("starts a thread for a mention and steers follow-ups into it", () =>
       });
       assert.isTrue(
         start?.text.startsWith(
-          "Slack message from Ada Lovelace (<@U0ALLOWED>):\n\nFix the flaky test\nmore detail",
+          "Slack message 1700000000.000100 from Ada Lovelace (<@U0ALLOWED>):\n\nFix the flaky test\nmore detail",
         ),
       );
       // Only the first turn explains how answers reach Slack.
       assert.include(start?.text ?? "", "chat_post");
+      assert.include(start?.text ?? "", "chat_react");
       assert.deepInclude(send, { op: "send", threadId: "thread-1", mode: "steer" });
       assert.notInclude(send?.text ?? "", "chat_post");
     }),

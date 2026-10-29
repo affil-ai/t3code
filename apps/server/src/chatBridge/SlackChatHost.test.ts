@@ -247,6 +247,7 @@ it("maps a Chat SDK message to an inbound event", () => {
     platform: "slack",
     chatThreadKey: "slack:C0MAPPED:1700000000.000100",
     channelId: "C0MAPPED",
+    messageId: "1700000000.000200",
     kind: "follow_up",
     author: { userId: "U1", userName: "ada", fullName: "Ada" },
     text: "also the lint",

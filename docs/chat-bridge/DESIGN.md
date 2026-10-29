@@ -6,7 +6,7 @@ A Slack user mentions the bot in a mapped channel. T3 starts a thread in that
 channel's project and binds the Slack thread to it. Later replies in the Slack
 thread steer the run in flight, or queue behind it if the settings say so.
 Files people attach become T3 attachments, and the agent can send files back
-with the `chat_post` tool. When a run finishes, its final answer is posted
+with the `chat_post` tool or react with `chat_react`. When a run finishes, its final answer is posted
 back to the Slack thread. The bridge uses the Vercel Chat SDK (`chat`
 plus `@chat-adapter/slack`), so adding a second platform means adding an
 adapter, not new plumbing.
@@ -33,9 +33,12 @@ The internal contract between the layers is three plain types in
   or `ignored` with a reason.
 - `ChatOutboundReply`: chat thread key, run id, and text.
 
-The agent's side is the `chat_post` MCP tool in
-`apps/server/src/mcp/toolkits/chatBridge/`. It posts text, files or both to
-the chat thread bound to the calling thread.
+The agent's side is two MCP tools in
+`apps/server/src/mcp/toolkits/chatBridge/`. `chat_post` posts text, files or
+both to the chat thread bound to the calling thread. `chat_react` adds an
+emoji reaction to a message in that thread; the host refuses a message id that
+is not in the thread. Both are listed to every thread and refuse an unbound
+one.
 
 `packages/contracts/src/chatBridge.ts` holds only what the web app and server
 share: the settings shape, the status, and the three RPCs. These are
@@ -102,7 +105,9 @@ message in them, stay out of Slack.
    **Mentions.** Slack text names people by display name only. The host reads
    the `<@U…>` ids from the raw message, looks up their names, and the turn
    lists them as `Name (<@U…>)`. The first turn tells the agent to write
-   `<@USERID>` to mention someone, and that `chat_post` sends files.
+   `<@USERID>` to mention someone, that `chat_post` sends files, and that
+   `chat_react` reacts. Each turn starts with the Slack message id
+   `chat_react` takes.
 
 3. **Answer.** `ChatBridgeService` follows `streamDomainEvents`. For each
    terminal `run.updated`, it claims the reply and posts the root node's last
@@ -177,10 +182,8 @@ change plus a reinstall.
      channel map and allowlist.
 2. **Step 2.**
    - Done: follow-ups steer by default; Slack files import as attachments;
-     `chat_post` sends text and workspace files; mentions carry user ids.
-   - `chat_react` beside `chat_post` in the `chatBridge` toolkit. Both act on
-     the calling thread's bound chat thread only; `chat_post` is listed to
-     every thread today and refuses an unbound one.
+     `chat_post` sends text and workspace files; `chat_react` reacts;
+     mentions carry user ids.
    - 👀 on receipt and ✅ or ❌ at the end (the manifest already asks for
      `reactions:write`).
    - Stream the answer with `thread.post(asyncIterable)`.

@@ -57,6 +57,8 @@ export interface ChatInboundEvent {
   /** The Chat SDK thread id, such as `slack:C0123:1700000000.000100`. */
   readonly chatThreadKey: string;
   readonly channelId: string;
+  /** The platform's id for this message (a Slack `ts`), which `chat_react` takes. */
+  readonly messageId: string;
   /** A mention outside a bound thread starts one; anything in a bound thread follows up. */
   readonly kind: "mention" | "follow_up";
   readonly author: ChatAuthor;
@@ -152,6 +154,7 @@ const FIRST_TURN_NOTE = [
   "If a message needs no reply, end the run without a final message and nothing is posted.",
   "To mention someone there, write <@USERID>, such as <@U0123ABCD>.",
   "To send files there, call the chat_post tool with their paths in your workspace.",
+  "To react to a message, call the chat_react tool with its message id and an emoji name.",
 ].join(" ");
 
 export function turnText(
@@ -160,7 +163,7 @@ export function turnText(
   first: boolean,
 ): string {
   const lines = [
-    `Slack message from ${event.author.fullName || event.author.userName} (<@${event.author.userId}>):`,
+    `Slack message ${event.messageId} from ${event.author.fullName || event.author.userName} (<@${event.author.userId}>):`,
     "",
     event.text,
   ];
