@@ -845,10 +845,8 @@ export const layerWithOptions = (
 
       // A replacement under the same id owns the status from its open on,
       // even after it closes. Callers hold the open lock while invoking this.
-      const writeOwnReleaseRecords = (
-        input: Omit<Parameters<typeof writeReleaseRecords>[0], "replaced">,
-      ) =>
-        Effect.gen(function* () {
+      const writeOwnReleaseRecords = Effect.fn("ProviderSessionManager.writeOwnReleaseRecords")(
+        function* (input: Omit<Parameters<typeof writeReleaseRecords>[0], "replaced">) {
           const key = sessionKey(input.entry.runtime.providerSessionId);
           const replaced = (yield* Ref.get(latestOpened)).get(key) !== input.entry.runtime;
           yield* writeReleaseRecords({ ...input, replaced });
@@ -859,7 +857,8 @@ export const layerWithOptions = (
             updated.delete(key);
             return updated;
           });
-        });
+        },
+      );
 
       // The session already left the live map, so a later release finds nothing
       // to do. Without a retry the UI would keep a ready session and answerable

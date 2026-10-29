@@ -118,7 +118,7 @@ const hostCommandsRequireFullAccess =
 export const runsCommandsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) =>
     requireThreadCaller.pipe(
-      Effect.flatMap(() => writingCaller),
+      Effect.andThen(writingCaller),
       Effect.tap((caller) => assertFullAccess(caller, hostCommandsRequireFullAccess)),
       Effect.flatMap(() => handle(params)),
     ),

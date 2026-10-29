@@ -25,7 +25,6 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
@@ -2411,9 +2410,10 @@ describe("OrchestratorMcpService provider resolution", () => {
                   }),
                   Layer.mock(ProjectService.ProjectService)({
                     getById: () =>
-                      Effect.succeed(
-                        Option.some({ id: projectId, defaultModelSelection: projectDefault }),
-                      ) as never,
+                      Effect.succeedSome({
+                        id: projectId,
+                        defaultModelSelection: projectDefault,
+                      }) as never,
                   }),
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({

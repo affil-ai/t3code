@@ -180,13 +180,12 @@ export function agentFromRow(row: AgentRow): AgentProfile {
   } as AgentProfile;
 }
 
-const columnsOf = (table: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    return new Set(
-      (yield* sql.unsafe<{ name: string }>(`PRAGMA table_info(${table})`)).map((row) => row.name),
-    );
-  });
+const columnsOf = Effect.fn("columnsOf")(function* (table: string) {
+  const sql = yield* SqlClient.SqlClient;
+  return new Set(
+    (yield* sql.unsafe<{ name: string }>(`PRAGMA table_info(${table})`)).map((row) => row.name),
+  );
+});
 
 /** Creates the tables, and any column added after the first release. */
 export const ensureSchema = Effect.gen(function* () {

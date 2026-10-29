@@ -126,16 +126,18 @@ export const layerWithTreehouse = Layer.effect(
     const service = yield* ProviderTurnStartServiceV2;
     const workspaces = yield* TreehouseThreadWorkspaces.TreehouseThreadWorkspaces;
     return ProviderTurnStartServiceV2.of({
-      start: (input) =>
-        workspaces
-          .withWorkspace(input.threadId, service.start(input))
-          .pipe(
-            Effect.mapError((cause) =>
-              isProviderTurnStartError(cause)
-                ? cause
-                : new ProviderTurnStartError({ runId: input.runId, cause }),
+      start: Effect.fn("ProviderTurnStartServiceV2.start")(
+        (input: Parameters<ProviderTurnStartServiceV2Shape["start"]>[0]) =>
+          workspaces
+            .withWorkspace(input.threadId, service.start(input))
+            .pipe(
+              Effect.mapError((cause) =>
+                isProviderTurnStartError(cause)
+                  ? cause
+                  : new ProviderTurnStartError({ runId: input.runId, cause }),
+              ),
             ),
-          ),
+      ),
     });
   }),
 );

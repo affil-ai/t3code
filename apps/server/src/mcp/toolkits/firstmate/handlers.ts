@@ -61,10 +61,9 @@ const make = Effect.gen(function* () {
 
   /** The standup is the user's one list; only Firstmate's coordinator keeps it. */
   const requireFirstmateCoordinator = requireCoordinator.pipe(
-    Effect.flatMap((agent) =>
-      agent.id === FIRSTMATE_AGENT_ID
-        ? Effect.succeed(agent)
-        : new OrchestratorMcpFailure({ code: "capability_denied", message: firstmateRequired }),
+    Effect.filterOrElse(
+      (agent) => agent.id === FIRSTMATE_AGENT_ID,
+      () => new OrchestratorMcpFailure({ code: "capability_denied", message: firstmateRequired }),
     ),
   );
 

@@ -843,7 +843,7 @@ const make = Effect.gen(function* () {
           return "completed";
         }),
       );
-    }).pipe(Effect.catch(() => Effect.succeed("retry" as const)));
+    }).pipe(Effect.orElseSucceed(() => "retry" as const));
 
   const cleanWorktrees = Effect.fn("StorageCleanup.cleanWorktrees")(function* (
     serverSettings: ServerSettings,

@@ -130,135 +130,133 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const terminalRunsAfter = (
+  const terminalRunsAfter = Effect.fn("FirstmateReactor.terminalRunsAfter")(function* (
     worker: OrchestrationV2ThreadShell,
     markerId: string | null,
     terminalNoticeMarkerId: string | null,
-  ) =>
-    Effect.gen(function* () {
-      // Held completions keep the marker behind them, so equality means nothing is pending.
-      if (worker.latestRunId === markerId) return [];
-      const target = { projectId: worker.projectId, threadId: worker.id };
-      const { runs } = yield* threads.getProjectThreadRecords(target, ["runs"]);
-      const marker = markerId === null ? undefined : runs.find((run) => run.id === markerId);
-      const terminalNoticeMarker = runs.find((run) => run.id === terminalNoticeMarkerId);
-      const terminalRuns = runs
-        .filter(
-          (run) =>
-            (marker === undefined || run.ordinal > marker.ordinal) &&
-            terminalReason(run.status) !== undefined,
-        )
-        .toSorted((left, right) => left.ordinal - right.ordinal);
-      if (terminalRuns.length === 0) return [];
-      const { messages } = yield* threads.getProjectThreadRecords(target, ["messages"], {
-        messageRunIds: terminalRuns.map((run) => run.id),
-        messageIds: terminalRuns.map((run) => run.userMessageId),
-      });
-      const messagesById = new Map(messages.map((message) => [message.id, message]));
-      return terminalRuns.map((run) => ({
-        run,
-        inputMessage: messagesById.get(run.userMessageId) ?? null,
-        noticeAcknowledged:
-          terminalNoticeMarker !== undefined && run.ordinal <= terminalNoticeMarker.ordinal,
-      }));
+  ) {
+    // Held completions keep the marker behind them, so equality means nothing is pending.
+    if (worker.latestRunId === markerId) return [];
+    const target = { projectId: worker.projectId, threadId: worker.id };
+    const { runs } = yield* threads.getProjectThreadRecords(target, ["runs"]);
+    const marker = markerId === null ? undefined : runs.find((run) => run.id === markerId);
+    const terminalNoticeMarker = runs.find((run) => run.id === terminalNoticeMarkerId);
+    const terminalRuns = runs
+      .filter(
+        (run) =>
+          (marker === undefined || run.ordinal > marker.ordinal) &&
+          terminalReason(run.status) !== undefined,
+      )
+      .toSorted((left, right) => left.ordinal - right.ordinal);
+    if (terminalRuns.length === 0) return [];
+    const { messages } = yield* threads.getProjectThreadRecords(target, ["messages"], {
+      messageRunIds: terminalRuns.map((run) => run.id),
+      messageIds: terminalRuns.map((run) => run.userMessageId),
     });
+    const messagesById = new Map(messages.map((message) => [message.id, message]));
+    return terminalRuns.map((run) => ({
+      run,
+      inputMessage: messagesById.get(run.userMessageId) ?? null,
+      noticeAcknowledged:
+        terminalNoticeMarker !== undefined && run.ordinal <= terminalNoticeMarker.ordinal,
+    }));
+  });
 
   /** Sends one agent's wakes to its coordinator chat, folding into a queued wake. */
-  const deliver = (
+  const deliver = Effect.fn("FirstmateReactor.deliver")(function* (
     target: ThreadId,
     projectId: ProjectId,
     wakes: ReadonlyArray<FirstmateWake>,
     parkedTaskIds: ReadonlySet<string>,
-  ) =>
-    Effect.gen(function* () {
-      const pending = yield* pendingWake(projectId, target);
-      const pendingWakes = pending?.wakes.filter((wake) => !parkedTaskIds.has(wake.taskId)) ?? [];
-      if (
-        pending !== undefined &&
-        pendingWakes.length !== pending.wakes.length &&
-        wakes.length === 0
-      ) {
-        const updateId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
-        if (pendingWakes.length === 0) {
-          yield* threads.dispatch({
-            type: "queued-run.cancel",
-            commandId: CommandId.make(`firstmate:wake-cancel-parked:${updateId}`),
-            threadId: target,
-            runId: pending.runId,
-          });
-          return;
-        }
+  ) {
+    const pending = yield* pendingWake(projectId, target);
+    const pendingWakes = pending?.wakes.filter((wake) => !parkedTaskIds.has(wake.taskId)) ?? [];
+    if (
+      pending !== undefined &&
+      pendingWakes.length !== pending.wakes.length &&
+      wakes.length === 0
+    ) {
+      const updateId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      if (pendingWakes.length === 0) {
         yield* threads.dispatch({
-          type: "queued-notification.revise",
-          commandId: CommandId.make(`firstmate:wake-remove-parked:${updateId}`),
+          type: "queued-run.cancel",
+          commandId: CommandId.make(`firstmate:wake-cancel-parked:${updateId}`),
           threadId: target,
           runId: pending.runId,
-          text: wakeDigest(pendingWakes),
-          notification: wakeNotification(pendingWakes),
         });
+        return;
       }
-      // A restart or stop holds the coordinator's queue until someone resumes it,
-      // and a wake folded into a held run never reaches the coordinator. Once no
-      // turn is in flight, send the held digest again as a new wake and drop the
-      // held one. While a turn runs, a new wake would queue behind it and be held
-      // too, so the wake keeps folding into the held run until that turn ends.
-      if (pending?.held === true && !pending.busy) {
-        const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      yield* threads.dispatch({
+        type: "queued-notification.revise",
+        commandId: CommandId.make(`firstmate:wake-remove-parked:${updateId}`),
+        threadId: target,
+        runId: pending.runId,
+        text: wakeDigest(pendingWakes),
+        notification: wakeNotification(pendingWakes),
+      });
+    }
+    // A restart or stop holds the coordinator's queue until someone resumes it,
+    // and a wake folded into a held run never reaches the coordinator. Once no
+    // turn is in flight, send the held digest again as a new wake and drop the
+    // held one. While a turn runs, a new wake would queue behind it and be held
+    // too, so the wake keeps folding into the held run until that turn ends.
+    if (pending?.held === true && !pending.busy) {
+      const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const merged = mergeWakes(pendingWakes, wakes);
+      // With nothing in flight the wake starts a turn; the held queue only blocks
+      // queued sends. Sending before cancelling means a failure between the two
+      // repeats the wake rather than losing it.
+      yield* threads.sendToThread({
+        projectId,
+        commandId: CommandId.make(`firstmate:wake:${wakeId}`),
+        threadId: target,
+        messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
+        text: wakeDigest(merged),
+        notification: wakeNotification(merged),
+        attachments: [],
+        mode: "auto",
+        createdBy: "agent",
+        creationSource: "server",
+      });
+      yield* threads.dispatch({
+        type: "queued-run.cancel",
+        commandId: CommandId.make(`firstmate:wake-cancel-held:${wakeId}`),
+        threadId: target,
+        runId: pending.runId,
+      });
+    } else if (wakes.length > 0) {
+      const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      if (pending !== undefined) {
+        // At most one wake waits: fold this pass into the one already queued.
         const merged = mergeWakes(pendingWakes, wakes);
-        // With nothing in flight the wake starts a turn; the held queue only blocks
-        // queued sends. Sending before cancelling means a failure between the two
-        // repeats the wake rather than losing it.
+        yield* threads.dispatch({
+          type: "queued-notification.revise",
+          commandId: CommandId.make(`firstmate:wake-revise:${wakeId}`),
+          threadId: target,
+          runId: pending.runId,
+          text: wakeDigest(merged),
+          notification: wakeNotification(merged),
+        });
+      } else {
+        // `auto` steers the wake into the coordinator's active turn when it can,
+        // so a failure is seen mid-conversation instead of behind the user's turns.
         yield* threads.sendToThread({
           projectId,
           commandId: CommandId.make(`firstmate:wake:${wakeId}`),
           threadId: target,
           messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
-          text: wakeDigest(merged),
-          notification: wakeNotification(merged),
+          text: wakeDigest(wakes),
+          // A notification is an automatic wake: a compact row in the timeline,
+          // hidden from the queue, and it does not keep the thread from settling.
+          notification: wakeNotification(wakes),
           attachments: [],
           mode: "auto",
           createdBy: "agent",
           creationSource: "server",
         });
-        yield* threads.dispatch({
-          type: "queued-run.cancel",
-          commandId: CommandId.make(`firstmate:wake-cancel-held:${wakeId}`),
-          threadId: target,
-          runId: pending.runId,
-        });
-      } else if (wakes.length > 0) {
-        const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
-        if (pending !== undefined) {
-          // At most one wake waits: fold this pass into the one already queued.
-          const merged = mergeWakes(pendingWakes, wakes);
-          yield* threads.dispatch({
-            type: "queued-notification.revise",
-            commandId: CommandId.make(`firstmate:wake-revise:${wakeId}`),
-            threadId: target,
-            runId: pending.runId,
-            text: wakeDigest(merged),
-            notification: wakeNotification(merged),
-          });
-        } else {
-          // `auto` steers the wake into the coordinator's active turn when it can,
-          // so a failure is seen mid-conversation instead of behind the user's turns.
-          yield* threads.sendToThread({
-            projectId,
-            commandId: CommandId.make(`firstmate:wake:${wakeId}`),
-            threadId: target,
-            messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${wakeId}`),
-            text: wakeDigest(wakes),
-            // A notification is an automatic wake: a compact row in the timeline,
-            // hidden from the queue, and it does not keep the thread from settling.
-            notification: wakeNotification(wakes),
-            attachments: [],
-            mode: "auto",
-            createdBy: "agent",
-            creationSource: "server",
-          });
-        }
       }
-    });
+    }
+  });
 
   const sweep = () =>
     lane.withPermits(1)(
@@ -415,32 +413,31 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const start = () =>
-    Effect.gen(function* () {
-      const events = yield* Effect.forkScoped(
-        orchestrator.streamDomainEvents.pipe(
-          Stream.runForEach(() => PubSub.publish(signal, undefined).pipe(Effect.ignore)),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Firstmate event wake stream stopped", { cause }),
+  const start = Effect.fn("FirstmateReactor.start")(function* () {
+    const events = yield* Effect.forkScoped(
+      orchestrator.streamDomainEvents.pipe(
+        Stream.runForEach(() => PubSub.publish(signal, undefined).pipe(Effect.ignore)),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Firstmate event wake stream stopped", { cause }),
+        ),
+      ),
+    );
+    yield* forkParked(
+      Stream.merge(
+        Stream.fromSchedule(Schedule.spaced(SWEEP_INTERVAL)),
+        Stream.fromSubscription(yield* PubSub.subscribe(signal)).pipe(
+          Stream.debounce(EVENT_DEBOUNCE),
+        ),
+      ).pipe(
+        Stream.runForEach(() =>
+          sweep().pipe(
+            Effect.catchCause((cause) => Effect.logWarning("Firstmate sweep failed", { cause })),
           ),
         ),
-      );
-      yield* forkParked(
-        Stream.merge(
-          Stream.fromSchedule(Schedule.spaced(SWEEP_INTERVAL)),
-          Stream.fromSubscription(yield* PubSub.subscribe(signal)).pipe(
-            Stream.debounce(EVENT_DEBOUNCE),
-          ),
-        ).pipe(
-          Stream.runForEach(() =>
-            sweep().pipe(
-              Effect.catchCause((cause) => Effect.logWarning("Firstmate sweep failed", { cause })),
-            ),
-          ),
-          Effect.ensuring(Fiber.interrupt(events)),
-        ),
-      );
-    });
+        Effect.ensuring(Fiber.interrupt(events)),
+      ),
+    );
+  });
 
   return { start, sweep } satisfies FirstmateReactor["Service"];
 });

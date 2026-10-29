@@ -40,8 +40,9 @@ const terminate = (
     const handle = ChildProcessSpawner.makeHandle({
       pid: ChildProcessSpawner.ProcessId(51),
       exitCode: Deferred.await(exited).pipe(
-        Effect.flatMap((code) =>
-          exitStatusError ? Effect.fail(exitStatusError) : Effect.succeed(code),
+        Effect.filterOrFail(
+          () => !exitStatusError,
+          () => exitStatusError as PlatformError.PlatformError,
         ),
       ),
       isRunning: Deferred.isDone(exited).pipe(Effect.map((done) => !done)),
@@ -217,6 +218,7 @@ describe("Codex app-server diagnostic writer failures", () => {
   it.effect("logs only the signal for a platform signal exit, not its error or stderr", () =>
     Effect.gen(function* () {
       const messages = yield* terminate(
+        // @effect-diagnostics-next-line effectSucceedWithVoid:off - The diagnostic writer returns string | undefined, not the wider void type.
         () => Effect.succeed(undefined),
         PlatformError.systemError({
           _tag: "Unknown",
