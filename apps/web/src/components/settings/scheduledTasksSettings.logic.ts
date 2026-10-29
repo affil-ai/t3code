@@ -76,10 +76,7 @@ export interface DraftState {
   readonly interactionMode: ProviderInteractionMode;
   /** Only shown, and only meaningful, for a task bound to a chat. */
   readonly deliveryMode: ScheduledTaskDeliveryMode; // fork: scheduled-task-delivery-mode
-  /**
-   * The picker only edits `instanceId:model`; keeping the source object preserves provider
-   * options (reasoning, temperature, …) when the model itself is left unchanged.
-   */
+  /** Retain the source selection's provider options when the picker leaves instanceId:model unchanged. */
   readonly baseModelSelection: ModelSelection | null;
   readonly signatureEnabled: boolean;
   readonly signatureHeader: string;

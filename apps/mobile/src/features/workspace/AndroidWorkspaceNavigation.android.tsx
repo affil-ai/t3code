@@ -1,3 +1,4 @@
+import { selectedNavigationTab, visibleNavigationTabs } from "./navigation-tab-order";
 import { requireNativeView } from "expo";
 import { CommonActions, useNavigation } from "@react-navigation/native";
 import {
@@ -20,16 +21,18 @@ import {
 } from "./android-workspace-tabs";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAndroidWorkspaceRoot } from "./AndroidWorkspaceTabsProvider";
+import { useNavigationTabOrder, useHiddenNavigationTabs } from "./navigation-tabs";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { useWorkTabAvailable } from "../work/WorkTabState"; // fork: work
+import { navigationTabCapacity, visibleWorkspaceTabs } from "../work/WorkTab.logic"; // fork: work
 
 // Matches RAIL_WIDTH in the native rail.
 export const ANDROID_WORKSPACE_RAIL_WIDTH = 72;
 
 interface NativeNavigationProps extends ViewProps {
   readonly rail: boolean;
+  readonly tabs: readonly string[];
   readonly selectedTab: AndroidWorkspaceNavigationTab;
-  readonly workAvailable: boolean; // fork: work
   readonly dark: boolean;
   readonly textScale: number;
   readonly newEnabled: boolean;
@@ -64,6 +67,8 @@ export function AndroidWorkspaceNavigation(props: {
   readonly onOverlayChange?: (overlay: boolean) => void;
 }) {
   const workspace = useWorkspaceTabs()!;
+  const order = useNavigationTabOrder();
+  const hidden = useHiddenNavigationTabs();
   const root = useAndroidWorkspaceRoot();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -73,12 +78,18 @@ export function AndroidWorkspaceNavigation(props: {
   const { themeAppearance, themeVariables: colors } = useAppearancePreferences();
   const { scale } = useAndroidControlSizing();
   const rail = Boolean(props.rail);
-  const workAvailable = useWorkTabAvailable(); // fork: work
+  // fork: work: Work leads the bar and takes one of its slots.
+  const workAvailable = useWorkTabAvailable();
+  const capacity = navigationTabCapacity(rail ? 5 : 4, workAvailable);
   const { containerColor, indicatorColor, selectedColor, unselectedColor } =
     androidWorkspaceNavigationColors(colors, rail);
-  const selectedTab: AndroidWorkspaceNavigationTab = root?.settingsOpen
-    ? "settings"
-    : workspace.state.selectedTab;
+  const workspaceTab = workspace.state.selectedTab;
+  const selectedTab =
+    workspaceTab === "work" // fork: work
+      ? root?.settingsOpen
+        ? "settings"
+        : "work"
+      : selectedNavigationTab(order, workspaceTab, root?.settingsOpen ?? false, hidden, capacity);
   if (!rail && keyboardVisible) return null;
 
   return (
@@ -91,8 +102,11 @@ export function AndroidWorkspaceNavigation(props: {
     >
       <NativeNavigation
         rail={rail}
+        tabs={[
+          ...visibleWorkspaceTabs(workAvailable, visibleNavigationTabs(order, hidden, capacity)),
+          "settings",
+        ]}
         selectedTab={selectedTab}
-        workAvailable={workAvailable}
         dark={themeAppearance === "dark"}
         textScale={scale}
         newEnabled={connectionState.hasConnections}
@@ -108,15 +122,13 @@ export function AndroidWorkspaceNavigation(props: {
         onTabSelected={(event) => {
           Keyboard.dismiss();
           const tab = event.nativeEvent.tab;
-          if (tab !== selectedTab) {
-            if (tab !== "settings") workspace.dispatch({ type: "select", tab });
-            // Reset the root stack even when a nested settings navigator has focus.
-            if (root) {
-              navigation.dispatch({
-                ...CommonActions.reset(androidWorkspaceTabNavigationState(root.getState(), tab)),
-                target: root.key,
-              });
-            }
+          if (tab !== "settings") workspace.dispatch({ type: "select", tab });
+          // Reset the root stack even when a nested settings navigator has focus.
+          if (root) {
+            navigation.dispatch({
+              ...CommonActions.reset(androidWorkspaceTabNavigationState(root.getState(), tab)),
+              target: root.key,
+            });
           }
           props.onSelect?.();
         }}

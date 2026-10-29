@@ -6,7 +6,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
-import * as Option from "effect/Option";
 import * as Tracer from "effect/Tracer";
 
 import * as ServerConfig from "../config.ts";
@@ -65,7 +64,7 @@ const withService = <A, E>(
               Effect.succeed({ projectId: "project-1", worktreePath: workspace } as never),
           }),
           Layer.mock(ProjectService.ProjectService)({
-            getById: () => Effect.succeed(Option.none()),
+            getById: () => Effect.succeedNone,
           }),
         ),
       ),

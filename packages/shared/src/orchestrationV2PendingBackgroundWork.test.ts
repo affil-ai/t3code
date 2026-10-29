@@ -9,8 +9,17 @@ import {
   derivePendingBackgroundWork,
 } from "./orchestrationV2PendingBackgroundWork.ts";
 
-// fork: firstmate
 describe("backgroundWorkHoldsCompletion", () => {
+  it.each([
+    ["a dev server", false, [{ taskId: "dev", kind: "command" }]],
+    ["a dev server's watchdog monitor", false, [{ taskId: "watch", kind: "monitor" }]],
+    ["a command the agent waits on", true, [{ taskId: "tests", kind: "command", awaited: true }]],
+    ["a subagent", true, [{ taskId: "review", kind: "subagent" }]],
+  ] as const)("with %s pending, holds completion: %s", (_case, holds, tasks) => {
+    expect(backgroundWorkHoldsCompletion(tasks)).toBe(holds);
+  });
+
+  // fork: firstmate
   it("holds completion for a kind from a newer provider", () => {
     expect(
       backgroundWorkHoldsCompletion([
@@ -324,6 +333,7 @@ describe("derivePendingBackgroundWork kinds", () => {
           id: "pt-1" as never,
           pendingBackgroundTasks: [
             { taskId: "bash", kind: "command" },
+            { taskId: "tests", kind: "command", awaited: true },
             { taskId: "watch", kind: "monitor" },
             { taskId: "workflow", kind: "background_task" },
           ],
@@ -350,6 +360,7 @@ describe("derivePendingBackgroundWork kinds", () => {
     });
     expect(tasks).toEqual([
       { taskId: "bash", kind: "command" },
+      { taskId: "tests", kind: "command", awaited: true },
       { taskId: "watch", kind: "monitor" },
       { taskId: "workflow", kind: "background_task" },
       {
@@ -391,7 +402,7 @@ describe("derivePendingBackgroundWork kinds", () => {
       link(3, { source: "stack-dismissed" }),
     ];
 
-    it("keeps a settled run waiting on each visible watch, as a monitor", () => {
+    it("keeps a settled run waiting on each visible watch, as an awaited monitor", () => {
       const tasks = derivePendingBackgroundWork({
         latestRun: { id: "run-1" as never, ordinal: 1, status: "completed" },
         providerThreads: [],
@@ -403,6 +414,7 @@ describe("derivePendingBackgroundWork kinds", () => {
           taskId: "pull-request-watch:github.com/acme/app#1",
           description: "Watching pull request #1",
           kind: "monitor",
+          awaited: true,
         },
       ]);
       expect(backgroundWorkHoldsCompletion(tasks)).toBe(true);

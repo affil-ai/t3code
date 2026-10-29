@@ -119,16 +119,15 @@ export class FirstmateHome extends Context.Service<
   }
 >()("t3/firstmate/FirstmateHome") {}
 
-const configuredPath = (name: string) =>
-  Effect.gen(function* () {
-    const path = yield* Path.Path;
-    const home = yield* HostProcess.HomeDirectory;
-    const configured = (yield* Config.String(name).pipe(
-      Config.option,
-      Config.map(Option.getOrUndefined),
-    ))?.trim();
-    return configured ? path.resolve(expandHomePath(configured, home)) : null;
-  });
+const configuredPath = Effect.fn("FirstmateHome.configuredPath")(function* (name: string) {
+  const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
+  const configured = (yield* Config.String(name).pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ))?.trim();
+  return configured ? path.resolve(expandHomePath(configured, home)) : null;
+});
 
 /** `T3CODE_AGENTS_HOME` with `~` expanded, else `~/agents`. */
 const resolveRepoRoot = Effect.fn("FirstmateHome.resolveRepoRoot")(function* () {
@@ -159,58 +158,58 @@ const make = Effect.gen(function* () {
     new FirstmateError({ message: `Could not set up ${what} at ${repoRoot}.`, cause });
 
   /** Writes `content` unless something is already at `absolute`. True when it wrote. */
-  const writeIfMissing = (absolute: string, content: string) =>
-    Effect.gen(function* () {
-      yield* fileSystem.makeDirectory(path.dirname(absolute), { recursive: true });
-      return yield* fileSystem.writeFileString(absolute, content, { flag: "wx" }).pipe(
-        Effect.as(true),
-        Effect.catchIf(
-          (error) => error.reason._tag === "AlreadyExists",
-          () => Effect.succeed(false),
-        ),
-      );
-    });
+  const writeIfMissing = Effect.fn("FirstmateHome.writeIfMissing")(function* (
+    absolute: string,
+    content: string,
+  ) {
+    yield* fileSystem.makeDirectory(path.dirname(absolute), { recursive: true });
+    return yield* fileSystem.writeFileString(absolute, content, { flag: "wx" }).pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        (error) => error.reason._tag === "AlreadyExists",
+        () => Effect.succeed(false),
+      ),
+    );
+  });
 
   /**
    * `.claude/skills` links to `.agents/skills` in `folder`, so Claude Code and
    * Codex share one skills folder. Where links cannot be made, it is a folder
    * of its own. Returns the repository-relative paths it added.
    */
-  const linkClaudeSkills = (folder: string) =>
-    Effect.gen(function* () {
-      const link = path.join(folder, CLAUDE_SKILLS_PATH);
-      yield* fileSystem.makeDirectory(path.dirname(link), { recursive: true });
-      const linked = yield* fileSystem.symlink(CLAUDE_SKILLS_TARGET, link).pipe(
-        Effect.as<"linked" | "present" | "failed">("linked"),
-        Effect.catchIf(
-          (error) => error.reason._tag === "AlreadyExists",
-          () => Effect.succeed("present" as const),
-        ),
-        Effect.orElseSucceed(() => "failed" as const),
-      );
-      if (linked === "linked") return [path.relative(repoRoot, link)];
-      if (linked === "present") return [];
-      const readme = path.join(link, "README.md");
-      return (yield* writeIfMissing(readme, CLAUDE_SKILLS_FALLBACK_README))
-        ? [path.relative(repoRoot, readme)]
-        : [];
-    });
+  const linkClaudeSkills = Effect.fn("FirstmateHome.linkClaudeSkills")(function* (folder: string) {
+    const link = path.join(folder, CLAUDE_SKILLS_PATH);
+    yield* fileSystem.makeDirectory(path.dirname(link), { recursive: true });
+    const linked = yield* fileSystem.symlink(CLAUDE_SKILLS_TARGET, link).pipe(
+      Effect.as<"linked" | "present" | "failed">("linked"),
+      Effect.catchIf(
+        (error) => error.reason._tag === "AlreadyExists",
+        () => Effect.succeed("present" as const),
+      ),
+      Effect.orElseSucceed(() => "failed" as const),
+    );
+    if (linked === "linked") return [path.relative(repoRoot, link)];
+    if (linked === "present") return [];
+    const readme = path.join(link, "README.md");
+    return (yield* writeIfMissing(readme, CLAUDE_SKILLS_FALLBACK_README))
+      ? [path.relative(repoRoot, readme)]
+      : [];
+  });
 
-  const seedFolder = (
+  const seedFolder = Effect.fn("FirstmateHome.seedFolder")(function* (
     folder: string,
     files: ReadonlyArray<{ readonly path: string; readonly content: string }>,
-  ) =>
-    Effect.gen(function* () {
-      yield* fileSystem.makeDirectory(folder, { recursive: true });
-      const written: string[] = [];
-      for (const file of files) {
-        const absolute = path.join(folder, file.path);
-        if (yield* writeIfMissing(absolute, file.content))
-          written.push(path.relative(repoRoot, absolute));
-      }
-      written.push(...(yield* linkClaudeSkills(folder)));
-      return written;
-    });
+  ) {
+    yield* fileSystem.makeDirectory(folder, { recursive: true });
+    const written: string[] = [];
+    for (const file of files) {
+      const absolute = path.join(folder, file.path);
+      if (yield* writeIfMissing(absolute, file.content))
+        written.push(path.relative(repoRoot, absolute));
+    }
+    written.push(...(yield* linkClaudeSkills(folder)));
+    return written;
+  });
 
   // Git's own identity when it has one, else a fixed author.
   const identityEnv = Effect.gen(function* () {
@@ -246,8 +245,8 @@ const make = Effect.gen(function* () {
    * the user's staged work is never swept in. Git trouble (none installed, a
    * signing prompt) leaves the files uncommitted rather than failing the start.
    */
-  const commitPaths = (paths: ReadonlyArray<string>, message: string) =>
-    Effect.gen(function* () {
+  const commitPaths = Effect.fn("FirstmateHome.commitPaths")(
+    function* (paths: ReadonlyArray<string>, message: string) {
       yield* ensureRepository;
       if (paths.length === 0) return;
       yield* git.execute({
@@ -278,14 +277,14 @@ const make = Effect.gen(function* () {
           stderr: result.stderr.trim(),
         });
       }
-    }).pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("Could not record the agents home files in Git", { cause }),
-      ),
-    );
+    },
+    Effect.catch((cause) =>
+      Effect.logWarning("Could not record the agents home files in Git", { cause }),
+    ),
+  );
 
-  const ensureProject = (folder: string, name: string) =>
-    Effect.gen(function* () {
+  const ensureProject = Effect.fn("FirstmateHome.ensureProject")(
+    function* (folder: string, name: string) {
       const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       const { project } = yield* projects
         .bootstrap({
@@ -303,11 +302,11 @@ const make = Effect.gen(function* () {
           }),
         );
       return { projectId: project.id };
-    }).pipe(
-      Effect.mapError(
-        (cause) => new FirstmateError({ message: "Could not create the agent's project.", cause }),
-      ),
-    );
+    },
+    Effect.mapError(
+      (cause) => new FirstmateError({ message: "Could not create the agent's project.", cause }),
+    ),
+  );
 
   const ensure: FirstmateHome["Service"]["ensure"] = Effect.fn("FirstmateHome.ensure")(
     function* (input) {
@@ -562,8 +561,8 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const keepAvatar: FirstmateHome["Service"]["keepAvatar"] = (input) =>
-    Effect.gen(function* () {
+  const keepAvatar: FirstmateHome["Service"]["keepAvatar"] = Effect.fn("FirstmateHome.keepAvatar")(
+    function* (input) {
       const claim = planAttachmentClaim({
         attachmentsDir: config.attachmentsDir,
         threadId: `avatar-${input.agentId}`,
@@ -597,13 +596,13 @@ const make = Effect.gen(function* () {
       }
       yield* fileSystem.copyFile(claim.currentPath, claim.finalPath);
       return claim.finalId;
-    }).pipe(
-      Effect.mapError((cause) =>
-        isFirstmateError(cause)
-          ? cause
-          : new FirstmateError({ message: "Could not store the agent avatar.", cause }),
-      ),
-    );
+    },
+    Effect.mapError((cause) =>
+      isFirstmateError(cause)
+        ? cause
+        : new FirstmateError({ message: "Could not store the agent avatar.", cause }),
+    ),
+  );
 
   return FirstmateHome.of({
     artifactsRoot: path.join(repoRoot, ARTIFACTS_FOLDER),

@@ -1,12 +1,22 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useRef, type Dispatch } from "react";
+import { useEffect, useMemo, useRef, type Dispatch } from "react";
 
 import { agentsEnvironment, useAgentsHome } from "../../state/agents";
 import { environmentPresentations } from "../../state/presentation";
 import { useWorkspaceEnvironments } from "../../state/workspace";
-import type { WorkspaceTabsAction, WorkspaceTabsState } from "../workspace/workspace-tabs-state";
+import type { AppSymbolName } from "../../components/ui/AppSymbol";
+import {
+  NAVIGATION_TAB_ICONS,
+  WORKSPACE_TAB_LABELS,
+  useEnabledNavigationTabs,
+} from "../workspace/navigation-tabs";
+import type {
+  WorkspaceTab,
+  WorkspaceTabsAction,
+  WorkspaceTabsState,
+} from "../workspace/workspace-tabs-state";
 import { visibleWorkspaceTabs, workTabAvailable, workTabSelection } from "./WorkTab.logic";
 
 /** The environment that last served Work this session; see `workTabAvailable`. */
@@ -52,10 +62,23 @@ export function useWorkTabAvailable(): boolean {
   });
 }
 
-/** The workspace tabs to draw, in order. */
+/** The workspace tabs to draw, in order: Work, when available, then the enabled navigation tabs. */
 export function useVisibleWorkspaceTabs() {
-  return visibleWorkspaceTabs(useWorkTabAvailable());
+  const workAvailable = useWorkTabAvailable();
+  const enabled = useEnabledNavigationTabs();
+  return useMemo(() => visibleWorkspaceTabs(workAvailable, enabled), [workAvailable, enabled]);
 }
+
+/** Labels and icons for every workspace tab, Work included. */
+export const WORKSPACE_TAB_TITLES: Readonly<Record<WorkspaceTab, string>> = {
+  ...WORKSPACE_TAB_LABELS,
+  work: "Work",
+};
+
+export const WORKSPACE_TAB_ICONS: Readonly<Record<WorkspaceTab, AppSymbolName>> = {
+  ...NAVIGATION_TAB_ICONS,
+  work: "person.2",
+};
 
 /**
  * Keeps the tab selection in step with Work's availability: picks Work the

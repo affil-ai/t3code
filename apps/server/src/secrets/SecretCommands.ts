@@ -93,64 +93,66 @@ const make = Effect.gen(function* () {
     .pipe(Effect.andThen(fileSystem.chmod(runsDirectory, 0o700)), Effect.orDie);
 
   /** The thread's worktree, else its project's root. */
-  const workspaceOf = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const thread = yield* threadManagement
-        .getThreadShell(threadId)
-        .pipe(Effect.mapError(() => failure("orchestration_error", "Could not read the thread.")));
-      if (thread === null) return yield* failure("thread_not_found", "The thread was not found.");
-      if (thread.worktreePath !== null) return thread.worktreePath;
-      const project = yield* projects
-        .getById(thread.projectId)
-        .pipe(Effect.mapError(() => failure("orchestration_error", "Could not read the project.")));
-      if (Option.isNone(project)) {
-        return yield* failure("orchestration_error", "The thread's project was not found.");
-      }
-      return project.value.workspaceRoot;
-    });
+  const workspaceOf = Effect.fn("SecretCommands.workspaceOf")(function* (threadId: ThreadId) {
+    const thread = yield* threadManagement
+      .getThreadShell(threadId)
+      .pipe(Effect.mapError(() => failure("orchestration_error", "Could not read the thread.")));
+    if (thread === null) return yield* failure("thread_not_found", "The thread was not found.");
+    if (thread.worktreePath !== null) return thread.worktreePath;
+    const project = yield* projects
+      .getById(thread.projectId)
+      .pipe(Effect.mapError(() => failure("orchestration_error", "Could not read the project.")));
+    if (Option.isNone(project)) {
+      return yield* failure("orchestration_error", "The thread's project was not found.");
+    }
+    return project.value.workspaceRoot;
+  });
 
-  const resolveCwd = (threadId: ThreadId, cwd: string | undefined) =>
-    Effect.gen(function* () {
-      const resolved = path.resolve(yield* workspaceOf(threadId), cwd ?? ".");
-      const info = yield* fileSystem.stat(resolved).pipe(Effect.option);
-      if (Option.isNone(info) || info.value.type !== "Directory") {
-        return yield* failure("invalid_request", `cwd ${resolved} is not a directory.`);
-      }
-      return resolved;
-    });
+  const resolveCwd = Effect.fn("SecretCommands.resolveCwd")(function* (
+    threadId: ThreadId,
+    cwd: string | undefined,
+  ) {
+    const resolved = path.resolve(yield* workspaceOf(threadId), cwd ?? ".");
+    const info = yield* fileSystem.stat(resolved).pipe(Effect.option);
+    if (Option.isNone(info) || info.value.type !== "Directory") {
+      return yield* failure("invalid_request", `cwd ${resolved} is not a directory.`);
+    }
+    return resolved;
+  });
 
   /** Each secret's delivery, checked before any value is read. */
-  const checkDeliveries = (secrets: OrchestratorMcpRunWithSecretInput["secrets"]) =>
-    Effect.gen(function* () {
-      const deliveries = secrets.map((secret) => ({ ...secret, as: secret.as ?? "env" }));
-      if (deliveries.filter((delivery) => delivery.as === "stdin").length > 1) {
-        return yield* failure("invalid_request", "Only one secret can be delivered on stdin.");
+  const checkDeliveries = Effect.fn("SecretCommands.checkDeliveries")(function* (
+    secrets: OrchestratorMcpRunWithSecretInput["secrets"],
+  ) {
+    const deliveries = secrets.map((secret) => ({ ...secret, as: secret.as ?? "env" }));
+    if (deliveries.filter((delivery) => delivery.as === "stdin").length > 1) {
+      return yield* failure("invalid_request", "Only one secret can be delivered on stdin.");
+    }
+    const names = new Set<string>();
+    for (const delivery of deliveries) {
+      if (delivery.as === "stdin") continue;
+      if (delivery.name === undefined) {
+        return yield* failure(
+          "invalid_request",
+          `A secret delivered as ${delivery.as} needs a name for its environment variable.`,
+        );
       }
-      const names = new Set<string>();
-      for (const delivery of deliveries) {
-        if (delivery.as === "stdin") continue;
-        if (delivery.name === undefined) {
-          return yield* failure(
-            "invalid_request",
-            `A secret delivered as ${delivery.as} needs a name for its environment variable.`,
-          );
-        }
-        if (RESERVED_NAME.test(delivery.name)) {
-          return yield* failure(
-            "invalid_request",
-            `${delivery.name} changes how commands run; choose another name.`,
-          );
-        }
-        if (names.has(delivery.name)) {
-          return yield* failure("invalid_request", `${delivery.name} is used twice.`);
-        }
-        names.add(delivery.name);
+      if (RESERVED_NAME.test(delivery.name)) {
+        return yield* failure(
+          "invalid_request",
+          `${delivery.name} changes how commands run; choose another name.`,
+        );
       }
-      return deliveries;
-    });
+      if (names.has(delivery.name)) {
+        return yield* failure("invalid_request", `${delivery.name} is used twice.`);
+      }
+      names.add(delivery.name);
+    }
+    return deliveries;
+  });
 
-  const run: SecretCommands["Service"]["run"] = (input) =>
-    Effect.gen(function* () {
+  const run: SecretCommands["Service"]["run"] = Effect.fn("SecretCommands.run")(
+    function* (input) {
       const deliveries = yield* checkDeliveries(input.secrets);
       const cwd = yield* resolveCwd(input.threadId, input.cwd);
       const values = yield* Effect.forEach(deliveries, (delivery) =>
@@ -262,7 +264,9 @@ const make = Effect.gen(function* () {
         outputTruncated,
         redactions,
       };
-    }).pipe(Effect.scoped, Effect.withSpan("SecretCommands.run"));
+    },
+    Effect.scoped,
+  );
 
   return SecretCommands.of({ run });
 });

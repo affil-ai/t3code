@@ -27,7 +27,7 @@ import { NativeScrollViewMarker as ScrollViewMarker } from "../../native/NativeS
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useFirstmateCommands } from "../../state/firstmate";
 import { useEnvironmentScope } from "../../state/session";
-import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
+import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 import { TaskStatusDot } from "./TaskStatusDot";
 import {
   WorkTaskActionButtons,
@@ -150,7 +150,7 @@ function TaskDetail(props: {
   readonly coordinatorThreadId: ThreadId | null;
 }) {
   const { environmentId, task, agentName, coordinatorThreadId } = props;
-  const { selectThreadRoute } = useAdaptiveWorkspaceLayout();
+  const selectDetail = useSelectWorkspaceDetail();
   const insets = useSafeAreaInsets();
   const keyboardVisible = useKeyboardState((state) => state.isVisible);
   const bottomInset = keyboardVisible ? 8 : Math.max(insets.bottom, 12);
@@ -160,7 +160,10 @@ function TaskDetail(props: {
   const canSend = canOperate && coordinatorThreadId !== null;
 
   const openThread = (threadId: ThreadId) =>
-    selectThreadRoute({ environmentId: String(environmentId), threadId: String(threadId) });
+    selectDetail({
+      name: "Thread",
+      params: { environmentId: String(environmentId), threadId: String(threadId) },
+    });
 
   const send = async (text: string, sentTitle: string): Promise<boolean> => {
     if (coordinatorThreadId === null || busy) return false;

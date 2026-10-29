@@ -96,8 +96,8 @@ type Binding = typeof binding.Type;
  * copy of a checkout file (a setup script's .env copy), an empty folder, or a TypeScript build
  * cache. Anything else, or anything that cannot be read, is kept.
  */
-export const disposableIgnoredEntry = (worktree: string, checkout: string, entry: string) =>
-  Effect.gen(function* () {
+export const disposableIgnoredEntry = Effect.fn("TreehouseWorktrees.disposableIgnoredEntry")(
+  function* (worktree: string, checkout: string, entry: string) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     if (entry.endsWith("/")) {
@@ -112,7 +112,9 @@ export const disposableIgnoredEntry = (worktree: string, checkout: string, entry
       fs.readFile(original),
     ]);
     return copy.length === source.length && copy.every((byte, index) => byte === source[index]);
-  }).pipe(Effect.orElseSucceed(() => false));
+  },
+  Effect.orElseSucceed(() => false),
+);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -133,7 +135,7 @@ const make = Effect.gen(function* () {
   const readBinding = (threadId: ThreadId) =>
     sql<Binding>`SELECT * FROM treehouse_thread_lease WHERE thread_id = ${threadId}`.pipe(
       Effect.flatMap((rows) =>
-        rows[0] === undefined ? Effect.succeed(null) : Schema.decodeUnknownEffect(binding)(rows[0]),
+        rows[0] === undefined ? Effect.succeed(null) : Schema.decodeEffect(binding)(rows[0]),
       ),
     );
   const writeBinding = (value: Binding) =>
@@ -276,233 +278,235 @@ const make = Effect.gen(function* () {
     );
   return TreehouseWorktrees.of({
     enabled: binary !== undefined,
-    acquire: (input) =>
-      guard(
-        Effect.gen(function* () {
-          const existing = yield* readBinding(input.threadId);
-          if (existing?.active === 1) {
-            const slot = yield* currentLease(existing);
-            if (slot.branch !== input.branch || existing.cwd !== path.resolve(input.cwd))
-              return yield* new TreehouseWorktreeError({ operation: "ownership-changed" });
-            return existing.path;
-          }
-          const previous = (yield* readStatus(input.cwd)).filter(
-            (entry) => entry.lease_holder === "t3:" + input.threadId,
-          );
-          if (previous.length > 1)
-            return yield* new TreehouseWorktreeError({ operation: "ambiguous-lease" });
-          const recovered = previous[0];
-          if (recovered !== undefined) {
-            const recoveredPath = path.resolve(recovered.path);
-            if (
-              !recoveredPath.startsWith(path.join(poolRoot, ".treehouse") + path.sep) ||
-              recovered.lease_id === "" ||
-              recovered.branch !== input.branch ||
-              recovered.branch_error ||
-              recovered.recovery_reason
-            )
-              return yield* new TreehouseWorktreeError({ operation: "unconfirmed-lease" });
-            yield* writeBinding({
-              thread_id: input.threadId,
-              cwd: path.resolve(input.cwd),
-              path: recoveredPath,
-              lease_id: recovered.lease_id,
-              merge_ref: input.mergeRef,
-              active: 1,
-            });
-            return recoveredPath;
-          }
-          return yield* allocate(input);
-        }),
-      ),
-    ensure: (input) =>
-      guard(
-        Effect.gen(function* () {
-          let value = yield* readBinding(input.threadId);
-          if ((value === null || value.active === 0) && input.rootThreadId !== input.threadId) {
-            const root = yield* readBinding(input.rootThreadId);
-            if (root?.active === 1 && root.cwd === path.resolve(input.cwd)) {
-              const slot = yield* currentLease(root);
-              if (slot.branch === input.branch) {
-                value = { ...root, thread_id: input.threadId };
-                yield* writeBinding(value);
-                return root.path;
-              }
+    acquire: Effect.fn("TreehouseWorktrees.acquire")(
+      function* (input) {
+        const existing = yield* readBinding(input.threadId);
+        if (existing?.active === 1) {
+          const slot = yield* currentLease(existing);
+          if (slot.branch !== input.branch || existing.cwd !== path.resolve(input.cwd))
+            return yield* new TreehouseWorktreeError({ operation: "ownership-changed" });
+          return existing.path;
+        }
+        const previous = (yield* readStatus(input.cwd)).filter(
+          (entry) => entry.lease_holder === "t3:" + input.threadId,
+        );
+        if (previous.length > 1)
+          return yield* new TreehouseWorktreeError({ operation: "ambiguous-lease" });
+        const recovered = previous[0];
+        if (recovered !== undefined) {
+          const recoveredPath = path.resolve(recovered.path);
+          if (
+            !recoveredPath.startsWith(path.join(poolRoot, ".treehouse") + path.sep) ||
+            recovered.lease_id === "" ||
+            recovered.branch !== input.branch ||
+            recovered.branch_error ||
+            recovered.recovery_reason
+          )
+            return yield* new TreehouseWorktreeError({ operation: "unconfirmed-lease" });
+          yield* writeBinding({
+            thread_id: input.threadId,
+            cwd: path.resolve(input.cwd),
+            path: recoveredPath,
+            lease_id: recovered.lease_id,
+            merge_ref: input.mergeRef,
+            active: 1,
+          });
+          return recoveredPath;
+        }
+        return yield* allocate(input);
+      },
+      guard,
+    ),
+    ensure: Effect.fn("TreehouseWorktrees.ensure")(
+      function* (input) {
+        let value = yield* readBinding(input.threadId);
+        if ((value === null || value.active === 0) && input.rootThreadId !== input.threadId) {
+          const root = yield* readBinding(input.rootThreadId);
+          if (root?.active === 1 && root.cwd === path.resolve(input.cwd)) {
+            const slot = yield* currentLease(root);
+            if (slot.branch === input.branch) {
+              value = { ...root, thread_id: input.threadId };
+              yield* writeBinding(value);
+              return root.path;
             }
           }
-          if (value === null) {
-            const rows =
-              yield* sql`SELECT 1 FROM treehouse_thread_lease WHERE path = ${path.resolve(input.worktreePath)} LIMIT 1`;
-            if (rows.length > 0)
-              return yield* new TreehouseWorktreeError({ operation: "unowned-slot" });
-            return null;
-          }
-          if (value.cwd !== path.resolve(input.cwd))
-            return yield* new TreehouseWorktreeError({ operation: "repository-changed" });
-          if (value.active === 1) {
-            // Aliases use the original lease holder, not their own app thread ID.
-            const owners = yield* sql<Binding>`SELECT * FROM treehouse_thread_lease
-          WHERE lease_id = ${value.lease_id} AND active = 1`;
-            const slots = yield* readStatus(value.cwd);
-            const slot = slots.find((entry) => path.resolve(entry.path) === value.path);
-            if (
-              slot === undefined ||
-              slot.lease_id !== value.lease_id ||
-              slot.branch !== input.branch ||
-              slot.branch_error ||
-              slot.recovery_reason ||
-              !owners.some((owner) => slot.lease_holder === "t3:" + owner.thread_id)
-            )
-              return yield* new TreehouseWorktreeError({ operation: "lease-changed" });
-            return value.path;
-          }
-          return yield* allocate({
-            threadId: input.threadId,
-            cwd: value.cwd,
-            baseRef: input.branch,
-            branch: input.branch,
-            mergeRef: value.merge_ref,
-            existingBranch: true,
-          });
-        }),
-      ),
-    ownsPath: (input) =>
-      guard(
-        sql`SELECT 1 FROM treehouse_thread_lease WHERE path = ${path.resolve(input)} LIMIT 1`.pipe(
-          Effect.map((rows) => rows.length > 0),
-        ),
-      ),
-    release: (input, expectedThreadId, mergedHead) =>
-      guard(
-        Effect.gen(function* () {
-          const expected =
-            expectedThreadId === undefined ? null : yield* readBinding(expectedThreadId);
-          if (expected !== null) {
-            if (expected.path !== path.resolve(input))
-              return yield* new TreehouseWorktreeError({ operation: "owner-workspace-changed" });
-            // A retired owner must not release a slot another thread acquired.
-            if (expected.active === 0) return true;
-          }
+        }
+        if (value === null) {
           const rows =
-            yield* sql<Binding>`SELECT * FROM treehouse_thread_lease WHERE path = ${path.resolve(input)} AND active = 1`;
-          const value = rows[0];
-          if (value === undefined) {
-            if (expected !== null)
-              return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
-            const known =
-              yield* sql`SELECT 1 FROM treehouse_thread_lease WHERE path = ${path.resolve(input)} LIMIT 1`;
-            if (known.length > 0 && expectedThreadId !== undefined)
-              return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
-            return known.length > 0;
-          }
-          if (
-            expectedThreadId !== undefined &&
-            (expected === null || expected.lease_id !== value.lease_id)
-          )
-            return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
+            yield* sql`SELECT 1 FROM treehouse_thread_lease WHERE path = ${path.resolve(input.worktreePath)} LIMIT 1`;
+          if (rows.length > 0)
+            return yield* new TreehouseWorktreeError({ operation: "unowned-slot" });
+          return null;
+        }
+        if (value.cwd !== path.resolve(input.cwd))
+          return yield* new TreehouseWorktreeError({ operation: "repository-changed" });
+        if (value.active === 1) {
+          // Aliases use the original lease holder, not their own app thread ID.
+          const owners = yield* sql<Binding>`SELECT * FROM treehouse_thread_lease
+        WHERE lease_id = ${value.lease_id} AND active = 1`;
           const slots = yield* readStatus(value.cwd);
           const slot = slots.find((entry) => path.resolve(entry.path) === value.path);
           if (
             slot === undefined ||
             slot.lease_id !== value.lease_id ||
-            slot.processes.length > 0 ||
+            slot.branch !== input.branch ||
             slot.branch_error ||
             slot.recovery_reason ||
-            !rows.some((owner) => slot.lease_holder === "t3:" + owner.thread_id)
+            !owners.some((owner) => slot.lease_holder === "t3:" + owner.thread_id)
           )
-            return yield* new TreehouseWorktreeError({ operation: "busy-or-changed" });
-          const references = yield* sql<{
-            thread_id: string;
-            root_thread_id: string | null;
-          }>`SELECT thread_id, json_extract(payload_json,'$.lineage.rootThreadId') AS root_thread_id
-        FROM orchestration_v2_projection_threads
-        WHERE deleted_at IS NULL AND json_extract(payload_json,'$.worktreePath') = ${value.path}`;
-          // fork: treehouse-shared-lineage — the holder's delegated tasks may share its slot.
-          const holder = slot.lease_holder.slice("t3:".length);
-          if (
-            references.some(
-              (entry) => entry.thread_id !== holder && entry.root_thread_id !== holder,
-            )
+            return yield* new TreehouseWorktreeError({ operation: "lease-changed" });
+          return value.path;
+        }
+        return yield* allocate({
+          threadId: input.threadId,
+          cwd: value.cwd,
+          baseRef: input.branch,
+          branch: input.branch,
+          mergeRef: value.merge_ref,
+          existingBranch: true,
+        });
+      },
+      guard,
+    ),
+    ownsPath: Effect.fn("TreehouseWorktrees.ownsPath")(
+      function* (input) {
+        const rows =
+          yield* sql`SELECT 1 FROM treehouse_thread_lease WHERE path = ${path.resolve(input)} LIMIT 1`;
+        return rows.length > 0;
+      },
+      guard,
+    ),
+    release: Effect.fn("TreehouseWorktrees.release")(
+      function* (input, expectedThreadId, mergedHead) {
+        const expected =
+          expectedThreadId === undefined ? null : yield* readBinding(expectedThreadId);
+        if (expected !== null) {
+          if (expected.path !== path.resolve(input))
+            return yield* new TreehouseWorktreeError({ operation: "owner-workspace-changed" });
+          // A retired owner must not release a slot another thread acquired.
+          if (expected.active === 0) return true;
+        }
+        const rows =
+          yield* sql<Binding>`SELECT * FROM treehouse_thread_lease WHERE path = ${path.resolve(input)} AND active = 1`;
+        const value = rows[0];
+        if (value === undefined) {
+          if (expected !== null)
+            return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
+          const known =
+            yield* sql`SELECT 1 FROM treehouse_thread_lease WHERE path = ${path.resolve(input)} LIMIT 1`;
+          if (known.length > 0 && expectedThreadId !== undefined)
+            return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
+          return known.length > 0;
+        }
+        if (
+          expectedThreadId !== undefined &&
+          (expected === null || expected.lease_id !== value.lease_id)
+        )
+          return yield* new TreehouseWorktreeError({ operation: "lease-owner-changed" });
+        const slots = yield* readStatus(value.cwd);
+        const slot = slots.find((entry) => path.resolve(entry.path) === value.path);
+        if (
+          slot === undefined ||
+          slot.lease_id !== value.lease_id ||
+          slot.processes.length > 0 ||
+          slot.branch_error ||
+          slot.recovery_reason ||
+          !rows.some((owner) => slot.lease_holder === "t3:" + owner.thread_id)
+        )
+          return yield* new TreehouseWorktreeError({ operation: "busy-or-changed" });
+        const references = yield* sql<{
+          thread_id: string;
+          root_thread_id: string | null;
+        }>`SELECT thread_id, json_extract(payload_json,'$.lineage.rootThreadId') AS root_thread_id
+      FROM orchestration_v2_projection_threads
+      WHERE deleted_at IS NULL AND json_extract(payload_json,'$.worktreePath') = ${value.path}`;
+        // fork: treehouse-shared-lineage — the holder's delegated tasks may share its slot.
+        const holder = slot.lease_holder.slice("t3:".length);
+        if (
+          references.some(
+            (entry) => entry.thread_id !== holder && entry.root_thread_id !== holder,
           )
-            return yield* new TreehouseWorktreeError({ operation: "shared-worktree" });
-          const runs = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
-        WHERE (thread_id IN (SELECT thread_id FROM treehouse_thread_lease WHERE lease_id = ${value.lease_id})
-          OR thread_id IN (SELECT thread_id FROM orchestration_v2_projection_threads
-            WHERE deleted_at IS NULL AND json_extract(payload_json,'$.worktreePath') = ${value.path}))
-        AND status NOT IN ('completed','cancelled','failed','interrupted') LIMIT 1`;
-          if (runs.length > 0)
-            return yield* new TreehouseWorktreeError({ operation: "active-run" });
-          const changes = yield* run(
-            "git",
-            [
-              "-c",
-              "status.showUntrackedFiles=normal",
-              "status",
-              "--porcelain=v1",
-              "--untracked-files=all",
-            ],
-            value.path,
-          );
-          if (changes.trim() !== "")
-            return yield* new TreehouseWorktreeError({ operation: "local-changes" });
-          const ignored = yield* run(
-            "git",
-            ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
-            value.path,
-          );
-          // Preserve ignored source, credentials and local state. Dependencies are
-          // the only ignored directory this adapter permits Treehouse to retain.
-          // fork: treehouse-env-copies — a setup script's exact copy of a file in the
-          // main checkout, an empty folder, or a TypeScript build cache loses nothing.
-          const protectedEntries = yield* Effect.filter(
-            ignored
-              .split("\0")
-              .filter((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry)),
-            (entry) =>
-              disposableIgnoredEntry(value.path, value.cwd, entry).pipe(
-                Effect.map((ok) => !ok),
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(Path.Path, path),
-              ),
-          );
-          if (protectedEntries.length > 0)
-            return yield* new TreehouseWorktreeError({ operation: "protected-ignored-files" });
-          // fork: treehouse-merge-ref — a local base branch can lag far behind origin, where
-          // a branch cut from origin was merged. Either one holding HEAD loses no commits.
-          yield* run(
-            "git",
-            ["merge-base", "--is-ancestor", "HEAD", value.merge_ref],
-            value.path,
-          ).pipe(
-            Effect.catch(() =>
-              run(
-                "git",
-                ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/" + value.merge_ref],
-                value.path,
-              ),
+        )
+          return yield* new TreehouseWorktreeError({ operation: "shared-worktree" });
+        const runs = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
+      WHERE (thread_id IN (SELECT thread_id FROM treehouse_thread_lease WHERE lease_id = ${value.lease_id})
+        OR thread_id IN (SELECT thread_id FROM orchestration_v2_projection_threads
+          WHERE deleted_at IS NULL AND json_extract(payload_json,'$.worktreePath') = ${value.path}))
+      AND status NOT IN ('completed','cancelled','failed','interrupted') LIMIT 1`;
+        if (runs.length > 0)
+          return yield* new TreehouseWorktreeError({ operation: "active-run" });
+        const changes = yield* run(
+          "git",
+          [
+            "-c",
+            "status.showUntrackedFiles=normal",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+          ],
+          value.path,
+        );
+        if (changes.trim() !== "")
+          return yield* new TreehouseWorktreeError({ operation: "local-changes" });
+        const ignored = yield* run(
+          "git",
+          ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+          value.path,
+        );
+        // Preserve ignored source, credentials and local state. Dependencies are
+        // the only ignored directory this adapter permits Treehouse to retain.
+        // fork: treehouse-env-copies — a setup script's exact copy of a file in the
+        // main checkout, an empty folder, or a TypeScript build cache loses nothing.
+        const protectedEntries = yield* Effect.filter(
+          ignored
+            .split("\0")
+            .filter((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry)),
+          (entry) =>
+            disposableIgnoredEntry(value.path, value.cwd, entry).pipe(
+              Effect.map((ok) => !ok),
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
             ),
-            Effect.catch((cause) =>
-              mergedHead === undefined
-                ? Effect.fail(cause)
-                : run("git", ["rev-parse", "--verify", "HEAD"], value.path).pipe(
-                    Effect.flatMap((head) =>
-                      head.trim() === mergedHead ? Effect.void : Effect.fail(cause),
-                    ),
+        );
+        if (protectedEntries.length > 0)
+          return yield* new TreehouseWorktreeError({ operation: "protected-ignored-files" });
+        // fork: treehouse-merge-ref — a local base branch can lag far behind origin, where
+        // a branch cut from origin was merged. Either one holding HEAD loses no commits.
+        yield* run(
+          "git",
+          ["merge-base", "--is-ancestor", "HEAD", value.merge_ref],
+          value.path,
+        ).pipe(
+          Effect.catch(() =>
+            run(
+              "git",
+              ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/" + value.merge_ref],
+              value.path,
+            ),
+          ),
+          Effect.catch((cause) =>
+            mergedHead === undefined
+              ? Effect.fail(cause)
+              : run("git", ["rev-parse", "--verify", "HEAD"], value.path).pipe(
+                  Effect.flatMap((head) =>
+                    head.trim() === mergedHead ? Effect.void : Effect.fail(cause),
                   ),
-            ),
-          );
-          // Treehouse rechecks this exact lease under its own pool lock. No --force,
-          // --all, prune, or orphan recovery can affect another thread's slot.
-          yield* treehouse(["return", value.path, "--if-lease-id", value.lease_id], value.cwd);
-          const after = (yield* readStatus(value.cwd)).find(
-            (entry) => path.resolve(entry.path) === value.path,
-          );
-          if (after === undefined || after.lease_id !== "" || after.processes.length > 0)
-            return yield* new TreehouseWorktreeError({ operation: "return-unconfirmed" });
-          yield* sql`UPDATE treehouse_thread_lease SET active = 0 WHERE lease_id = ${value.lease_id}`;
-          return true;
-        }),
-      ),
+                ),
+          ),
+        );
+        // Treehouse rechecks this exact lease under its own pool lock. No --force,
+        // --all, prune, or orphan recovery can affect another thread's slot.
+        yield* treehouse(["return", value.path, "--if-lease-id", value.lease_id], value.cwd);
+        const after = (yield* readStatus(value.cwd)).find(
+          (entry) => path.resolve(entry.path) === value.path,
+        );
+        if (after === undefined || after.lease_id !== "" || after.processes.length > 0)
+          return yield* new TreehouseWorktreeError({ operation: "return-unconfirmed" });
+        yield* sql`UPDATE treehouse_thread_lease SET active = 0 WHERE lease_id = ${value.lease_id}`;
+        return true;
+      },
+      guard,
+    ),
   });
 });
 

@@ -63,25 +63,27 @@ const make = Effect.gen(function* () {
       }
       return nextPath ?? worktreePath;
     }).pipe(Effect.mapError((cause) => new TreehouseThreadWorkspaceError({ threadId, cause })));
-  const withWorkspace = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
-    Effect.gen(function* () {
-      if (!pool.enabled) return yield* effect;
-      const projection = yield* threads
-        .getThreadProjection(threadId)
-        .pipe(Effect.mapError((cause) => new TreehouseThreadWorkspaceError({ threadId, cause })));
-      const originalPath = projection.thread.worktreePath;
-      if (originalPath === null) return yield* effect;
-      return yield* withWorkspaceLease(
-        originalPath,
-        prepare(threadId).pipe(
-          Effect.flatMap((nextPath) =>
-            nextPath !== null && nextPath !== originalPath
-              ? withWorkspaceLease(nextPath, effect)
-              : effect,
-          ),
+  const withWorkspace = Effect.fn("TreehouseThreadWorkspaces.withWorkspace")(function* <A, E, R>(
+    threadId: ThreadId,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.fn.Return<A, E | TreehouseThreadWorkspaceError, R> {
+    if (!pool.enabled) return yield* effect;
+    const projection = yield* threads
+      .getThreadProjection(threadId)
+      .pipe(Effect.mapError((cause) => new TreehouseThreadWorkspaceError({ threadId, cause })));
+    const originalPath = projection.thread.worktreePath;
+    if (originalPath === null) return yield* effect;
+    return yield* withWorkspaceLease(
+      originalPath,
+      prepare(threadId).pipe(
+        Effect.flatMap((nextPath) =>
+          nextPath !== null && nextPath !== originalPath
+            ? withWorkspaceLease(nextPath, effect)
+            : effect,
         ),
-      );
-    });
+      ),
+    );
+  });
   return TreehouseThreadWorkspaces.of({ withWorkspace });
 });
 export const layer = Layer.effect(TreehouseThreadWorkspaces, make);

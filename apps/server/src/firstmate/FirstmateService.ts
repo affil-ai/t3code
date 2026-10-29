@@ -287,19 +287,21 @@ export const layer = Layer.effect(
     // Kept review images move with it, so their stored paths follow.
     // Images kept under a moved folder now sit in the repository's artifacts/,
     // so their stored paths go there; any other path follows the folder.
-    const repointArtifacts = (from: string, to: string) =>
-      Effect.gen(function* () {
-        const keptFrom = `${from}/artifacts/`;
-        const keptTo = `${home.artifactsRoot}/`;
-        yield* sql`
-          UPDATE firstmate_task SET artifacts_json = replace(artifacts_json, ${keptFrom}, ${keptTo})
-          WHERE artifacts_json LIKE ${`%${keptFrom}%`}
-        `;
-        yield* sql`
-          UPDATE firstmate_task SET artifacts_json = replace(artifacts_json, ${`${from}/`}, ${`${to}/`})
-          WHERE artifacts_json LIKE ${`%${from}/%`}
-        `;
-      });
+    const repointArtifacts = Effect.fn("Firstmate.repointArtifacts")(function* (
+      from: string,
+      to: string,
+    ) {
+      const keptFrom = `${from}/artifacts/`;
+      const keptTo = `${home.artifactsRoot}/`;
+      yield* sql`
+        UPDATE firstmate_task SET artifacts_json = replace(artifacts_json, ${keptFrom}, ${keptTo})
+        WHERE artifacts_json LIKE ${`%${keptFrom}%`}
+      `;
+      yield* sql`
+        UPDATE firstmate_task SET artifacts_json = replace(artifacts_json, ${`${from}/`}, ${`${to}/`})
+        WHERE artifacts_json LIKE ${`%${from}/%`}
+      `;
+    });
     const moved = yield* home.migrateLegacyHome();
     if (moved !== null) yield* repointArtifacts(moved.from, moved.to);
     // Agents' folders move from `agents/` to `crew/` once. The first move left
@@ -361,8 +363,10 @@ export const layer = Layer.effect(
           row?.coordinator_thread_id == null ? null : ThreadId.make(row.coordinator_thread_id),
         ),
       );
-    const agentForThread: FirstmateService["Service"]["agentForThread"] = (threadId) =>
-      Effect.gen(function* () {
+    const agentForThread: FirstmateService["Service"]["agentForThread"] = Effect.fn(
+      "Firstmate.agentForThread",
+    )(
+      function* (threadId) {
         const own = yield* sql<AgentRow>`
           SELECT * FROM firstmate_agent WHERE coordinator_thread_id = ${threadId} AND archived_at IS NULL
         `;
@@ -374,7 +378,9 @@ export const layer = Layer.effect(
           ORDER BY t.updated_at DESC LIMIT 1
         `;
         return working[0] === undefined ? null : agentFromRow(working[0]);
-      }).pipe(Effect.mapError(dbError("Could not find the calling thread's agent.")));
+      },
+      Effect.mapError(dbError("Could not find the calling thread's agent.")),
+    );
     /** Firstmate's row mirrors into firstmate_config, so an older build can still read it. */
     const mirrorFirstmateConfig = (agentId: AgentProfileId) =>
       agentId !== FIRSTMATE_AGENT_ID
@@ -490,19 +496,18 @@ export const layer = Layer.effect(
     /** The event that records a change to a task's next step. */
     const nextStepEvent = (nextStep: string | null) =>
       nextStep === null ? "Next step cleared." : `Next step: ${nextStep}`;
-    const appendEvent = (
+    const appendEvent = Effect.fn("Firstmate.appendEvent")(function* (
       taskId: FirstmateTask["id"],
       summary: string,
       actor: FirstmateTaskEvent["actor"],
       at: string,
-    ) =>
-      Effect.gen(function* () {
-        const eventId = `firstmate-event:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`;
-        yield* sql`
-          INSERT INTO firstmate_task_event(event_id, task_id, created_at, actor, summary)
-          VALUES (${eventId}, ${taskId}, ${at}, ${actor}, ${summary})
-        `.pipe(Effect.mapError(dbError("Could not record the task event.", taskId)));
-      });
+    ) {
+      const eventId = `firstmate-event:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`;
+      yield* sql`
+        INSERT INTO firstmate_task_event(event_id, task_id, created_at, actor, summary)
+        VALUES (${eventId}, ${taskId}, ${at}, ${actor}, ${summary})
+      `.pipe(Effect.mapError(dbError("Could not record the task event.", taskId)));
+    });
     /** The task when it exists and belongs to `agentId`; another agent's task is "not found". */
     const readOwnTask = (agentId: AgentProfileId, taskId: FirstmateTask["id"]) =>
       sql<TaskRow>`SELECT * FROM firstmate_task WHERE task_id = ${taskId} AND agent_id = ${agentId}`.pipe(
@@ -734,22 +739,24 @@ export const layer = Layer.effect(
      * it, through delegated-subagent links only, that works on `taskId` or,
      * without one, on any open task. Null when there is none.
      */
-    const reportingWorker = (callerThreadId: ThreadId, taskId: FirstmateTask["id"] | undefined) =>
-      Effect.gen(function* () {
-        let threadId: ThreadId | null = callerThreadId;
-        for (let hop = 0; threadId !== null && hop <= MAX_SUBAGENT_DEPTH; hop += 1) {
-          const worked = yield* openTasksWorkedBy(threadId);
-          if (taskId === undefined ? worked.length > 0 : worked.some((task) => task.id === taskId))
-            return threadId;
-          // Only a delegated subagent reports for its parent; a fork is its own conversation.
-          const shell: OrchestrationV2ThreadShell | null = yield* threads.getThreadShell(threadId);
-          threadId =
-            shell?.lineage.relationshipToParent === "subagent"
-              ? shell.lineage.parentThreadId
-              : null;
-        }
-        return null;
-      });
+    const reportingWorker = Effect.fn("Firstmate.reportingWorker")(function* (
+      callerThreadId: ThreadId,
+      taskId: FirstmateTask["id"] | undefined,
+    ) {
+      let threadId: ThreadId | null = callerThreadId;
+      for (let hop = 0; threadId !== null && hop <= MAX_SUBAGENT_DEPTH; hop += 1) {
+        const worked = yield* openTasksWorkedBy(threadId);
+        if (taskId === undefined ? worked.length > 0 : worked.some((task) => task.id === taskId))
+          return threadId;
+        // Only a delegated subagent reports for its parent; a fork is its own conversation.
+        const shell: OrchestrationV2ThreadShell | null = yield* threads.getThreadShell(threadId);
+        threadId =
+          shell?.lineage.relationshipToParent === "subagent"
+            ? shell.lineage.parentThreadId
+            : null;
+      }
+      return null;
+    });
     const reportProgress: FirstmateService["Service"]["reportProgress"] = (callerThreadId, raw) =>
       Effect.gen(function* () {
         const input = yield* decodeReportProgressInput(raw);
@@ -797,58 +804,64 @@ export const layer = Layer.effect(
     // --- starting and shaping agents ---------------------------------------
 
     /** Seeds the agent's folder and starts its chat; returns the new coordinator. */
-    const launchCoordinator = (agent: AgentProfile, modelSelection: ModelSelection) =>
-      Effect.gen(function* () {
-        // The coordinator runs at the agent's folder, so the provider loads the
-        // shared AGENTS.md above it and its own, plus its notes and skills.
-        const { projectId } = yield* home.ensure({
-          slug: agent.slug,
-          name: agent.name,
-          role: agent.role,
-        });
-        yield* sql`
-          UPDATE firstmate_agent SET home_project_id = ${projectId},
-            model_selection_json = ${encodeModelSelection(modelSelection)}
-          WHERE agent_id = ${agent.id}
-        `.pipe(Effect.mapError(dbError("Could not record the agent's project.")));
-        const launched = yield* launches.launch({
-          commandId: CommandId.make(
-            `firstmate:start:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
-          ),
-          projectId,
-          title: agent.name,
-          modelSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          workspaceStrategy: { type: "root" },
-          initialMessage: {
-            messageId: MessageId.make(
-              `firstmate:prompt:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
-            ),
-            text: coordinatorKickoff(agent.name),
-            attachments: [],
-          },
-          createdBy: "user",
-          creationSource: "web",
-        });
-        yield* setCoordinator(agent.id, { threadId: launched.threadId });
-        return launched.threadId;
+    const launchCoordinator = Effect.fn("Firstmate.launchCoordinator")(function* (
+      agent: AgentProfile,
+      modelSelection: ModelSelection,
+    ) {
+      // The coordinator runs at the agent's folder, so the provider loads the
+      // shared AGENTS.md above it and its own, plus its notes and skills.
+      const { projectId } = yield* home.ensure({
+        slug: agent.slug,
+        name: agent.name,
+        role: agent.role,
       });
-    const start: FirstmateService["Service"]["start"] = (agentId, input) =>
-      Effect.gen(function* () {
+      yield* sql`
+        UPDATE firstmate_agent SET home_project_id = ${projectId},
+          model_selection_json = ${encodeModelSelection(modelSelection)}
+        WHERE agent_id = ${agent.id}
+      `.pipe(Effect.mapError(dbError("Could not record the agent's project.")));
+      const launched = yield* launches.launch({
+        commandId: CommandId.make(
+          `firstmate:start:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+        ),
+        projectId,
+        title: agent.name,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        workspaceStrategy: { type: "root" },
+        initialMessage: {
+          messageId: MessageId.make(
+            `firstmate:prompt:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          ),
+          text: coordinatorKickoff(agent.name),
+          attachments: [],
+        },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* setCoordinator(agent.id, { threadId: launched.threadId });
+      return launched.threadId;
+    });
+    const start: FirstmateService["Service"]["start"] = Effect.fn("Firstmate.start")(
+      function* (agentId, input) {
         const agent = yield* requireAgent(agentId);
         const threadId = yield* launchCoordinator(agent, input.modelSelection);
         return { threadId, snapshot: yield* snapshot(agentId) };
-      }).pipe(Effect.mapError(dbError(`Could not start the agent.`)));
-    const startAgent: FirstmateService["Service"]["startAgent"] = (input) =>
-      Effect.gen(function* () {
+      },
+      Effect.mapError(dbError(`Could not start the agent.`)),
+    );
+    const startAgent: FirstmateService["Service"]["startAgent"] = Effect.fn("Firstmate.startAgent")(
+      function* (input) {
         const agent = yield* requireAgent(input.agentId);
         const threadId = yield* launchCoordinator(agent, input.modelSelection);
         return { agent: yield* requireAgent(input.agentId), threadId };
-      }).pipe(Effect.mapError(dbError("Could not start the agent.")));
+      },
+      Effect.mapError(dbError("Could not start the agent.")),
+    );
     /** Renames the coordinator chat the way a thread rename does, when it still exists. */
-    const renameCoordinator = (threadId: ThreadId, title: string) =>
-      Effect.gen(function* () {
+    const renameCoordinator = Effect.fn("Firstmate.renameCoordinator")(
+      function* (threadId: ThreadId, title: string) {
         const shell = yield* threads.getThreadShell(threadId);
         if (shell === null || shell.deletedAt !== null || shell.title === title) return;
         yield* threads.dispatch({
@@ -859,15 +872,21 @@ export const layer = Layer.effect(
           threadId,
           title,
         });
-      }).pipe(Effect.mapError(dbError("Could not rename the agent's chat.")));
-    const applyName = (agent: AgentProfile, name: string) =>
-      Effect.gen(function* () {
-        if (agent.coordinatorThreadId !== null)
-          yield* renameCoordinator(agent.coordinatorThreadId, name);
-        yield* home.rename({ slug: agent.slug, name });
-      });
-    const setAppearance: FirstmateService["Service"]["setAppearance"] = (agentId, raw) =>
-      Effect.gen(function* () {
+      },
+      Effect.mapError(dbError("Could not rename the agent's chat.")),
+    );
+    const applyName = Effect.fn("Firstmate.applyName")(function* (
+      agent: AgentProfile,
+      name: string,
+    ) {
+      if (agent.coordinatorThreadId !== null)
+        yield* renameCoordinator(agent.coordinatorThreadId, name);
+      yield* home.rename({ slug: agent.slug, name });
+    });
+    const setAppearance: FirstmateService["Service"]["setAppearance"] = Effect.fn(
+      "Firstmate.setAppearance",
+    )(
+      function* (agentId, raw) {
         const input = yield* decodeAppearanceInput(raw);
         const agent = yield* requireAgent(agentId);
         yield* sql`UPDATE firstmate_agent SET name = ${input.name}, icon = ${input.icon} WHERE agent_id = ${agentId}`;
@@ -875,9 +894,13 @@ export const layer = Layer.effect(
         yield* notify;
         yield* applyName(agent, input.name);
         return yield* snapshot(agentId);
-      }).pipe(Effect.mapError(dbError("Could not save the name and icon.")));
-    const createAgent: FirstmateService["Service"]["createAgent"] = (raw) =>
-      Effect.gen(function* () {
+      },
+      Effect.mapError(dbError("Could not save the name and icon.")),
+    );
+    const createAgent: FirstmateService["Service"]["createAgent"] = Effect.fn(
+      "Firstmate.createAgent",
+    )(
+      function* (raw) {
         const input = yield* decodeCreateAgentInput(raw);
         const taken = new Set(
           (yield* sql<{ slug: string }>`SELECT slug FROM firstmate_agent`).map((row) => row.slug),
@@ -915,9 +938,13 @@ export const layer = Layer.effect(
           input.modelSelection,
         );
         return { agent: yield* requireAgent(agentId), threadId };
-      }).pipe(Effect.mapError(dbError("Could not create the agent.")));
-    const updateAgent: FirstmateService["Service"]["updateAgent"] = (raw) =>
-      Effect.gen(function* () {
+      },
+      Effect.mapError(dbError("Could not create the agent.")),
+    );
+    const updateAgent: FirstmateService["Service"]["updateAgent"] = Effect.fn(
+      "Firstmate.updateAgent",
+    )(
+      function* (raw) {
         const input = yield* decodeUpdateAgentInput(raw);
         const agent = yield* requireAgent(input.agentId);
         const avatarAttachmentId =
@@ -949,10 +976,14 @@ export const layer = Layer.effect(
             role: input.role,
           });
         return yield* requireAgent(agent.id);
-      }).pipe(Effect.mapError(dbError("Could not update the agent.")));
+      },
+      Effect.mapError(dbError("Could not update the agent.")),
+    );
 
-    const archiveAgent: FirstmateService["Service"]["archiveAgent"] = (input) =>
-      Effect.gen(function* () {
+    const archiveAgent: FirstmateService["Service"]["archiveAgent"] = Effect.fn(
+      "Firstmate.archiveAgent",
+    )(
+      function* (input) {
         if (input.agentId === FIRSTMATE_AGENT_ID)
           return yield* error("Firstmate cannot be archived.");
         yield* requireAgent(input.agentId);
@@ -960,7 +991,9 @@ export const layer = Layer.effect(
         yield* sql`UPDATE firstmate_agent SET archived_at = ${at} WHERE agent_id = ${input.agentId}`;
         yield* notify;
         return yield* requireAgent(input.agentId);
-      }).pipe(Effect.mapError(dbError("Could not archive the agent.")));
+      },
+      Effect.mapError(dbError("Could not archive the agent.")),
+    );
 
     const markReportedRun: FirstmateService["Service"]["markReportedRun"] = (taskId, runId) =>
       sql`UPDATE firstmate_task SET last_reported_run_id = ${runId}, updated_at = updated_at WHERE task_id = ${taskId}`.pipe(

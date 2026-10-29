@@ -260,24 +260,36 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     },
     request,
     notify,
-    handleServerRequest: (method, handler) =>
-      Effect.sync(() => {
-        requestHandlers.set(method, handler as ServerRequestHandler);
-      }),
-    handleServerNotification: (method, handler) =>
-      Effect.sync(() => {
-        const current = notificationHandlers.get(method) ?? [];
-        current.push(handler as ServerNotificationHandler);
-        notificationHandlers.set(method, current);
-      }),
-    handleUnknownServerRequest: (handler) =>
-      Effect.sync(() => {
-        unknownRequestHandler = handler;
-      }),
-    handleUnknownServerNotification: (handler) =>
-      Effect.sync(() => {
+    handleServerRequest: Effect.fn("CodexAppServerClient.handleServerRequest")(
+      function (method, handler) {
+        return Effect.sync(() => {
+          requestHandlers.set(method, handler as ServerRequestHandler);
+        });
+      },
+    ),
+    handleServerNotification: Effect.fn("CodexAppServerClient.handleServerNotification")(
+      function (method, handler) {
+        return Effect.sync(() => {
+          const current = notificationHandlers.get(method) ?? [];
+          current.push(handler as ServerNotificationHandler);
+          notificationHandlers.set(method, current);
+        });
+      },
+    ),
+    handleUnknownServerRequest: Effect.fn("CodexAppServerClient.handleUnknownServerRequest")(
+      function (handler) {
+        return Effect.sync(() => {
+          unknownRequestHandler = handler;
+        });
+      },
+    ),
+    handleUnknownServerNotification: Effect.fn(
+      "CodexAppServerClient.handleUnknownServerNotification",
+    )(function (handler) {
+      return Effect.sync(() => {
         unknownNotificationHandler = handler;
-      }),
+      });
+    }),
     terminated: Deferred.await(termination),
   });
 });
@@ -299,8 +311,9 @@ const makeChildProcessClient = Effect.fn(
     Effect.ignore,
     Effect.forkIn(scope, { startImmediately: true }),
   );
-  const reportTermination = (error: CodexError.CodexAppServerError) =>
-    Effect.gen(function* () {
+  const reportTermination = Effect.fn("reportTermination")(function* (
+    error: CodexError.CodexAppServerError,
+  ) {
       const tail = stderr.read();
       // Disk failures (including defects) and stalled writes must not hold
       // pending RPCs or process recovery, nor log a cause containing stderr.
@@ -329,7 +342,7 @@ const makeChildProcessClient = Effect.fn(
         stderrBytes: tail.byteLength,
         diagnosticPath,
       });
-    });
+  });
 
   const termination = makeTerminationError(handle).pipe(
     // Wait briefly for the final stderr chunk without allowing diagnostics to

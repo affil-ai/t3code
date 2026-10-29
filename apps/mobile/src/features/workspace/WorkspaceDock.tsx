@@ -11,6 +11,7 @@ const DOCK_TABS = {
   work: { label: "Work", icon: "person.2" },
   threads: { label: "Threads", icon: "text.bubble" },
   pullRequests: { label: "Pull requests", icon: PullRequestGlyph.pullRequest },
+  usage: { label: "Usage", icon: "chart.bar.xaxis" },
 } as const; // fork: work
 
 export function WorkspaceDock(props: { readonly onNewTask: () => void }) {
