@@ -27,6 +27,7 @@ const task: ScheduledTask = {
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
   runtimeMode: "full-access",
   interactionMode: "default",
+  deliveryMode: "queue",
   createdBy: "user",
   creationSource: "web",
   createdAt: "2026-09-17T00:00:00.000Z",

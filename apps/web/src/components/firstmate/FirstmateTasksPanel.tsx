@@ -21,7 +21,6 @@ import { useAgentsHome, useAgentTasks } from "~/state/agents";
 import { useFirstmateTaskFocusStore } from "./firstmateTaskFocusStore";
 import { useFirstmateSnapshot } from "~/state/firstmate";
 import { ScheduledSection } from "./FirstmateScheduledSection";
-import { useRelativeTimeTick } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
@@ -431,4 +430,14 @@ export function FirstmateTasksPanel({
       </div>
     </CoordinatorThreadContext>
   );
+}
+
+/** Re-renders on an interval so relative ages stay current without a new snapshot. */
+function useRelativeTimeTick(intervalMs: number) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return nowMs;
 }

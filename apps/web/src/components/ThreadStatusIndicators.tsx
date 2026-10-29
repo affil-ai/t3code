@@ -32,10 +32,11 @@ import {
   CircleDashedIcon,
   FolderGit2Icon,
   ListChecksIcon,
-  type LucideIcon,
   MessageCircleQuestionIcon,
   ShieldQuestionIcon,
   TerminalIcon,
+  UserRoundIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { useRender } from "@base-ui/react/use-render";
 import { type ReactNode, type AnimationEvent, type MouseEvent, type ReactElement } from "react";
@@ -880,6 +881,10 @@ const THREAD_STATUS_ICONS: Record<
   "Awaiting Input": {
     Icon: MessageCircleQuestionIcon,
     className: "text-indigo-600 dark:text-indigo-300/90",
+  },
+  "Guest Request": {
+    Icon: UserRoundIcon,
+    className: "text-fuchsia-600 dark:text-fuchsia-300/90",
   },
   Working: {
     Icon: CircleDashedIcon,
