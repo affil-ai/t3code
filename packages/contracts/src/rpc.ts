@@ -357,7 +357,6 @@ import {
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
 import { FirstmateRpcs } from "./firstmate.ts"; // fork: firstmate
-import { ChatBridgeRpcs } from "./chatBridge.ts"; // fork: chat-bridge
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   ProjectCloneActionInput,
@@ -1896,7 +1895,6 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
 // type-instantiation limit.
 export const ForkWsRpcGroup = RpcGroup.make(
   ...FirstmateRpcs,
-  ...ChatBridgeRpcs, // fork: chat-bridge
   WsOrchestrationV2ReleaseThreadWorktreeRpc,
 );
 

@@ -7,7 +7,6 @@ import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 
 import { rpcRequestDuration, rpcRequestsTotal, withMetrics } from "./Metrics.ts";
 import { FIRSTMATE_RPC_AGGREGATES } from "../firstmate/rpc.ts"; // fork: firstmate
-import { CHAT_BRIDGE_RPC_AGGREGATES } from "../chatBridge/rpc.ts"; // fork: chat-bridge
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
@@ -91,7 +90,6 @@ const RPC_AGGREGATES = {
   [WS_METHODS.scheduledTasksList]: "scheduledTasks",
   [WS_METHODS.scheduledTasksSubscribe]: "scheduledTasks",
   ...FIRSTMATE_RPC_AGGREGATES, // fork: firstmate
-  ...CHAT_BRIDGE_RPC_AGGREGATES, // fork: chat-bridge
   [WS_METHODS.scheduledTasksUpsert]: "scheduledTasks",
   [WS_METHODS.scheduledTasksSetEnabled]: "scheduledTasks",
   [WS_METHODS.scheduledTasksDelete]: "scheduledTasks",

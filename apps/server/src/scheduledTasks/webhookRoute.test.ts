@@ -29,7 +29,6 @@ import { CLOUD_MINT_PUBLIC_KEY, RELAY_ISSUER_SECRET } from "../cloud/config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RelayDeliveryProof from "./RelayDeliveryProof.ts";
 import { WEBHOOK_MAX_BODY_BYTES } from "./webhookRoute.ts";
-import * as ChatBridge from "../chatBridge/index.ts"; // fork: chat-bridge
 import * as WebhookRoute from "./webhookRoute.ts";
 
 class WebhookTestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.webhooks) {}
@@ -80,7 +79,6 @@ const handlerFor = (
     HttpApiBuilder.layer(WebhookTestApi).pipe(
       Layer.provide(WebhookRoute.layer),
       Layer.provide(RelayDeliveryProof.layer),
-      Layer.provide(Layer.mock(ChatBridge.ChatBridgeService)({})), // fork: chat-bridge
       Layer.provide(Layer.mock(ScheduledTaskService)({ triggerWebhook: trigger })),
       Layer.provide(
         Layer.mock(ServerSecretStore.ServerSecretStore)({

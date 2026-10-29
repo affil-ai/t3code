@@ -66,7 +66,6 @@ import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import { FirstmateHandlers, FirstmateToolkit } from "./toolkits/firstmate/index.ts"; // fork: firstmate
-import { ChatBridgeHandlers, ChatBridgeToolkit } from "./toolkits/chatBridge/index.ts"; // fork: chat-bridge
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
 import {
   DeviceScreenshotTool,
@@ -1084,7 +1083,6 @@ export const layer = Layer.mergeAll(
   layerWorktreeToolkitRegistration,
   layerPullRequestsToolkit,
   layerFirstmateToolkit, // fork: firstmate
-  toolkitRegistration(ChatBridgeToolkit, ChatBridgeHandlers.layer), // fork: chat-bridge
   layerDeviceToolkit,
   layerHtmlToolkit,
 ).pipe(Layer.provideMerge(layerMcpTransport));

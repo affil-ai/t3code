@@ -61,7 +61,6 @@ export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
 export * from "./scheduledTask.ts";
 export * from "./firstmate.ts"; // fork: firstmate
-export * from "./chatBridge.ts"; // fork: chat-bridge
 export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";

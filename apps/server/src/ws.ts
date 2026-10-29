@@ -120,7 +120,6 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Firstmate from "./firstmate/index.ts"; // fork: firstmate
-import * as ChatBridge from "./chatBridge/index.ts"; // fork: chat-bridge
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import {
   archivedShellStreamItemFromThreadShell,
@@ -559,11 +558,9 @@ const UpstreamWsRpcGroup = ServerWsRpcGroup.omit(...FORK_WS_RPC_TAGS);
 const layerForkWsRpc = ForkWsRpcGroup.toLayer(
   Effect.gen(function* () {
     const firstmate = yield* Firstmate.FirstmateService;
-    const chatBridge = yield* ChatBridge.ChatBridgeService; // fork: chat-bridge
     const storageCleanup = yield* StorageCleanup.StorageCleanup;
     return ForkWsRpcGroup.of({
       ...Firstmate.rpcHandlers(firstmate),
-      ...ChatBridge.rpcHandlers(chatBridge), // fork: chat-bridge
       [ORCHESTRATION_V2_WS_METHODS.releaseThreadWorktree]: (input) =>
         storageCleanup.releaseThreadWorktree(input.threadId),
     });

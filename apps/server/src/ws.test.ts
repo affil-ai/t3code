@@ -68,7 +68,6 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Firstmate from "./firstmate/index.ts"; // fork: firstmate
-import * as ChatBridge from "./chatBridge/index.ts"; // fork: chat-bridge
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -339,7 +338,6 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ReviewService.ReviewService)({}),
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Layer.mock(Firstmate.FirstmateService)({}), // fork: firstmate
-  Layer.mock(ChatBridge.ChatBridgeService)({}), // fork: chat-bridge
   Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({}),
   Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({}),

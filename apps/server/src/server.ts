@@ -7,7 +7,6 @@ import * as TreehouseRuntime from "./workspace/treehouseRuntimeLayer.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as Firstmate from "./firstmate/index.ts"; // fork: firstmate
-import * as ChatBridge from "./chatBridge/index.ts"; // fork: chat-bridge
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 // Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
 // @effect-diagnostics nodeBuiltinImport:off
@@ -599,7 +598,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     Layer.provide(ProjectionStoreV2.layer),
   ),
   Firstmate.runtimeLayer, // fork: firstmate
-  ChatBridge.runtimeLayer.pipe(Layer.provide(layerScheduledTaskWebhookOrigin)), // fork: chat-bridge
   Layer.effectDiscard(
     Effect.gen(function* () {
       const service = yield* DelegatedTaskQuestionReactor.DelegatedTaskQuestionReactor;
