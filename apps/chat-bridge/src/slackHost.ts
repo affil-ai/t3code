@@ -13,7 +13,7 @@ import {
   type Thread,
 } from "chat";
 
-import type { InboundEvent, InboundOutcome, MentionedUser } from "./bridge.ts";
+import type { EarlierMessage, InboundEvent, InboundOutcome, MentionedUser } from "./bridge.ts";
 import type { InboundFile } from "./threads.ts";
 
 export interface SlackChatHostOptions {
@@ -103,12 +103,59 @@ function toInboundFile(attachment: Message["attachments"][number]): InboundFile 
   };
 }
 
+/** The fields of a Slack `conversations.replies` message the bridge reads. */
+export interface SlackRawMessage {
+  readonly ts?: string | undefined;
+  readonly user?: string | undefined;
+  readonly bot_id?: string | undefined;
+  readonly username?: string | undefined;
+  readonly bot_profile?: { readonly name?: string | undefined } | undefined;
+  readonly text?: string | undefined;
+  readonly files?: ReadonlyArray<{ readonly name?: string | undefined }> | undefined;
+}
+
+/** Slack `ts` values are decimal seconds; they compare as numbers. */
+const tsBefore = (ts: string | undefined, before: string) =>
+  ts !== undefined && Number(ts) < Number(before);
+
+/**
+ * The thread messages before `beforeTs`, oldest first, with names from
+ * `nameOf`. Messages with neither text nor files, such as joins, are dropped.
+ */
+export async function toEarlierMessages(
+  raw: ReadonlyArray<SlackRawMessage>,
+  beforeTs: string,
+  nameOf: (userId: string) => Promise<string>,
+): Promise<Array<EarlierMessage>> {
+  const earlier = raw
+    .filter((message) => tsBefore(message.ts, beforeTs))
+    .filter((message) => (message.text ?? "").trim() !== "" || (message.files ?? []).length > 0)
+    .toSorted((a, b) => Number(a.ts) - Number(b.ts));
+  return Promise.all(
+    earlier.map(async (message) => {
+      const userId = message.user ?? "";
+      const isBot = message.bot_id !== undefined;
+      const name = userId
+        ? await nameOf(userId)
+        : (message.bot_profile?.name ?? message.username ?? "bot");
+      return {
+        userId,
+        name,
+        isBot,
+        text: (message.text ?? "").trim(),
+        fileNames: (message.files ?? []).map((file) => file.name ?? "file"),
+      };
+    }),
+  );
+}
+
 export function toInboundEvent(
   thread: Pick<Thread, "id">,
   message: Pick<Message, "id" | "text" | "author" | "attachments">,
   kind: InboundEvent["kind"],
   botNames: ReadonlyArray<string>,
   mentions: ReadonlyArray<MentionedUser> = [],
+  earlierMessages?: InboundEvent["earlierMessages"],
 ): InboundEvent {
   // Chat SDK Slack thread ids are `slack:<channel>:<thread ts>`.
   const channelId = thread.id.split(":")[1] ?? "";
@@ -126,6 +173,7 @@ export function toInboundEvent(
     text: stripBotMention(message.text, botNames),
     files: message.attachments.map(toInboundFile),
     mentions,
+    ...(earlierMessages ? { earlierMessages } : {}),
   };
 }
 
@@ -173,6 +221,37 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     );
   };
 
+  const nameOf = async (userId: string) => {
+    const user = await slack.getUser(userId).catch(() => null);
+    return user?.fullName || user?.userName || userId;
+  };
+
+  // A long thread spans pages; past this many the oldest are dropped anyway.
+  const HISTORY_PAGES = 5;
+  /** The thread's messages before `messageId`, when that message is a reply in a thread. */
+  const earlierInThread = (chatThreadKey: string, messageId: string) => {
+    const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+    if (!threadTs || !tsBefore(threadTs, messageId)) return undefined;
+    return async () => {
+      const raw: Array<SlackRawMessage> = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < HISTORY_PAGES; page++) {
+        const result = await slack.webClient.conversations.replies({
+          channel,
+          ts: threadTs,
+          latest: messageId,
+          inclusive: false,
+          limit: 200,
+          ...(cursor ? { cursor } : {}),
+        });
+        raw.push(...((result.messages ?? []) as Array<SlackRawMessage>));
+        cursor = result.response_metadata?.next_cursor || undefined;
+        if (!cursor) break;
+      }
+      return toEarlierMessages(raw, messageId, nameOf);
+    };
+  };
+
   const deliver = async (
     thread: Thread,
     message: Message,
@@ -185,7 +264,10 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     for (const each of [...(context?.skipped ?? []), message]) {
       if (each.author.isMe || each.author.isBot === true) continue;
       const mentions = await mentionedUsers(each);
-      const outcome = await options.onEvent(toInboundEvent(thread, each, kind, botNames, mentions));
+      const earlier = kind === "mention" ? earlierInThread(thread.id, each.id) : undefined;
+      const outcome = await options.onEvent(
+        toInboundEvent(thread, each, kind, botNames, mentions, earlier),
+      );
       if (outcome.type === "started" || outcome.type === "followed_up") bound = true;
     }
     if (bound && kind === "mention") await thread.subscribe();

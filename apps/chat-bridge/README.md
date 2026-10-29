@@ -12,6 +12,11 @@ Socket Mode, so it needs no public URL.
 
 - **A mention starts a thread.** The bridge launches a T3 thread in the
   channel's project with the message, who sent it, and any attached files.
+- **A mention inside a Slack thread brings the thread along.** The first turn
+  includes the messages before the mention, oldest first: up to the newest 50,
+  within 20,000 characters. Each message shows its author and Slack id, so the
+  agent can tag them. Earlier files are named but not imported. Messages from
+  people outside `allowedUserIds` are included as context too.
 - **Replies continue it.** A reply in the Slack thread steers the run in flight,
   or starts a new run if the thread is idle. Set `followUpMode` to `queue` to
   run replies after the current run instead.

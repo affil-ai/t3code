@@ -4,6 +4,7 @@ import {
   mentionedUserIds,
   redactSlackSecrets,
   stripBotMention,
+  toEarlierMessages,
   toInboundEvent,
 } from "./slackHost.ts";
 
@@ -62,4 +63,24 @@ it("redacts Slack tokens and socket tickets", () => {
     ),
     "<redacted> and <redacted>; wss://x/?ticket=<redacted>&app_id=A0",
   );
+});
+
+it("reads the thread before a message, oldest first, with names", async () => {
+  const earlier = await toEarlierMessages(
+    [
+      { ts: "100.3", user: "U0GRACE", text: "second" },
+      { ts: "100.1", user: "U0ADA", text: "first <@U0GRACE>", files: [{ name: "a.png" }] },
+      { ts: "100.2", bot_id: "B1", bot_profile: { name: "CI" }, text: "build failed" },
+      { ts: "100.4", user: "U0ADA", text: "" },
+      { ts: "100.5", user: "U0ADA", text: "the mention itself" },
+      { ts: "100.6", user: "U0ADA", text: "after" },
+    ],
+    "100.5",
+    async (userId) => (userId === "U0ADA" ? "Ada" : "Grace"),
+  );
+  assert.deepStrictEqual(earlier, [
+    { userId: "U0ADA", name: "Ada", isBot: false, text: "first <@U0GRACE>", fileNames: ["a.png"] },
+    { userId: "", name: "CI", isBot: true, text: "build failed", fileNames: [] },
+    { userId: "U0GRACE", name: "Grace", isBot: false, text: "second", fileNames: [] },
+  ]);
 });
