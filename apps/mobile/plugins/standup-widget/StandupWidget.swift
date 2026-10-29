@@ -30,6 +30,9 @@ struct StandupSummary: Codable {
     let agentName: String
     let agentIcon: String?
     let agentColor: String?
+    /// What the app's row says under the title, and when the task last moved. Older servers omit both.
+    let detail: String?
+    let lastActivityAt: String?
   }
 
   /// Every open task; `tasks` holds the first 20 (5 from servers older than the list widget).
@@ -98,6 +101,34 @@ private let isoFormatter: ISO8601DateFormatter = {
   return formatter
 }()
 
+private func parseDate(_ value: String) -> Date? {
+  isoFormatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+}
+
+/// "just now", "12 min ago", "3 h ago", "yesterday", "Mon", then "Oct 3", read against the entry's own time.
+/// `spoken` spells out the units VoiceOver would read as letters.
+private func activityLabel(
+  _ date: Date, now: Date, spoken: Bool = false, calendar: Calendar = .current
+) -> String {
+  let seconds = max(0, now.timeIntervalSince(date))
+  if seconds < 60 { return "just now" }
+  if seconds < 3600 {
+    let minutes = Int(seconds / 60)
+    return spoken ? "\(minutes) minute\(minutes == 1 ? "" : "s") ago" : "\(minutes) min ago"
+  }
+  // Late last night still reads as hours ago in the small hours.
+  if calendar.isDate(date, inSameDayAs: now) || seconds < 6 * 3600 {
+    let hours = Int(seconds / 3600)
+    return spoken ? "\(hours) hour\(hours == 1 ? "" : "s") ago" : "\(hours) h ago"
+  }
+  let days = calendar.dateComponents(
+    [.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)
+  ).day ?? 0
+  if days == 1 { return "yesterday" }
+  if days < 7 { return date.formatted(.dateTime.weekday(.abbreviated)) }
+  return date.formatted(.dateTime.month(.abbreviated).day())
+}
+
 // MARK: - Timeline
 
 struct StandupEntry: TimelineEntry {
@@ -112,28 +143,29 @@ struct StandupEntry: TimelineEntry {
   let openURL: URL?
 
   static let sample: StandupEntry = {
-    let rows: [(String, String, String, String, String)] = [
-      ("Ship the offer history page", "needs_you", "Firstmate", "compass", "sky"),
-      ("Page and link system cleanup", "running", "Joan", "bot", "violet"),
-      ("Upload Hilton prices", "running", "Firstmate", "compass", "sky"),
-      ("Card benefits audit", "waiting", "Ledger", "wallet", "emerald"),
-      ("Fix the mockup capture retries", "running", "Joan", "bot", "violet"),
-      ("Draft the Q4 partner brief", "not_started", "Firstmate", "compass", "sky"),
-      ("Mobile standup widget", "needs_you", "Firstmate", "compass", "sky"),
-      ("Review Chase affiliate terms", "waiting", "Ledger", "wallet", "emerald"),
-      ("Refresh the Amex card art", "running", "Joan", "bot", "violet"),
-      ("Merge the credit history PR", "needs_you", "Firstmate", "compass", "sky"),
-      ("Head-to-head dark mode", "running", "Money Maker", "dollar-sign", "amber"),
-      ("Explore credit pages", "waiting", "Money Maker", "dollar-sign", "amber"),
-      ("Backfill Vercel env names", "not_started", "Firstmate", "compass", "sky"),
-      ("Weekly link analytics digest", "waiting", "Ledger", "wallet", "emerald"),
-      ("Retire the old offer table", "not_started", "Joan", "bot", "violet"),
-      ("Office review rules update", "waiting", "Firstmate", "compass", "sky"),
+    let rows: [(String, String, String, String, String, String, Double)] = [
+      ("Ship the offer history page", "needs_you", "Firstmate", "compass", "sky", "Approve the deploy", 4),
+      ("Page and link system cleanup", "running", "Joan", "bot", "violet", "Moving the last links to the new table", 0),
+      ("Upload Hilton prices", "running", "Firstmate", "compass", "sky", "Scraping the second batch", 12),
+      ("Card benefits audit", "waiting", "Ledger", "wallet", "emerald", "Waiting on the issuer's PDF", 190),
+      ("Fix the mockup capture retries", "running", "Joan", "bot", "violet", "Running the capture suite", 2),
+      ("Draft the Q4 partner brief", "not_started", "Firstmate", "compass", "sky", "Parked", 1_500),
+      ("Mobile standup widget", "needs_you", "Firstmate", "compass", "sky", "Review the widget screenshots", 25),
+      ("Review Chase affiliate terms", "waiting", "Ledger", "wallet", "emerald", "Next: Someone else", 3_000),
+      ("Refresh the Amex card art", "running", "Joan", "bot", "violet", "Exporting the new art", 40),
+      ("Merge the credit history PR", "needs_you", "Firstmate", "compass", "sky", "Merge PR 412", 70),
+      ("Head-to-head dark mode", "running", "Money Maker", "dollar-sign", "amber", "Fixing contrast", 8),
+      ("Explore credit pages", "waiting", "Money Maker", "dollar-sign", "amber", "Next: Firstmate", 5_000),
+      ("Backfill Vercel env names", "not_started", "Firstmate", "compass", "sky", "Parked", 12_000),
+      ("Weekly link analytics digest", "waiting", "Ledger", "wallet", "emerald", "Next: Worker", 300),
+      ("Retire the old offer table", "not_started", "Joan", "bot", "violet", "Parked", 20_000),
+      ("Office review rules update", "waiting", "Firstmate", "compass", "sky", "Next: You", 600),
     ]
     let tasks = rows.enumerated().map { index, row in
       StandupSummary.Row(
         taskId: "\(index)", title: row.0, progress: row.1, agentName: row.2, agentIcon: row.3,
-        agentColor: row.4)
+        agentColor: row.4, detail: row.5,
+        lastActivityAt: isoFormatter.string(from: Date.now.addingTimeInterval(-row.6 * 60)))
     }
     return StandupEntry(
       date: .now,
@@ -158,7 +190,17 @@ struct StandupProvider: TimelineProvider {
   func getTimeline(in context: Context, completion: @escaping (Timeline<StandupEntry>) -> Void) {
     Task {
       let entry = await entry()
-      completion(Timeline(entries: [entry], policy: .after(entry.date.addingTimeInterval(refreshInterval))))
+      // The large size says how long ago each task moved. iOS often reloads well after the
+      // requested time, so entries run on past it: each minute for an hour, then each hour.
+      let offsets: [TimeInterval] =
+        context.family == .systemLarge
+        ? (0..<60).map { TimeInterval($0 * 60) } + (1...12).map { TimeInterval($0 * 3600) }
+        : [0]
+      let entries = offsets.map { offset in
+        StandupEntry(
+          date: entry.date.addingTimeInterval(offset), content: entry.content, openURL: entry.openURL)
+      }
+      completion(Timeline(entries: entries, policy: .after(entry.date.addingTimeInterval(refreshInterval))))
     }
   }
 
@@ -187,7 +229,7 @@ struct StandupProvider: TimelineProvider {
 // MARK: - Views
 
 /// The worker status the app's Standup rows show, as a symbol so it still reads
-/// in one tint (Lock Screen, StandBy at night).
+/// in one tint (Lock Screen, StandBy at night). The label is spoken, not drawn.
 private struct Status {
   let label: String
   let symbol: String
@@ -262,9 +304,9 @@ private func agentColor(_ name: String?) -> Color {
 }
 
 /// How many rows each size draws, the "+N more" line included when tasks overflow.
-private func rowCapacity(_ family: WidgetFamily) -> Int {
+private func rowCapacity(_ family: WidgetFamily, twoLine: Bool) -> Int {
   switch family {
-  case .systemLarge: return 14
+  case .systemLarge: return twoLine ? 7 : 14
   case .accessoryRectangular: return 3
   default: return 7
   }
@@ -274,29 +316,47 @@ private struct TaskLine: View {
   let task: StandupSummary.Row
   let font: Font
   let showsOwner: Bool
-  let showsLabel: Bool
+  /// Draws the detail and how long ago the task moved under the title; the largest size only.
+  var now: Date? = nil
   /// Read before the first row's label, since the widget shows no header.
   var spokenPrefix: String? = nil
 
   var body: some View {
     let status = Status(task.progress)
-    HStack(spacing: 5) {
-      Image(systemName: status.symbol).foregroundStyle(status.style).widgetAccentable()
-      if showsOwner {
-        Image(systemName: agentSymbol(task.agentIcon)).foregroundStyle(agentColor(task.agentColor))
-          .frame(minWidth: 14)
-      }
-      Text(task.title).lineLimit(1)
-      if showsLabel {
+    let activityDate = task.lastActivityAt.flatMap(parseDate)
+    let activity = now.flatMap { now in activityDate.map { activityLabel($0, now: now) } }
+    let spokenActivity = now.flatMap { now in
+      activityDate.map { activityLabel($0, now: now, spoken: true) }
+    }
+    let detail = now == nil ? nil : task.detail
+    VStack(alignment: .leading, spacing: 1) {
+      HStack(spacing: 5) {
+        if showsOwner {
+          Image(systemName: agentSymbol(task.agentIcon)).foregroundStyle(agentColor(task.agentColor))
+            .frame(minWidth: 14)
+        }
+        Text(task.title).lineLimit(1)
         Spacer(minLength: 4)
-        Text(status.label).foregroundStyle(status.style).lineLimit(1).layoutPriority(1)
+        Image(systemName: status.symbol).foregroundStyle(status.style).widgetAccentable()
+      }
+      .font(font)
+      if detail != nil || activity != nil {
+        // The detail truncates first so the time always shows.
+        HStack(spacing: 0) {
+          if let detail { Text(detail).lineLimit(1) }
+          if let activity {
+            Text(detail == nil ? activity : " · \(activity)").lineLimit(1).layoutPriority(1)
+          }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.leading, showsOwner ? 19 : 0)
       }
     }
-    .font(font)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(
-      [spokenPrefix, "\(task.title), \(task.agentName), \(status.label)"]
+      [spokenPrefix, "\(task.title), \(task.agentName), \(status.label)", detail, spokenActivity]
         .compactMap { $0 }.joined(separator: ". "))
   }
 }
@@ -306,9 +366,14 @@ private struct TaskList: View {
   @Environment(\.widgetFamily) private var family
   let summary: StandupSummary
   let stale: Bool
+  let now: Date
 
   var body: some View {
-    let capacity = rowCapacity(family)
+    // Two-line rows need the detail and time an older server doesn't send.
+    let twoLine =
+      family == .systemLarge
+      && summary.tasks.contains { $0.detail != nil || $0.lastActivityAt != nil }
+    let capacity = rowCapacity(family, twoLine: twoLine)
     let lockScreen = family == .accessoryRectangular
     // Overflow is judged against the rows actually sent: an older server sends at most five.
     // The Lock Screen can't spare a line for the count.
@@ -325,7 +390,7 @@ private struct TaskList: View {
           task: task,
           font: font,
           showsOwner: family != .systemSmall,
-          showsLabel: family == .systemMedium || family == .systemLarge,
+          now: twoLine ? now : nil,
           spokenPrefix: index == 0 ? stalePrefix : nil
         )
       }
@@ -342,8 +407,7 @@ private struct TaskList: View {
   }
 
   private func staleDescription(_ generatedAt: String) -> String {
-    guard let date = isoFormatter.date(from: generatedAt) ?? ISO8601DateFormatter().date(from: generatedAt)
-    else { return "Not current" }
+    guard let date = parseDate(generatedAt) else { return "Not current" }
     return "Last updated \(date.formatted(date: .omitted, time: .shortened))"
   }
 }
@@ -374,7 +438,7 @@ struct StandupWidgetView: View {
   @ViewBuilder private var content: some View {
     switch entry.content {
     case .summary(let summary, let stale):
-      TaskList(summary: summary, stale: stale)
+      TaskList(summary: summary, stale: stale, now: entry.date)
     case .signedOut:
       if family == .accessoryRectangular {
         Text("Open T3 Work to see your standup").font(.caption)

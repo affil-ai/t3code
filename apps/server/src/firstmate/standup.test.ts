@@ -1,7 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { AgentProfileId, FIRSTMATE_AGENT_ID } from "@t3tools/contracts";
+import {
+  AgentProfileId,
+  FIRSTMATE_AGENT_ID,
+  type OrchestrationV2ThreadShell,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -16,21 +22,44 @@ import * as FirstmateService from "./FirstmateService.ts";
 const FM = FIRSTMATE_AGENT_ID;
 const JOAN = AgentProfileId.make("agent:joan");
 
-const layerFirstmate = FirstmateService.layer.pipe(
-  Layer.provideMerge(
-    Layer.mergeAll(
-      Layer.mock(FirstmateHome.FirstmateHome)({
-        migrateLegacyHome: () => Effect.succeed(null),
-        migrateAgentsFolder: () => Effect.succeed([]),
-        artifactsRoot: "/agents/artifacts",
-      }),
-      Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
-      Layer.mock(ThreadManagement.ThreadManagementService)({}),
-      NodeCrypto.layer,
-      NodeSqliteClient.layer({ filename: ":memory:" }),
+const firstmateWithThreads = (
+  threads: Partial<ThreadManagement.ThreadManagementService["Service"]> = {},
+) =>
+  FirstmateService.layer.pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Layer.mock(FirstmateHome.FirstmateHome)({
+          migrateLegacyHome: () => Effect.succeed(null),
+          migrateAgentsFolder: () => Effect.succeed([]),
+          artifactsRoot: "/agents/artifacts",
+        }),
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        Layer.mock(ThreadManagement.ThreadManagementService)(threads),
+        NodeCrypto.layer,
+        NodeSqliteClient.layer({ filename: ":memory:" }),
+      ),
     ),
-  ),
-);
+  );
+const layerFirstmate = firstmateWithThreads();
+
+const WORKER = ThreadId.make("worker-1");
+const WORKER_MESSAGE_AT = "2026-10-29T15:04:00.000Z";
+const layerWithWorker = firstmateWithThreads({
+  getThreadShell: (threadId) =>
+    Effect.succeed(
+      threadId === WORKER
+        ? ({
+            id: threadId,
+            status: "idle",
+            activeRunId: null,
+            pendingRuntimeRequest: null,
+            latestRunStartedAt: DateTime.makeUnsafe("2026-10-29T14:00:00.000Z"),
+            latestRunCompletedAt: null,
+            latestVisibleMessage: { updatedAt: DateTime.makeUnsafe(WORKER_MESSAGE_AT) },
+          } as OrchestrationV2ThreadShell)
+        : null,
+    ),
+});
 
 const addJoan = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -243,5 +272,37 @@ describe("standup", () => {
       // Canceled work is not done, and a finish from days ago is outside every time zone's today.
       expect(summary.doneAt).toEqual([expect.any(String), expect.any(String)]);
     }).pipe(Effect.provide(layerFirstmate)),
+  );
+  it.effect("gives each widget row the app's detail line and its latest activity", () =>
+    Effect.gen(function* () {
+      const service = yield* FirstmateService.FirstmateService;
+      const worked = yield* service.create(FM, {
+        title: "Offer history",
+        intent: "Finish it",
+        definitionOfDone: "Done",
+        status: "in_progress",
+        nextActor: "worker",
+        nextStep: "Wire the chart to live data",
+        workerThreadId: WORKER,
+      });
+      const waiting = yield* service.create(FM, {
+        title: "Upload hilton prices",
+        intent: "Upload them",
+        definitionOfDone: "Uploaded",
+        status: "in_progress",
+        nextActor: "user",
+      });
+      yield* service.markStandup(FM, { taskId: worked.task.id, onStandup: true });
+      yield* service.markStandup(FM, { taskId: waiting.task.id, onStandup: true });
+      const { task: waitingNow } = yield* service.get(FM, { taskId: waiting.task.id });
+
+      const { tasks } = yield* service.standupSummary();
+      expect(tasks).toMatchObject([
+        // The worker's last message is newer than the task's own update.
+        { detail: "Wire the chart to live data", lastActivityAt: WORKER_MESSAGE_AT },
+        // No next step: who has the ball, as on the app's row; no worker: the task's update.
+        { detail: "Next: You", lastActivityAt: waitingNow.updatedAt },
+      ]);
+    }).pipe(Effect.provide(layerWithWorker)),
   );
 });
