@@ -208,11 +208,12 @@ async function officeCheck(version, expectedRelease) {
     `const p = await import(${JSON.stringify(pin)}); p.assertApprovedT3ServerVersion(${JSON.stringify(version)});`,
   ]);
   run("systemctl", ["is-active", "office-t3-worker.service"]);
-  // The shell snapshot of a busy server can take several seconds; retry before failing.
+  // The shell snapshot of a busy server can take several seconds (13-24 s on a
+  // degraded 29 GB database before fork.83); retry before failing.
   await withRetries(3, async () => {
     const response = await fetch("http://127.0.0.1:3779/api/orchestration/shell", {
       headers: { "x-t3-orchestration-protocol": "2" },
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(120_000),
     });
     if (!response.ok) throw Error("Ubuntu orchestration protocol health failed");
     await response.arrayBuffer();
