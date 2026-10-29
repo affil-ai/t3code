@@ -17,7 +17,9 @@ export interface BridgeConfig {
     readonly channelId: string;
     readonly projectId: string;
   }>;
-  /** Slack user ids who may use the bot. Everyone else is ignored. */
+  /** The T3 project a direct message to the bot starts its thread in. Omit to ignore direct messages. */
+  readonly dmProjectId?: string | undefined;
+  /** Slack user ids who may use the bot. Everyone else gets a short refusal. */
   readonly allowedUserIds: ReadonlyArray<string>;
   /** `steer` joins a reply to the run in flight; `queue` runs it after. */
   readonly followUpMode: FollowUpMode;
@@ -70,6 +72,12 @@ export function parseConfig(raw: unknown): BridgeConfig {
   if (typeof toolsPort !== "number" || !Number.isInteger(toolsPort) || toolsPort <= 0) {
     fail("toolsPort must be a port number.");
   }
+  if (
+    raw.dmProjectId !== undefined &&
+    (typeof raw.dmProjectId !== "string" || raw.dmProjectId === "")
+  ) {
+    fail("dmProjectId must be a project id.");
+  }
   if (raw.runtimeMode !== undefined && typeof raw.runtimeMode !== "string") {
     fail("runtimeMode must be a string.");
   }
@@ -79,6 +87,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
   return {
     t3Url,
     channelProjects,
+    dmProjectId: raw.dmProjectId as string | undefined,
     allowedUserIds: stringList(raw.allowedUserIds, "allowedUserIds"),
     followUpMode: followUpMode as FollowUpMode,
     toolsPort: toolsPort as number,

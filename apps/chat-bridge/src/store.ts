@@ -16,6 +16,14 @@ export interface Binding {
   /** The random key the agent passes to `chat_post` and `chat_react`. */
   readonly chatKey: string;
   readonly createdByUserId: string;
+  /** A muted thread only answers messages that mention the bot. */
+  readonly muted?: boolean | undefined;
+}
+
+/** A message the agent sees with its next turn, without starting one. */
+export interface ContextMessage {
+  readonly eventId: string;
+  readonly line: string;
 }
 
 export interface OwedReply {
@@ -41,7 +49,8 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       thread_id TEXT NOT NULL UNIQUE,
       chat_key TEXT NOT NULL UNIQUE,
       created_by_user_id TEXT NOT NULL,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      muted INTEGER NOT NULL DEFAULT 0
     );
     -- Slack messages already handed to T3, so a redelivery never sends twice.
     CREATE TABLE IF NOT EXISTS handled_message (
@@ -55,7 +64,18 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       chat_thread_key TEXT NOT NULL,
       posted_at INTEGER
     );
+    -- Messages kept for the thread's next turn: asides, replies in a muted thread, other people.
+    CREATE TABLE IF NOT EXISTS thread_context (
+      event_id TEXT PRIMARY KEY,
+      chat_thread_key TEXT NOT NULL,
+      line TEXT NOT NULL
+    );
   `);
+  // Databases made before threads could be muted.
+  const columns = db.prepare("PRAGMA table_info(binding)").all();
+  if (!columns.some((column) => column.name === "muted")) {
+    db.exec("ALTER TABLE binding ADD COLUMN muted INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 const fromRow = (row: Record<string, unknown>): Binding => ({
@@ -65,6 +85,7 @@ const fromRow = (row: Record<string, unknown>): Binding => ({
   threadId: String(row.thread_id),
   chatKey: String(row.chat_key),
   createdByUserId: String(row.created_by_user_id),
+  muted: row.muted === 1,
 });
 
 export class BridgeStore {
@@ -105,6 +126,34 @@ export class BridgeStore {
         binding.createdByUserId,
         this.now(),
       );
+  }
+
+  setMuted(chatThreadKey: string, muted: boolean): void {
+    this.db
+      .prepare("UPDATE binding SET muted = ? WHERE chat_thread_key = ?")
+      .run(muted ? 1 : 0, chatThreadKey);
+  }
+
+  addContext(chatThreadKey: string, message: ContextMessage): void {
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO thread_context (event_id, chat_thread_key, line) VALUES (?, ?, ?)",
+      )
+      .run(message.eventId, chatThreadKey, message.line);
+  }
+
+  /** The thread's kept messages, oldest first. */
+  context(chatThreadKey: string): Array<ContextMessage> {
+    return this.db
+      .prepare("SELECT event_id, line FROM thread_context WHERE chat_thread_key = ? ORDER BY rowid")
+      .all(chatThreadKey)
+      .map((row) => ({ eventId: String(row.event_id), line: String(row.line) }));
+  }
+
+  /** Drops kept messages once a turn has carried them. */
+  dropContext(eventIds: ReadonlyArray<string>): void {
+    const remove = this.db.prepare("DELETE FROM thread_context WHERE event_id = ?");
+    for (const eventId of eventIds) remove.run(eventId);
   }
 
   isHandled(eventId: string): boolean {

@@ -1,3 +1,4 @@
+// @effect-diagnostics globalFetch:off -- A plain Node app; it does not use Effect.
 /**
  * The Chat SDK side of the bridge. It owns the `Chat` instance and the Slack
  * adapter in Socket Mode, turns SDK messages into `InboundEvent`s for the
@@ -14,6 +15,7 @@ import {
 } from "chat";
 
 import type { EarlierMessage, InboundEvent, InboundOutcome, MentionedUser } from "./bridge.ts";
+import { withoutAttribution, withRichContent } from "./slackText.ts";
 import type { InboundFile } from "./threads.ts";
 
 export interface SlackChatHostOptions {
@@ -58,6 +60,12 @@ export interface SlackChatHost {
   readonly post: (message: SlackOutboundMessage) => Promise<void>;
   /** Adds a reaction; reacting twice with the same emoji is not an error. */
   readonly react: (reaction: SlackReaction) => Promise<void>;
+  /**
+   * Shows a status under the thread, such as "is working…", through
+   * `assistant.threads.setStatus` (scope `assistant:write`). Empty clears it.
+   * Without the scope it does nothing after the first refusal.
+   */
+  readonly setStatus: (chatThreadKey: string, status: string) => Promise<void>;
   /** Disconnects from Slack. */
   readonly shutdown: () => Promise<void>;
 }
@@ -111,7 +119,26 @@ export interface SlackRawMessage {
   readonly username?: string | undefined;
   readonly bot_profile?: { readonly name?: string | undefined } | undefined;
   readonly text?: string | undefined;
-  readonly files?: ReadonlyArray<{ readonly name?: string | undefined }> | undefined;
+  /** Block Kit and legacy attachments, read by `withRichContent`. */
+  readonly blocks?: unknown;
+  readonly attachments?: unknown;
+  readonly files?:
+    | ReadonlyArray<{
+        readonly name?: string | undefined;
+        readonly mimetype?: string | undefined;
+        readonly size?: number | undefined;
+        readonly url_private_download?: string | undefined;
+      }>
+    | undefined;
+}
+
+function isSlackFileUrl(url: string): boolean {
+  try {
+    const { hostname, protocol } = new URL(url);
+    return protocol === "https:" && (hostname === "slack.com" || hostname.endsWith(".slack.com"));
+  } catch {
+    return false;
+  }
 }
 
 /** Slack escapes only these three in message text; mention tokens keep their real angle brackets. */
@@ -125,15 +152,22 @@ const tsBefore = (ts: string | undefined, before: string) =>
 /**
  * The thread messages before `beforeTs`, oldest first, with names from
  * `nameOf`. Messages with neither text nor files, such as joins, are dropped.
+ * `download` fetches a file's private URL with the bot's token.
  */
 export async function toEarlierMessages(
   raw: ReadonlyArray<SlackRawMessage>,
   beforeTs: string,
   nameOf: (userId: string) => Promise<string>,
+  download: (url: string) => Promise<Uint8Array>,
 ): Promise<Array<EarlierMessage>> {
   const earlier = raw
     .filter((message) => tsBefore(message.ts, beforeTs))
-    .filter((message) => (message.text ?? "").trim() !== "" || (message.files ?? []).length > 0)
+    .filter(
+      (message) =>
+        (message.text ?? "").trim() !== "" ||
+        (message.files ?? []).length > 0 ||
+        withRichContent("", message) !== "",
+    )
     .toSorted((a, b) => Number(a.ts) - Number(b.ts));
   return Promise.all(
     earlier.map(async (message) => {
@@ -146,39 +180,106 @@ export async function toEarlierMessages(
         userId,
         name,
         isBot,
-        text: unescapeSlack((message.text ?? "").trim()),
-        fileNames: (message.files ?? []).map((file) => file.name ?? "file"),
+        text: withoutAttribution(
+          withRichContent(unescapeSlack((message.text ?? "").trim()), message),
+        ),
+        files: (message.files ?? []).map((file): InboundFile => {
+          const url = file.url_private_download;
+          return {
+            name: file.name ?? "file",
+            mimeType: file.mimetype,
+            sizeBytes: file.size,
+            // A deleted or hidden file has no download link.
+            fetch: url ? () => download(url) : undefined,
+          };
+        }),
       };
     }),
   );
 }
 
+/**
+ * The thread a message belongs to. Slack gives every top-level direct message
+ * the same thread id, `slack:D…:`, so each becomes its own thread, keyed by its ts.
+ */
+export function chatThreadKeyOf(threadId: string, messageId: string): string {
+  return /^slack:D[A-Z0-9]+:$/.test(threadId) ? `${threadId}${messageId}` : threadId;
+}
+
 export function toInboundEvent(
   thread: Pick<Thread, "id">,
-  message: Pick<Message, "id" | "text" | "author" | "attachments">,
-  kind: InboundEvent["kind"],
-  botNames: ReadonlyArray<string>,
-  mentions: ReadonlyArray<MentionedUser> = [],
-  earlierMessages?: InboundEvent["earlierMessages"],
+  message: Pick<Message, "id" | "text" | "author" | "attachments" | "raw">,
+  options: {
+    readonly kind: InboundEvent["kind"];
+    readonly addressed: boolean;
+    readonly botNames: ReadonlyArray<string>;
+    readonly mentions?: ReadonlyArray<MentionedUser> | undefined;
+    readonly forAnotherBot?: boolean | undefined;
+    readonly earlierMessages?: InboundEvent["earlierMessages"];
+  },
 ): InboundEvent {
   // Chat SDK Slack thread ids are `slack:<channel>:<thread ts>`.
   const channelId = thread.id.split(":")[1] ?? "";
   return {
     eventId: `slack:${channelId}:${message.id}`,
-    chatThreadKey: thread.id,
+    chatThreadKey: chatThreadKeyOf(thread.id, message.id),
     channelId,
     messageId: message.id,
-    kind,
+    kind: options.kind,
+    addressed: options.addressed,
+    direct: channelId.startsWith("D"),
+    ...(options.forAnotherBot ? { forAnotherBot: true } : {}),
     author: {
       userId: message.author.userId,
       userName: message.author.userName,
       fullName: message.author.fullName,
     },
-    text: stripBotMention(message.text, botNames),
+    text: withoutAttribution(
+      withRichContent(stripBotMention(message.text, options.botNames), message.raw),
+    ),
     files: message.attachments.map(toInboundFile),
-    mentions,
-    ...(earlierMessages ? { earlierMessages } : {}),
+    mentions: options.mentions ?? [],
+    ...(options.earlierMessages ? { earlierMessages: options.earlierMessages } : {}),
   };
+}
+
+/** Slack refuses `markdown_text` over 12,000 characters, so a longer message goes out in parts. */
+const SLACK_MARKDOWN_LIMIT = 12_000;
+/** Room in a part for a code fence closed at its end and reopened in the next. */
+const FENCE_ROOM = 100;
+const FENCE = /^\s*```/;
+
+/**
+ * Splits markdown into parts Slack accepts, at line breaks. A code block cut
+ * in two is closed at the end of one part and reopened in the next.
+ */
+export function splitMarkdown(text: string, limit = SLACK_MARKDOWN_LIMIT): Array<string> {
+  if (text.length <= limit) return [text];
+  const lineLimit = limit - 2 * FENCE_ROOM;
+  const lines = text.split("\n").flatMap((line) => {
+    if (line.length <= lineLimit) return [line];
+    const pieces: Array<string> = [];
+    for (let at = 0; at < line.length; at += lineLimit) pieces.push(line.slice(at, at + lineLimit));
+    return pieces;
+  });
+  const parts: Array<string> = [];
+  let current: Array<string> = [];
+  let size = 0;
+  let fence: string | undefined;
+  for (const line of lines) {
+    const closing = fence === undefined ? 0 : 4;
+    if (current.length > 0 && size + 1 + line.length + closing > limit) {
+      parts.push([...current, ...(fence === undefined ? [] : ["```"])].join("\n"));
+      current = fence === undefined ? [] : [fence];
+      size = fence?.length ?? 0;
+    }
+    size += (current.length > 0 ? 1 : 0) + line.length;
+    current.push(line);
+    if (FENCE.test(line))
+      fence = fence === undefined ? line.trim().slice(0, FENCE_ROOM - 10) : undefined;
+  }
+  parts.push(current.join("\n"));
+  return parts.map((part) => part.trim()).filter((part) => part !== "");
 }
 
 export async function startSlackChatHost(options: SlackChatHostOptions): Promise<SlackChatHost> {
@@ -214,15 +315,32 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
   };
 
   // Slack text names people by display name only; the agent needs their ids to mention them back.
-  const mentionedUsers = async (message: Message): Promise<Array<MentionedUser>> => {
+  const mentionedUsers = async (
+    message: Message,
+  ): Promise<Array<MentionedUser & { readonly isBot: boolean }>> => {
     const raw = message.raw as { readonly text?: unknown } | undefined;
-    const ids = mentionedUserIds(raw?.text, slack.botUserId);
+    const text = typeof raw?.text === "string" ? withoutAttribution(raw.text) : undefined;
+    const ids = mentionedUserIds(text, slack.botUserId);
     return Promise.all(
       ids.map(async (userId) => {
         const user = await slack.getUser(userId).catch(() => null);
-        return { userId, name: user?.fullName || user?.userName || userId };
+        return {
+          userId,
+          name: user?.fullName || user?.userName || userId,
+          isBot: user?.isBot === true,
+        };
       }),
     );
+  };
+
+  const download = async (url: string) => {
+    // The token goes only to Slack; a file link elsewhere is not fetched with it.
+    if (!isSlackFileUrl(url)) throw new Error("The file is not hosted by Slack.");
+    const response = await fetch(url, {
+      headers: { authorization: `Bearer ${options.botToken}` },
+    });
+    if (!response.ok) throw new Error(`Slack answered ${response.status} for a file download.`);
+    return new Uint8Array(await response.arrayBuffer());
   };
 
   const nameOf = async (userId: string) => {
@@ -252,57 +370,75 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
         cursor = result.response_metadata?.next_cursor || undefined;
         if (!cursor) break;
       }
-      return toEarlierMessages(raw, messageId, nameOf);
+      return toEarlierMessages(raw, messageId, nameOf, download);
     };
   };
 
+  type Route = "mention" | "subscribed" | "direct";
   const deliver = async (
     thread: Thread,
     message: Message,
     context: MessageContext | undefined,
-    kind: InboundEvent["kind"],
+    route: Route,
   ) => {
     let bound = false;
     const botNames = await botMentionNames();
+    // In a direct message every message is addressed and may start a thread.
+    const kind = route === "subscribed" ? "follow_up" : "mention";
     // The queue strategy hands over only the latest message; earlier ones arrive as `skipped`.
     for (const each of [...(context?.skipped ?? []), message]) {
       if (each.author.isMe || each.author.isBot === true) continue;
+      const addressed = route !== "subscribed" || each.isMention === true;
       const mentions = await mentionedUsers(each);
-      const earlier = kind === "mention" ? earlierInThread(thread.id, each.id) : undefined;
+      const key = chatThreadKeyOf(thread.id, each.id);
       const outcome = await options.onEvent(
-        toInboundEvent(thread, each, kind, botNames, mentions, earlier),
+        toInboundEvent(thread, each, {
+          kind,
+          addressed,
+          botNames,
+          mentions: mentions.map(({ userId, name }) => ({ userId, name })),
+          forAnotherBot: !addressed && mentions.some((user) => user.isBot),
+          earlierMessages: kind === "mention" ? earlierInThread(key, each.id) : undefined,
+        }),
       );
       if (outcome.type === "started" || outcome.type === "followed_up") bound = true;
     }
-    if (bound && kind === "mention") await thread.subscribe();
+    // Direct messages all reach the bot anyway; a channel thread needs following.
+    if (bound && route === "mention") await thread.subscribe();
   };
   const guarded =
-    (kind: InboundEvent["kind"]) =>
-    async (thread: Thread, message: Message, context?: MessageContext) => {
+    (route: Route) => async (thread: Thread, message: Message, context?: MessageContext) => {
       try {
-        await deliver(thread, message, context, kind);
+        await deliver(thread, message, context, route);
       } catch (error) {
         options.onError(error);
       }
     };
   chat.onNewMention(guarded("mention"));
-  chat.onSubscribedMessage(guarded("follow_up"));
+  chat.onSubscribedMessage(guarded("subscribed"));
+  chat.onDirectMessage((thread, message, _channel, context) =>
+    guarded("direct")(thread, message, context),
+  );
 
   await chat.initialize();
+  let statusUnavailable = false;
   const mrkdwn = new SlackFormatConverter();
 
   return {
     post: async (message) => {
       const files = message.files ?? [];
+      const parts = splitMarkdown(message.text);
+      // Every part but the last goes alone; the last carries the files, if any.
+      const last = parts.pop() ?? "";
+      for (const part of parts) await chat.thread(message.chatThreadKey).post({ markdown: part });
       if (files.length === 0) {
-        await chat.thread(message.chatThreadKey).post({ markdown: message.text });
+        if (last !== "") await chat.thread(message.chatThreadKey).post({ markdown: last });
         return;
       }
       // The SDK uploads files and posts the text as two messages. Slack's
       // `initial_comment` puts the text on the file message itself, in mrkdwn.
       const { channel, threadTs } = slack.decodeThreadId(message.chatThreadKey);
-      const comment =
-        message.text.trim() === "" ? "" : mrkdwn.toResponseUrlText({ markdown: message.text });
+      const comment = last.trim() === "" ? "" : mrkdwn.toResponseUrlText({ markdown: last });
       await slack.webClient.files.uploadV2({
         channel_id: channel,
         ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -328,6 +464,29 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
         await slack.webClient.reactions.add({ channel, timestamp: messageId, name: emoji });
       } catch (error) {
         if ((error as { data?: { error?: string } }).data?.error !== "already_reacted") throw error;
+      }
+    },
+    setStatus: async (chatThreadKey, status) => {
+      if (statusUnavailable) return;
+      const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+      if (!threadTs) return;
+      try {
+        await slack.webClient.apiCall("assistant.threads.setStatus", {
+          channel_id: channel,
+          thread_ts: threadTs,
+          status,
+        });
+      } catch (error) {
+        const code = (error as { data?: { error?: string } }).data?.error;
+        if (code === "missing_scope" || code === "not_allowed_token_type") {
+          statusUnavailable = true;
+          options.log?.(
+            "warn",
+            `Thread status is off: Slack answered ${code}. Add the assistant:write scope to show it.`,
+          );
+          return;
+        }
+        throw error;
       }
     },
     shutdown: () => chat.shutdown(),

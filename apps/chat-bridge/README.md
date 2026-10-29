@@ -12,37 +12,55 @@ Socket Mode, so it needs no public URL.
 
 - **A mention starts a thread.** The bridge launches a T3 thread in the
   channel's project with the message, who sent it, and any attached files.
+- **A direct message starts a thread too**, in `dmProjectId`. Each top-level
+  direct message is its own thread; replies under it continue that thread.
 - **A mention inside a Slack thread brings the thread along.** The first turn
-  includes the messages before the mention, oldest first: up to the newest 50,
-  within 20,000 characters. Each message shows its author and Slack id, so the
-  agent can tag them. Earlier files are named but not imported. Messages from
-  people outside `allowedUserIds` are included as context too.
+  includes the messages before the mention, oldest first, within 80,000
+  characters (the newest are kept). Each message shows its author and Slack id,
+  so the agent can tag them. Their files are imported with the mention's own.
+  Messages from people outside `allowedUserIds` are included as context too.
 - **Replies continue it.** A reply in the Slack thread steers the run in flight,
   or starts a new run if the thread is idle. Set `followUpMode` to `queue` to
   run replies after the current run instead.
+- **Some replies are only context.** A reply that starts with "aside", one that
+  mentions another bot, and one from someone outside `allowedUserIds` start no
+  run. The agent sees them, up to the newest 50, with the next message it gets.
+- **Mute.** `@bot mute` in a thread makes the bot answer only messages that
+  mention it; the rest become context. `@bot unmute` undoes it.
 - **Answers come back.** When a run ends, its final assistant message is posted
-  to the Slack thread. A run that ends without a final message posts nothing. A
-  failed run posts a short notice.
+  to the Slack thread, split into parts at 12,000 characters, Slack's limit. A
+  run that ends without a final message posts nothing. A failed run posts a
+  short notice.
 - **Files go both ways.** Slack files are uploaded to T3 as attachments: images
   up to 10 MB as images, anything else up to 50 MB as files, at most 8 per
   message. Agents send files back with the `chat_post` tool.
 - **Reactions.** Agents react to a Slack message with the `chat_react` tool.
+- **Status.** While a run lasts, Slack shows "is working…" under the thread.
+  Agents can change it with the `chat_status` tool, such as "is running the
+  tests…". This needs the `assistant:write` scope, which the manifest leaves
+  out: Slack treats an app with it as an agent and changes how its DMs work.
+  Add it yourself if you want the status; without it the bridge logs one
+  warning and carries on.
 - **Restarts are safe.** Bindings, handled messages and owed replies live in
   SQLite. After a restart the bridge picks up runs it still owes a reply for.
   Messages sent to Slack while the bridge was down are not replayed.
 
-Only Slack users in `allowedUserIds` can use it. Messages from bots, including
-itself, are ignored.
+Only Slack users in `allowedUserIds` can use it. Anyone else who mentions or
+messages the bot gets a short reply, at most once an hour, with their member id
+to add. Messages from bots, including itself, are ignored.
 
 ## How the agent posts files and reactions
 
 Stock T3 doesn't tell an MCP server which thread is calling it, so the bridge
 writes a random chat key for each Slack thread into the turn it sends. The
-agent passes that key to `chat_post` or `chat_react`. The key is the permission:
+agent passes that key to `chat_post`, `chat_react` or `chat_status`. The key is the permission:
 it only reaches its own Slack thread, and `chat_post` only reads files inside
 that thread's worktree or project folder.
 
 The tools are served on `http://127.0.0.1:<toolsPort>/mcp`, on loopback only.
+The server also sends the agent short instructions when it connects: that its
+final message goes to Slack, and how to mention people. Those stay in view after
+the first turn is compacted away. Every later turn repeats the chat key.
 Each agent provider must be told about that server (step 5).
 
 ## Setup
@@ -69,8 +87,9 @@ node src/bin.ts manifest --name "T3 Code"
 ```
 
 The manifest turns on Socket Mode and asks for these bot scopes:
-`app_mentions:read`, `channels:history`, `groups:history`, `chat:write`,
-`files:read`, `files:write`, `reactions:write` and `users:read`.
+`app_mentions:read`, `channels:history`, `groups:history`, `im:history`,
+`chat:write`, `files:read`, `files:write`, `reactions:write` and `users:read`.
+It also turns on the app's Messages tab, so people can send it direct messages.
 
 Then:
 
@@ -89,6 +108,7 @@ when that is set. Create `config.json` there:
 {
   "t3Url": "http://127.0.0.1:3773",
   "channelProjects": [{ "channelId": "C0123ABCD", "projectId": "your-t3-project-id" }],
+  "dmProjectId": "your-t3-project-id",
   "allowedUserIds": ["U0123ABCD"],
   "followUpMode": "steer",
   "toolsPort": 3920,
@@ -101,6 +121,8 @@ when that is set. Create `config.json` there:
 - `channelProjects`: which T3 project a mention in each channel starts its
   thread in. A channel id is in the channel's **About** panel. A project id is
   in T3, or from the `t3_project_list` MCP tool.
+- `dmProjectId`: optional. The T3 project direct messages start their threads
+  in. Without it, direct messages are ignored.
 - `allowedUserIds`: Slack member ids (profile → **⋯** → **Copy member ID**).
 - `followUpMode`: `steer` (default) or `queue`.
 - `toolsPort`: the port for the `chat_post` / `chat_react` server. Default 3920.
@@ -183,7 +205,11 @@ Slack's events between them.
   by path, and the tools server listens on loopback.
 - Slack messages sent while the bridge is down are not picked up later.
 - T3 issues no refresh tokens, so the login needs renewing every 30 days.
-- Long answers are posted up to 50,000 characters.
+- Answers are posted up to 50,000 characters, in parts of up to 12,000.
+- A T3 message takes at most 8 attachments, so a mention with more files (its
+  own plus the thread's) imports the first 8 and names the rest.
+- If Slack refuses an answer five times in a row, the bridge stops trying until
+  it restarts.
 
 ## Development
 

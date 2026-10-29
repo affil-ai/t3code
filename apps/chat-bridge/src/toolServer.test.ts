@@ -31,6 +31,7 @@ function harness() {
     workspaceRoots: async () => [workspace],
     post: async (message) => void posts.push(message),
     react: async (reaction) => void reactions.push(reaction),
+    setStatus: (_chatThreadKey, status) => status !== "idle thread",
   };
   return { deps, posts, reactions, root };
 }
@@ -91,4 +92,12 @@ it("reacts with a bare emoji name and checks the message id", async () => {
     emoji: "eyes",
   });
   assert.isTrue(bad.isError);
+});
+
+it("sets a status only while the thread has a run in flight", async () => {
+  const { deps } = harness();
+  const set = await callTool(deps, "chat_status", { chatKey: "key-1", status: "is testing…" });
+  assert.isUndefined(set.isError);
+  const idle = await callTool(deps, "chat_status", { chatKey: "key-1", status: "idle thread" });
+  assert.isTrue(idle.isError);
 });

@@ -25,6 +25,7 @@ import type { Binding } from "./store.ts";
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT = 12_000;
+const MAX_STATUS = 100;
 const MESSAGE_ID = /^\d+\.\d+$/;
 const EMOJI = /^:?[a-z0-9_+'-]+:?$/;
 
@@ -34,6 +35,8 @@ export interface ToolDeps {
   readonly workspaceRoots: (threadId: string) => Promise<ReadonlyArray<string>>;
   readonly post: (message: SlackOutboundMessage) => Promise<void>;
   readonly react: (reaction: SlackReaction) => Promise<void>;
+  /** False when the thread has no run in flight. */
+  readonly setStatus: (chatThreadKey: string, status: string) => boolean;
 }
 
 class ToolInputError extends Error {}
@@ -79,6 +82,19 @@ const TOOLS = [
         emoji: { type: "string", description: "A Slack emoji name, with or without colons." },
       },
       required: ["chatKey", "messageId", "emoji"],
+    },
+  },
+  {
+    name: "chat_status",
+    description:
+      'Show what you are doing under the Slack thread with this chat key, such as "is running the tests…", while the run lasts. Slack shows it after the bot\'s name. It clears when the run ends.',
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        chatKey: { type: "string", description: "The chat key from the Slack message." },
+        status: { type: "string", maxLength: MAX_STATUS },
+      },
+      required: ["chatKey", "status"],
     },
   },
 ];
@@ -175,6 +191,14 @@ export async function callTool(
       await deps.react({ chatThreadKey: binding.chatThreadKey, messageId, emoji: bare });
       return text(`Reacted with :${bare}:.`);
     }
+    if (name === "chat_status") {
+      const status = stringArg(args, "status")?.trim() ?? "";
+      if (status === "" || status.length > MAX_STATUS)
+        return text(`status must be 1 to ${MAX_STATUS} characters.`, true);
+      if (!deps.setStatus(binding.chatThreadKey, status))
+        return text("This Slack thread has no run in flight, so there is no status to set.", true);
+      return text("Status set.");
+    }
     return text(`Unknown tool ${name}.`, true);
   } catch (error) {
     if (error instanceof ToolInputError) return text(error.message, true);
@@ -185,10 +209,21 @@ export async function callTool(
   }
 }
 
+/**
+ * Sent to the agent when it connects, so it knows how Slack threads work
+ * even after its first turn has been compacted away.
+ */
+const INSTRUCTIONS = [
+  "Some threads take their messages from a Slack thread. Their turns start with a Slack message and carry a chat key.",
+  "In those threads your final message in each run is posted to the Slack thread. If a message needs no reply, end the run without a final message and nothing is posted.",
+  "To mention someone in Slack, write <@USERID>; the turn shows each person's id.",
+  "Use chat_post to send files or an update before the run ends, chat_react to react to a message, and chat_status to show what you are doing during a long run. All take the thread's chat key.",
+].join(" ");
+
 function mcpServer(deps: ToolDeps): Server {
   const server = new Server(
     { name: "t3-chat-bridge", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
   server.setRequestHandler(CallToolRequestSchema, (request) =>

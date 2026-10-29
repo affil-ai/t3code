@@ -69,6 +69,7 @@ async function start(): Promise<void> {
   for (const { projectId } of config.channelProjects) {
     await t3.call("t3_project_read", { projectId });
   }
+  if (config.dmProjectId) await t3.call("t3_project_read", { projectId: config.dmProjectId });
 
   let host: SlackChatHost | undefined;
   const bridge = new Bridge({
@@ -79,6 +80,7 @@ async function start(): Promise<void> {
       if (host === undefined) throw new Error("Slack is not connected yet.");
       await host.post({ chatThreadKey: reply.chatThreadKey, text: reply.text });
     },
+    status: async (chatThreadKey, status) => host?.setStatus(chatThreadKey, status),
     log,
   });
   host = await startSlackChatHost({
@@ -100,6 +102,7 @@ async function start(): Promise<void> {
       workspaceRoots: (threadId) => threads.workspaceRoots(threadId),
       post: (message) => slack.post(message),
       react: (reaction) => slack.react(reaction),
+      setStatus: (chatThreadKey, status) => bridge.setStatus(chatThreadKey, status),
     },
     config.toolsPort,
   );

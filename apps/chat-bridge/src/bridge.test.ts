@@ -4,7 +4,6 @@ import { assert, it } from "vite-plus/test";
 
 import {
   Bridge,
-  EARLIER_MESSAGE_LIMIT,
   type EarlierMessage,
   earlierText,
   type InboundEvent,
@@ -41,6 +40,8 @@ function fakeT3() {
         switch (tool) {
           case "t3_thread_launch":
             return { threadId: THREAD, runId: `run-${++runs}` };
+          case "t3_attachment_prepare_upload":
+            return { attachmentId: `attachment-${calls.length}`, relativeUrl: "/upload" };
           case "t3_thread_send":
             if (args.mode === "steer") throw new Error("steer fails when no run is in flight");
             return {
@@ -92,10 +93,15 @@ function freshDatabase(): NodeSqlite.DatabaseSync {
   return db;
 }
 
-function harness(db = freshDatabase()) {
+function harness(
+  db = freshDatabase(),
+  options: { dmProjectId?: string; post?: (reply: Reply) => Promise<void> } = {},
+) {
   const t3 = fakeT3();
   const posted: Array<Reply> = [];
+  const statuses: Array<string> = [];
   const store = new BridgeStore(db);
+  let clock = 0;
   const bridge = new Bridge({
     store,
     threads: new T3Threads(t3.tools),
@@ -103,11 +109,14 @@ function harness(db = freshDatabase()) {
       channelProjects: [{ channelId: "C1", projectId: PROJECT }],
       allowedUserIds: ["U1"],
       followUpMode: "steer",
+      dmProjectId: options.dmProjectId,
     },
-    post: async (reply) => void posted.push(reply),
+    post: options.post ?? (async (reply) => void posted.push(reply)),
+    status: async (chatThreadKey, status) => void statuses.push(`${chatThreadKey} ${status}`),
     sleep: async () => {},
+    now: () => clock,
   });
-  return { t3, bridge, store, posted, db };
+  return { t3, bridge, store, posted, statuses, db, advance: (ms: number) => (clock += ms) };
 }
 
 const event = (ts: string, overrides: Partial<InboundEvent> = {}): InboundEvent => ({
@@ -116,6 +125,8 @@ const event = (ts: string, overrides: Partial<InboundEvent> = {}): InboundEvent 
   channelId: "C1",
   messageId: ts,
   kind: "mention",
+  addressed: true,
+  direct: false,
   author: { userId: "U1", userName: "ada", fullName: "Ada" },
   text: "fix the build",
   files: [],
@@ -160,12 +171,25 @@ it("steers follow-ups into the bound thread and answers each run once", async ()
 });
 
 it("ignores strangers, unmapped channels, unbound follow-ups and redeliveries", async () => {
-  const { t3, bridge } = harness();
-  const stranger = event("100.1", { author: { userId: "U9", userName: "x", fullName: "X" } });
-  assert.deepStrictEqual(await bridge.receive(stranger), {
-    type: "ignored",
-    reason: "not_allowed",
-  });
+  const { t3, bridge, posted, advance } = harness();
+  const grace = { userId: "U9", userName: "grace", fullName: "Grace" };
+  assert.deepStrictEqual(
+    await bridge.receive(event("150.1", { author: grace, chatThreadKey: "slack:C1:150.1" })),
+    {
+      type: "ignored",
+      reason: "not_allowed",
+    },
+  );
+  // One refusal an hour per person.
+  await bridge.receive(event("150.2", { author: grace, chatThreadKey: "slack:C1:150.2" }));
+  advance(60 * 60_000);
+  await bridge.receive(event("150.3", { author: grace, chatThreadKey: "slack:C1:150.3" }));
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    Array(2).fill(
+      "Sorry, you can't use this bot yet. Ask whoever runs it to add your Slack member ID (U9) to its allowed users.",
+    ),
+  );
   const elsewhere = event("200.1", { channelId: "C2", chatThreadKey: "slack:C2:200.1" });
   assert.deepStrictEqual(await bridge.receive(elsewhere), {
     type: "ignored",
@@ -235,8 +259,15 @@ const said = (
   name,
   isBot: false,
   text,
-  fileNames: [],
+  files: [],
   ...overrides,
+});
+
+const file = (name: string) => ({
+  name,
+  mimeType: "text/plain",
+  sizeBytes: 3,
+  fetch: async () => new Uint8Array([1, 2, 3]),
 });
 
 it("gives a mention in an existing thread the messages before it", async () => {
@@ -245,12 +276,18 @@ it("gives a mention in an existing thread the messages before it", async () => {
   const earlierMessages = async () => {
     reads++;
     return [
-      said("Grace", "the build fails on <@U-Ada>'s branch", { fileNames: ["build.log"] }),
+      said("Grace", "the build fails on <@U-Ada>'s branch", { files: [file("build.log")] }),
       said("CI", "Build 412 failed", { userId: "", isBot: true }),
     ];
   };
-  await bridge.receive(event("100.5", { earlierMessages }));
-  const message = String(t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
+  await bridge.receive(event("100.5", { earlierMessages, files: [file("mine.txt")] }));
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  const message = String(launch.args.message);
+  // The mention's own files come first, then the earlier ones.
+  assert.deepStrictEqual(
+    (launch.args.attachments as Array<{ name: string }>).map((attachment) => attachment.name),
+    ["mine.txt", "build.log"],
+  );
   assert.include(
     message,
     [
@@ -281,18 +318,123 @@ it("starts the thread without history when reading it fails", async () => {
   assert.notInclude(message, "Earlier in this Slack thread");
 });
 
-it("keeps the newest earlier messages within the limits", () => {
-  const many = Array.from({ length: EARLIER_MESSAGE_LIMIT + 5 }, (_, index) =>
-    said("Ada", `message ${index}`),
-  );
-  const text = earlierText(many);
-  assert.include(text, "(5 older messages left out)");
-  assert.notInclude(text, "message 4\n");
-  assert.include(text, `message ${EARLIER_MESSAGE_LIMIT + 4}`);
+it("keeps the newest earlier messages within the size limit", () => {
+  const many = Array.from({ length: 300 }, (_, index) => said("Ada", `message ${index}`));
+  assert.notInclude(earlierText(many), "left out");
 
-  const long = [said("Ada", "x".repeat(15_000)), said("Grace", "y".repeat(15_000))];
+  const long = [said("Ada", "x".repeat(50_000)), said("Grace", "y".repeat(50_000))];
   const kept = earlierText(long);
   assert.include(kept, "(1 older messages left out)");
   assert.include(kept, "Grace");
   assert.strictEqual(earlierText([]), "");
+});
+
+it("mutes and unmutes a thread on command", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  assert.deepStrictEqual(
+    await bridge.receive(event("100.2", { kind: "follow_up", text: " Mute " })),
+    {
+      type: "muted",
+      threadId: THREAD,
+    },
+  );
+  // Unaddressed replies are kept for later; a mention still reaches the agent.
+  const unaddressed = { kind: "follow_up" as const, addressed: false };
+  assert.strictEqual(
+    (await bridge.receive(event("100.3", { ...unaddressed, text: "fyi it's red" }))).type,
+    "noted",
+  );
+  assert.strictEqual(
+    (await bridge.receive(event("100.4", { kind: "follow_up", text: "fix it" }))).type,
+    "followed_up",
+  );
+  const sent = String(t3.calls.find((call) => call.tool === "t3_thread_send")!.args.message);
+  assert.include(sent, "since your last turn");
+  assert.include(sent, "Ada (<@U1>): fyi it's red");
+
+  await bridge.receive(event("100.5", { kind: "follow_up", text: "unmute" }));
+  assert.strictEqual(
+    (await bridge.receive(event("100.6", { ...unaddressed, text: "and docs" }))).type,
+    "followed_up",
+  );
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    [
+      "Muted. I'll only answer messages that mention me, and read the rest as context.",
+      "Unmuted. I'll answer every message in this thread.",
+    ],
+  );
+});
+
+it("keeps asides, other people and messages for other bots as context, once", async () => {
+  const { t3, bridge } = harness();
+  await bridge.receive(event("100.1"));
+  const followUp = { kind: "follow_up" as const, addressed: false };
+  assert.strictEqual(
+    (await bridge.receive(event("100.2", { ...followUp, text: "aside: lunch?" }))).type,
+    "noted",
+  );
+  await bridge.receive(
+    event("100.3", { ...followUp, text: "<@U0OTHER> deploy", forAnotherBot: true }),
+  );
+  await bridge.receive(
+    event("100.4", { ...followUp, author: { userId: "U9", userName: "grace", fullName: "Grace" } }),
+  );
+  await bridge.receive(event("100.5", { kind: "follow_up", text: "go" }));
+  await bridge.receive(event("100.6", { kind: "follow_up", text: "and again" }));
+  const sends = t3.calls
+    .filter((call) => call.tool === "t3_thread_send")
+    .map((call) => String(call.args.message));
+  assert.lengthOf(sends, 2);
+  assert.include(sends[0], "aside: lunch?");
+  assert.include(sends[0], "<@U0OTHER> deploy");
+  assert.include(sends[0], "Grace (<@U9>): fix the build");
+  assert.notInclude(sends[1], "since your last turn");
+  assert.include(sends[1], "Chat key:");
+});
+
+it("starts direct messages in the direct-message project, when there is one", async () => {
+  const dm = event("300.1", { channelId: "D1", chatThreadKey: "slack:D1:300.1", direct: true });
+  assert.deepStrictEqual(await harness().bridge.receive(dm), {
+    type: "ignored",
+    reason: "unmapped_channel",
+  });
+  const { t3, bridge } = harness(freshDatabase(), { dmProjectId: "project-dm" });
+  assert.strictEqual((await bridge.receive(dm)).type, "started");
+  assert.strictEqual(
+    t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.projectId,
+    "project-dm",
+  );
+});
+
+it("stops posting an answer Slack keeps refusing", async () => {
+  let attempts = 0;
+  const { t3, bridge, store } = harness(freshDatabase(), {
+    post: async () => {
+      attempts++;
+      throw new Error("msg_too_long");
+    },
+  });
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  assert.strictEqual(attempts, 5);
+  // Still owed, so a restart tries again.
+  assert.lengthOf(store.pendingReplies(), 1);
+});
+
+it("shows a status while a run is in flight and clears it after", async () => {
+  const { t3, bridge, statuses } = harness();
+  await bridge.receive(event("100.1"));
+  assert.isTrue(bridge.setStatus("slack:C1:100.1", "is reading the logs…"));
+  assert.isFalse(bridge.setStatus("slack:C1:999.1", "elsewhere"));
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+  assert.isFalse(bridge.setStatus("slack:C1:100.1", "too late"));
+  assert.deepStrictEqual(statuses, [
+    "slack:C1:100.1 is working…",
+    "slack:C1:100.1 is reading the logs…",
+    "slack:C1:100.1 ",
+  ]);
 });
