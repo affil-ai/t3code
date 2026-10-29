@@ -91,6 +91,8 @@ export function run(command, args, options = {}) {
     cwd: sourceRoot,
     encoding: "utf8",
     timeout: options.timeout ?? 30_000,
+    // Upstream syncs produce multi-megabyte source diffs; the 1 MB default fails with ENOBUFS.
+    maxBuffer: 256 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
   });
