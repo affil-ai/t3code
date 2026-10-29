@@ -758,6 +758,43 @@ export const AgentStartResult = Schema.Struct({
 });
 export type AgentStartResult = typeof AgentStartResult.Type;
 
+/** Who acts next, in the reader's terms. */
+export const FIRSTMATE_NEXT_ACTOR_LABELS: Record<FirstmateTask["nextActor"], string> = {
+  user: "You",
+  worker: "Worker",
+  coordinator: "Firstmate",
+  external: "Someone else",
+};
+
+const CLOSED_STATE_LABELS: Partial<Record<FirstmateTask["state"], string>> = {
+  done: "Done",
+  dropped: "Dropped",
+};
+
+/** True once the task is done or dropped. */
+export function firstmateTaskClosed(task: Pick<FirstmateTask, "state">): boolean {
+  return CLOSED_STATE_LABELS[task.state] !== undefined;
+}
+
+/** What a task row says about who has the ball, when the task has no next step. */
+export function firstmateTaskStatusLabel(task: FirstmateTask): string {
+  if (firstmateTaskStatus(task) === "backlog") return "Parked";
+  const closed = CLOSED_STATE_LABELS[task.state];
+  if (closed) return closed;
+  return `Next: ${FIRSTMATE_NEXT_ACTOR_LABELS[task.nextActor]}`;
+}
+
+/**
+ * What happens next on an open task, written by its coordinator. Null for a
+ * closed task, or one from before next steps, which falls back to
+ * `firstmateTaskStatusLabel`.
+ */
+export function firstmateTaskNextStep(task: FirstmateTask): string | null {
+  if (CLOSED_STATE_LABELS[task.state]) return null;
+  const step = task.nextStep?.trim();
+  return step ? step : null;
+}
+
 /** Done and live-in-production work both count as finished for the standup. */
 export function standupTaskFinished(task: FirstmateTask): boolean {
   const status = firstmateTaskStatus(task);
@@ -849,6 +886,10 @@ export const StandupSummary = Schema.Struct({
       /** The owner's icon key and color, for the widget's owner glyph. Older servers omit them. */
       agentIcon: Schema.optional(FirstmateIcon),
       agentColor: Schema.optional(Schema.String),
+      /** The line the app's task row shows under the title: the next step, else who has the ball. Older servers omit it. */
+      detail: Schema.optional(Schema.String),
+      /** The later of the task's last update and its worker chat's last message or run. Older servers omit it. */
+      lastActivityAt: Schema.optional(IsoDateTime),
     }),
   ),
   /**

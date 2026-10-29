@@ -12,6 +12,8 @@ import {
   type AgentProfileId,
   FirstmateError,
   type FirstmateTask,
+  firstmateTaskNextStep,
+  firstmateTaskStatusLabel,
   type StandupListInput,
   type StandupMarkInput,
   type StandupSummary,
@@ -148,7 +150,7 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
     const entries = yield* openTasks().pipe(
       Effect.mapError(dbError("Could not read the standup.")),
     );
-    const progress = yield* Effect.forEach(entries, ({ task }) =>
+    const rows = yield* Effect.forEach(entries, ({ task }) =>
       Effect.gen(function* () {
         const shell =
           task.workerThreadId === null
@@ -156,7 +158,7 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
             : yield* deps.threads
                 .getThreadShell(task.workerThreadId)
                 .pipe(Effect.orElseSucceed(() => null));
-        return standupProgress(
+        const progress = standupProgress(
           task,
           shell === null
             ? null
@@ -170,8 +172,24 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
                 needsInput: shell.pendingRuntimeRequest !== null,
               },
         );
+        // The thread's own updatedAt also moves on settle, snooze and pin, which are not work.
+        const workerActivity = [
+          shell?.latestVisibleMessage?.updatedAt,
+          shell?.latestRunStartedAt,
+          shell?.latestRunCompletedAt,
+        ].flatMap((at) => (at == null ? [] : [DateTime.toEpochMillis(at)]));
+        const lastActivityAt = DateTime.formatIso(
+          DateTime.makeUnsafe(
+            Math.max(
+              DateTime.toEpochMillis(DateTime.makeUnsafe(task.updatedAt)),
+              ...workerActivity,
+            ),
+          ),
+        );
+        return { progress, lastActivityAt };
       }),
     );
+    const progress = rows.map((row) => row.progress);
     const generatedAt = yield* deps.now();
     const doneSince = DateTime.formatIso(
       DateTime.subtract(DateTime.makeUnsafe(generatedAt), { hours: SUMMARY_DONE_WINDOW_HOURS }),
@@ -193,6 +211,8 @@ export const makeStandup = Effect.fn("Firstmate.makeStandup")(function* (deps: {
         agentName: agent.name,
         agentIcon: agent.icon,
         agentColor: agent.color,
+        detail: firstmateTaskNextStep(task) ?? firstmateTaskStatusLabel(task),
+        ...(rows[index] === undefined ? {} : { lastActivityAt: rows[index].lastActivityAt }),
       })),
       doneAt: done.map((row) => row.standup_finished_at),
       generatedAt,

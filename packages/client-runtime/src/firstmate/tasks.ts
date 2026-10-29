@@ -5,7 +5,7 @@
  * @module firstmate/tasks
  */
 import {
-  firstmateTaskStatus,
+  FIRSTMATE_NEXT_ACTOR_LABELS,
   type FirstmateTask,
   type FirstmateTaskEvent,
 } from "@t3tools/contracts";
@@ -37,18 +37,12 @@ export const COLUMN_EMPTY: Record<Exclude<FirstmateColumnId, "done">, string> = 
   hillclimb: "No hillclimbs running",
 };
 
-/** Who acts next, in the reader's terms. */
-export const NEXT_ACTOR_LABELS: Record<FirstmateTask["nextActor"], string> = {
-  user: "You",
-  worker: "Worker",
-  coordinator: "Firstmate",
-  external: "Someone else",
-};
-
-const CLOSED_STATE_LABELS: Partial<Record<FirstmateTask["state"], string>> = {
-  done: "Done",
-  dropped: "Dropped",
-};
+export {
+  FIRSTMATE_NEXT_ACTOR_LABELS as NEXT_ACTOR_LABELS,
+  firstmateTaskClosed as isTaskClosed,
+  firstmateTaskNextStep as taskNextStep,
+  firstmateTaskStatusLabel as taskStatusLabel,
+} from "@t3tools/contracts";
 
 export const EVENT_ACTOR_LABELS: Record<FirstmateTaskEvent["actor"], string> = {
   coordinator: "Firstmate",
@@ -56,33 +50,9 @@ export const EVENT_ACTOR_LABELS: Record<FirstmateTaskEvent["actor"], string> = {
   system: "System",
 };
 
-/** True once the task is done or dropped. */
-export function isTaskClosed(task: Pick<FirstmateTask, "state">): boolean {
-  return CLOSED_STATE_LABELS[task.state] !== undefined;
-}
-
-/** What the card's meta line says about who has the ball, when the task has no next step. */
-export function taskStatusLabel(task: FirstmateTask): string {
-  if (firstmateTaskStatus(task) === "backlog") return "Parked";
-  const closed = CLOSED_STATE_LABELS[task.state];
-  if (closed) return closed;
-  return `Next: ${NEXT_ACTOR_LABELS[task.nextActor]}`;
-}
-
 /** Who acts next, for the small chip beside a task's next step. */
 export function nextActorLabel(task: FirstmateTask): string {
-  return NEXT_ACTOR_LABELS[task.nextActor];
-}
-
-/**
- * What happens next on an open task, written by its coordinator. Null for a
- * closed task, or one from before next steps, which falls back to
- * `taskStatusLabel`.
- */
-export function taskNextStep(task: FirstmateTask): string | null {
-  if (CLOSED_STATE_LABELS[task.state]) return null;
-  const step = task.nextStep?.trim();
-  return step ? step : null;
+  return FIRSTMATE_NEXT_ACTOR_LABELS[task.nextActor];
 }
 
 const LIST_MARKER = /^\s*(?:[-*•]|\d+[.)])\s+/;
