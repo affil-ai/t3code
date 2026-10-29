@@ -5,7 +5,10 @@
  * T3 server.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 class T3ToolError extends Error {
@@ -70,17 +73,26 @@ export class T3Client implements T3Tools {
     args: Record<string, unknown>,
     options: { timeoutMs?: number } = {},
   ): Promise<T> {
-    const client = await this.connect();
     const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    let result;
-    try {
-      result = await client.callTool({ name: tool, arguments: args }, undefined, {
+    const attempt = async () =>
+      (await this.connect()).callTool({ name: tool, arguments: args }, undefined, {
         timeout,
         maxTotalTimeout: timeout,
       });
+    let result;
+    try {
+      result = await attempt();
     } catch (error) {
       await this.reset();
-      throw error;
+      // A restarted T3 answers an old session with 404 without running the call,
+      // so a retry on a new session can't repeat it.
+      if (!(error instanceof StreamableHTTPError && error.code === 404)) throw error;
+      try {
+        result = await attempt();
+      } catch (retryError) {
+        await this.reset();
+        throw retryError;
+      }
     }
     if (result.isError) {
       const content = Array.isArray(result.content) ? result.content : [];
