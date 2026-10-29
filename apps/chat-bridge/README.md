@@ -147,6 +147,16 @@ Codex, in `~/.codex/config.toml`:
 url = "http://127.0.0.1:3920/mcp"
 ```
 
+Or, to give the tools only to Codex runs that T3 starts, set the Codex
+provider's **Launch arguments** in T3's settings to:
+
+```text
+-c mcp_servers.t3-chat-bridge.url="http://127.0.0.1:3920/mcp"
+```
+
+T3 runs one Codex app-server per provider instance and doesn't restart it when
+settings change, so restart T3 afterwards.
+
 Without this step the bridge still works, but agents can't send files or react.
 
 ### 6. Start it
