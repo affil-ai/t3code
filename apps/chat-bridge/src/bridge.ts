@@ -99,7 +99,7 @@ const WAIT_SLICE_MS = 10 * 60_000;
 const RETRY_DELAY_MS = 15_000;
 /** Bounds on the earlier thread messages a first turn carries; the newest are kept. */
 export const EARLIER_MESSAGE_LIMIT = 50;
-export const EARLIER_CHARS_LIMIT = 20_000;
+const EARLIER_CHARS_LIMIT = 20_000;
 
 /** Tells the agent how its answer reaches Slack, once per thread. */
 function firstTurnNote(chatKey: string): string {
