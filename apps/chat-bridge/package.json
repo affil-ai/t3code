@@ -1,0 +1,25 @@
+{
+  "name": "@t3tools/chat-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "t3-chat-bridge": "./src/bin.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node src/bin.ts start",
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "@chat-adapter/slack": "4.43.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "chat": "4.43.0"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

@@ -24,14 +24,15 @@ language, and ownership boundaries.
 
 ## Fork changes and merge rules
 
-| Area                                      | Server change | Location                                               |
-| ----------------------------------------- | ------------- | ------------------------------------------------------ |
-| Code and Work modes, Work sidebar         | No            | `apps/web/src/components/work/`, `LegacySidebar.tsx`   |
-| Chat dock                                 | No            | `apps/web/src/components/work/DockChatPanel.tsx`       |
-| Desktop app identity and data directories | No            | `apps/desktop/src/app/`, `scripts/lib/brand-assets.ts` |
-| Firstmate                                 | **Yes**       | See [Firstmate](#firstmate)                            |
-| Detached service updates                  | **Yes**       | `apps/server/src/cli/managedProcessTree.ts`            |
-| Release build dependency pinning          | No            | `scripts/lib/pin-patched-dependencies.ts`              |
+| Area                                      | Server change | Location                                                       |
+| ----------------------------------------- | ------------- | -------------------------------------------------------------- |
+| Code and Work modes, Work sidebar         | No            | `apps/web/src/components/work/`, `LegacySidebar.tsx`           |
+| Chat dock                                 | No            | `apps/web/src/components/work/DockChatPanel.tsx`               |
+| Desktop app identity and data directories | No            | `apps/desktop/src/app/`, `scripts/lib/brand-assets.ts`         |
+| Firstmate                                 | **Yes**       | See [Firstmate](#firstmate)                                    |
+| Detached service updates                  | **Yes**       | `apps/server/src/cli/managedProcessTree.ts`                    |
+| Release build dependency pinning          | No            | `scripts/lib/pin-patched-dependencies.ts`                      |
+| Chat bridge app for stock T3 (Slack)      | No            | `apps/chat-bridge/` (its [README](apps/chat-bridge/README.md)) |
 
 Keep fork code in its own files. When an upstream file must change, limit the
 edit to an import plus one registration line, and mark it with a
