@@ -72,26 +72,27 @@ async function start(): Promise<void> {
   if (config.dmProjectId) await t3.call("t3_project_read", { projectId: config.dmProjectId });
 
   let host: SlackChatHost | undefined;
+  const connected = () => {
+    if (host === undefined) throw new Error("Slack is not connected yet.");
+    return host;
+  };
   const bridge = new Bridge({
     store,
     threads,
     settings: config,
-    post: async (reply) => {
-      if (host === undefined) throw new Error("Slack is not connected yet.");
-      await host.post({ chatThreadKey: reply.chatThreadKey, text: reply.text });
-    },
+    post: (reply) => connected().post({ chatThreadKey: reply.chatThreadKey, text: reply.text }),
     status: async (chatThreadKey, status) => host?.setStatus(chatThreadKey, status),
+    download: (url) => connected().download(url),
+    history: (chatThreadKey, messageId) => connected().history(chatThreadKey, messageId),
+    bound: (chatThreadKey) => connected().follow(chatThreadKey),
     log,
   });
   host = await startSlackChatHost({
     botToken,
     appToken,
     state: createChatState(db),
-    onEvent: async (event) => {
-      const outcome = await bridge.receive(event);
-      log(`${event.eventId}: ${outcome.type}${"reason" in outcome ? ` (${outcome.reason})` : ""}`);
-      return outcome;
-    },
+    // The bridge logs each outcome as it handles the event.
+    onEvent: (event) => bridge.receive(event),
     onError: (error) => log(`Slack message failed: ${String(error)}`),
     log: (level, line) => log(`slack ${level}: ${line}`),
   });
@@ -106,7 +107,9 @@ async function start(): Promise<void> {
     },
     config.toolsPort,
   );
-  bridge.resume();
+  // What a restart left in the inbox first, then what Slack sent while the bridge was down.
+  await bridge.resume();
+  await bridge.catchUp((request) => slack.missedEvents(request));
   log(
     `Connected to Slack and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
   );

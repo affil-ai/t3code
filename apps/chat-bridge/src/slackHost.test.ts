@@ -27,8 +27,9 @@ it("maps a Chat SDK message to an inbound event", () => {
       id: "1700000000.000200",
       text: "@t3 also the lint",
       author: { userId: "U1", userName: "ada", fullName: "Ada", isBot: false, isMe: false },
-      attachments: [{ type: "file", name: "trace.log" }],
-      raw: {},
+      raw: {
+        files: [{ name: "trace.log", url_private_download: "https://files.slack.com/trace.log" }],
+      },
     },
     {
       kind: "follow_up",
@@ -50,10 +51,14 @@ it("maps a Chat SDK message to an inbound event", () => {
     text: "also the lint",
     mentions: [{ userId: "U2", name: "Grace" }],
   });
-  assert.deepStrictEqual(
-    files.map((file) => file.name),
-    ["trace.log"],
-  );
+  assert.deepStrictEqual(files, [
+    {
+      name: "trace.log",
+      mimeType: undefined,
+      sizeBytes: undefined,
+      url: "https://files.slack.com/trace.log",
+    },
+  ]);
 });
 
 it("reads mentioned user ids from Slack's raw text, without the bot", () => {

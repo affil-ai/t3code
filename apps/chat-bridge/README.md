@@ -41,9 +41,19 @@ Socket Mode, so it needs no public URL.
   out: Slack treats an app with it as an agent and changes how its DMs work.
   Add it yourself if you want the status; without it the bridge logs one
   warning and carries on.
-- **Restarts are safe.** Bindings, handled messages and owed replies live in
-  SQLite. After a restart the bridge picks up runs it still owes a reply for.
-  Messages sent to Slack while the bridge was down are not replayed.
+- **Nothing is lost.** Each Slack message is saved to an inbox table in SQLite
+  before the bridge acts on it, and each Slack thread's messages are handled
+  from that table in order. If T3 can't take a message, it stays in the inbox
+  and is retried after 15 s, 30 s, 1 min and so on, up to 10 min apart. After
+  nine failed tries (about 36 minutes) the bridge says so in the thread and
+  drops it. Later messages in that thread wait behind it. T3 retry keys make a
+  retried message land once.
+- **Restarts are safe.** After a restart the bridge works through what is left
+  in the inbox and picks up runs it still owes a reply for. Then it reads Slack
+  for messages sent while it was down: replies in threads bound in the last 14
+  days (up to 200 threads), new mentions in mapped channels, and new messages
+  in direct-message channels it has answered before. It reads from a minute
+  before it last ran, and skips messages it already has.
 
 Only Slack users in `allowedUserIds` can use it. Anyone else who mentions or
 messages the bot gets a short reply, at most once an hour, with their member id
@@ -203,7 +213,8 @@ Slack's events between them.
 
 - The bridge, T3 and the agents must share a machine. `chat_post` reads files
   by path, and the tools server listens on loopback.
-- Slack messages sent while the bridge is down are not picked up later.
+- Catch-up after downtime misses a mention inside a thread the bot wasn't in,
+  and a first direct message from someone the bot has never answered.
 - T3 issues no refresh tokens, so the login needs renewing every 30 days.
 - Answers are posted up to 50,000 characters, in parts of up to 12,000.
 - A T3 message takes at most 8 attachments, so a mention with more files (its
@@ -226,6 +237,6 @@ pnpm --filter @t3tools/chat-bridge test
 | `src/t3Client.ts`   | The MCP client for T3.                                  |
 | `src/slackHost.ts`  | Slack over Socket Mode, through the Chat SDK.           |
 | `src/toolServer.ts` | The `chat_post` / `chat_react` MCP server.              |
-| `src/store.ts`      | Bindings, handled messages and owed replies in SQLite.  |
+| `src/store.ts`      | Inbox, bindings, handled messages and owed replies.     |
 | `src/chatState.ts`  | The Chat SDK's state on the same SQLite file.           |
 | `src/login.ts`      | T3's MCP OAuth sign-in.                                 |

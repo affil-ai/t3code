@@ -21,6 +21,11 @@ function fakeT3() {
   const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
   const answers = new Map<string, string>();
   const ended = new Map<string, { status: RunStatus; resolve: () => void; done: Promise<void> }>();
+  /** Launches by retry key, as T3 keeps them, so a retried launch returns the same thread. */
+  const launches = new Map<string, { threadId: string; runId: string }>();
+  /** Calls to fail or never answer, by tool, before the next one succeeds. */
+  const failures = new Map<string, number>();
+  const hangs = new Set<string>();
   let runs = 0;
   const run = (runId: string) => {
     let entry = ended.get(runId);
@@ -36,10 +41,20 @@ function fakeT3() {
     upload: async () => {},
     call: async <T>(tool: string, args: Record<string, unknown>) => {
       calls.push({ tool, args });
+      if (hangs.delete(tool)) return new Promise<T>(() => {});
+      const failing = failures.get(tool) ?? 0;
+      if (failing > 0) {
+        failures.set(tool, failing - 1);
+        throw new Error("T3 is unavailable");
+      }
       const result = (() => {
         switch (tool) {
-          case "t3_thread_launch":
-            return { threadId: THREAD, runId: `run-${++runs}` };
+          case "t3_thread_launch": {
+            const key = String(args.clientRequestId);
+            const launch = launches.get(key) ?? { threadId: THREAD, runId: `run-${++runs}` };
+            launches.set(key, launch);
+            return launch;
+          }
           case "t3_attachment_prepare_upload":
             return { attachmentId: `attachment-${calls.length}`, relativeUrl: "/upload" };
           case "t3_thread_send":
@@ -78,6 +93,8 @@ function fakeT3() {
   return {
     tools,
     calls,
+    fail: (tool: string, times: number) => failures.set(tool, times),
+    hang: (tool: string) => hangs.add(tool),
     finish: (runId: string, status: RunStatus, answer?: string) => {
       if (answer !== undefined) answers.set(runId, answer);
       const entry = run(runId);
@@ -95,13 +112,19 @@ function freshDatabase(): NodeSqlite.DatabaseSync {
 
 function harness(
   db = freshDatabase(),
-  options: { dmProjectId?: string; post?: (reply: Reply) => Promise<void> } = {},
+  options: {
+    dmProjectId?: string;
+    post?: (reply: Reply) => Promise<void>;
+    history?: () => Promise<ReadonlyArray<EarlierMessage>>;
+  } = {},
 ) {
   const t3 = fakeT3();
   const posted: Array<Reply> = [];
   const statuses: Array<string> = [];
   const store = new BridgeStore(db);
   let clock = 0;
+  const scheduled: Array<number> = [];
+  const downloads: Array<string> = [];
   const bridge = new Bridge({
     store,
     threads: new T3Threads(t3.tools),
@@ -113,10 +136,28 @@ function harness(
     },
     post: options.post ?? (async (reply) => void posted.push(reply)),
     status: async (chatThreadKey, status) => void statuses.push(`${chatThreadKey} ${status}`),
+    download: async (url) => {
+      downloads.push(url);
+      return new Uint8Array([1, 2, 3]);
+    },
+    ...(options.history ? { history: options.history } : {}),
+    // Tests run retries themselves, by moving the clock and calling `resume`.
+    schedule: (ms) => void scheduled.push(ms),
     sleep: async () => {},
     now: () => clock,
   });
-  return { t3, bridge, store, posted, statuses, db, advance: (ms: number) => (clock += ms) };
+  return {
+    t3,
+    bridge,
+    store,
+    posted,
+    statuses,
+    scheduled,
+    downloads,
+    db,
+    advance: (ms: number) => (clock += ms),
+    setClock: (ms: number) => (clock = ms),
+  };
 }
 
 const event = (ts: string, overrides: Partial<InboundEvent> = {}): InboundEvent => ({
@@ -241,7 +282,7 @@ it("resumes owed replies after a restart", async () => {
   first.bridge.stop();
 
   const second = harness(db);
-  second.bridge.resume();
+  await second.bridge.resume();
   second.t3.finish("run-1", "completed", "Done after restart.");
   await second.bridge.idle();
   assert.deepStrictEqual(
@@ -271,16 +312,18 @@ const file = (name: string) => ({
 });
 
 it("gives a mention in an existing thread the messages before it", async () => {
-  const { t3, bridge } = harness();
   let reads = 0;
-  const earlierMessages = async () => {
+  const history = async () => {
     reads++;
     return [
       said("Grace", "the build fails on <@U-Ada>'s branch", { files: [file("build.log")] }),
       said("CI", "Build 412 failed", { userId: "", isBot: true }),
     ];
   };
-  await bridge.receive(event("100.5", { earlierMessages, files: [file("mine.txt")] }));
+  const { t3, bridge, downloads } = harness(freshDatabase(), { history });
+  const mine = { name: "mine.txt", mimeType: "text/plain", sizeBytes: 3, url: "https://f/mine" };
+  await bridge.receive(event("100.5", { files: [mine] }));
+  assert.deepStrictEqual(downloads, ["https://f/mine"]);
   const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
   const message = String(launch.args.message);
   // The mention's own files come first, then the earlier ones.
@@ -300,19 +343,17 @@ it("gives a mention in an existing thread the messages before it", async () => {
   );
 
   // A follow-up in the bound thread does not read the history again.
-  await bridge.receive(event("100.6", { kind: "follow_up", earlierMessages }));
+  await bridge.receive(event("100.6", { kind: "follow_up" }));
   assert.strictEqual(reads, 1);
 });
 
 it("starts the thread without history when reading it fails", async () => {
-  const { t3, bridge } = harness();
-  const outcome = await bridge.receive(
-    event("100.5", {
-      earlierMessages: async () => {
-        throw new Error("ratelimited");
-      },
-    }),
-  );
+  const { t3, bridge } = harness(freshDatabase(), {
+    history: async () => {
+      throw new Error("ratelimited");
+    },
+  });
+  const outcome = await bridge.receive(event("100.5"));
   assert.strictEqual(outcome.type, "started");
   const message = String(t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
   assert.notInclude(message, "Earlier in this Slack thread");
@@ -437,4 +478,157 @@ it("shows a status while a run is in flight and clears it after", async () => {
     "slack:C1:100.1 is reading the logs…",
     "slack:C1:100.1 ",
   ]);
+});
+
+it("hands over a saved message after a crash mid hand-off, once", async () => {
+  const db = freshDatabase();
+  const first = harness(db);
+  // The launch never answers: the process dies with the message saved and maybe launched.
+  first.t3.hang("t3_thread_launch");
+  void first.bridge.receive(event("100.1"));
+  await Promise.resolve();
+  first.bridge.stop();
+  assert.isFalse(first.store.isHandled("slack:C1:100.1"));
+
+  const second = harness(db);
+  await second.bridge.resume();
+  // The same retry key, so T3 returns the thread the first launch made, if it made one.
+  const launches = second.t3.calls.filter((call) => call.tool === "t3_thread_launch");
+  assert.lengthOf(launches, 1);
+  assert.strictEqual(launches[0]!.args.clientRequestId, "chat-bridge:slack:C1:100.1");
+  assert.isTrue(second.store.isHandled("slack:C1:100.1"));
+  assert.deepStrictEqual(second.store.inboxThreads(), []);
+  // A redelivery after the restart starts nothing.
+  assert.deepStrictEqual(await second.bridge.receive(event("100.1")), {
+    type: "ignored",
+    reason: "duplicate",
+  });
+
+  second.t3.finish("run-1", "completed", "Done once.");
+  await second.bridge.idle();
+  assert.deepStrictEqual(
+    second.posted.map((reply) => reply.text),
+    ["Done once."],
+  );
+});
+
+it("retries a failed hand-off with backoff and keeps later messages behind it", async () => {
+  const { t3, bridge, store, posted, scheduled, advance } = harness();
+  t3.fail("t3_thread_launch", 2);
+  assert.deepStrictEqual(await bridge.receive(event("100.1")), { type: "pending" });
+  // A follow-up waits behind the mention instead of finding no binding.
+  assert.deepStrictEqual(await bridge.receive(event("100.2", { kind: "follow_up" })), {
+    type: "pending",
+  });
+  assert.deepStrictEqual(scheduled, [15_000]);
+
+  // Too early: nothing is tried.
+  advance(10_000);
+  await bridge.resume();
+  assert.lengthOf(
+    t3.calls.filter((call) => call.tool === "t3_thread_launch"),
+    1,
+  );
+
+  advance(5_000);
+  await bridge.resume();
+  assert.deepStrictEqual(scheduled, [15_000, 30_000]);
+  advance(30_000);
+  await bridge.resume();
+
+  const launches = t3.calls.filter((call) => call.tool === "t3_thread_launch");
+  assert.lengthOf(launches, 3);
+  assert.isTrue(store.isHandled("slack:C1:100.1"));
+  assert.isTrue(store.isHandled("slack:C1:100.2"));
+  assert.lengthOf(
+    t3.calls.filter((call) => call.tool === "t3_thread_send"),
+    1,
+  );
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Fixed."],
+  );
+});
+
+it("gives up on a hand-off that keeps failing, and says so", async () => {
+  const { t3, bridge, store, posted, advance } = harness();
+  t3.fail("t3_thread_launch", 100);
+  await bridge.receive(event("100.1"));
+  for (let attempt = 0; attempt < 10; attempt++) {
+    advance(10 * 60_000);
+    await bridge.resume();
+  }
+  assert.lengthOf(
+    t3.calls.filter((call) => call.tool === "t3_thread_launch"),
+    9,
+  );
+  assert.isTrue(store.isHandled("slack:C1:100.1"));
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    [
+      "I couldn't pass this message to T3 Code after several tries, so I dropped it. Send it again to retry.",
+    ],
+  );
+});
+
+it("catches up on messages sent while down, without duplicates", async () => {
+  const db = freshDatabase();
+  const first = harness(db);
+  first.setClock(1_000_000);
+  // The first start only sets the mark.
+  let asked = 0;
+  await first.bridge.catchUp(async () => {
+    asked++;
+    return [];
+  });
+  assert.strictEqual(asked, 0);
+  assert.strictEqual(first.store.caughtUpTo(), 1_000_000 - 60_000);
+  await first.bridge.receive(event("100.1"));
+  first.bridge.stop();
+
+  const second = harness(db);
+  second.setClock(2_000_000);
+  const requests: Array<unknown> = [];
+  const missed = [
+    // Handled before the restart.
+    event("100.1"),
+    event("100.2", { kind: "follow_up", text: "while you were down" }),
+    event("100.2", { kind: "follow_up", text: "while you were down" }),
+  ];
+  await second.bridge.catchUp(async (request) => {
+    requests.push(request);
+    return missed;
+  });
+  assert.deepStrictEqual(requests, [
+    { since: 1_000_000 - 60_000, threads: ["slack:C1:100.1"], channels: ["C1"] },
+  ]);
+  const sends = second.t3.calls.filter((call) => call.tool === "t3_thread_send");
+  assert.lengthOf(sends, 1);
+  assert.include(String(sends[0]!.args.message), "while you were down");
+  assert.lengthOf(
+    second.t3.calls.filter((call) => call.tool === "t3_thread_launch"),
+    0,
+  );
+  assert.strictEqual(second.store.caughtUpTo(), 2_000_000 - 60_000);
+
+  // The same messages again, as a live redelivery or a second catch-up, start nothing.
+  for (const each of missed) {
+    assert.deepStrictEqual(await second.bridge.receive(each), {
+      type: "ignored",
+      reason: "duplicate",
+    });
+  }
+});
+
+it("keeps the old mark when catch-up cannot read Slack", async () => {
+  const db = freshDatabase();
+  const { bridge, store, setClock } = harness(db);
+  store.setCaughtUpTo(500);
+  setClock(9_000_000);
+  await bridge.catchUp(async () => {
+    throw new Error("ratelimited");
+  });
+  assert.strictEqual(store.caughtUpTo(), 500);
 });

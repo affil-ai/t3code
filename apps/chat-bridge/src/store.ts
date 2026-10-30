@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- A plain Node app; it does not use Effect.
 /**
- * The bridge's own SQLite database: which T3 thread answers which Slack
- * thread, which Slack messages were already handed to T3, and which runs
- * still owe Slack a reply. The Chat SDK's state lives in the same file
+ * The bridge's own SQLite database: Slack messages saved but not yet handed
+ * to T3 (the inbox), which T3 thread answers which Slack thread, which Slack
+ * messages were already handled, and which runs still owe Slack a reply. The Chat SDK's state lives in the same file
  * (see `chatState.ts`).
  */
 import * as NodeSqlite from "node:sqlite";
@@ -30,6 +30,18 @@ export interface OwedReply {
   readonly runId: string;
   readonly threadId: string;
   readonly chatThreadKey: string;
+}
+
+/** A Slack message saved before the bridge acts on it, so a crash or a T3 failure cannot lose it. */
+export interface InboxEntry {
+  readonly eventId: string;
+  readonly chatThreadKey: string;
+  /** The inbound event as JSON. */
+  readonly event: string;
+  /** Failed hand-offs so far. */
+  readonly attempts: number;
+  /** Not tried again before this time, in epoch ms. */
+  readonly retryAt: number;
 }
 
 export function openDatabase(filename: string): NodeSqlite.DatabaseSync {
@@ -63,6 +75,21 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       thread_id TEXT NOT NULL,
       chat_thread_key TEXT NOT NULL,
       posted_at INTEGER
+    );
+    -- Slack messages saved on arrival and removed once handled; the bridge works from this table.
+    CREATE TABLE IF NOT EXISTS inbox (
+      event_id TEXT PRIMARY KEY,
+      chat_thread_key TEXT NOT NULL,
+      event TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      retry_at INTEGER NOT NULL,
+      last_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS inbox_thread ON inbox (chat_thread_key);
+    -- Single values, such as how far back Slack has been read.
+    CREATE TABLE IF NOT EXISTS bridge_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
     );
     -- Messages kept for the thread's next turn: asides, replies in a muted thread, other people.
     CREATE TABLE IF NOT EXISTS thread_context (
@@ -154,6 +181,84 @@ export class BridgeStore {
   dropContext(eventIds: ReadonlyArray<string>): void {
     const remove = this.db.prepare("DELETE FROM thread_context WHERE event_id = ?");
     for (const eventId of eventIds) remove.run(eventId);
+  }
+
+  /** Bindings made since `since` (epoch ms), newest first. */
+  recentBindings(since: number, limit: number): Array<Binding> {
+    return this.db
+      .prepare("SELECT * FROM binding WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?")
+      .all(since, limit)
+      .map(fromRow);
+  }
+
+  /** Saves a message to the inbox. False when it is already there or already handled. */
+  enqueue(entry: Pick<InboxEntry, "eventId" | "chatThreadKey" | "event">): boolean {
+    if (this.isHandled(entry.eventId)) return false;
+    const inserted = this.db
+      .prepare(
+        `INSERT INTO inbox (event_id, chat_thread_key, event, retry_at) VALUES (?, ?, ?, 0)
+          ON CONFLICT (event_id) DO NOTHING RETURNING event_id`,
+      )
+      .all(entry.eventId, entry.chatThreadKey, entry.event);
+    return inserted.length > 0;
+  }
+
+  /** The chat thread's oldest message still in the inbox. */
+  inboxHead(chatThreadKey: string): InboxEntry | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM inbox WHERE chat_thread_key = ? ORDER BY rowid LIMIT 1")
+      .get(chatThreadKey);
+    return row === undefined
+      ? undefined
+      : {
+          eventId: String(row.event_id),
+          chatThreadKey: String(row.chat_thread_key),
+          event: String(row.event),
+          attempts: Number(row.attempts),
+          retryAt: Number(row.retry_at),
+        };
+  }
+
+  /** Chat threads with messages in the inbox, in the order their oldest arrived. */
+  inboxThreads(): Array<string> {
+    return this.db
+      .prepare("SELECT chat_thread_key FROM inbox GROUP BY chat_thread_key ORDER BY MIN(rowid)")
+      .all()
+      .map((row) => String(row.chat_thread_key));
+  }
+
+  retryLater(eventId: string, attempts: number, retryAt: number, error: string): void {
+    this.db
+      .prepare("UPDATE inbox SET attempts = ?, retry_at = ?, last_error = ? WHERE event_id = ?")
+      .run(attempts, retryAt, error.slice(0, 1000), eventId);
+  }
+
+  /** Moves a message from the inbox to the handled list, in one step. */
+  finish(eventId: string): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM inbox WHERE event_id = ?").run(eventId);
+      this.markHandled(eventId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Every Slack message before this time (epoch ms) has been saved or handled. */
+  caughtUpTo(): number | undefined {
+    const row = this.db.prepare("SELECT value FROM bridge_meta WHERE key = 'caught_up_to'").get();
+    return row === undefined ? undefined : Number(row.value);
+  }
+
+  setCaughtUpTo(time: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO bridge_meta (key, value) VALUES ('caught_up_to', ?)
+          ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(String(time));
   }
 
   isHandled(eventId: string): boolean {
