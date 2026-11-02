@@ -328,11 +328,16 @@ const cleanupFixture = (
     yield* fs.makeDirectory(testConfig.browserArtifactsDir, { recursive: true });
     yield* fs.makeDirectory(testConfig.logsDir, { recursive: true });
     // macOS temp folders have symlinked ancestors. File cleanup deliberately
-    // requires canonical roots, so this fixture must use their physical paths.
+    // requires canonical roots, so this fixture uses their physical parents. A
+    // root that is itself a link stays one, as upstream's symlinked-folder test needs.
+    const physicalParent = (root: string) =>
+      fs
+        .realPath(root.slice(0, root.lastIndexOf("/")) || "/")
+        .pipe(Effect.map((parent) => `${parent}${root.slice(root.lastIndexOf("/"))}`));
     const config = {
       ...testConfig,
-      browserArtifactsDir: yield* fs.realPath(testConfig.browserArtifactsDir),
-      logsDir: yield* fs.realPath(testConfig.logsDir),
+      browserArtifactsDir: yield* physicalParent(testConfig.browserArtifactsDir),
+      logsDir: yield* physicalParent(testConfig.logsDir),
     };
     const git = yield* GitVcsDriver.GitVcsDriver;
     const repo = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-repo-" }));
