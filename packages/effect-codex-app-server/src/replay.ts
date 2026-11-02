@@ -3,6 +3,7 @@ import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -458,6 +459,25 @@ const makeReplayClientWithState = Effect.fn(
           }
 
           const entry = transcript.entries[current.cursor];
+          // fork: codex recovery — the adapter probes a long-running app-server with
+          // thread/loaded/list. A recording that does not script the probe answers it
+          // here, without moving the cursor, as a live app-server would.
+          if (
+            Predicate.isObject(actual) &&
+            actual.method === "thread/loaded/list" &&
+            actual.id !== undefined &&
+            !(
+              entry?.type === "expect_outbound" &&
+              Predicate.isObject(entry.frame) &&
+              entry.frame.method === "thread/loaded/list"
+            )
+          ) {
+            yield* Queue.offer(
+              input,
+              encodeInboundFrame({ id: actual.id, result: { data: [], nextCursor: null } }),
+            );
+            return;
+          }
           if (!entry) {
             yield* failReplay(
               new CodexAppServerReplayExhaustedError({
