@@ -449,7 +449,34 @@ const makeReplayClientWithState = Effect.fn(
     }
   });
 
+  // fork: codex recovery — the adapter probes a long-running app-server with
+  // thread/loaded/list. A recording that never scripts the probe gets an answer
+  // here, as from a live app-server: no cursor move and no inbound drain, which
+  // could race a drain already waiting out an entry's afterMs.
+  const scriptsLivenessProbe = transcript.entries.some(
+    (entry) =>
+      entry.type === "expect_outbound" &&
+      Predicate.isObject(entry.frame) &&
+      entry.frame.method === "thread/loaded/list",
+  );
+  const isUnscriptedLivenessProbe = (actual: unknown) =>
+    !scriptsLivenessProbe &&
+    Predicate.isObject(actual) &&
+    actual.method === "thread/loaded/list" &&
+    actual.id !== undefined;
+
   const processOutboundFrame = (actual: unknown) =>
+    isUnscriptedLivenessProbe(actual)
+      ? Queue.offer(
+          input,
+          encodeInboundFrame({
+            id: (actual as { readonly id: unknown }).id,
+            result: { data: [], nextCursor: null },
+          }),
+        ).pipe(Effect.asVoid)
+      : processScriptedOutboundFrame(actual);
+
+  const processScriptedOutboundFrame = (actual: unknown) =>
     drainInbound().pipe(
       Effect.andThen(
         Effect.gen(function* () {
@@ -459,25 +486,6 @@ const makeReplayClientWithState = Effect.fn(
           }
 
           const entry = transcript.entries[current.cursor];
-          // fork: codex recovery — the adapter probes a long-running app-server with
-          // thread/loaded/list. A recording that does not script the probe answers it
-          // here, without moving the cursor, as a live app-server would.
-          if (
-            Predicate.isObject(actual) &&
-            actual.method === "thread/loaded/list" &&
-            actual.id !== undefined &&
-            !(
-              entry?.type === "expect_outbound" &&
-              Predicate.isObject(entry.frame) &&
-              entry.frame.method === "thread/loaded/list"
-            )
-          ) {
-            yield* Queue.offer(
-              input,
-              encodeInboundFrame({ id: actual.id, result: { data: [], nextCursor: null } }),
-            );
-            return;
-          }
           if (!entry) {
             yield* failReplay(
               new CodexAppServerReplayExhaustedError({
