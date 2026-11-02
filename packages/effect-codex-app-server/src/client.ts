@@ -337,8 +337,14 @@ const makeChildProcessClient = Effect.fn(
   const scope = options.diagnosticsScope ?? (yield* Scope.Scope);
   const stderr = makeStderrDiagnostic(); // fork: codex-diagnostics (raw bytes for a private file)
   // One reader feeds both upstream's error excerpt and the fork's private diagnostic.
+  // `stderrDone` settles even when the reader is interrupted, so the termination
+  // report never inherits that interruption.
+  const stderrDone = yield* Deferred.make<void>();
   const stderrTail = yield* makeStderrTail(
-    handle.stderr.pipe(Stream.tap((chunk) => Effect.sync(() => stderr.append(chunk)))),
+    handle.stderr.pipe(
+      Stream.tap((chunk) => Effect.sync(() => stderr.append(chunk))),
+      Stream.ensuring(Deferred.succeed(stderrDone, undefined)),
+    ),
   );
   const reportTermination = Effect.fn("reportTermination")(function* (
     error: CodexError.CodexAppServerError,
@@ -376,7 +382,13 @@ const makeChildProcessClient = Effect.fn(
   // Wait briefly for the final stderr chunk without allowing diagnostics to
   // wedge process termination when a descendant keeps the pipe open.
   const terminationError = yield* Effect.cached(
-    makeTerminationError(handle, stderrTail.awaitDrained.pipe(Effect.andThen(stderrTail.read))),
+    makeTerminationError(
+      handle,
+      Deferred.await(stderrDone).pipe(
+        Effect.timeoutOption("250 millis"),
+        Effect.andThen(stderrTail.read),
+      ),
+    ),
   );
   // Start reporting independently, before protocol disposal can interrupt its
   // only other waiter. The supplied diagnostics scope keeps this waiter alive
