@@ -21,7 +21,7 @@ export type { FirstmateHome };
 
 export const firstmateEnvironment = createFirstmateEnvironmentAtoms(connectionAtomRuntime);
 
-const firstmateHomeAtom = createFirstmateHomeAtom({
+export const firstmateHomeAtom = createFirstmateHomeAtom({
   presentationsAtom: environmentPresentations.presentationsAtom,
   live: firstmateEnvironment.live,
 });

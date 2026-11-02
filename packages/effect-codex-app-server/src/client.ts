@@ -21,7 +21,12 @@ import {
   encodeOptionalPayload,
   runHandler,
 } from "./_internal/shared.ts";
-import { makeChildStdio, makeStderrDiagnostic, makeTerminationError } from "./_internal/stdio.ts";
+import {
+  makeChildStdio,
+  makeStderrDiagnostic,
+  makeStderrTail,
+  makeTerminationError,
+} from "./_internal/stdio.ts";
 
 export interface CodexAppServerClientOptions {
   /**
@@ -54,6 +59,7 @@ export class CodexAppServerClient extends Context.Service<
   CodexAppServerClient,
   {
     readonly raw: CodexAppServerClientRaw;
+    readonly awaitTermination: Effect.Effect<never, CodexError.CodexAppServerError>;
     readonly request: <M extends CodexRpc.ClientRequestMethod>(
       method: M,
       payload: CodexRpc.ClientRequestParamsByMethod[M],
@@ -117,6 +123,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
   exited?: Effect.Effect<CodexError.CodexAppServerError>,
 ): Effect.fn.Return<CodexAppServerClient["Service"], never, Scope.Scope> {
   const requestHandlers = new Map<string, ServerRequestHandler>();
+  const termination = yield* Deferred.make<never, CodexError.CodexAppServerError>();
   const notificationHandlers = new Map<string, Array<ServerNotificationHandler>>();
   let unknownRequestHandler:
     | ((method: string, params: unknown) => Effect.Effect<unknown, CodexError.CodexAppServerError>)
@@ -167,6 +174,29 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       >
     | undefined => CodexRpc.CLIENT_NOTIFICATION_PARAMS[method] as never;
 
+  // A notification the schema rejects has no reply to fail, so it is dropped.
+  // A Codex build that drifted from the generated schema repeats the bad shape
+  // on every frame, so each distinct failure is warned about once per client.
+  const warnedDecodeFailures = new Set<string>();
+  const warnUndecodableNotification = (error: CodexError.CodexAppServerProtocolParseError) => {
+    const key = `${error.method}\n${error.issueKinds?.join(",")}`;
+    if (warnedDecodeFailures.has(key)) {
+      return Effect.void;
+    }
+    warnedDecodeFailures.add(key);
+    return Effect.logWarning("Dropped a Codex App Server notification that failed to decode").pipe(
+      Effect.annotateLogs({
+        operation: error.operation,
+        ...(error.method === undefined ? {} : { method: error.method }),
+        ...(error.issueCount === undefined ? {} : { issueCount: error.issueCount }),
+        ...(error.issueKinds === undefined ? {} : { issueKinds: error.issueKinds }),
+        ...(error.maximumPathDepth === undefined
+          ? {}
+          : { maximumPathDepth: error.maximumPathDepth }),
+      }),
+    );
+  };
+
   const dispatchNotification = (
     notification: CodexProtocol.CodexAppServerIncomingNotification,
   ): Effect.Effect<void, never> => {
@@ -180,6 +210,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
 
     if (schema) {
       return decodeNotificationPayload(notification.method, schema, notification.params).pipe(
+        Effect.tapError(warnUndecodableNotification),
         Effect.flatMap((decoded) =>
           Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
         ),
@@ -212,10 +243,8 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       : Effect.fail(CodexError.CodexAppServerRequestError.methodNotFound(request.method));
   };
 
-  const termination = yield* Deferred.make<CodexError.CodexAppServerError>();
   const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
     stdio,
-    onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
     ...(terminationError ? { terminationError } : {}),
     ...(exited ? { exited } : {}),
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
@@ -223,6 +252,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logger ? { logger: options.logger } : {}),
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,
+    onTermination: (error) => Deferred.fail(termination, error).pipe(Effect.asVoid),
   });
 
   const request = <M extends CodexRpc.ClientRequestMethod>(
@@ -250,6 +280,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     );
 
   return CodexAppServerClient.of({
+    awaitTermination: Deferred.await(termination),
     raw: {
       notifications: transport.incomingNotifications,
       requests: transport.incomingRequests,
@@ -290,7 +321,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
         unknownNotificationHandler = handler;
       });
     }),
-    terminated: Deferred.await(termination),
+    terminated: Effect.flip(Deferred.await(termination)), // fork: codex recovery
   });
 });
 
@@ -304,54 +335,61 @@ const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",
 )(function* (handle: ChildProcessSpawner.ChildProcessHandle, options: CodexAppServerClientOptions) {
   const scope = options.diagnosticsScope ?? (yield* Scope.Scope);
-  const stderr = makeStderrDiagnostic();
+  const stderr = makeStderrDiagnostic(); // fork: codex-diagnostics (raw bytes for a private file)
+  // One reader feeds both upstream's error excerpt and the fork's private diagnostic.
+  // `stderrDone` settles even when the reader is interrupted, so the termination
+  // report never inherits that interruption.
   const stderrDone = yield* Deferred.make<void>();
-  yield* Stream.runForEach(handle.stderr, (chunk) => Effect.sync(() => stderr.append(chunk))).pipe(
-    Effect.ensuring(Deferred.succeed(stderrDone, undefined)),
-    Effect.ignore,
-    Effect.forkIn(scope, { startImmediately: true }),
+  const stderrTail = yield* makeStderrTail(
+    handle.stderr.pipe(
+      Stream.tap((chunk) => Effect.sync(() => stderr.append(chunk))),
+      Stream.ensuring(Deferred.succeed(stderrDone, undefined)),
+    ),
   );
   const reportTermination = Effect.fn("reportTermination")(function* (
     error: CodexError.CodexAppServerError,
   ) {
-      const tail = stderr.read();
-      // Disk failures (including defects) and stalled writes must not hold
-      // pending RPCs or process recovery, nor log a cause containing stderr.
-      const diagnosticPath = options.writeStderrDiagnostic
-        ? yield* Effect.suspend(() => options.writeStderrDiagnostic!(handle.pid, tail)).pipe(
-            Effect.timeoutOption("1 second"),
-            Effect.map(Option.getOrUndefined),
-            Effect.catchCause(() => Effect.void),
-          )
+    const tail = stderr.read();
+    // Disk failures (including defects) and stalled writes must not hold
+    // pending RPCs or process recovery, nor log a cause containing stderr.
+    const diagnosticPath = options.writeStderrDiagnostic
+      ? yield* Effect.suspend(() => options.writeStderrDiagnostic!(handle.pid, tail)).pipe(
+          Effect.timeoutOption("1 second"),
+          Effect.map(Option.getOrUndefined),
+          Effect.catchCause(() => Effect.void),
+        )
+      : undefined;
+    const exitCause =
+      error._tag === "CodexAppServerTransportError" && PlatformError.isPlatformError(error.cause)
+        ? error.cause.reason.cause
         : undefined;
-      const exitCause =
-        error._tag === "CodexAppServerTransportError" && PlatformError.isPlatformError(error.cause)
-          ? error.cause.reason.cause
-          : undefined;
-      // The platform exposes signal exits only through this fixed error.
-      // Extract the signal, never forward the error text or command details.
-      const signal =
-        exitCause instanceof Error
-          ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
-              exitCause.message,
-            )?.[1]
-          : undefined;
-      yield* Effect.logWarning("Codex app-server terminated", {
-        code: error._tag === "CodexAppServerProcessExitedError" ? error.code : undefined,
-        ...(signal === undefined ? {} : { signal }),
-        stderrBytes: tail.byteLength,
-        diagnosticPath,
-      });
+    // The platform exposes signal exits only through this fixed error.
+    // Extract the signal, never forward the error text or command details.
+    const signal =
+      exitCause instanceof Error
+        ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
+            exitCause.message,
+          )?.[1]
+        : undefined;
+    yield* Effect.logWarning("Codex app-server terminated", {
+      code: error._tag === "CodexAppServerProcessExitedError" ? error.code : undefined,
+      ...(signal === undefined ? {} : { signal }),
+      stderrBytes: tail.byteLength,
+      diagnosticPath,
+    });
   });
 
-  const termination = makeTerminationError(handle).pipe(
-    // Wait briefly for the final stderr chunk without allowing diagnostics to
-    // wedge process termination when a descendant keeps the pipe open.
-    Effect.tap(() =>
-      Deferred.await(stderrDone).pipe(Effect.timeoutOption("100 millis"), Effect.asVoid),
+  // Wait briefly for the final stderr chunk without allowing diagnostics to
+  // wedge process termination when a descendant keeps the pipe open.
+  const terminationError = yield* Effect.cached(
+    makeTerminationError(
+      handle,
+      Deferred.await(stderrDone).pipe(
+        Effect.timeoutOption("250 millis"),
+        Effect.andThen(stderrTail.read),
+      ),
     ),
   );
-  const terminationError = yield* Effect.cached(termination);
   // Start reporting independently, before protocol disposal can interrupt its
   // only other waiter. The supplied diagnostics scope keeps this waiter alive
   // until the owning process acquisition has finalized.
@@ -368,5 +406,10 @@ const makeChildProcessClient = Effect.fn(
       Effect.flatMap((running) => (running ? Effect.void : Fiber.join(reporter))),
     ),
   );
-  return yield* make(makeChildStdio(handle), options, terminationError, terminationError);
+  return yield* make(
+    makeChildStdio(handle, stderrTail.awaitDrained),
+    options,
+    terminationError,
+    terminationError,
+  );
 });

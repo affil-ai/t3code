@@ -1,3 +1,4 @@
+import { pipe } from "effect/Function";
 import {
   secretRequestAnswerInput,
   secretRequestDisplay,
@@ -95,7 +96,7 @@ function PendingSecretRequestForm(props: {
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
-      setError(secretRequestFailureMessage(squashAtomCommandFailure(result)));
+      pipe(squashAtomCommandFailure(result), secretRequestFailureMessage, setError);
     }
   };
 
@@ -104,7 +105,9 @@ function PendingSecretRequestForm(props: {
       <View className="gap-1">
         <Text className="font-t3-bold text-base text-foreground">{item.label}</Text>
         {item.reason.trim() ? (
-          <Text className="font-sans text-sm leading-5 text-foreground-muted">{item.reason}</Text>
+          <Text className="font-sans text-sm leading-5 text-foreground-muted" selectable>
+            {item.reason}
+          </Text>
         ) : null}
       </View>
       {inputs.map((input, index) => (

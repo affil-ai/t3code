@@ -78,6 +78,7 @@ export function useMediaQuery(query: BreakpointQuery | MediaQueryInput | (string
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
+// fork: work mode. The legacy sidebar and the chat header still read this.
 export function useIsMobile(): boolean {
   return useMediaQuery("max-md");
 }

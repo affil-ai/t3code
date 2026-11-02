@@ -27,6 +27,9 @@ const agentsHome = createAgentsHomeAtoms({
   tasks: agentsEnvironment.tasks,
 });
 
+/** The agents home atom, for services that read it outside React (the showcase capture). */
+export const agentsHomeAtom = agentsHome.homeAtom;
+
 /** The first connected environment whose server serves agents, with every unarchived agent. */
 export function useAgentsHome(): AgentsHome | null {
   return useAtomValue(agentsHome.homeAtom);

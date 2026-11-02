@@ -42,6 +42,10 @@ export function useShowcaseSelectedWorkspaceTab(): WorkspaceTab | null {
   return useSyncExternalStore(subscribe, getSelectedTab, getSelectedTab);
 }
 
+/** The same report for the capture service, which reads it outside React. */
+export const getShowcaseSelectedWorkspaceTab = getSelectedTab;
+export const subscribeToShowcaseWorkspaceTab = subscribe;
+
 /** Called by `WorkspaceTabsProvider`. Does nothing outside showcase builds. */
 export function useShowcaseWorkspaceTab(
   currentTab: WorkspaceTab,

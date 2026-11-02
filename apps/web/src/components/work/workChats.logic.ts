@@ -7,7 +7,7 @@ import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 
-import { sortThreads } from "../../lib/threadSort";
+import { sortThreads } from "@t3tools/client-runtime/state/thread-sort";
 import type { SidebarThreadSummary } from "../../types";
 import {
   buildWorkFolderTree,

@@ -19,12 +19,7 @@ import { useMemo } from "react";
 import { deriveEffectiveComposerModelState, useComposerDraftStore } from "~/composerDraftStore";
 import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { resolveNewThreadModelSelectionOverride } from "~/lib/chatThreadActions";
-import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
-  NO_PROVIDER_MODEL_SELECTION,
-  sortProviderInstanceEntries,
-} from "~/providerInstances";
+import { NO_PROVIDER_MODEL_SELECTION, providerInstanceEntriesFor } from "~/providerInstances";
 import { useProjects, useServerConfigs } from "~/state/entities";
 import { useEnvironmentProviders } from "~/state/environments";
 import { resolveComposerProviderSelection } from "../ChatView.logic";
@@ -63,13 +58,7 @@ export function resolveFirstmateModelSelection(input: FirstmateModelInput): Mode
   // ChatView: an unstarted draft's thread selection is the project default.
   const threadModelSelection = projectDefault ?? NO_PROVIDER_MODEL_SELECTION;
   // ChatComposer: pick the instance, then the model and its options.
-  const entries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(
-      deriveProviderInstanceEntries(input.providers),
-      input.settings,
-      projectId,
-    ),
-  );
+  const entries = providerInstanceEntriesFor(input.providers, input.settings, projectId);
   const { selectedProviderEntry, requestedDriverKind } = resolveComposerProviderSelection({
     entries,
     candidateInstanceIds: [
