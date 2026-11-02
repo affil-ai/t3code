@@ -8,8 +8,12 @@ import { Button } from "../ui/button";
 import { CommandDialogTrigger } from "../ui/command";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-/** Search stays in the titlebar on phones, where history buttons are hidden. */
-export function SidebarHeaderActions() {
+/**
+ * Search stays in the titlebar on phones, where history buttons are hidden.
+ * The desktop app has upstream's back and forward buttons beside the brand, so
+ * these history buttons are for the browser only.
+ */
+export function SidebarHeaderActions({ showHistory = true }: { showHistory?: boolean }) {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const shortcut = shortcutLabelForCommand(keybindings, "commandPalette.toggle");
   return (
@@ -34,7 +38,7 @@ export function SidebarHeaderActions() {
         </TooltipTrigger>
         <TooltipPopup side="bottom">{shortcut ? `Search (${shortcut})` : "Search"}</TooltipPopup>
       </Tooltip>
-      <HistoryNavButtons className="hidden md:flex" />
+      {showHistory ? <HistoryNavButtons className="hidden md:flex" /> : null}
     </div>
   );
 }

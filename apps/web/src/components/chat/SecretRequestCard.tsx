@@ -1,3 +1,4 @@
+import { pipe } from "effect/Function";
 import {
   secretRequestAnswerInput,
   secretRequestDisplay,
@@ -91,7 +92,7 @@ function PendingSecretRequestForm(props: {
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
-      setError(secretRequestFailureMessage(squashAtomCommandFailure(result)));
+      pipe(squashAtomCommandFailure(result), secretRequestFailureMessage, setError);
     }
   };
 
@@ -106,9 +107,13 @@ function PendingSecretRequestForm(props: {
       className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card p-4"
       onSubmit={onSubmit}
       autoComplete="off"
-      onPointerDown={(event) => {
-        if (!(event.target instanceof HTMLElement)) return;
+      // On click, not pointerdown: the mousedown that follows a pointerdown
+      // moves focus back off the input. A click that ends a text selection
+      // leaves it alone so the reason can still be copied.
+      onClick={(event) => {
+        if (!(event.target instanceof Element)) return;
         if (event.target.closest("input, button, a")) return;
+        if (window.getSelection()?.isCollapsed === false) return;
         document.getElementById(`${inputId}-0`)?.focus();
       }}
     >
@@ -120,7 +125,9 @@ function PendingSecretRequestForm(props: {
         ) : (
           <p className="text-sm font-medium text-foreground">{item.label}</p>
         )}
-        {item.reason.trim() ? <p className="text-sm text-muted-foreground">{item.reason}</p> : null}
+        {item.reason.trim() ? (
+          <p className="text-sm wrap-anywhere text-muted-foreground">{item.reason}</p>
+        ) : null}
       </div>
       {inputs.map((input, index) => (
         <div key={input.key} className="flex min-w-0 flex-col gap-1.5">

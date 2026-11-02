@@ -18,7 +18,7 @@ import {
   hydrateImagesFromPersisted,
   useComposerDraftStore,
 } from "../../composerDraftStore";
-import { type ComposerPromptEditorHandle } from "../ComposerPromptEditor";
+import { type ComposerPromptEditorHandle } from "../ComposerPromptEditorTiptap";
 import {
   MAX_STASH_ENTRIES,
   type PromptStashEntry,
@@ -62,6 +62,7 @@ import {
   useState,
 } from "react";
 import { BackgroundThreadContext } from "./backgroundThread";
+import { isInSideChatPane } from "../../lib/sideChatPane";
 import { useStableCallback } from "../../hooks/useStableCallback";
 
 /**
@@ -697,6 +698,7 @@ export function useComposerStash(input: {
       ).terminalOpen,
     ),
   }));
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the capture-phase stash shortcut with the command registry while the composer is mounted
   useEffect(() => {
     if (backgroundThread) return;
     return registerCommands(
@@ -705,7 +707,9 @@ export function useComposerStash(input: {
         capture: true,
         context: readShortcutContext,
         // fork: chat dock. With a second composer mounted, only one of them stashes.
-        when: (event) => composerOwnsShortcutEvent(composerFormRef.current, event.target),
+        when: (event) =>
+          composerOwnsShortcutEvent(composerFormRef.current, event.target) &&
+          !isInSideChatPane(event.target),
       },
     );
   }, [backgroundThread, composerFormRef, handleStashShortcut, readShortcutContext]);

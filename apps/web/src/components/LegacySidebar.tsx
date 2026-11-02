@@ -83,14 +83,15 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { useNavigate, useRouter } from "@tanstack/react-router";
+import { type SidebarProjectSortOrder, type SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import {
   MAX_SIDEBAR_THREAD_PREVIEW_COUNT,
   MIN_SIDEBAR_THREAD_PREVIEW_COUNT,
-  type SidebarProjectSortOrder,
+  setSidebarThreadPreviewCount,
   type SidebarThreadPreviewCount,
-  type SidebarThreadSortOrder,
-} from "@t3tools/contracts/settings";
-import { isDesktopLocalConnectionTarget, isWslConnectionTarget } from "../connection/desktopLocal";
+  useSidebarThreadPreviewCount,
+} from "./work/legacySidebarPreviewCount"; // fork: work mode
+import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { isElectron } from "../env";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
@@ -113,10 +114,7 @@ import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { useThreadDiscoveredPorts } from "../portDiscoveryState";
 import { openDiscoveredPort } from "./preview/openDiscoveredPort";
 import { useAtomCommand } from "../state/use-atom-command";
-import {
-  ORCHESTRATION_OPERATE_DENIED_MESSAGE,
-  useOrchestrationCommand,
-} from "../state/use-orchestration-command";
+import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { previewEnvironment } from "../state/preview";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import {
@@ -197,26 +195,22 @@ import {
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import {
   archiveSelectedThreadEntries,
-  buildMultiSelectThreadContextMenuItems,
   deleteSelectedThreadEntries,
   filterSidebarV2VisibleThreads,
-  getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
-  isContextMenuPointerDown,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
   resolveThreadLastVisitedAt,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
-  shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   useSidebarRowSubscriptionLease,
   setFileDragActive,
   useThreadJumpHintsVisible,
   ThreadStatusPill,
 } from "./Sidebar.logic";
-import { sortThreads } from "../lib/threadSort";
+import { sortThreads } from "@t3tools/client-runtime/state/thread-sort";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -227,10 +221,18 @@ import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import {
   derivePhysicalProjectKey,
-  deriveProjectGroupingOverrideKey,
   getProjectOrderKey,
   selectProjectGroupingSettings,
-} from "../logicalProject";
+} from "@t3tools/client-runtime/state/project-grouping";
+import {
+  buildMultiSelectThreadContextMenuItems,
+  deriveProjectGroupingOverrideKey,
+  getSidebarThreadIdsToPrewarm,
+  isContextMenuPointerDown,
+  isWslConnectionTarget,
+  ORCHESTRATION_OPERATE_DENIED_MESSAGE,
+  shouldClearThreadSelectionOnMouseDown,
+} from "./work/legacySidebar.logic"; // fork: work mode
 import type { SidebarThreadSummary } from "../types";
 import {
   buildWorkFolderTree,
@@ -2039,9 +2041,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const updateProject = useOrchestrationCommand(projectEnvironment.update, {
     reportFailure: false,
   });
-  const sidebarThreadPreviewCount = useClientSettings<SidebarThreadPreviewCount>(
-    (settings) => settings.sidebarThreadPreviewCount,
-  );
+  const sidebarThreadPreviewCount = useSidebarThreadPreviewCount();
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const setProjectExpanded = useUiStateStore((state) => state.setProjectExpanded);
@@ -3447,9 +3447,7 @@ const SidebarWorkSections = memo(function SidebarWorkSections(props: SidebarWork
   const threadSortOrder = useClientSettings<SidebarThreadSortOrder>(
     (settings) => settings.sidebarThreadSortOrder,
   );
-  const threadPreviewCount = useClientSettings<SidebarThreadPreviewCount>(
-    (settings) => settings.sidebarThreadPreviewCount,
-  );
+  const threadPreviewCount = useSidebarThreadPreviewCount();
   const { isMobile, setOpenMobile } = useSidebar();
   const [dropTarget, setDropTarget] = useState<WorkDropTarget | null>(null);
 
@@ -4018,7 +4016,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     updateClientSettings({ sidebarThreadSortOrder: sortOrder });
   }, []);
   const handleThreadPreviewCountChange = useCallback((count: SidebarThreadPreviewCount) => {
-    updateClientSettings({ sidebarThreadPreviewCount: count });
+    setSidebarThreadPreviewCount(count);
   }, []);
 
   // fork: agents — the Work sidebar follows the selected agent: Firstmate keeps
@@ -4262,7 +4260,7 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
   const sidebarThreadSortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const sidebarThreadPreviewCount = useClientSettings((s) => s.sidebarThreadPreviewCount);
+  const sidebarThreadPreviewCount = useSidebarThreadPreviewCount();
   const handleNewThread = useNewThreadHandler();
   const { archiveThread, deleteThread, markThreadUnread } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();

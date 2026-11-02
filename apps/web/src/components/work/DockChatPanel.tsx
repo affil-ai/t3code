@@ -250,7 +250,7 @@ export function DockChatPanel(props: {
           environmentId={chatEnvironmentId}
           threadId={threadId}
           routeKind="server"
-          embedded={embedding}
+          dock={embedding}
         />
       )}
     </div>
