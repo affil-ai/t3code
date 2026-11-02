@@ -1632,6 +1632,11 @@ export interface CodexAdapterV2Options {
   readonly fileSystem: FileSystem.FileSystem;
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly serverConfig: ServerConfig["Service"];
+  /**
+   * fork: codex recovery — `false` turns off the liveness probe, for a replayed
+   * app-server whose recording does not script the probe's requests.
+   */
+  readonly livenessProbe?: false;
   /** Omitting this leaves late completions projection-only. */
   readonly continuationRequests?: {
     readonly offer: (
@@ -6925,23 +6930,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
           }
         });
-        yield* Effect.raceFirst(
-          client.awaitTermination.pipe(Effect.ignore),
-          // A probe that fails with a transport error is the termination above.
-          unresponsive.pipe(
-            Effect.catch(() => Effect.never),
-            Effect.flatMap((detail) =>
-              Queue.fail(
-                events,
-                new ProviderAdapter.ProviderAdapterEventStreamError({
-                  driver: CODEX_PROVIDER,
-                  providerSessionId: input.providerSessionId,
-                  cause: detail,
-                }),
+        if (adapterOptions.livenessProbe !== false)
+          yield* Effect.raceFirst(
+            client.awaitTermination.pipe(Effect.ignore),
+            // A probe that fails with a transport error is the termination above.
+            unresponsive.pipe(
+              Effect.catch(() => Effect.never),
+              Effect.flatMap((detail) =>
+                Queue.fail(
+                  events,
+                  new ProviderAdapter.ProviderAdapterEventStreamError({
+                    driver: CODEX_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    cause: detail,
+                  }),
+                ),
               ),
             ),
-          ),
-        ).pipe(Effect.forkIn(scope));
+          ).pipe(Effect.forkIn(scope));
 
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId: adapterOptions.instanceId,

@@ -1733,6 +1733,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         fileSystem,
         idAllocator,
         serverConfig,
+        livenessProbe: false, // fork: recordings do not script the probe
         continuationRequests: {
           offer: (request) =>
             Effect.sync(() => {
