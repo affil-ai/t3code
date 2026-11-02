@@ -1133,11 +1133,6 @@ export default function ChatView(props: ChatViewProps) {
   const activeWorkerTask = activeThreadRef
     ? (taskByWorkerThreadKey.get(scopedThreadKey(activeThreadRef)) ?? null)
     : null;
-  useAutoOpenWorkerTaskDetails(
-    activeThreadRef,
-    activeWorkerTask?.id ?? null,
-    shouldUsePlanSidebarSheet,
-  );
   // fork: chat dock — panels, previews, and proactive surfaces belong to the routed thread.
   const panelThreadRef = isEmbedded ? null : activeThreadRef;
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
@@ -1202,6 +1197,12 @@ export default function ChatView(props: ChatViewProps) {
     selectThreadRightPanelState(state.byThreadKey, activeThreadRef),
   );
   const shouldUsePlanSidebarSheet = prefersPlanSidebarSheet && rightPanelState.maximized !== true;
+  // fork: firstmate
+  useAutoOpenWorkerTaskDetails(
+    activeThreadRef,
+    activeWorkerTask?.id ?? null,
+    shouldUsePlanSidebarSheet,
+  );
   const activeRightPanelSurface = useRightPanelStore((state) =>
     selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef),
   );

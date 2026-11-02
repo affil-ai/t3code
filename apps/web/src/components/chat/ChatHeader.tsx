@@ -25,7 +25,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import GitActionsControl from "../GitActionsControl";
 import type { DraftId } from "~/composerDraftStore";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Badge } from "../ui/badge";
@@ -112,7 +111,6 @@ const TITLE_MENU_OPEN_DELAY_MS = 500;
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
   activeThreadId,
-  draftId,
   activeThreadTitle,
   activeThreadLinkOrigin,
   isServerThread,
@@ -125,8 +123,6 @@ export const ChatHeader = memo(function ChatHeader({
   parentThreadLink,
   onOpenThread,
   rightPanelOpen,
-  gitCwd,
-  onOpenPullRequest,
   onNewThreadInProject,
   onOpenProjectSettings,
   onRunProjectScript,
@@ -400,18 +396,7 @@ export const ChatHeader = memo(function ChatHeader({
           />
         </>
       )}
-      {activeProjectName && gitCwd && (
-        <>
-          {actionsCollapsed && (activeProjectScripts || showOpenInPicker) && <MenuSeparator />}
-          <GitActionsControl
-            presentation={actionsCollapsed ? "menu" : "toolbar"}
-            gitCwd={gitCwd}
-            activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
-            onOpenPullRequest={onOpenPullRequest}
-            {...(draftId ? { draftId } : {})}
-          />
-        </>
-      )}
+      {/* Upstream v0.1.6 removed the header Git toolbar; Git actions live in the thread details panel. */}
     </>
   );
   return (
@@ -593,7 +578,7 @@ export const ChatHeader = memo(function ChatHeader({
             <MenuTrigger
               className={
                 actionsCollapsed &&
-                (activeProjectScripts || showOpenInPicker || (activeProjectName && gitCwd))
+                (activeProjectScripts || showOpenInPicker)
                   ? undefined
                   : "hidden"
               }

@@ -103,6 +103,7 @@ import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import {
   readThreadShell,
+  useDelegatedUnderParent, // fork: work sidebar follows upstream's linked-task nesting
   useProjects,
   useThreadShells,
   useThreadShellsForProjectRefs,
@@ -2006,6 +2007,7 @@ function useSidebarThreadRowController(input: SidebarThreadRowControllerInput) {
 }
 
 const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjectItemProps) {
+  const delegatedUnderParent = useDelegatedUnderParent();
   const {
     project,
     isThreadListExpanded,
@@ -2190,7 +2192,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       });
     };
     const visibleProjectThreads = sortThreads(
-      filterSidebarV2VisibleThreads(projectThreads, null),
+      filterSidebarV2VisibleThreads(projectThreads, null, delegatedUnderParent),
       threadSortOrder,
     );
     const projectStatus = resolveProjectStatusIndicator(
@@ -2203,7 +2205,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       projectStatus,
       visibleProjectThreads,
     };
-  }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
+  }, [delegatedUnderParent, projectThreads, threadLastVisitedAts, threadSortOrder]);
   const activeThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
     if (!activeThreadKey) {
@@ -4539,9 +4541,10 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
     animatedThreadListsRef.current.add(node);
   }, []);
 
+  const delegatedUnderParent = useDelegatedUnderParent();
   const visibleThreads = useMemo(
-    () => filterSidebarV2VisibleThreads(sidebarThreads, null),
-    [sidebarThreads],
+    () => filterSidebarV2VisibleThreads(sidebarThreads, null, delegatedUnderParent),
+    [delegatedUnderParent, sidebarThreads],
   );
   const sortedProjects = useMemo(() => {
     const sortableProjects = sidebarProjects.map((project) => ({
@@ -4579,7 +4582,11 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
     () =>
       sortedProjects.flatMap((project) => {
         const projectThreads = sortThreads(
-          filterSidebarV2VisibleThreads(threadsByProjectKey.get(project.projectKey) ?? [], null),
+          filterSidebarV2VisibleThreads(
+            threadsByProjectKey.get(project.projectKey) ?? [],
+            null,
+            delegatedUnderParent,
+          ),
           sidebarThreadSortOrder,
         );
         const projectExpanded = resolveProjectExpanded(
@@ -4622,6 +4629,7 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
         });
       }),
     [
+      delegatedUnderParent,
       sidebarThreadSortOrder,
       sidebarThreadPreviewCount,
       expandedThreadListsByProject,
@@ -4932,7 +4940,7 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
         projectsLength={projects.length}
         resolveLogicalProjectKey={resolveLogicalProjectKey}
       />
-      <SidebarChromeFooter showUndoNotice />
+      <SidebarChromeFooter />
     </RevealActiveRowContext>
   );
 }
