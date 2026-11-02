@@ -791,7 +791,11 @@ const make = Effect.gen(function* () {
           if (current.worktreePath !== thread.worktreePath || current.branch !== thread.branch)
             return "busy";
           if (
-            !storageCleanupThreadIdle(current, yield* Clock.currentTimeMillis) ||
+            !storageCleanupThreadIdle(
+              current,
+              yield* Clock.currentTimeMillis,
+              yield* settingsService.getSettings,
+            ) ||
             hasTerminal(cwd)
           )
             return "busy";
@@ -861,7 +865,11 @@ const make = Effect.gen(function* () {
             latest.worktreePath !== current.worktreePath ||
             latest.branch !== current.branch ||
             storageCleanupActivityAt(latest) !== storageCleanupActivityAt(current) ||
-            !storageCleanupThreadIdle(latest, yield* Clock.currentTimeMillis) ||
+            !storageCleanupThreadIdle(
+              latest,
+              yield* Clock.currentTimeMillis,
+              yield* settingsService.getSettings,
+            ) ||
             hasTerminal(cwd) ||
             final.threads.some(
               (entry) =>

@@ -56,10 +56,7 @@ import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
-import * as Sink from "effect/Sink";
-import * as Stdio from "effect/Stdio";
 import * as Exit from "effect/Exit";
-import * as Cause from "effect/Cause";
 import * as PlatformError from "effect/PlatformError";
 import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -639,7 +636,6 @@ function codexReplayPreamble(input: {
             preview: "",
             ephemeral: false,
             modelProvider: "openai",
-            projectId: null, // fork: codex recovery decodes this through the real client
             createdAt: 1782622440,
             updatedAt: 1782622440,
             status: { type: "idle" },
@@ -1151,7 +1147,7 @@ describe("CodexAdapterV2 lost app-server", () => {
         crypto: yield* Crypto.Crypto,
         fileSystem: yield* FileSystem.FileSystem,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* makeReplayServerConfig("codex-lost-app-server").pipe(Effect.orDie),
+        serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig("codex-lost-app-server").pipe(Effect.orDie),
       });
       const runtime = yield* adapter.openSession({
         threadId: ThreadId.make("thread-codex-lost-app-server"),
@@ -1325,7 +1321,7 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
         (handle) => handle.kill().pipe(Effect.ignore),
       ),
     );
-    const serverConfig = yield* makeReplayServerConfig("codex-app-server-recovery").pipe(
+    const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig("codex-app-server-recovery").pipe(
       Effect.orDie,
     );
     const clientFactory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
