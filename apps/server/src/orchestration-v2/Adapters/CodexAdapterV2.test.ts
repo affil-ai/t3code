@@ -1477,9 +1477,11 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
             "error",
           );
           assert.isTrue(Option.isNone(yield* manager.get(sessionId)));
+          // Upstream v0.1.6 curates provider failure text: the session shows the
+          // event-stream category, never the app-server's own detail.
           assert.include(
             failed.providerSessions.find((session) => session.id === sessionId)?.lastError ?? "",
-            failure === "clean exit" ? "exited with code 0" : "Codex stopped responding",
+            "The provider event stream closed unexpectedly",
           );
           // Session eviction precedes asynchronous disk I/O. Wait for the report,
           // not a sleep or an assumption that eviction means cleanup has finished.

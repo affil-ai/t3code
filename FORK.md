@@ -61,7 +61,10 @@ choice is stored locally under `t3work:work-mode:v1`.
 ### Work sidebar
 
 The Work sidebar has two sections (`apps/web/src/components/LegacySidebar.tsx`,
-`apps/web/src/components/work/workChats.logic.ts`):
+`apps/web/src/components/work/workChats.logic.ts`). Upstream deleted
+`LegacySidebar.tsx` in v0.1.6; the fork keeps it for Work mode only, and Code
+mode always uses upstream's sidebar. Helpers upstream removed from under it
+live in `apps/web/src/components/work/legacySidebar.logic.ts`.
 
 - **Projects** includes user-created Work projects and registered repositories.
   Repository rows keep the Code sidebar's environment grouping and chat actions.
@@ -122,8 +125,10 @@ right panel, or terminal, and it does not change the route.
   store, so it adds no sidebar row (`apps/web/src/components/localDraftSession.ts`).
 - Window-level shortcuts, typing, and paste go to the chat that has focus or
   was clicked last (`apps/web/src/components/chat/composerEventScope.ts`).
-- Clicking into one chat blurs the other chat's composer, which collapses to
-  its compact bar.
+- Clicking into one chat blurs the other chat's composer.
+- The dock is separate from upstream's side chats (the `side-chat` panel
+  surface). In `ChatView`, the dock's prop is `dock` and upstream's side-chat
+  prop is `embedded`.
 
 ## Firstmate and Agents
 

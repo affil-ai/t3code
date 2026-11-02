@@ -857,40 +857,53 @@ export const layer = Layer.effect(
 
         // A bound thread can move to another project (No project to a project) while
         // this fires. Follow it; one move needs at most two retries. Same ids replay safely.
+        // fork: scheduled-task-delivery-mode — each attempt reads the send mode from the
+        // project the thread is in now, so a move between attempts is followed too.
+        type BoundSend = ReturnType<typeof threadManagement.sendToThread>;
         const sendBound = (
           threadId: ThreadId,
           projectId: ProjectId,
-          mode: ReturnType<typeof steerSendMode>, // fork: scheduled-task-delivery-mode
           retries: number,
-        ): ReturnType<typeof threadManagement.sendToThread> =>
-          threadManagement
-            .sendToThread({
-              projectId,
-              commandId,
-              threadId,
-              messageId,
-              scheduledTaskId: active.id,
-              text: prompt,
-              attachments: [],
-              mode,
-              createdBy: active.createdBy,
-              creationSource: active.creationSource,
-            })
-            .pipe(
-              Effect.catchTags({
-                ThreadManagementThreadNotFoundError: (error) =>
-                  retries === 0
-                    ? Effect.fail(error)
-                    : threadManagement.getThreadShell(threadId).pipe(
-                        Effect.orElseSucceed(() => null),
-                        Effect.flatMap((shell) =>
-                          shell === null || shell.projectId === projectId
-                            ? Effect.fail(error)
-                            : sendBound(threadId, shell.projectId, mode, retries - 1),
-                        ),
-                      ),
+        ): Effect.Effect<
+          Effect.Success<BoundSend>,
+          Effect.Error<BoundSend> | ThreadManagementService.ThreadManagementProjectionLoadError
+        > =>
+          (active.deliveryMode === "queue"
+            ? Effect.succeed<ReturnType<typeof steerSendMode>>("queue")
+            : threadManagement
+                .getProjectThreadRecords({ projectId, threadId }, SEND_MODE_RECORDS, {
+                  omitSettledLeafNodes: true,
+                })
+                .pipe(Effect.map(steerSendMode))
+          ).pipe(
+            Effect.flatMap((mode) =>
+              threadManagement.sendToThread({
+                projectId,
+                commandId,
+                threadId,
+                messageId,
+                scheduledTaskId: active.id,
+                text: prompt,
+                attachments: [],
+                mode,
+                createdBy: active.createdBy,
+                creationSource: active.creationSource,
               }),
-            );
+            ),
+            Effect.catchTags({
+              ThreadManagementThreadNotFoundError: (error) =>
+                retries === 0
+                  ? Effect.fail(error)
+                  : threadManagement.getThreadShell(threadId).pipe(
+                      Effect.orElseSucceed(() => null),
+                      Effect.flatMap((shell) =>
+                        shell === null || shell.projectId === projectId
+                          ? Effect.fail(error)
+                          : sendBound(threadId, shell.projectId, retries - 1),
+                      ),
+                    ),
+            }),
+          );
 
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const boundThreadId = active.threadId;
@@ -926,24 +939,11 @@ export const layer = Layer.effect(
                 }),
               )
             : yield* Effect.exit(
-                Effect.gen(function* () {
-                  const threadId = ThreadId.make(boundThreadId);
-                  // fork: scheduled-task-delivery-mode
-                  const mode =
-                    active.deliveryMode === "queue"
-                      ? "queue"
-                      : steerSendMode(
-                          yield* threadManagement.getProjectThreadRecords(
-                            { projectId: active.projectId, threadId },
-                            SEND_MODE_RECORDS,
-                            { omitSettledLeafNodes: true },
-                          ),
-                        );
-                  // The stored selection only seeds fresh threads. A bound run
-                  // follows the thread's current provider, so it passes none.
-                  yield* sendBound(threadId, active.projectId, mode, 2);
-                  return threadId;
-                }),
+                // The stored selection only seeds fresh threads. A bound run
+                // follows the thread's current provider, so it passes none.
+                sendBound(ThreadId.make(boundThreadId), active.projectId, 2).pipe(
+                  Effect.as(ThreadId.make(boundThreadId)),
+                ),
               );
 
         const runSucceeded = result._tag === "Success";

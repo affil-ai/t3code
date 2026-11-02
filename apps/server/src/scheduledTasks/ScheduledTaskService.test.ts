@@ -437,6 +437,15 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
                 { projectId: next ?? promoted } as never,
                 rest,
               ]),
+            // fork: scheduled-task-delivery-mode reads the send mode before each attempt.
+            getProjectThreadRecords: () =>
+              Effect.succeed({
+                runs: [],
+                nodes: [],
+                providerThreads: [],
+                providerSessions: [],
+                providerTurns: [],
+              } as never),
           }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
