@@ -232,8 +232,12 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
-      Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-      Layer.provide(Layer.mock(SecretCommands.SecretCommands)({})), // fork: secrets
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(SecretCommands.SecretCommands)({}), // fork: secrets
+        ),
+      ),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
       Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),

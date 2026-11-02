@@ -164,8 +164,12 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
     Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
     Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
-    Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-    Layer.provide(Layer.mock(SecretCommands.SecretCommands)({})), // fork: secrets
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(SecretCommands.SecretCommands)({}), // fork: secrets
+      ),
+    ),
     Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
     Layer.provide(

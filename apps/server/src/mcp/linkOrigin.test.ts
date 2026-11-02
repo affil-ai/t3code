@@ -160,8 +160,12 @@ const layerTools = Layer.mergeAll(
     }),
   ),
   Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
-  Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-  Layer.provide(Layer.mock(SecretCommands.SecretCommands)({})), // fork: secrets
+  Layer.provide(
+    Layer.mergeAll(
+      Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.mock(SecretCommands.SecretCommands)({}), // fork: secrets
+    ),
+  ),
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
