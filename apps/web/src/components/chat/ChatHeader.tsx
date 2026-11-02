@@ -577,8 +577,7 @@ export const ChatHeader = memo(function ChatHeader({
           <Menu open={actionsCollapsed && actionsOpen} onOpenChange={setActionsOpen}>
             <MenuTrigger
               className={
-                actionsCollapsed &&
-                (activeProjectScripts || showOpenInPicker)
+                actionsCollapsed && (activeProjectScripts || showOpenInPicker)
                   ? undefined
                   : "hidden"
               }

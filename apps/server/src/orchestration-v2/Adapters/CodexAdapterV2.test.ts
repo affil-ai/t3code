@@ -1147,7 +1147,9 @@ describe("CodexAdapterV2 lost app-server", () => {
         crypto: yield* Crypto.Crypto,
         fileSystem: yield* FileSystem.FileSystem,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig("codex-lost-app-server").pipe(Effect.orDie),
+        serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig(
+          "codex-lost-app-server",
+        ).pipe(Effect.orDie),
       });
       const runtime = yield* adapter.openSession({
         threadId: ThreadId.make("thread-codex-lost-app-server"),
@@ -1321,9 +1323,9 @@ describe("CodexAdapterV2 app-server recovery through orchestration", () => {
         (handle) => handle.kill().pipe(Effect.ignore),
       ),
     );
-    const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig("codex-app-server-recovery").pipe(
-      Effect.orDie,
-    );
+    const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig(
+      "codex-app-server-recovery",
+    ).pipe(Effect.orDie);
     const clientFactory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
       Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
       Effect.provideService(ServerConfig.ServerConfig, serverConfig),

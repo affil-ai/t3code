@@ -129,15 +129,16 @@ export function WorkspaceToolbar(props: {
       separateBackground
     />
   ) : null;
-  const searchButton = foldedSearch && searchable ? ( // fork: work
-    <Toolbar.Button
-      identifier="workspace-search"
-      accessibilityLabel={searchVisible ? "Close search" : searchLabel}
-      icon={searchVisible ? "xmark" : "magnifyingglass"}
-      onPress={searchVisible ? () => searchRef.current?.cancelSearch() : focusSearch}
-      separateBackground
-    />
-  ) : null;
+  const searchButton =
+    foldedSearch && searchable ? ( // fork: work
+      <Toolbar.Button
+        identifier="workspace-search"
+        accessibilityLabel={searchVisible ? "Close search" : searchLabel}
+        icon={searchVisible ? "xmark" : "magnifyingglass"}
+        onPress={searchVisible ? () => searchRef.current?.cancelSearch() : focusSearch}
+        separateBackground
+      />
+    ) : null;
   return (
     <>
       <NativeStackScreenOptions

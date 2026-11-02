@@ -349,34 +349,34 @@ const makeChildProcessClient = Effect.fn(
   const reportTermination = Effect.fn("reportTermination")(function* (
     error: CodexError.CodexAppServerError,
   ) {
-      const tail = stderr.read();
-      // Disk failures (including defects) and stalled writes must not hold
-      // pending RPCs or process recovery, nor log a cause containing stderr.
-      const diagnosticPath = options.writeStderrDiagnostic
-        ? yield* Effect.suspend(() => options.writeStderrDiagnostic!(handle.pid, tail)).pipe(
-            Effect.timeoutOption("1 second"),
-            Effect.map(Option.getOrUndefined),
-            Effect.catchCause(() => Effect.void),
-          )
+    const tail = stderr.read();
+    // Disk failures (including defects) and stalled writes must not hold
+    // pending RPCs or process recovery, nor log a cause containing stderr.
+    const diagnosticPath = options.writeStderrDiagnostic
+      ? yield* Effect.suspend(() => options.writeStderrDiagnostic!(handle.pid, tail)).pipe(
+          Effect.timeoutOption("1 second"),
+          Effect.map(Option.getOrUndefined),
+          Effect.catchCause(() => Effect.void),
+        )
+      : undefined;
+    const exitCause =
+      error._tag === "CodexAppServerTransportError" && PlatformError.isPlatformError(error.cause)
+        ? error.cause.reason.cause
         : undefined;
-      const exitCause =
-        error._tag === "CodexAppServerTransportError" && PlatformError.isPlatformError(error.cause)
-          ? error.cause.reason.cause
-          : undefined;
-      // The platform exposes signal exits only through this fixed error.
-      // Extract the signal, never forward the error text or command details.
-      const signal =
-        exitCause instanceof Error
-          ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
-              exitCause.message,
-            )?.[1]
-          : undefined;
-      yield* Effect.logWarning("Codex app-server terminated", {
-        code: error._tag === "CodexAppServerProcessExitedError" ? error.code : undefined,
-        ...(signal === undefined ? {} : { signal }),
-        stderrBytes: tail.byteLength,
-        diagnosticPath,
-      });
+    // The platform exposes signal exits only through this fixed error.
+    // Extract the signal, never forward the error text or command details.
+    const signal =
+      exitCause instanceof Error
+        ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
+            exitCause.message,
+          )?.[1]
+        : undefined;
+    yield* Effect.logWarning("Codex app-server terminated", {
+      code: error._tag === "CodexAppServerProcessExitedError" ? error.code : undefined,
+      ...(signal === undefined ? {} : { signal }),
+      stderrBytes: tail.byteLength,
+      diagnosticPath,
+    });
   });
 
   // Wait briefly for the final stderr chunk without allowing diagnostics to
