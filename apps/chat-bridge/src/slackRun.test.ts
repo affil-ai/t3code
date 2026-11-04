@@ -243,5 +243,11 @@ it("makes titles Slack accepts", () => {
     "t3 bridge test What is 17 times 23? Reply with just the number.",
   );
   assert.strictEqual(slackTitle("Fix `ci` #42 <now> ✅", true), "Fix ci 42 now");
+  // Slack answered invalid_name for a colon too.
+  assert.strictEqual(
+    slackTitle("test E falcon: Find where the map fetches hotel…"),
+    "test E falcon - Find where the map fetches hotel…",
+  );
+  assert.strictEqual(slackTitle("a: b", true), "a b");
   assert.strictEqual(slackTitle("x".repeat(300)).length, 200);
 });
