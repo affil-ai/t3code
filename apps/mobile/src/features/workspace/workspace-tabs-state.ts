@@ -11,16 +11,14 @@ export function resolveWorkspaceTabOrder(saved: readonly unknown[] | undefined) 
     : NAVIGATION_TAB_ORDER;
 }
 
-// fork: work: Work is not a customizable navigation tab; it leads while a server runs agents.
-export type WorkspaceTab = NavigationTab | "work";
+export type WorkspaceTab = NavigationTab;
 /** Lists with their own search: the searchable tabs and the Settings list. */
 export type WorkspaceSearchTab = WorkspaceTab | "settings";
 export type WorkspaceSearchMode = "resting" | "active" | "expanded";
 
 /** Settings, Chats and pull requests pair a list with a detail column; Usage is one page. */
 export function workspaceUsesColumns(tab: WorkspaceTab, settingsOpen = false) {
-  // fork: work: the Work board pairs with a task's detail the way the pull request list does.
-  return settingsOpen || tab === "threads" || tab === "pullRequests" || tab === "work";
+  return settingsOpen || tab === "threads" || tab === "pullRequests";
 }
 
 export interface WorkspaceTabState {
@@ -49,7 +47,6 @@ export function initialWorkspaceTabsState(): WorkspaceTabsState {
       pullRequests: emptyTab(),
       usage: emptyTab(),
       settings: emptyTab(),
-      work: emptyTab(), // fork: work
     },
   };
 }
@@ -108,6 +105,15 @@ export function workspaceTabsReducer(
       break;
   }
   return { ...state, tabs: { ...state.tabs, [tab]: next } };
+}
+
+/**
+ * iOS 27's integrated search X closes the field with only a blur, leaving `expanded`.
+ * An empty one has nothing to restore, except where the caller keeps it open (the Duo).
+ */
+export function shouldRestoreNativeSearch(tab: WorkspaceTabState, keepsEmptySearchOpen: boolean) {
+  if (tab.searchMode === "resting") return false;
+  return tab.searchMode === "active" || tab.query !== "" || keepsEmptySearchOpen;
 }
 
 export const WORKSPACE_TOOLBAR = { height: 48, expandedGap: 10, edge: 16, gap: 8 };

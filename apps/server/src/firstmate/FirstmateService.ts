@@ -43,7 +43,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -276,7 +276,7 @@ export const layer = Layer.effect(
   FirstmateService,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     const changes = yield* PubSub.sliding<void>(1);
     const home = yield* FirstmateHome.FirstmateHome;
     const launches = yield* ThreadLaunchService.ThreadLaunchService;
@@ -502,7 +502,7 @@ export const layer = Layer.effect(
       actor: FirstmateTaskEvent["actor"],
       at: string,
     ) {
-      const eventId = `firstmate-event:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`;
+      const eventId = `firstmate-event:${yield* crypto.uuidV4().pipe(Effect.orDie)}`;
       yield* sql`
         INSERT INTO firstmate_task_event(event_id, task_id, created_at, actor, summary)
         VALUES (${eventId}, ${taskId}, ${at}, ${actor}, ${summary})
@@ -567,9 +567,7 @@ export const layer = Layer.effect(
               });
             if (status === "backlog") yield* assertCanPark(input.workerThreadId ?? null);
             const at = yield* now();
-            const taskId = asTaskId(
-              `firstmate-task:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
-            );
+            const taskId = asTaskId(`firstmate-task:${yield* crypto.uuidV4().pipe(Effect.orDie)}`);
             const task: StoredTask = {
               id: taskId,
               priority: input.priority ?? false,
@@ -751,9 +749,7 @@ export const layer = Layer.effect(
         // Only a delegated subagent reports for its parent; a fork is its own conversation.
         const shell: OrchestrationV2ThreadShell | null = yield* threads.getThreadShell(threadId);
         threadId =
-          shell?.lineage.relationshipToParent === "subagent"
-            ? shell.lineage.parentThreadId
-            : null;
+          shell?.lineage.relationshipToParent === "subagent" ? shell.lineage.parentThreadId : null;
       }
       return null;
     });
@@ -821,9 +817,7 @@ export const layer = Layer.effect(
         WHERE agent_id = ${agent.id}
       `.pipe(Effect.mapError(dbError("Could not record the agent's project.")));
       const launched = yield* launches.launch({
-        commandId: CommandId.make(
-          `firstmate:start:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
-        ),
+        commandId: CommandId.make(`firstmate:start:${yield* crypto.uuidV4().pipe(Effect.orDie)}`),
         projectId,
         title: agent.name,
         modelSelection,
@@ -832,7 +826,7 @@ export const layer = Layer.effect(
         workspaceStrategy: { type: "root" },
         initialMessage: {
           messageId: MessageId.make(
-            `firstmate:prompt:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+            `firstmate:prompt:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
           ),
           text: coordinatorKickoff(agent.name),
           attachments: [],
@@ -867,7 +861,7 @@ export const layer = Layer.effect(
         yield* threads.dispatch({
           type: "thread.metadata.update",
           commandId: CommandId.make(
-            `firstmate:rename:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+            `firstmate:rename:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
           ),
           threadId,
           title,
@@ -908,9 +902,7 @@ export const layer = Layer.effect(
         const base = slugFor(input.name);
         let slug = base;
         for (let n = 2; taken.has(slug); n += 1) slug = `${base}-${n}`;
-        const agentId = AgentProfileId.make(
-          `agent:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
-        );
+        const agentId = AgentProfileId.make(`agent:${yield* crypto.uuidV4().pipe(Effect.orDie)}`);
         const at = yield* now();
         const avatarAttachmentId =
           input.avatarAttachmentId === undefined

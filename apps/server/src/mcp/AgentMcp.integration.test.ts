@@ -21,6 +21,7 @@ import * as FirstmateService from "../firstmate/FirstmateService.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -82,12 +83,13 @@ const layerDomains = Layer.mergeAll(FirstmateService.layer, ScheduledTasks.layer
       }),
       Scheduler.layer,
       NodeCrypto.layer,
+      ManagedPolicy.layerTest(),
       Sqlite.layerMemory,
     ),
   ),
 );
 const layerTest = McpHttpServer.layerFirstmateToolkit.pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provideMerge(layerDomains),
 );
 const call = Effect.fn("agentMcpIntegration.call")(function* (

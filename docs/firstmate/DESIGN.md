@@ -104,12 +104,6 @@ web side follows the same split in `apps/web/src/components/firstmate/`:
 `firstmateTasksShared.ts` (column colors and the coordinator context they
 share).
 
-Mobile's Work tab (`apps/mobile/src/features/work/`) differs from web's
-sidebar in one deliberate way: tapping a task opens its detail, even when it
-has a worker, rather than the worker's chat. On the phone the detail is where
-the user acts on a task (priority, and the requests sent to the coordinator),
-and it links to the worker chat; the worker chat links back with Open task.
-
 `FirstmateReactor` uses no model. It is woken by orchestration events where
 possible and otherwise sweeps every 30 seconds. It collects wake reasons:
 

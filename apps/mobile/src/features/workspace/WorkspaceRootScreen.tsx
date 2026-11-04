@@ -1,7 +1,5 @@
 import { WorkspaceNoTabs } from "./WorkspaceNoTabs";
-import { useEnabledNavigationTabs } from "./navigation-tabs";
-import { WORKSPACE_TAB_TITLES } from "../work/WorkTabState"; // fork: work
-import { useSelectWorkspaceDetail } from "./useSelectWorkspaceDetail"; // fork: work
+import { WORKSPACE_TAB_LABELS, useEnabledNavigationTabs } from "./navigation-tabs";
 import { WorkspaceExtraTab } from "./WorkspaceExtraTab";
 import { SettingsRouteScreen } from "../settings/SettingsRouteScreen";
 import { WorkspaceSectionToolbar } from "./WorkspaceSectionToolbar";
@@ -12,13 +10,12 @@ import { useKeyboardState } from "react-native-keyboard-controller";
 import { SafeAreaInsetsContext, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CompactBrandTitle } from "../../components/CompactBrandTitle";
-import { AndroidScreenHeader } from "../../components/ui/AndroidScreenHeader";
+import { AppBar } from "../../components/ui/AppBar";
 import { HeaderItemsWidthContext } from "../../native/header-items-width";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { NativePrimaryColumnContext } from "../../native/v5-workspace-context";
 import { isDuoDevice } from "../../lib/device-type";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
-import { useWorkspaceSurface } from "./useWorkspaceSurface";
 import {
   useDeviceType,
   useNativeColumnLayoutMetrics,
@@ -29,13 +26,11 @@ import { dispatchHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCom
 import { WorkspaceConnectionTitle } from "../home/WorkspaceConnectionTitle";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { PullRequestsScreen } from "../pull-requests/PullRequestsScreen";
-import { WorkScreen } from "../work/WorkScreen"; // fork: work
 import {
   WorkspaceTabsContext,
   WorkspaceTabsProvider,
   useWorkspaceTabs,
 } from "./WorkspaceTabsContext";
-import { useWorkTabLink } from "../work/WorkTabLink";
 import { WorkspaceToolbar } from "./WorkspaceToolbar";
 import {
   WORKSPACE_DOCK,
@@ -51,7 +46,7 @@ import {
 import { openSettings } from "../settings/settings-navigation";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
 
-const TAB_TITLES = WORKSPACE_TAB_TITLES; // fork: work
+const TAB_TITLES = WORKSPACE_TAB_LABELS;
 
 function WorkspaceRootTitle(props: {
   readonly columnWidth: number;
@@ -68,10 +63,7 @@ function WorkspaceRootTitle(props: {
   return (
     <View style={{ width: maxWidth, minHeight: 32, justifyContent: "center" }}>
       <WorkspaceConnectionTitle
-        brand={
-          // fork: brand
-          <CompactBrandTitle accessibilityLabel={`T3 Work, ${tabTitle}`} fit />
-        }
+        brand={<CompactBrandTitle accessibilityLabel={`T3 Code, ${tabTitle}`} fit />}
         maxWidth={maxWidth}
         onPress={props.onOpenEnvironments}
       />
@@ -81,8 +73,6 @@ function WorkspaceRootTitle(props: {
 
 function WorkspaceRootContent() {
   const navigation = useNavigation();
-  useWorkTabLink(); // fork: work
-  const selectDetail = useSelectWorkspaceDetail(); // fork: work
   const selectTab = useSelectWorkspaceTab();
   const { width: windowWidth } = useWindowDimensions();
   const { layout, startNewTask } = useAdaptiveWorkspaceLayout();
@@ -90,7 +80,6 @@ function WorkspaceRootContent() {
   const columnMetrics = useNativeColumnLayoutMetrics();
   const nativeMetrics = useNativeLayoutMetrics();
   const deviceType = useDeviceType();
-  const surface = useWorkspaceSurface();
   const systemTabBar = useSystemWorkspaceTabBar();
   const compactTabs = useCompactWorkspaceTabs();
   const enabled = useEnabledNavigationTabs();
@@ -116,7 +105,7 @@ function WorkspaceRootContent() {
   );
   const tab = state.tabs[settingsOpen ? "settings" : state.selectedTab];
   const bottomClearance =
-    layout.primarySidebarOverlaysContent && state.selectedTab === "usage"
+    layout.variant === "medium" && state.selectedTab === "usage"
       ? workspaceDockBottomClearance({ bottomInset: insets.bottom, keyboardHeight })
       : Platform.OS === "ios" && isDuoDevice(deviceType)
         ? // The column's safe area already holds the Duo's search toolbar and keyboard.
@@ -137,7 +126,7 @@ function WorkspaceRootContent() {
 
   return (
     <WorkspaceTabsContext value={context}>
-      <View className={`flex-1 ${sidebarPicker ? "bg-drawer" : surface.className}`}>
+      <View className={sidebarPicker ? "flex-1 bg-drawer" : "flex-1 bg-screen"}>
         {Platform.OS === "ios" ? (
           <NativeStackScreenOptions
             optionsVersion={[
@@ -173,8 +162,9 @@ function WorkspaceRootContent() {
             }}
           />
         ) : (
-          <AndroidScreenHeader
-            title="T3 Work" // fork: brand
+          <AppBar
+            embedded
+            title="T3 Code"
             titleContent={renderHeaderTitle()}
             actions={[
               ...(state.selectedTab === "threads" || state.selectedTab === "pullRequests"
@@ -200,8 +190,6 @@ function WorkspaceRootContent() {
         <SafeAreaInsetsContext value={compactTabs ? { ...insets, bottom: 0 } : insets}>
           {settingsOpen ? (
             <SettingsRouteScreen />
-          ) : state.selectedTab === "work" ? ( // fork: work
-            <WorkScreen onOpenChat={(params) => selectDetail({ name: "Thread", params })} />
           ) : enabled.length === 0 ? (
             <WorkspaceNoTabs />
           ) : state.selectedTab === "threads" ? (

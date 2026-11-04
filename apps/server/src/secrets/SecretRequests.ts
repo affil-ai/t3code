@@ -7,7 +7,8 @@
  * A ref works only for the thread that asked, as often as it likes, until
  * SECRET_REF_TTL_MS after the user saved it. A card with several fields
  * saves one ref per field. A `file` request instead moves its value to an
- * owner-only file for the agent's own shell.
+ * owner-only file for the agent's own shell. A secret the user pasted in
+ * chat goes straight to such a file, with no card.
  */
 import {
   CommandId,
@@ -117,6 +118,14 @@ export class SecretRequests extends Context.Service<
     readonly saveToFile: (input: {
       readonly threadId: ThreadId;
       readonly turnItemId: string;
+    }) => Effect.Effect<string, SecretRequestError>;
+    /** Writes a secret the user pasted in chat to an owner-only file and returns its path. */
+    readonly savePasted: (input: {
+      readonly threadId: ThreadId;
+      /** The provider session's namespace, so two sessions' keys never share a file. */
+      readonly requestNamespace: string;
+      readonly requestKey: string;
+      readonly value: string;
     }) => Effect.Effect<string, SecretRequestError>;
   }
 >()("t3/secrets/SecretRequests") {}
@@ -284,6 +293,23 @@ const make = Effect.gen(function* () {
 
   // Two calls for one request must not both write its file or both remove its stored copy.
   const fileLock = yield* Semaphore.make(1);
+
+  const writeSecretFile = (dir: string, file: string, value: string) => {
+    const partial = `${file}.partial`;
+    return fileSystem.makeDirectory(dir, { recursive: true, mode: 0o700 }).pipe(
+      Effect.andThen(fileSystem.chmod(dir, 0o700)),
+      Effect.andThen(fileSystem.remove(partial, { force: true })),
+      // `wx` never follows or replaces an existing path.
+      Effect.andThen(
+        fileSystem.writeFile(partial, new TextEncoder().encode(value), {
+          flag: "wx",
+          mode: 0o600,
+        }),
+      ),
+      Effect.andThen(fileSystem.rename(partial, file)),
+      Effect.mapError((cause) => new SecretRequestError({ reason: "store_failed", cause })),
+    );
+  };
   const saveToFile: SecretRequests["Service"]["saveToFile"] = Effect.fn(
     "SecretRequests.saveToFile",
   )(function* (input) {
@@ -318,21 +344,27 @@ const make = Effect.gen(function* () {
       }
       // The stored value goes only after the file is complete, so a failed write can retry.
       const value = yield* useRef({ ref, threadId: input.threadId });
-      const partial = `${file}.partial`;
-      yield* fileSystem.makeDirectory(filesDir, { recursive: true, mode: 0o700 }).pipe(
-        Effect.andThen(fileSystem.chmod(filesDir, 0o700)),
-        Effect.andThen(fileSystem.remove(partial, { force: true })),
-        // `wx` never follows or replaces an existing path.
-        Effect.andThen(
-          fileSystem.writeFile(partial, new TextEncoder().encode(value), {
-            flag: "wx",
-            mode: 0o600,
-          }),
-        ),
-        Effect.andThen(fileSystem.rename(partial, file)),
-        Effect.mapError((cause) => new SecretRequestError({ reason: "store_failed", cause })),
-      );
+      yield* writeSecretFile(filesDir, file, value);
       return yield* removeStored;
+    }).pipe(fileLock.withPermits(1));
+  });
+
+  const savePasted: SecretRequests["Service"]["savePasted"] = Effect.fn(
+    "SecretRequests.savePasted",
+  )(function* (input) {
+    if (filesDir === undefined) return yield* new SecretRequestError({ reason: "store_failed" });
+    const ref = refFor(
+      salt,
+      input.threadId,
+      `pasted\u0000${input.requestNamespace}\u0000${input.requestKey}`,
+    );
+    const file = path.join(filesDir, ref.slice(SECRET_REF_PREFIX.length));
+    // A retry with the same clientRequestId gets the file the first call wrote, unchanged, so a
+    // command already holding that path never reads another value.
+    return yield* Effect.gen(function* () {
+      if (yield* fileSystem.exists(file).pipe(Effect.orElseSucceed(() => false))) return file;
+      yield* writeSecretFile(filesDir, file, input.value);
+      return file;
     }).pipe(fileLock.withPermits(1));
   });
 
@@ -382,7 +414,7 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  return SecretRequests.of({ answer, savedRef, use, saveToFile });
+  return SecretRequests.of({ answer, savedRef, use, saveToFile, savePasted });
 });
 
 export const layer = Layer.effect(SecretRequests, make);

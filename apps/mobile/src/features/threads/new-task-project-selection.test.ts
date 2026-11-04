@@ -2,9 +2,7 @@ import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { HomeProjectScope } from "../home/homeThreadList";
-import { withoutAgentHomeProjects } from "./agent-chats";
 import {
   getProjectScopeSelectionTarget,
   newTaskDestination,
@@ -215,33 +213,6 @@ describe("newTaskDestination", () => {
     expect(destination({ useLastProject: true, projects: [archived], current: archived })).toEqual({
       draft: { requestId: "request", environmentId: "environment", projectId: "archived" },
     });
-  });
-
-  it("skips an agent's home project, from it or as the remembered one", () => {
-    // fork: agents. The layout passes the user's projects, without home projects.
-    const home = makeProject("agent-home");
-    const projects = withoutAgentHomeProjects(
-      [home, makeProject("app")],
-      new Set([scopedProjectKey(home.environmentId, home.id)]),
-    );
-    expect(destination({ useLastProject: true, projects, current: home })).toEqual(picker);
-    expect(
-      destination({
-        useLastProject: true,
-        projects,
-        current: home,
-        last: { environmentId: "environment", projectId: "app" },
-      }),
-    ).toEqual({
-      draft: { requestId: "request", environmentId: "environment", projectId: "app" },
-    });
-    expect(
-      destination({
-        useLastProject: true,
-        projects,
-        last: { environmentId: "environment", projectId: "agent-home" },
-      }),
-    ).toEqual(picker);
   });
 
   it("treats an unset preference as on", () => {

@@ -16,6 +16,7 @@ import {
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
+import { shouldRestoreNativeSearch } from "./workspace-tabs-state";
 import { useFloatingWorkspaceTabs, useSidebarWorkspaceTabs } from "./useSystemWorkspaceTabBar";
 import { WorkspaceTabToolbarButtons } from "./WorkspaceSectionToolbar";
 
@@ -50,10 +51,7 @@ export function WorkspaceToolbar(props: {
   // The Settings list takes the selected tab's place, so search follows it.
   const selectedTab = workspace.settingsOpen ? "settings" : workspace.state.selectedTab;
   const tab = workspace.state.tabs[selectedTab];
-  // fork: work: the Work tab has no search; its list is one agent's board.
-  const searchable = selectedTab !== "work";
-  const searchLabel =
-    SEARCH_LABELS[selectedTab === "usage" || selectedTab === "work" ? "threads" : selectedTab];
+  const searchLabel = SEARCH_LABELS[selectedTab === "usage" ? "threads" : selectedTab];
   const { isTabActive: isListTabActive } = workspace;
   // A retained tab slot stays mounted while another is shown.
   const isTabActive = (tab: typeof selectedTab) =>
@@ -75,7 +73,7 @@ export function WorkspaceToolbar(props: {
     if (props.sidebar && !panes.primarySidebarVisible) togglePrimarySidebar();
   }, [workspace, selectedTab, props.sidebar, panes.primarySidebarVisible, togglePrimarySidebar]);
   const focusSearch = () => {
-    if (!isTabActive(selectedTab) || !searchable) return false; // fork: work
+    if (!isTabActive(selectedTab)) return false;
     if (duoSearch || !NATIVE_LIQUID_GLASS_SUPPORTED) enterSearch();
     searchRef.current?.focus();
     return true;
@@ -96,7 +94,7 @@ export function WorkspaceToolbar(props: {
       searchHostVisible &&
       searchVisible &&
       isTabActive(selectedTab) &&
-      tab.searchMode !== "resting"
+      shouldRestoreNativeSearch(tab, duoSearch)
     ) {
       searchRef.current?.setText(tab.query);
       // Integrated search collapses to its button when its screen reappears,
@@ -129,16 +127,15 @@ export function WorkspaceToolbar(props: {
       separateBackground
     />
   ) : null;
-  const searchButton =
-    foldedSearch && searchable ? ( // fork: work
-      <Toolbar.Button
-        identifier="workspace-search"
-        accessibilityLabel={searchVisible ? "Close search" : searchLabel}
-        icon={searchVisible ? "xmark" : "magnifyingglass"}
-        onPress={searchVisible ? () => searchRef.current?.cancelSearch() : focusSearch}
-        separateBackground
-      />
-    ) : null;
+  const searchButton = foldedSearch ? (
+    <Toolbar.Button
+      identifier="workspace-search"
+      accessibilityLabel={searchVisible ? "Close search" : searchLabel}
+      icon={searchVisible ? "xmark" : "magnifyingglass"}
+      onPress={searchVisible ? () => searchRef.current?.cancelSearch() : focusSearch}
+      separateBackground
+    />
+  ) : null;
   return (
     <>
       <NativeStackScreenOptions
@@ -151,8 +148,7 @@ export function WorkspaceToolbar(props: {
             (NATIVE_LIQUID_GLASS_SUPPORTED ||
               tab.searchMode !== "resting" ||
               workspace.settingsOpen) &&
-            searchVisible &&
-            searchable // fork: work
+            searchVisible
               ? {
                   ref: searchRef,
                   autoFocus: tab.searchMode === "active",
@@ -203,7 +199,7 @@ export function WorkspaceToolbar(props: {
               onPress={props.onNewTask}
             />
           )}
-          {NATIVE_LIQUID_GLASS_SUPPORTED || !searchable ? null : ( // fork: work
+          {NATIVE_LIQUID_GLASS_SUPPORTED ? null : (
             <Toolbar.Button
               accessibilityLabel={searchLabel}
               icon="magnifyingglass"
@@ -214,7 +210,7 @@ export function WorkspaceToolbar(props: {
       )}
       <Toolbar placement="bottom">
         {sidebarTabs === "toolbar" ? <WorkspaceTabToolbarButtons /> : null}
-        {bottomSearch && searchVisible && searchable ? <Toolbar.SearchBarSlot /> : null}
+        {bottomSearch && searchVisible ? <Toolbar.SearchBarSlot /> : null}
       </Toolbar>
     </>
   );

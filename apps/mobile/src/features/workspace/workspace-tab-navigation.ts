@@ -220,8 +220,7 @@ export function workspaceTabNavigationState<
   }
   const home = state.routes.find((route) => route.name === "Home") ?? { name: "Home" };
   const detail =
-    // fork: work: Work remembers no task; its detail column starts empty.
-    options.columns && tab !== "usage" && tab !== "work"
+    options.columns && tab !== "usage"
       ? detailRoute(state, tab, selections, options.check)
       : undefined;
   const routes = [...[home, ...(detail ? [detail] : [])].map(keyed), ...overlays];

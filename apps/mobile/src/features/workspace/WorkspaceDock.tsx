@@ -5,18 +5,9 @@ import { GlassSurface } from "../../components/ui/GlassSurface";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { WORKSPACE_DOCK } from "./workspace-tabs-state";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
-import { useVisibleWorkspaceTabs } from "../work/WorkTabState"; // fork: work
-
-const DOCK_TABS = {
-  work: { label: "Work", icon: "person.2" },
-  threads: { label: "Threads", icon: "text.bubble" },
-  pullRequests: { label: "Pull requests", icon: PullRequestGlyph.pullRequest },
-  usage: { label: "Usage", icon: "chart.bar.xaxis" },
-} as const; // fork: work
 
 export function WorkspaceDock(props: { readonly onNewTask: () => void }) {
   const workspace = useWorkspaceTabs()!;
-  const tabs = useVisibleWorkspaceTabs(); // fork: work
   return (
     <View
       className="w-full flex-row items-center justify-between"
@@ -24,19 +15,19 @@ export function WorkspaceDock(props: { readonly onNewTask: () => void }) {
     >
       <GlassSurface
         style={{
-          width: (WORKSPACE_DOCK.tabsWidth / 2) * tabs.length, // fork: work
+          width: WORKSPACE_DOCK.tabsWidth,
           height: WORKSPACE_DOCK.height,
           borderRadius: WORKSPACE_DOCK.height / 2,
         }}
       >
         <View className="flex-1 flex-row p-1" accessibilityRole="tablist">
-          {tabs.map((tab) => {
+          {(["threads", "pullRequests"] as const).map((tab) => {
             const selected = workspace.state.selectedTab === tab;
             return (
               <Pressable
                 key={tab}
                 accessibilityRole="tab"
-                accessibilityLabel={DOCK_TABS[tab].label}
+                accessibilityLabel={tab === "threads" ? "Threads" : "Pull requests"}
                 accessibilityState={{ selected }}
                 onPress={() => {
                   if (selected) return;
@@ -50,7 +41,7 @@ export function WorkspaceDock(props: { readonly onNewTask: () => void }) {
                 }
               >
                 <SymbolView
-                  name={DOCK_TABS[tab].icon}
+                  name={tab === "threads" ? "text.bubble" : PullRequestGlyph.pullRequest}
                   size={23}
                   tintColorClassName={selected ? "accent-focus" : "accent-icon"}
                 />
