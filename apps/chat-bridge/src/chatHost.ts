@@ -13,6 +13,7 @@ import {
   type Thread,
 } from "chat";
 
+import type { InboundReaction } from "./bridge.ts";
 import { ANSWER_ACTION_ID } from "./questions.ts";
 
 /** How the SDK routed a message: a new mention, a reply in a followed thread, or a direct message. */
@@ -39,7 +40,39 @@ export interface ChatHostOptions {
   readonly onAnswer?:
     | ((chatThreadKey: string, userId: string, value: string) => Promise<unknown>)
     | undefined;
+  /** Someone added or removed a reaction on a message, on any platform. */
+  readonly onReaction?: ((reaction: InboundReaction) => Promise<unknown>) | undefined;
   readonly log: (line: string) => void;
+}
+
+/** A Chat SDK reaction as the core takes it. */
+export function toInboundReaction(event: {
+  readonly threadId: string;
+  readonly messageId: string;
+  readonly emoji: { readonly name: string };
+  readonly rawEmoji: string;
+  readonly added: boolean;
+  readonly raw: unknown;
+  readonly user: { readonly userId: string; readonly userName: string; readonly fullName: string };
+}): InboundReaction {
+  const guid = (event.raw as { readonly guid?: unknown } | undefined)?.guid;
+  return {
+    // An iMessage tapback is its own row with a guid; others are named by what they change.
+    eventId:
+      typeof guid === "string"
+        ? `reaction:${guid}`
+        : `reaction:${event.threadId}:${event.messageId}:${event.user.userId}:${event.emoji.name}:${event.added ? "add" : "remove"}`,
+    chatThreadKey: event.threadId,
+    messageId: event.messageId,
+    author: {
+      userId: event.user.userId,
+      userName: event.user.userName,
+      fullName: event.user.fullName,
+    },
+    emoji: event.emoji.name,
+    rawEmoji: event.rawEmoji,
+    added: event.added,
+  };
 }
 
 export async function startChatHost(options: ChatHostOptions): Promise<Chat> {
@@ -80,6 +113,14 @@ export async function startChatHost(options: ChatHostOptions): Promise<Chat> {
     options.log(
       `app_context_changed from ${event.userId} (${event.entities.length} entities); ignored.`,
     );
+  });
+  chat.onReaction(async (event) => {
+    if (event.user.isMe || event.user.isBot === true) return;
+    try {
+      await options.onReaction?.(toInboundReaction(event));
+    } catch (error) {
+      options.onError(error);
+    }
   });
   chat.onAction(async (event) => {
     if (!event.actionId.startsWith(ANSWER_ACTION_ID)) return;

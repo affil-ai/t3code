@@ -17,18 +17,18 @@ import type {
   MentionedUser,
   MissedRequest,
   SessionState,
-} from "./bridge.ts";
-import type { Deliver, Route } from "./chatHost.ts";
+} from "../bridge.ts";
+import type { Deliver, Route } from "../chatHost.ts";
 import {
   slackErrorCode,
   slackTitle,
   splitMarkdown,
   withoutAttribution,
   withRichContent,
-} from "./slackText.ts";
+} from "./text.ts";
 
 export { splitMarkdown };
-import type { InboundFile } from "./threads.ts";
+import type { InboundFile } from "../threads.ts";
 
 /** The `users.info` fields that tell a full member from a guest, a bot or another company's person. */
 interface SlackMember {

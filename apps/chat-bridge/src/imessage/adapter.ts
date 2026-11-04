@@ -2,11 +2,12 @@
 /**
  * A Chat SDK adapter for iMessage over `imsg` on a Mac (via `mac/affil-imessage`).
  * Thread ids are `imessage:<chat rowid>`; every message counts as addressed.
- * Without SIP off, `imsg` can't edit, unsend, react, type or mark read.
+ * Without SIP off, `imsg` can't edit, unsend, send tapbacks, type or mark read.
  */
 import { extractFiles, toBuffer, ValidationError } from "@chat-adapter/shared";
 import {
   type Adapter,
+  getEmoji,
   type AdapterPostableMessage,
   type Attachment,
   BaseFormatConverter,
@@ -40,6 +41,12 @@ export interface ImsgMessage {
   readonly is_group?: boolean;
   readonly type?: "edited" | "unsent";
   readonly is_reaction?: boolean;
+  /** `love`, `like`, `dislike`, `laugh`, `emphasis`, `question`, or a custom emoji marker. */
+  readonly reaction_type?: string;
+  readonly reaction_emoji?: string;
+  readonly is_reaction_add?: boolean;
+  /** The tapped message's guid, sometimes with a `p:0/` part prefix. */
+  readonly reacted_to_guid?: string;
   readonly attachments?: ReadonlyArray<{
     readonly transfer_name?: string;
     readonly filename?: string;
@@ -66,8 +73,54 @@ export interface ImessageAdapterConfig {
   readonly services: ReadonlyArray<string>;
   /** On the very first start, read messages after this row id. Without it, only new ones. */
   readonly startAfterRowId?: number | undefined;
+  /**
+   * Send tapbacks through imsg's private Messages bridge. It needs SIP off on
+   * the Mac and `imsg launch`; tapbacks stay off until `status` shows it running.
+   */
+  readonly outboundReactions?: boolean | undefined;
   readonly log: (line: string) => void;
 }
+
+/** iMessage's six standard tapbacks, as Chat SDK emoji names. */
+const TAPBACK_EMOJI: Readonly<Record<string, string>> = {
+  love: "heart",
+  like: "thumbs_up",
+  dislike: "thumbs_down",
+  laugh: "laugh",
+  emphasis: "exclamation",
+  question: "question",
+};
+
+/** Emoji names an agent or the SDK may use, to the standard tapback each sends. */
+const TAPBACK_KIND: Readonly<Record<string, string>> = {
+  heart: "love",
+  love: "love",
+  red_heart: "love",
+  thumbs_up: "like",
+  thumbsup: "like",
+  "+1": "like",
+  like: "like",
+  thumbs_down: "dislike",
+  thumbsdown: "dislike",
+  "-1": "dislike",
+  dislike: "dislike",
+  laugh: "laugh",
+  joy: "laugh",
+  laughing: "laugh",
+  haha: "laugh",
+  exclamation: "emphasis",
+  bangbang: "emphasis",
+  emphasis: "emphasis",
+  question: "question",
+};
+
+/** The tapback a reaction asks for, or nothing when iMessage has no standard one. */
+export function tapbackKind(emoji: string): string | undefined {
+  return TAPBACK_KIND[emoji.replace(/^:|:$/g, "").toLowerCase()];
+}
+
+/** The guid a tapback points at, without its `p:N/` part prefix. */
+export const reactedGuid = (target: string) => target.replace(/^[a-z]*:\d+\//, "");
 
 const CURSOR_KEY = "imessage:cursor";
 const JPEG_MARK = "#jpeg";
@@ -104,6 +157,8 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
   private readonly chats = new Map<number, ImsgChat>();
   /** Incoming messages are handled one at a time, in order, on this chain. */
   private queue: Promise<void> = Promise.resolve();
+  /** Whether imsg's private bridge can send tapbacks now; checked on each connect. */
+  private tapbacks = false;
 
   private readonly config: ImessageAdapterConfig;
 
@@ -113,7 +168,11 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
       host: config.host,
       port: config.port,
       onNotification: (notification) => this.notified(notification),
-      onConnect: () => this.enqueue(() => this.catchUp()),
+      onConnect: () =>
+        this.enqueue(async () => {
+          await this.checkTapbacks();
+          await this.catchUp();
+        }),
       log: config.log,
     });
   }
@@ -125,6 +184,33 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
 
   async disconnect(): Promise<void> {
     this.rpc.close();
+  }
+
+  /** True when outbound tapbacks are on in config and imsg's private bridge is running. */
+  get canReact(): boolean {
+    return this.tapbacks;
+  }
+
+  private async checkTapbacks(): Promise<void> {
+    if (this.config.outboundReactions !== true) return;
+    try {
+      const status = await this.rpc.call<{
+        methods?: ReadonlyArray<string>;
+        bridge?: { ready?: boolean; error?: string };
+      }>("status");
+      const ready = status.bridge?.ready === true && (status.methods ?? []).includes("tapback");
+      if (ready !== this.tapbacks || !ready) {
+        this.config.log(
+          ready
+            ? "iMessage: tapbacks are on (imsg's private bridge is running)."
+            : `iMessage: tapbacks are off; imsg's private bridge isn't running${status.bridge?.error ? ` (${status.bridge.error})` : ""}.`,
+        );
+      }
+      this.tapbacks = ready;
+    } catch (error) {
+      this.tapbacks = false;
+      this.config.log(`iMessage: checking for tapbacks failed: ${String(error)}`);
+    }
   }
 
   // Thread ids
@@ -160,7 +246,8 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
     const sender = raw.sender ?? "";
     const text = raw.text ?? "";
     return new Message<ImsgMessage>({
-      id: String(raw.id),
+      // The guid, which tapbacks name their target by.
+      id: raw.guid,
       threadId: this.encodeThreadId(raw.chat_id),
       text,
       formatted: this.converter.toAst(text),
@@ -236,7 +323,12 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
         messages: Array<ImsgMessage>;
         next_rowid: number;
         has_more: boolean;
-      }>("messages.after", { since_rowid: cursor, limit: CATCH_UP_PAGE, attachments: true });
+      }>("messages.after", {
+        since_rowid: cursor,
+        limit: CATCH_UP_PAGE,
+        attachments: true,
+        include_reactions: true,
+      });
       for (const raw of page.messages) await this.receive(raw);
       read += page.messages.length;
       cursor = Math.max(cursor, page.next_rowid);
@@ -254,20 +346,21 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
     return info;
   }
 
-  /** Hands one new message to the SDK, then moves the cursor past it. */
+  /** Hands one new message or tapback to the SDK, then moves the cursor past it. */
   private async receive(raw: ImsgMessage): Promise<void> {
     const state = this.chat!.getState();
-    // Edits, unsends and tapbacks reuse or point at older rows; only new rows count.
-    const isNew = raw.type === undefined && raw.is_reaction !== true;
-    if (isNew && !raw.is_from_me && (raw.text?.trim() || raw.attachments?.length)) {
-      const info = await this.chatInfo(raw.chat_id);
-      if (this.config.services.includes(info.service ?? "")) {
-        await this.chat!.processMessage(
-          this,
-          this.encodeThreadId(raw.chat_id),
-          this.parseMessage(raw),
-        );
-      }
+    // Edits and unsends reuse older rows; only new rows count.
+    const isNew = raw.type === undefined;
+    const wanted =
+      isNew &&
+      !raw.is_from_me &&
+      (raw.is_reaction === true
+        ? raw.reacted_to_guid !== undefined
+        : Boolean(raw.text?.trim() || raw.attachments?.length));
+    if (wanted && this.config.services.includes((await this.chatInfo(raw.chat_id)).service ?? "")) {
+      const threadId = this.encodeThreadId(raw.chat_id);
+      if (raw.is_reaction === true) await this.reacted(threadId, raw);
+      else await this.chat!.processMessage(this, threadId, this.parseMessage(raw));
     }
     if (raw.type === undefined) {
       const cursor = (await state.get<number>(CURSOR_KEY)) ?? 0;
@@ -275,35 +368,74 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
     }
   }
 
+  /** A tapback on a message, as a Chat SDK reaction. */
+  private async reacted(threadId: string, raw: ImsgMessage): Promise<void> {
+    const standard = raw.reaction_type ? TAPBACK_EMOJI[raw.reaction_type] : undefined;
+    const rawEmoji = raw.reaction_emoji || raw.reaction_type || "";
+    if (rawEmoji === "") return;
+    const sender = raw.sender ?? "";
+    await this.chat!.processReaction({
+      adapter: this,
+      threadId,
+      messageId: reactedGuid(raw.reacted_to_guid!),
+      emoji: getEmoji(standard ?? rawEmoji),
+      rawEmoji,
+      added: raw.is_reaction_add !== false,
+      user: {
+        userId: sender,
+        userName: sender,
+        fullName: raw.sender_name || sender,
+        isBot: false,
+        isMe: false,
+      },
+      raw,
+    });
+  }
+
   // Outgoing
+
+  /**
+   * Sends once. An "uncertain" answer (imsg's -32001) may have been delivered,
+   * so it isn't retried; sending again could post the message twice.
+   */
+  private async send(params: Record<string, unknown>): Promise<{ id?: number; guid?: string }> {
+    try {
+      return await this.rpc.call("send", { ...params, allow_sms_fallback: false });
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== -32001) throw error;
+      this.config.log(`iMessage: imsg couldn't confirm a send; not retrying it: ${String(error)}`);
+      return {};
+    }
+  }
 
   async postMessage(
     threadId: string,
     message: AdapterPostableMessage,
   ): Promise<RawMessage<ImsgMessage>> {
     const chatId = this.decodeThreadId(threadId);
-    const text = this.converter.renderPostable(message).trim();
+    let text = this.converter.renderPostable(message).trim();
     let last: { id?: number; guid?: string } = {};
-    if (text !== "") {
-      last = await this.rpc.call("send", { chat_id: chatId, text, allow_sms_fallback: false });
-    }
+    // Every file is staged on the Mac first, so a failed upload sends nothing.
+    const staged: Array<string> = [];
     for (const file of extractFiles(message)) {
       const data = await toBuffer(file.data, {
         platform: "imessage" as never,
         throwOnUnsupported: false,
       });
       if (data === null) continue;
-      const staged = await this.rpc.call<{ path: string }>("attachment.write", {
+      const written = await this.rpc.call<{ path: string }>("attachment.write", {
         name: file.filename,
         data: data.toString("base64"),
       });
-      last = await this.rpc.call("send", {
-        chat_id: chatId,
-        file: staged.path,
-        allow_sms_fallback: false,
-      });
+      staged.push(written.path);
     }
-    const id = String(last.id ?? last.guid ?? "");
+    // The text rides with the first file: one send, and imsg can confirm it by the text.
+    for (const path of staged) {
+      last = await this.send({ chat_id: chatId, file: path, ...(text ? { text } : {}) });
+      text = "";
+    }
+    if (text !== "") last = await this.send({ chat_id: chatId, text });
+    const id = last.guid ?? "";
     return {
       id,
       threadId,
@@ -320,21 +452,47 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
   }
 
   async addReaction(
-    _threadId: string,
-    _messageId: string,
-    _emoji: EmojiValue | string,
+    threadId: string,
+    messageId: string,
+    emoji: EmojiValue | string,
   ): Promise<void> {
-    throw new ValidationError(
-      "imessage",
-      "Tapbacks need the Mac's private Messages bridge, which is off.",
-    );
+    await this.tapback(threadId, messageId, emoji, false);
   }
 
-  async removeReaction(): Promise<void> {
-    throw new ValidationError(
-      "imessage",
-      "Tapbacks need the Mac's private Messages bridge, which is off.",
-    );
+  async removeReaction(
+    threadId: string,
+    messageId: string,
+    emoji: EmojiValue | string,
+  ): Promise<void> {
+    await this.tapback(threadId, messageId, emoji, true);
+  }
+
+  private async tapback(
+    threadId: string,
+    messageId: string,
+    emoji: EmojiValue | string,
+    remove: boolean,
+  ): Promise<void> {
+    if (!this.tapbacks) {
+      throw new ValidationError(
+        "imessage",
+        "iMessage tapbacks are off: they need imsg's private Messages bridge, which needs SIP off on the Mac.",
+      );
+    }
+    const name = typeof emoji === "string" ? emoji : emoji.name;
+    const kind = tapbackKind(name);
+    if (kind === undefined) {
+      throw new ValidationError(
+        "imessage",
+        `iMessage has no ${name} tapback. Use heart, thumbsup, thumbsdown, laugh, bangbang or question.`,
+      );
+    }
+    await this.rpc.call("tapback", {
+      chat_id: this.decodeThreadId(threadId),
+      message_guid: messageId,
+      kind,
+      ...(remove ? { remove: true } : {}),
+    });
   }
 
   /** Typing bubbles need the private Messages bridge; nothing to show without it. */
@@ -353,11 +511,11 @@ export class ImessageAdapter implements Adapter<number, ImsgMessage> {
       limit: options?.limit ?? 50,
       attachments: true,
     });
-    // imsg returns the newest first.
+    // imsg returns the newest first; row ids give the order.
     const messages = result.messages
       .filter((raw) => raw.is_reaction !== true)
-      .map((raw) => this.parseMessage(raw))
-      .toSorted((a, b) => Number(a.id) - Number(b.id));
+      .toSorted((a, b) => a.id - b.id)
+      .map((raw) => this.parseMessage(raw));
     return { messages };
   }
 

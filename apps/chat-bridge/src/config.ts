@@ -55,6 +55,11 @@ export interface ImessageConfig {
   readonly services: ReadonlyArray<string>;
   /** On the very first start, also answer messages after this Messages row id. */
   readonly startAfterRowId?: number | undefined;
+  /**
+   * Let the agent send tapbacks. They need imsg's private Messages bridge (SIP
+   * off on the Mac, then `imsg launch`), and stay off until it runs. Default off.
+   */
+  readonly outboundReactions: boolean;
 }
 
 export const DEFAULT_TOOLS_PORT = 3920;
@@ -116,8 +121,10 @@ function parseImessage(raw: unknown): ImessageConfig | undefined {
   if (typeof raw.projectId !== "string" || raw.projectId === "") {
     fail("imessage.projectId is required.");
   }
-  if (raw.allowEveryone !== undefined && typeof raw.allowEveryone !== "boolean") {
-    fail("imessage.allowEveryone must be true or false.");
+  for (const field of ["allowEveryone", "outboundReactions"]) {
+    if (raw[field] !== undefined && typeof raw[field] !== "boolean") {
+      fail(`imessage.${field} must be true or false.`);
+    }
   }
   if (
     raw.startAfterRowId !== undefined &&
@@ -143,6 +150,7 @@ function parseImessage(raw: unknown): ImessageConfig | undefined {
     services:
       raw.services === undefined ? ["iMessage"] : stringList(raw.services, "imessage.services"),
     startAfterRowId: raw.startAfterRowId as number | undefined,
+    outboundReactions: raw.outboundReactions === true,
   };
 }
 

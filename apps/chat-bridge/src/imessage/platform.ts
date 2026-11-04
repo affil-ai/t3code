@@ -81,7 +81,10 @@ export function imessagePlatform(options: {
               "This is a group conversation and every message in it reaches you. Answer only when someone is talking to you or you clearly have something to add; otherwise end the run without a final message.",
             ]),
         `To send files, such as images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace.`,
-        "iMessage has no mentions and the bridge can't send tapbacks, so don't call chat_react here.",
+        options.adapter.canReact
+          ? `To react with a tapback, call chat_react with chatKey "${chatKey}", the message id and heart, thumbsup, thumbsdown, laugh, bangbang or question.`
+          : "iMessage has no mentions, and tapbacks are off on this Mac, so don't call chat_react here.",
+        "People's tapbacks on messages reach you as context with your next turn.",
       ].join(" "),
     refusal: (userId) =>
       `Sorry, you can't use this bot yet. Ask whoever runs it to add ${userId} to its allowed iMessage senders.`,
@@ -91,13 +94,17 @@ export function imessagePlatform(options: {
         .thread(chatThreadKey)
         .post(uploads.length > 0 ? { markdown: text, files: uploads } : { markdown: text });
     },
+    react: async ({ chatThreadKey, messageId, emoji }) =>
+      options.adapter.addReaction(chatThreadKey, messageId, emoji),
     download: async (path) => new Uint8Array(await options.adapter.readAttachment(path)),
     history: async (chatThreadKey, messageId): Promise<Array<EarlierMessage>> => {
       const { messages } = await options.adapter.fetchMessages(chatThreadKey, {
         limit: HISTORY_LIMIT + 1,
       });
-      return messages
-        .filter((each) => Number(each.id) < Number(messageId) && each.text.trim() !== "")
+      // Only what came before the message; when it isn't among them, they all did.
+      const at = messages.findIndex((each) => each.id === messageId);
+      return (at === -1 ? messages : messages.slice(0, at))
+        .filter((each) => each.text.trim() !== "")
         .slice(-HISTORY_LIMIT)
         .map((each) => ({
           userId: each.author.isMe ? "" : each.author.userId,

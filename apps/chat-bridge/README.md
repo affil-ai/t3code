@@ -315,7 +315,16 @@ that are read (default `["iMessage"]`), and chats on any other service are
 left alone. Each conversation is one ongoing T3 thread, and group chats are
 allowed. In a group, every message goes to the agent, which decides whether to
 answer. Photos and files arrive as attachments, and iPhone HEIC photos become
-JPEG. The agent sends files with `chat_post`. Answers are sent as plain text.
+JPEG. The agent sends files, such as images and PDFs, with `chat_post`. The
+text goes out with the first file, and a send `imsg` can't confirm isn't
+retried, so nothing arrives twice. Answers are sent as plain text.
+
+Reactions work the same way on every platform. A reaction never starts a run.
+In a bound thread, a reaction from someone allowed (an iMessage tapback or a
+Slack reaction) is kept as context for the thread's next turn, such as
+"Vivek reacted love (heart) to message <id>", and removals are kept too.
+Slack reactions reach the bridge only if the Slack app subscribes to
+`reaction_added` and `reaction_removed`.
 
 How it connects:
 
@@ -342,7 +351,8 @@ Config, in `config.json`:
   "projectId": "<T3 project id>",
   "worktreeFrom": "dev",
   "allowEveryone": false,
-  "allowedHandles": ["+14155550100", "someone@example.com"]
+  "allowedHandles": ["+14155550100", "someone@example.com"],
+  "outboundReactions": false
 }
 ```
 
@@ -368,12 +378,55 @@ Checked on 2026-11-04 by killing each piece in turn: the bridge, the tunnel,
 the T3 server and the Mac service each came back without help, and the bridge
 reconnected to each.
 
-### What iMessage can't do here
+### What iMessage can't do without SIP off
 
-`imsg` can't send tapbacks, typing bubbles or read receipts, or edit and unsend
-messages, without Apple's private Messages framework, which needs SIP turned
-off on the Mac. So `chat_react` isn't offered, there is no "typing" while a run
-works, and messages show as delivered, not read.
+`imsg` sends tapbacks, typing bubbles and read receipts, and edits and unsends
+messages, only through Apple's private Messages framework. It reaches that
+framework by injecting a helper into Messages, which needs SIP turned off on
+the Mac. Until then the agent isn't offered `chat_react` in iMessage, there's
+no "typing" while a run works, and messages show as delivered, not read.
+
+`imsg react` can send the six standard tapbacks without SIP, by driving
+Messages' Tapback picker with UI scripting. The bridge doesn't use it:
+
+- it reacts to the last or selected message, not one picked by id;
+- it needs Messages frontmost in the active GUI session, and the bridge's Mac
+  user runs in the background while someone else uses the Mac;
+- it needs an Accessibility grant, and a timeout leaves it unknown whether the
+  tapback was sent.
+
+**Outbound tapbacks with SIP off.** Set `imessage.outboundReactions: true`.
+On each connect the adapter asks `imsg` for `status`. It turns tapbacks on
+only when imsg's private bridge is running and offers `tapback`, and logs
+which way it went. Otherwise `chat_react` fails with a clear message, and the
+agent is told not to use it. Tapbacks target a message by its guid. They come
+in six kinds: heart, thumbsup, thumbsdown, laugh, bangbang and question.
+
+Turning SIP off on an Apple Silicon Mac (imsg needs only `csrutil disable`;
+it documents no boot arguments):
+
+1. Apple menu → Shut Down, and wait until the Mac is fully off.
+2. Press and hold the power button until "Loading startup options" appears.
+   Click Options, then Continue.
+3. If asked, choose an administrator account and enter its password.
+4. In the menu bar, choose Utilities → Terminal.
+5. Run `csrutil disable`, answer `y`, and enter an administrator's name and
+   password when asked.
+6. Run `csrutil status`. It should say "System Integrity Protection status:
+   disabled."
+7. Apple menu → Restart, then log back in to the Mac user that runs Messages
+   for the bridge.
+
+Then, as that user, with no further clicks: run `imsg launch --install-agent`,
+which injects the helper into Messages and keeps it injected across restarts.
+Check that `imsg status` shows the bridge running. Then set
+`outboundReactions: true` and restart the bridge. On macOS 26 and later,
+library validation or Messages' private entitlement checks can still block the
+helper with SIP off; `imsg status` says so if they do.
+
+To undo: run `imsg launch --uninstall-agent`, set `outboundReactions: false`,
+then in Recovery run `csrutil enable` and restart. SIP off lowers the
+security of the whole Mac, not only Messages.
 
 ## Limits
 
@@ -395,22 +448,21 @@ pnpm --filter @t3tools/chat-bridge typecheck
 pnpm --filter @t3tools/chat-bridge test
 ```
 
-| File                   | What it does                                                          |
-| ---------------------- | --------------------------------------------------------------------- |
-| `src/bin.ts`           | The `start`, `login` and `manifest` commands.                         |
-| `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                |
-| `src/platform.ts`      | `ChatPlatform`: what the core needs beyond the SDK.                   |
-| `src/slackPlatform.ts` | Slack as a `ChatPlatform`.                                            |
-| `src/imessage/`        | The iMessage Chat SDK adapter, its RPC client and its `ChatPlatform`. |
-| `mac/`                 | The Mac service and its LaunchAgent.                                  |
-| `src/bridge.ts`        | Turns Slack events into T3 turns and watches each run.                |
-| `src/runFeed.ts`       | What a run is doing now, from T3's activity view.                     |
-| `src/activity.ts`      | T3 activity items as status lines; redaction.                         |
-| `src/questions.ts`     | Agents' questions as buttons, and their answers.                      |
-| `src/threads.ts`       | The T3 MCP calls: launch, send, wait, read, configure.                |
-| `src/t3Client.ts`      | The MCP client for T3.                                                |
-| `src/slackHost.ts`     | Slack's adapter, its messages, and Slack-only calls.                  |
-| `src/toolServer.ts`    | The `chat_post` / `chat_react` MCP server.                            |
-| `src/store.ts`         | Inbox, bindings, handled messages and owed replies.                   |
-| `src/chatState.ts`     | The Chat SDK's state on the same SQLite file.                         |
-| `src/login.ts`         | T3's MCP OAuth sign-in.                                               |
+| File                | What it does                                                                                                           |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `src/bin.ts`        | The `start`, `login` and `manifest` commands.                                                                          |
+| `src/bridge.ts`     | The core: chat messages into T3 turns, each run watched, answers back.                                                 |
+| `src/platform.ts`   | `ChatPlatform`: what the core needs from a platform beyond the SDK.                                                    |
+| `src/chatHost.ts`   | The one Chat SDK `Chat`, with an adapter per platform.                                                                 |
+| `src/slack/`        | Slack: the adapter's messages and Slack-only calls (`host.ts`), its `ChatPlatform`, text helpers and the app manifest. |
+| `src/imessage/`     | iMessage: the Chat SDK adapter, its RPC client and its `ChatPlatform`.                                                 |
+| `mac/`              | The Mac service and its LaunchAgent.                                                                                   |
+| `src/runFeed.ts`    | What a run is doing now, from T3's activity view.                                                                      |
+| `src/activity.ts`   | T3 activity items as status lines; redaction.                                                                          |
+| `src/questions.ts`  | Agents' questions as buttons or numbered text, and their answers.                                                      |
+| `src/threads.ts`    | The T3 MCP calls: launch, send, wait, read, configure.                                                                 |
+| `src/t3Client.ts`   | The MCP client for T3.                                                                                                 |
+| `src/toolServer.ts` | The `chat_post` / `chat_react` MCP server.                                                                             |
+| `src/store.ts`      | Inbox, bindings, handled messages and owed replies.                                                                    |
+| `src/chatState.ts`  | The Chat SDK's state on the same SQLite file.                                                                          |
+| `src/login.ts`      | T3's MCP OAuth sign-in.                                                                                                |

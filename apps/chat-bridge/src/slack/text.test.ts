@@ -1,6 +1,6 @@
 import { assert, it } from "vite-plus/test";
 
-import { slackTitle, withoutAttribution, withRichContent } from "./slackText.ts";
+import { slackTitle, withoutAttribution, withRichContent } from "./text.ts";
 
 it("leaves a plain message alone", () => {
   assert.strictEqual(withRichContent("fix the build", { text: "fix the build" }), "fix the build");

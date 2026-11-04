@@ -8,12 +8,13 @@ import {
   earlierText,
   type ChannelRoute,
   type InboundEvent,
+  type InboundReaction,
   routeFor,
   threadTitle,
   type BlockMessage,
   type Reply,
 } from "./bridge.ts";
-import { slackFirstTurnNote, slackPlatform } from "./slackPlatform.ts";
+import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
 import { type RunStatus, T3Threads } from "./threads.ts";
@@ -627,6 +628,42 @@ it("keeps asides, other people and messages for other bots as context, once", as
   assert.include(sends[0], "Grace (<@U9>): fix the build");
   assert.notInclude(sends[1], "since your last turn");
   assert.include(sends[1], "Chat key:");
+});
+
+it("keeps reactions from allowed people in a bound thread as context, and never starts a run", async () => {
+  const { t3, bridge } = harness();
+  const reaction = (overrides: Partial<InboundReaction> = {}): InboundReaction => ({
+    eventId: "reaction:1",
+    chatThreadKey: "slack:C1:100.1",
+    messageId: "100.2",
+    author: { userId: "U1", userName: "ada", fullName: "Ada" },
+    emoji: "thumbs_up",
+    rawEmoji: "+1",
+    added: true,
+    ...overrides,
+  });
+  // Before the thread is bound, a reaction is dropped.
+  await bridge.reacted(reaction({ eventId: "reaction:0" }));
+  await bridge.receive(event("100.1"));
+  await bridge.reacted(reaction());
+  await bridge.reacted(reaction());
+  await bridge.reacted(reaction({ eventId: "reaction:2", added: false }));
+  await bridge.reacted(
+    reaction({ eventId: "reaction:3", author: { userId: "U9", userName: "eve", fullName: "Eve" } }),
+  );
+  assert.lengthOf(
+    t3.calls.filter((call) => call.tool === "t3_thread_send"),
+    0,
+  );
+  await bridge.receive(event("100.3", { kind: "follow_up", text: "go" }));
+  const sent = String(t3.calls.find((call) => call.tool === "t3_thread_send")!.args.message);
+  const lines = sent.split("\n");
+  assert.lengthOf(
+    lines.filter((line) => line === "Ada (<@U1>) reacted +1 (thumbs_up) to message 100.2"),
+    1,
+  );
+  assert.include(sent, "Ada (<@U1>) removed their +1 (thumbs_up) reaction from message 100.2");
+  assert.notInclude(sent, "Eve");
 });
 
 it("starts direct messages in the direct-message project, when there is one", async () => {

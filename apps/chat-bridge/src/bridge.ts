@@ -95,6 +95,21 @@ export interface InboundEvent {
   readonly mentions: ReadonlyArray<MentionedUser>;
 }
 
+/** Someone added or removed a reaction (a Slack reaction, an iMessage tapback) on a message. */
+export interface InboundReaction {
+  /** Unique per reaction change, so a redelivery is kept once. */
+  readonly eventId: string;
+  readonly chatThreadKey: string;
+  /** The message reacted to, as the platform names it in turns. */
+  readonly messageId: string;
+  readonly author: ChatAuthor;
+  /** Chat SDK's normalized name, such as `thumbs_up`. */
+  readonly emoji: string;
+  /** As the platform sent it, such as `👍` or `+1`. */
+  readonly rawEmoji: string;
+  readonly added: boolean;
+}
+
 export type InboundOutcome =
   | { readonly type: "started"; readonly threadId: string }
   | { readonly type: "followed_up"; readonly threadId: string; readonly delivery: Delivery }
@@ -864,6 +879,34 @@ export class Bridge {
     this.notes.set(chatThreadKey, { text, at: this.seenPosition.get(chatThreadKey) ?? -1 });
     this.showText(chatThreadKey, text);
     return true;
+  }
+
+  /**
+   * A reaction never starts a run. In a bound thread, from someone allowed,
+   * it is kept as context for the thread's next turn, like an aside.
+   */
+  async reacted(reaction: InboundReaction): Promise<void> {
+    const binding = this.store.binding(reaction.chatThreadKey);
+    if (binding === undefined) return;
+    const platform = this.platform(reaction.chatThreadKey);
+    if (!(await this.isAllowed(platform, reaction.author.userId))) return;
+    const who = platform.person(
+      reaction.author.userId,
+      reaction.author.fullName || reaction.author.userName,
+    );
+    const shown =
+      reaction.rawEmoji === reaction.emoji
+        ? reaction.emoji
+        : `${reaction.rawEmoji} (${reaction.emoji})`;
+    this.store.addContext(binding.chatThreadKey, {
+      eventId: reaction.eventId,
+      line: reaction.added
+        ? `${who} reacted ${shown} to message ${reaction.messageId}`
+        : `${who} removed their ${shown} reaction from message ${reaction.messageId}`,
+    });
+    this.log(
+      `${reaction.eventId}: kept a reaction (${reaction.emoji}${reaction.added ? "" : ", removed"}) for ${binding.threadId}.`,
+    );
   }
 
   /** Someone pressed an answer button. Only allowed users may answer. */

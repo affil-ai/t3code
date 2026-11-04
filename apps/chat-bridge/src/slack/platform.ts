@@ -1,6 +1,6 @@
 /** Slack as a `ChatPlatform`: what the core needs, on top of the Socket Mode host. */
-import type { Access, ChannelRoute, ChatPlatform, ThreadRoute } from "./platform.ts";
-import type { SlackChatHost } from "./slackHost.ts";
+import type { Access, ChannelRoute, ChatPlatform, ThreadRoute } from "../platform.ts";
+import type { SlackChatHost } from "./host.ts";
 
 /** Tells the agent how its answer reaches Slack, once per thread. */
 export function slackFirstTurnNote(chatKey: string): string {

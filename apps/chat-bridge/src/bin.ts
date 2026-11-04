@@ -18,10 +18,10 @@ import { dataDir, loadConfig } from "./config.ts";
 import { login, savedToken } from "./login.ts";
 import { createImessageAdapter } from "./imessage/adapter.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
-import { slackAppManifest } from "./manifest.ts";
+import { slackAppManifest } from "./slack/manifest.ts";
 import { type ChatPlatform, platformFor } from "./platform.ts";
-import { createSlackHost, redactSlackSecrets, type SlackChatHost } from "./slackHost.ts";
-import { slackPlatform } from "./slackPlatform.ts";
+import { createSlackHost, redactSlackSecrets, type SlackChatHost } from "./slack/host.ts";
+import { slackPlatform } from "./slack/platform.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
@@ -98,6 +98,7 @@ async function start(): Promise<void> {
           port: settings.port,
           services: settings.services,
           startAfterRowId: settings.startAfterRowId,
+          outboundReactions: settings.outboundReactions,
           log,
         });
         const { platform, deliver } = imessagePlatform({
@@ -142,6 +143,7 @@ async function start(): Promise<void> {
     onError: (error) => log(`Chat message failed: ${String(error)}`),
     onStop: (chatThreadKey, userId) => core.stopRequested(chatThreadKey, userId),
     onAnswer: (chatThreadKey, userId, value) => core.questionClicked(chatThreadKey, userId, value),
+    onReaction: (reaction) => core.reacted(reaction),
     log,
   });
   const running = chat;

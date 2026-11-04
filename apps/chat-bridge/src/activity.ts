@@ -4,7 +4,7 @@
  * it in the thread's status, the way Devin and Office do. Nothing here
  * touches Slack or T3.
  */
-import { redactSlackSecrets } from "./slackHost.ts";
+import { redactSlackSecrets } from "./slack/host.ts";
 
 /** One item from `t3_thread_read` with `view: "activity"`. */
 export interface ActivityItem {

@@ -11,7 +11,7 @@ import {
   stripBotMention,
   toEarlierMessages,
   toInboundEvent,
-} from "./slackHost.ts";
+} from "./host.ts";
 
 it("strips only the leading bot mention", () => {
   assert.strictEqual(stripBotMention("@t3 fix it", ["t3"]), "fix it");
