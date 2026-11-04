@@ -199,16 +199,18 @@ import {
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import {
   archiveSelectedThreadEntries,
+  resolveProjectStatusIndicator,
+  sortProjectsForSidebar,
+} from "./LegacySidebar.logic";
+import {
   deleteSelectedThreadEntries,
   filterSidebarV2VisibleThreads,
   resolveAdjacentThreadId,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
-  resolveProjectStatusIndicator,
   resolveThreadLastVisitedAt,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
-  sortProjectsForSidebar,
   useSidebarRowSubscriptionLease,
   setFileDragActive,
   useThreadJumpHintsVisible,

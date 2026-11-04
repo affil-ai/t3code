@@ -49,18 +49,13 @@ const DEVELOPMENT_ASSETS = {
   androidNotificationColor: "#00639B",
 } as const;
 
-// fork: brand. Preview and release use the T3 Work desktop's VO icon.
-const VO_ICON = fromRepoRoot(BRAND_ASSET_PATHS.forkIosIconPng);
-const VO_ANDROID_FOREGROUND = fromRepoRoot(BRAND_ASSET_PATHS.forkAndroidAdaptiveForegroundPng);
-const VO_BACKGROUND_COLOR = "#1f1f1f";
-
 const PREVIEW_ASSETS = {
-  appIcon: VO_ICON,
-  iosIcon: VO_ICON,
-  splashIcon: VO_ICON,
-  androidAdaptiveForeground: VO_ANDROID_FOREGROUND,
-  androidAdaptiveBackgroundColor: VO_BACKGROUND_COLOR,
-  androidAdaptiveBackgroundImage: undefined,
+  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
+  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIconComposerProject),
+  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
+  androidAdaptiveForeground,
+  androidAdaptiveBackgroundColor: "#111533",
+  androidAdaptiveBackgroundImage: "./assets/android-icon-background-nightly.png",
   androidSplashIcon: "./assets/android-splash-icon-nightly.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
@@ -68,11 +63,11 @@ const PREVIEW_ASSETS = {
 } as const;
 
 const RELEASE_ASSETS = {
-  appIcon: VO_ICON,
-  iosIcon: VO_ICON,
-  splashIcon: VO_ICON,
-  androidAdaptiveForeground: VO_ANDROID_FOREGROUND,
-  androidAdaptiveBackgroundColor: VO_BACKGROUND_COLOR,
+  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
+  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIconComposerProject),
+  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
+  androidAdaptiveForeground,
+  androidAdaptiveBackgroundColor: "#000000",
   androidAdaptiveBackgroundImage: undefined,
   androidSplashIcon: "./assets/android-splash-icon-prod.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
@@ -83,7 +78,6 @@ const RELEASE_ASSETS = {
 const VARIANT_CONFIG = {
   development: {
     appName: "T3 Code Dev",
-    displayName: "T3 Work Dev", // fork: brand
     scheme: "t3code-dev",
     iosBundleIdentifier: "com.t3tools.t3code.dev",
     androidPackage: "com.t3tools.t3code.dev",
@@ -92,7 +86,6 @@ const VARIANT_CONFIG = {
   },
   preview: {
     appName: "T3 Code Preview",
-    displayName: "T3 Work Preview", // fork: brand
     scheme: "t3code-preview",
     iosBundleIdentifier: "com.t3tools.t3code.preview",
     androidPackage: "com.t3tools.t3code.preview",
@@ -101,7 +94,6 @@ const VARIANT_CONFIG = {
   },
   production: {
     appName: "T3 Code",
-    displayName: "T3 Work", // fork: brand
     scheme: "t3code",
     iosBundleIdentifier: "com.t3tools.t3code",
     androidPackage: "com.t3tools.t3code",
@@ -124,6 +116,8 @@ function resolveAppVariant(value: string | undefined): AppVariant {
 }
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
+// Copied thread links open the app. app.t3.codes/.well-known lists every variant's identifiers.
+const HOSTED_APP_HOST = "app.t3.codes";
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
   : variant.iosBundleIdentifier;
@@ -257,17 +251,15 @@ const config: ExpoConfig = {
     bundleIdentifier: iosBundleIdentifier,
     // Avoid Personal Team fallback: it cannot sign App Groups, Apple sign-in or push entitlements.
     appleTeamId: "ARK85ZXQ4Z",
-    // Personal and wildcard profiles cannot sign associated domains.
-    associatedDomains: isIosPersonalTeamBuild
-      ? []
-      : [`applinks:${variant.relyingParty}`, `webcredentials:${variant.relyingParty}`],
+    associatedDomains: [
+      `applinks:${variant.relyingParty}`,
+      `webcredentials:${variant.relyingParty}`,
+      `applinks:${HOSTED_APP_HOST}`,
+    ],
     entitlements: {
-      // Follows the signed bundle id, so a personal-team build signs its own group.
-      "keychain-access-groups": [`$(AppIdentifierPrefix)${iosBundleIdentifier}`],
+      "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
     },
     infoPlist: {
-      // fork: brand. The home screen name; `name` keeps the T3Code native project.
-      CFBundleDisplayName: variant.displayName,
       UISupportedInterfaceOrientations: [
         "UIInterfaceOrientationPortrait",
         "UIInterfaceOrientationLandscapeLeft",
@@ -313,14 +305,19 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: true,
     // expo-sensors declares this for its pedometer, which the app does not use.
     blockedPermissions: ["android.permission.ACTIVITY_RECOGNITION"],
+    intentFilters: [
+      {
+        action: "VIEW",
+        autoVerify: true,
+        data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
+        category: ["BROWSABLE", "DEFAULT"],
+      },
+    ],
   },
   web: {
     favicon: variant.assets.appIcon,
   },
   plugins: [
-    // A plugin's entitlement mod runs after those of plugins later in this array,
-    // so the strip goes first to remove what expo-notifications adds.
-    ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
     "expo-asset",
     "react-native-pdf-jsi",
     [
@@ -381,7 +378,7 @@ const config: ExpoConfig = {
       "expo-audio",
       {
         microphonePermission: "Allow T3 Code to use your microphone for voice input.",
-        recordAudioAndroid: false,
+        recordAudioAndroid: true,
         enableBackgroundPlayback: false,
         enableBackgroundRecording: false,
       },
@@ -395,7 +392,14 @@ const config: ExpoConfig = {
         recordAudioAndroid: false,
       },
     ],
-    ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
+    [
+      "expo-image-picker",
+      {
+        photosPermission: false,
+        // `false` makes this plugin add RECORD_AUDIO to blockedPermissions, breaking Android dictation.
+        microphonePermission: "Allow T3 Code to use your microphone for voice input.",
+      },
+    ],
     [
       "expo-splash-screen",
       {
@@ -441,8 +445,6 @@ const config: ExpoConfig = {
     ["expo-sensors", { motionPermission: false }],
     // Mods run in reverse order; expo-widgets must create and wipe the target before assets are added.
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
-    // fork: the Standup widget needs only the keychain group, so device builds keep it.
-    "./plugins/withStandupWidget.cjs",
     "./plugins/withAndroidNetworkSecurityConfig.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
     "./plugins/withAndroidInputBackground.cjs",
@@ -450,6 +452,7 @@ const config: ExpoConfig = {
     "./plugins/withAndroidModernAlertDialog.cjs",
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
+    ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
   ],
   extra: {
     appVariant: APP_VARIANT,

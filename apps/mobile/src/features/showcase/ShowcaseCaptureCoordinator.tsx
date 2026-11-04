@@ -7,12 +7,6 @@ import {
   type NavigationState,
 } from "@react-navigation/native";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import {
-  isFirstmateAgent,
-  resolveSelectedAgent,
-  sanitizeSelectedAgentData,
-} from "@t3tools/client-runtime/firstmate/agents"; // fork: work
-import { EnvironmentId, FIRSTMATE_AGENT_ID, FirstmateTaskId } from "@t3tools/contracts"; // fork: work
 import { AsyncResult } from "effect/reactivity";
 import { requireOptionalNativeModule } from "expo";
 
@@ -30,8 +24,6 @@ import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
 import { environmentThreadShells } from "../../state/threads";
 import { holdEditingQueuedMessage } from "../../state/use-thread-outbox";
 import { workspaceConnections } from "../../state/workspace";
-import { agentsHomeAtom } from "../../state/agents"; // fork: work
-import { firstmateEnvironment, firstmateHomeAtom } from "../../state/firstmate"; // fork: work
 import { resolveThemeAppearance } from "../settings/appearance/AppearancePreferencesProvider";
 import {
   applyNativeShowcaseOrientation,
@@ -47,6 +39,7 @@ import {
   isShowcaseThemeApplied,
   SHOWCASE_THREAD_ID,
   showcaseReadinessKey,
+  showcaseSceneOnScreen,
   shouldNavigateToShowcaseScene,
   type ShowcaseNavigationTarget,
 } from "./showcaseCaptureModel";
@@ -60,21 +53,6 @@ import {
   subscribeToShowcaseRenderSignal,
 } from "./showcaseRenderSignal";
 import { retryShowcaseOperation } from "./showcaseRetry";
-// fork: work
-import {
-  isShowcaseWorkspaceRoot,
-  isWorkShowcaseScene,
-  isWorkspaceRootShowcaseScene,
-  resolveShowcaseScene,
-  SHOWCASE_WORK_AGENT_COUNT,
-  SHOWCASE_WORK_TASK_ID,
-  showcaseWorkspaceTab,
-} from "./showcaseScenes";
-import {
-  getShowcaseSelectedWorkspaceTab,
-  requestShowcaseWorkspaceTab,
-  subscribeToShowcaseWorkspaceTab,
-} from "./showcaseWorkspaceTab";
 import { stageShowcaseAgentActivity } from "./stageShowcaseAgentActivity";
 import { settingsNavigationState } from "../settings/settings-navigation";
 import { selectWorkspaceDetail } from "../workspace/workspace-detail-selection";
@@ -116,26 +94,13 @@ function showcaseNavigationAction(
   scene: ShowcaseScene,
   environmentId: string,
   rootState: NavigationState,
-  workEnvironmentId: string | null, // fork: work
-): NavigationAction | null {
+): NavigationAction {
   const params = { environmentId, threadId: SHOWCASE_THREAD_ID };
   switch (scene) {
     case "threads":
       return StackActions.popToTop();
     case "agent-activity":
-    case "work": // fork: work
       return CommonActions.reset({ index: 0, routes: [{ name: "Home" }] });
-    case "work-task": // fork: work
-      return workEnvironmentId === null
-        ? null
-        : selectWorkspaceDetail({
-            name: "WorkTask",
-            params: {
-              environmentId: workEnvironmentId,
-              taskId: SHOWCASE_WORK_TASK_ID,
-              agentId: FIRSTMATE_AGENT_ID,
-            },
-          });
     case "environments":
       return CommonActions.reset(settingsNavigationState(rootState, "SettingsEnvironments"));
     case "terminal":
@@ -166,8 +131,6 @@ export function installShowcaseCapture(
   let agentActivity: Run | null = null;
   let lastNavigation: ShowcaseNavigationTarget | null = null;
   let readiness: { key: string; cancel: () => void } | null = null;
-  // fork: work. Keeps the work-task scene's task query mounted while it is requested.
-  let workTaskSubscription: { key: string; unsubscribe: () => void } | null = null;
   const isCancelled = (run?: Run) => () => disposed || run?.cancelled === true;
 
   const devMenu = requireOptionalNativeModule<{
@@ -222,7 +185,6 @@ export function installShowcaseCapture(
     const scene = getNativeShowcaseScene();
     if (scene && scene !== requestedScene) {
       requestedScene = scene;
-      requestShowcaseWorkspaceTab(showcaseWorkspaceTab(scene)); // fork: work
       // Draws belong to their scene request; revisiting review must wait for its new surface.
       clearShowcaseRenderSignal();
       agentActivity = cancelRun(agentActivity);
@@ -315,64 +277,6 @@ export function installShowcaseCapture(
     };
   };
 
-  // fork: work. Every seeded environment carries the same boards; the scenes use
-  // whichever one the app picked as its Firstmate home.
-  const workEnvironmentId = () => {
-    const home = appAtomRegistry.get(firstmateHomeAtom);
-    return home === null ? null : String(home.environmentId);
-  };
-
-  /** Selects Firstmate for Work scenes and reports whether their boards are seeded. */
-  const stepWork = (scene: ShowcaseScene | null): boolean => {
-    const environmentId = scene === "work-task" ? workEnvironmentId() : null;
-    const taskKey = environmentId === null ? null : `${environmentId}:${SHOWCASE_WORK_TASK_ID}`;
-    const taskAtom =
-      environmentId === null
-        ? null
-        : firstmateEnvironment.getTask({
-            environmentId: EnvironmentId.make(environmentId),
-            input: { taskId: FirstmateTaskId.make(SHOWCASE_WORK_TASK_ID) },
-          });
-    if (workTaskSubscription?.key !== taskKey) {
-      workTaskSubscription?.unsubscribe();
-      workTaskSubscription =
-        taskKey === null || taskAtom === null
-          ? null
-          : { key: taskKey, unsubscribe: appAtomRegistry.subscribe(taskAtom, evaluate) };
-    }
-    if (scene === null || !isWorkShowcaseScene(scene)) return true;
-
-    const agents = appAtomRegistry.get(agentsHomeAtom);
-    const preferences = appAtomRegistry.get(mobilePreferencesAtom);
-    const saved = sanitizeSelectedAgentData(
-      AsyncResult.isSuccess(preferences) ? preferences.value.selectedAgent : undefined,
-    );
-    const isFirstmate =
-      agents !== null &&
-      isFirstmateAgent(
-        resolveSelectedAgent(agents.agents, saved.selectedAgentId, saved.preferCustomAgent),
-      );
-    if (agents !== null && !isFirstmate && AsyncResult.isSuccess(preferences)) {
-      appAtomRegistry.set(updateMobilePreferencesAtom, {
-        transform: (current) => ({
-          selectedAgent: {
-            ...sanitizeSelectedAgentData(current.selectedAgent),
-            selectedAgentId: FIRSTMATE_AGENT_ID,
-          },
-        }),
-      });
-    }
-    const home = appAtomRegistry.get(firstmateHomeAtom);
-    return (
-      home !== null &&
-      home.snapshot.coordinatorThreadId !== null &&
-      home.snapshot.tasks.some((task) => String(task.id) === SHOWCASE_WORK_TASK_ID) &&
-      (agents?.agents.length ?? 0) >= SHOWCASE_WORK_AGENT_COUNT &&
-      isFirstmate &&
-      (taskAtom === null || AsyncResult.isSuccess(appAtomRegistry.get(taskAtom)))
-    );
-  };
-
   const step = () => {
     readNativeRequests();
 
@@ -401,43 +305,25 @@ export function installShowcaseCapture(
 
     const navigationReady = rootNavigationRef.isReady();
     const rootState = navigationReady ? rootNavigationRef.getRootState() : undefined;
-    const pathname = rootState ? pathnameFromState(rootState) : null;
-    // fork: work. The workspace root serves the thread list and the Work tab.
-    const selectedTab = getShowcaseSelectedWorkspaceTab();
-    const scene =
-      pathname !== null ? resolveShowcaseScene({ pathname, requestedScene, selectedTab }) : null;
-    const workReady = stepWork(requestedScene);
-    const tabApplied =
-      requestedScene === null ||
-      (selectedTab ?? "threads") === showcaseWorkspaceTab(requestedScene);
+    const scene = rootState
+      ? showcaseSceneOnScreen(requestedScene, pathnameFromState(rootState))
+      : null;
 
     if (requestedScene !== null && hasFixture && showcaseThread && rootState) {
       const navigation = { requestedScene, scene, thread: showcaseThread };
       // Arriving forgets the target, so leaving the scene again navigates back.
-      const action =
-        scene === requestedScene
-          ? null
-          : showcaseNavigationAction(
-              requestedScene,
-              String(showcaseThread.environmentId),
-              rootState,
-              workEnvironmentId(),
-            );
       if (scene === requestedScene) {
         lastNavigation = null;
-      } else if (
-        // fork: work. The root's scenes differ only by workspace tab, which the tab
-        // request switches; resetting here would remount the workspace and its tab state.
-        !(
-          pathname !== null &&
-          isWorkspaceRootShowcaseScene(requestedScene) &&
-          isShowcaseWorkspaceRoot(pathname)
-        ) &&
-        action !== null &&
-        shouldNavigateToShowcaseScene(lastNavigation, navigation)
-      ) {
+      } else if (shouldNavigateToShowcaseScene(lastNavigation, navigation)) {
         lastNavigation = navigation;
-        rootNavigationRef.dispatch({ ...action, target: rootState.key });
+        rootNavigationRef.dispatch({
+          ...showcaseNavigationAction(
+            requestedScene,
+            String(showcaseThread.environmentId),
+            rootState,
+          ),
+          target: rootState.key,
+        });
       }
     }
 
@@ -448,19 +334,20 @@ export function installShowcaseCapture(
     }
 
     const render = getShowcaseRenderSnapshot();
-    const readinessKey = showcaseReadinessKey({
+    updateReadiness(
+      showcaseReadinessKey({
+        scene,
+        requestedScene,
+        hasFixture,
+        orientationSettled,
+        themeApplied,
+        agentActivityStaged: agentActivity?.done === true,
+        themeId,
+        renderSignal: render.signal,
+        renderReports: render.reports,
+      }),
       scene,
-      requestedScene,
-      hasFixture,
-      orientationSettled,
-      themeApplied,
-      agentActivityStaged: agentActivity?.done === true,
-      themeId,
-      renderSignal: render.signal,
-      renderReports: render.reports,
-    });
-    // fork: work. Work scenes also wait for their tab and seeded boards.
-    updateReadiness(tabApplied && workReady ? readinessKey : null, scene);
+    );
   };
 
   // Steps write atoms they also observe; a nested change reruns the step once
@@ -491,10 +378,6 @@ export function installShowcaseCapture(
     appAtomRegistry.subscribe(workspaceConnections.stateAtom, evaluate),
     appAtomRegistry.subscribe(workspaceConnections.environmentsAtom, evaluate),
     subscribeToShowcaseRenderSignal(evaluate),
-    // fork: work
-    appAtomRegistry.subscribe(firstmateHomeAtom, evaluate),
-    appAtomRegistry.subscribe(agentsHomeAtom, evaluate),
-    subscribeToShowcaseWorkspaceTab(evaluate),
     rootNavigationRef.addListener("state", evaluate),
   ];
   const appearanceSubscription = Appearance.addChangeListener(evaluate);
@@ -511,8 +394,6 @@ export function installShowcaseCapture(
     agentActivity = cancelRun(agentActivity);
     readiness?.cancel();
     readiness = null;
-    workTaskSubscription?.unsubscribe(); // fork: work
-    workTaskSubscription = null;
     setReadyScene(null);
   };
 }

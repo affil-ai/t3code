@@ -29,7 +29,6 @@ import {
   SHOWCASE_THREADS,
   seedShowcaseEnvironment,
 } from "./mobile-showcase-environment.ts";
-import { showcaseAgentsHomeEnv } from "./mobile-showcase-work.ts";
 
 const REPO_ROOT = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const MOBILE_ROOT = NodePath.join(REPO_ROOT, "apps/mobile");
@@ -37,10 +36,6 @@ const ANDROID_PACKAGE = "com.t3tools.t3code";
 const APP_SCHEME = "t3code";
 // Manifest flags update expo-dev-launcher preferences before loading, hiding dev chrome in captures.
 const DEV_CLIENT_LAUNCH_FLAGS = "disableOnboarding=1&disableFab=1&disableAutoLaunch=1";
-// The iOS dev menu reads only `__expo_`-prefixed flags off a Metro URL; without
-// them it opens over the app at launch and covers every capture.
-const IOS_DEV_CLIENT_LAUNCH_FLAGS =
-  "__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1";
 const IOS_READY_FILENAME = "T3ShowcaseReadyScene";
 const SERVER_HOST = "0.0.0.0";
 const IOS_SIMULATOR_ARCH = NodeProcess.arch === "arm64" ? "arm64" : "x86_64";
@@ -210,6 +205,11 @@ export function validateStoreAsset(
     if (metadata.width * 16 !== metadata.height * 9) {
       throw new Error(`${label} must use Google Play's recommended portrait 9:16 aspect ratio.`);
     }
+  }
+  try {
+    PNG.sync.read(Buffer.from(bytes));
+  } catch (cause) {
+    throw new Error(`${label} is not a valid PNG.`, { cause });
   }
   return metadata;
 }
@@ -637,7 +637,6 @@ function startShowcaseServer(
     {
       env: {
         ...NodeProcess.env,
-        ...showcaseAgentsHomeEnv(baseDir), // fork: agents
         PATH: `${labelProbeDirectory}:${NodeProcess.env.PATH ?? ""}`,
         SHELL: shellPath,
       },
@@ -721,7 +720,7 @@ export async function issuePairingCredential(baseDir: string): Promise<string> {
   const output = await commandOutput(
     "node",
     ["apps/server/src/bin.ts", "auth", "pairing", "create", "--base-dir", baseDir, "--json"],
-    { env: { ...NodeProcess.env, ...showcaseAgentsHomeEnv(baseDir), NO_COLOR: "1" } },
+    { env: { ...NodeProcess.env, NO_COLOR: "1" } },
   );
   return parsePairingCredentialOutput(output);
 }
@@ -1160,7 +1159,7 @@ async function captureIos(
     await runCommand("xcrun", ["simctl", "install", simulator.udid, appPath]);
   }
 
-  const metroUrl = `http://${metroHost}:${config.metroPort}?${IOS_DEV_CLIENT_LAUNCH_FLAGS}`;
+  const metroUrl = `http://${metroHost}:${config.metroPort}?${DEV_CLIENT_LAUNCH_FLAGS}`;
   const scenePath = NodePath.join(
     await iosAppContainer(simulator.udid),
     "Library/Caches/T3ShowcaseScene",

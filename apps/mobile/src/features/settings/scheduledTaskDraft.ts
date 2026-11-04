@@ -7,7 +7,6 @@ import type {
   ScheduledTask,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskWebhookSignature,
-  ThreadId, // fork: work
 } from "@t3tools/contracts";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
@@ -52,8 +51,10 @@ export function scheduledTaskDefaultModel(
 }
 
 export type ScheduleDraft = {
-  readonly mode: "fixed_time" | "interval" | "webhook";
+  readonly mode: "fixed_time" | "once" | "interval" | "webhook";
   readonly timeOfDay: string;
+  /** ISO time for a one-time run. Empty until the user picks the "Once" mode. */
+  readonly runAt: string;
   readonly weekdays: ReadonlyArray<number>;
   readonly intervalMinutes: string;
   readonly signature: ScheduledTaskWebhookSignature | null;
@@ -69,6 +70,7 @@ export type ScheduleDraft = {
 export const DEFAULT_SCHEDULE: ScheduleDraft = {
   mode: "fixed_time",
   timeOfDay: "09:00",
+  runAt: "",
   weekdays: [1, 2, 3, 4, 5],
   intervalMinutes: "15",
   signature: null,
@@ -90,6 +92,8 @@ export function scheduleDraftForTask(task: Pick<ScheduledTask, "schedule">): Sch
           ? [...new Set(task.schedule.weekdays)].sort((a, b) => a - b)
           : [0, 1, 2, 3, 4, 5, 6],
       };
+    case "once":
+      return { ...DEFAULT_SCHEDULE, mode: "once", runAt: task.schedule.runAt };
     case "interval":
       return {
         ...DEFAULT_SCHEDULE,
@@ -167,6 +171,10 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
         : {}),
     };
   }
+  if (draft.mode === "once") {
+    const runAt = new Date(draft.runAt);
+    return Number.isNaN(runAt.getTime()) ? null : { type: "once", runAt: runAt.toISOString() };
+  }
   if (draft.mode === "interval") {
     const minutes = parseIntervalMinutes(draft.intervalMinutes);
     const everyMs = Math.round(minutes * 60_000);
@@ -202,41 +210,7 @@ export type ScheduledTaskDraft = {
   readonly enabled: boolean;
   readonly startFromOrigin: boolean;
   readonly runtimeMode: RuntimeMode;
-  /** The chat a new task posts into, such as an agent's; edits keep the task's own. */
-  readonly boundThreadId?: ThreadId | null; // fork: work
 };
-
-/**
- * The chat a task posts into: an edited task keeps its own, a new one may be
- * bound to an agent's chat. A bound run uses that chat's current model.
- */
-export function draftBoundThreadId(
-  draft: Pick<ScheduledTaskDraft, "boundThreadId"> & {
-    readonly task: { readonly threadId: ThreadId | null } | null;
-  },
-): ThreadId | null {
-  return draft.task ? draft.task.threadId : (draft.boundThreadId ?? null);
-}
-
-/**
- * The model a save sends. A bound run uses its chat's current model, so the
- * value only matters to servers that predate optional models and still require
- * one: an edited task sends its stored model back, a new one its seeded default.
- */
-export function draftModelSelectionInput(
-  draft: Pick<ScheduledTaskDraft, "boundThreadId" | "modelSelection"> & {
-    readonly task: {
-      readonly threadId: ThreadId | null;
-      readonly modelSelection?: ModelSelection | null | undefined;
-    } | null;
-  },
-): { readonly modelSelection?: ModelSelection } {
-  if (draftBoundThreadId(draft) === null) {
-    return draft.modelSelection ? { modelSelection: draft.modelSelection } : {};
-  }
-  const modelSelection = draft.task ? draft.task.modelSelection : draft.modelSelection;
-  return modelSelection ? { modelSelection } : {};
-}
 
 function draftSignature(draft: ScheduledTaskDraft): string {
   return JSON.stringify([
@@ -250,6 +224,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
       .map((option) => [option.id, option.value]),
     draft.schedule.mode,
     draft.schedule.timeOfDay,
+    draft.schedule.runAt,
     [...draft.schedule.weekdays].sort((a, b) => a - b),
     draft.schedule.intervalMinutes,
     draft.schedule.maxDeliveryAgeMinutes,

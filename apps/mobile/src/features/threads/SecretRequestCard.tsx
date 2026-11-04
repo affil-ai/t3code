@@ -1,9 +1,9 @@
 import { pipe } from "effect/Function";
 import {
+  SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   secretRequestAnswerInput,
   secretRequestDisplay,
   secretRequestFailureMessage,
-  secretRequestInputs,
   secretRequestPrivacyNote,
   type SecretRequestItem,
 } from "@t3tools/client-runtime/secret-request";
@@ -63,26 +63,25 @@ function PendingSecretRequestForm(props: {
   readonly iconColor: ColorValue;
 }) {
   const { item } = props;
-  const inputs = secretRequestInputs(item);
-  const single = item.fields === undefined;
   const answer = useAtomCommand(serverEnvironment.answerSecretRequest, {
     label: "answer secret request",
     // The failure cause holds the request; keep it out of the console.
     reportFailure: false,
     reportDefect: false,
   });
-  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+  const [secret, setSecret] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Submit then a tap can both run before a re-render; this guard is synchronous.
   const inFlight = useRef(false);
 
   const send = async (
-    reply:
-      | { readonly type: "save"; readonly values: Readonly<Record<string, string>> }
-      | { readonly type: "decline" },
+    reply: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" },
   ) => {
-    const input = secretRequestAnswerInput(item, reply);
+    const input = secretRequestAnswerInput(
+      item,
+      reply.type === "save" ? { type: "save", values: { "": reply.secret } } : reply, // fork: secrets
+    );
     if (input === null || inFlight.current) return;
     inFlight.current = true;
     setSubmitting(true);
@@ -92,7 +91,7 @@ function PendingSecretRequestForm(props: {
       setSubmitting(false);
     });
     if (result._tag === "Success") {
-      setValues({});
+      setSecret("");
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
@@ -110,31 +109,22 @@ function PendingSecretRequestForm(props: {
           </Text>
         ) : null}
       </View>
-      {inputs.map((input, index) => (
-        <View key={input.key} className="gap-1.5">
-          {single ? null : (
-            <Text className="font-sans text-xs text-foreground-muted">{input.label}</Text>
-          )}
-          <TextInput
-            accessibilityLabel={single ? item.label : input.label}
-            placeholder={input.placeholder}
-            value={values[input.key] ?? ""}
-            onChangeText={(value) => setValues((current) => ({ ...current, [input.key]: value }))}
-            editable={!submitting}
-            secureTextEntry
-            autoCorrect={false}
-            autoCapitalize="none"
-            autoComplete="off"
-            textContentType="none"
-            importantForAutofill="no"
-            spellCheck={false}
-            returnKeyType={index === inputs.length - 1 ? "done" : "next"}
-            onSubmitEditing={() => {
-              if (index === inputs.length - 1) void send({ type: "save", values });
-            }}
-          />
-        </View>
-      ))}
+      <TextInput
+        accessibilityLabel={item.label}
+        placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
+        value={secret}
+        onChangeText={setSecret}
+        editable={!submitting}
+        secureTextEntry
+        autoCorrect={false}
+        autoCapitalize="none"
+        autoComplete="off"
+        textContentType="none"
+        importantForAutofill="no"
+        spellCheck={false}
+        returnKeyType="done"
+        onSubmitEditing={() => void send({ type: "save", secret })}
+      />
       {error !== null ? (
         <Text
           accessibilityRole="alert"
@@ -148,8 +138,8 @@ function PendingSecretRequestForm(props: {
         label="Save securely"
         tone="primary"
         fullWidth
-        disabled={submitting || secretRequestAnswerInput(item, { type: "save", values }) === null}
-        onPress={() => void send({ type: "save", values })}
+        disabled={submitting || secret.trim().length === 0}
+        onPress={() => void send({ type: "save", secret })}
       />
       <View className="flex-row items-center justify-between gap-2">
         <View className="flex-1 flex-row items-center gap-1.5">

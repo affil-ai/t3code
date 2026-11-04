@@ -14,10 +14,6 @@ import {
   type PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
-import {
-  sanitizeSelectedAgentData,
-  type SelectedAgentData,
-} from "@t3tools/client-runtime/firstmate/agents"; // fork: work
 import type { AndroidNavigationStyle } from "../lib/androidNavigationStyle";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import type { FollowUpBehavior } from "../lib/followUpBehavior";
@@ -131,7 +127,6 @@ export interface Preferences {
   readonly threadListWorkingShelfExpanded?: boolean;
   readonly threadListFilters?: ThreadListFilters;
   readonly pullRequestListFilters?: PullRequestListPreferences;
-  readonly selectedAgent?: SelectedAgentData; // fork: work
   readonly workspaceSelections?: WorkspaceSelections;
 }
 
@@ -209,7 +204,6 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
-    selectedAgent?: SelectedAgentData; // fork: work
     workspaceSelections?: WorkspaceSelections;
   } = {};
 
@@ -361,9 +355,6 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isPullRequestListPreferences(parsed.pullRequestListFilters)) {
     preferences.pullRequestListFilters = parsed.pullRequestListFilters;
-  }
-  if (parsed.selectedAgent !== undefined) {
-    preferences.selectedAgent = sanitizeSelectedAgentData(parsed.selectedAgent); // fork: work
   }
   if (isWorkspaceSelections(parsed.workspaceSelections)) {
     preferences.workspaceSelections = parsed.workspaceSelections;

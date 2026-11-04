@@ -88,7 +88,7 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
+    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`. No secrets in `task`.",
   parameters: OrchestratorMcpDelegateTaskInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
@@ -168,7 +168,7 @@ const ScheduleTaskTool = Tool.make("schedule_task", {
   failureMode: "return",
   dependencies,
 })
-  .annotate(Tool.Title, "Schedule a recurring task")
+  .annotate(Tool.Title, "Schedule a task")
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
@@ -200,7 +200,7 @@ const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
 
 const RequestSecretTool = Tool.make("request_secret", {
   description:
-    'Ask the user to enter a secret in a private card and wait. You never see the value. Returns a `secretRef` (or `secretRefs`, one per field, when you ask with `fields`) to use with run_with_secret in any command or with a tool that accepts one; a ref works from this thread only, as often as needed, for 15 minutes. With `delivery: "file"` it returns a private file path to read inside a shell command instead. Asked how to provide a secret: call this now, do not explain instead. Never ask for secrets in chat or invent one.', // fork: secrets
+    'Ask the user to enter a secret in a private card and wait. You never see the value. Returns a `secretRef` (or `secretRefs`, one per field, when you ask with `fields`) to use with run_with_secret in any command or with a tool that accepts one; a ref works from this thread only, as often as needed, for 15 minutes. With `delivery: "file"` it returns a private file path to read inside a shell command instead. Asked how to provide a secret: call this now, do not explain instead. A secret the user already pasted in this thread, needed by a child or script: pass it as `value`. Never ask for secrets in chat or invent one.', // fork: secrets
   parameters: OrchestratorMcpRequestSecretInput,
   success: OrchestratorMcpRequestSecretResult,
   failure: OrchestratorMcpFailure,
@@ -208,7 +208,9 @@ const RequestSecretTool = Tool.make("request_secret", {
   dependencies,
 })
   .annotate(Tool.Title, "Request a secret from the user")
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  // Claude Code defers MCP tools behind ToolSearch; agents that never load this one ask in chat.
+  .annotate(Tool.Meta, { "anthropic/alwaysLoad": true });
 
 const RunWithSecretTool = Tool.make("run_with_secret", {
   description:

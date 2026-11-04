@@ -11,7 +11,7 @@ import { rememberedSettingsPage, workspaceSelectionsIn } from "./workspace-tab-n
 /** Settings joins the two list tabs as a top-level Android destination. */
 export type AndroidWorkspaceNavigationTab = WorkspaceTab | "settings";
 
-const WORKSPACE_ROUTES = new Set(["Home", "Thread", "PullRequest", "WorkTask"]); // fork: work
+const WORKSPACE_ROUTES = new Set(["Home", "Thread", "PullRequest"]);
 
 /** The Settings tab resets over Home alone so stale chat and PR history is dropped. */
 export function androidWorkspaceTabNavigationState(

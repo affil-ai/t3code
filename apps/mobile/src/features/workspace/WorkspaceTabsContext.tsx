@@ -17,8 +17,6 @@ import {
   type WorkspaceTabsAction,
   type WorkspaceTabsState,
 } from "./workspace-tabs-state";
-import { useWorkTabSelection } from "../work/WorkTabState"; // fork: work
-import { useShowcaseWorkspaceTab } from "../showcase/showcaseWorkspaceTab"; // fork: work
 
 export const WorkspaceTabsContext = createContext<{
   readonly state: WorkspaceTabsState;
@@ -46,11 +44,7 @@ function resolveWorkspaceTabsSelection(
   const hidden = navigationCustomizationAvailable()
     ? resolveHiddenNavigationTabs(saved?.hiddenNavigationTabs)
     : [];
-  // fork: work: Work is not in the navigation order; useWorkTabSelection leaves it when it goes.
-  const selected =
-    state.selectedTab === "work"
-      ? "work"
-      : resolveSelectedNavigationTab(order, hidden, state.selectedTab);
+  const selected = resolveSelectedNavigationTab(order, hidden, state.selectedTab);
   return selected && selected !== state.selectedTab
     ? workspaceTabsReducer(state, { type: "select", tab: selected })
     : state;
@@ -65,7 +59,6 @@ function createWorkspaceTabsModel() {
     pullRequests: 0,
     usage: 0,
     settings: 0,
-    work: 0, // fork: work
   };
   return {
     stored,
@@ -86,13 +79,10 @@ export function WorkspaceTabsProvider(props: {
   const registry = use(RegistryContext);
   const [model] = useState(createWorkspaceTabsModel);
   const state = useAtomValue(model.resolved);
-  const dispatch = (action: WorkspaceTabsAction) =>
-    registry.set(model.stored, workspaceTabsReducer(registry.get(model.resolved), action));
-  useWorkTabSelection(state, dispatch); // fork: work
-  useShowcaseWorkspaceTab(state.selectedTab, dispatch); // fork: work
   const context = {
     state,
-    dispatch,
+    dispatch: (action: WorkspaceTabsAction) =>
+      registry.set(model.stored, workspaceTabsReducer(registry.get(model.resolved), action)),
     isTabActive: (tab: WorkspaceTab) => registry.get(model.resolved).selectedTab === tab,
     bottomClearance: 0,
     settingsOpen: props.settingsOpen ?? false,

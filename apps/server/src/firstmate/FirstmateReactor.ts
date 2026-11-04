@@ -11,7 +11,7 @@ import {
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -92,7 +92,7 @@ const make = Effect.gen(function* () {
   const firstmate = yield* FirstmateService.FirstmateService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const signal = yield* PubSub.sliding<void>(1);
   const seen = yield* Ref.make<ReadonlySet<string>>(new Set());
   const lane = yield* Semaphore.make(1);
@@ -176,7 +176,7 @@ const make = Effect.gen(function* () {
       pendingWakes.length !== pending.wakes.length &&
       wakes.length === 0
     ) {
-      const updateId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const updateId = yield* crypto.uuidV4().pipe(Effect.orDie);
       if (pendingWakes.length === 0) {
         yield* threads.dispatch({
           type: "queued-run.cancel",
@@ -201,7 +201,7 @@ const make = Effect.gen(function* () {
     // held one. While a turn runs, a new wake would queue behind it and be held
     // too, so the wake keeps folding into the held run until that turn ends.
     if (pending?.held === true && !pending.busy) {
-      const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const wakeId = yield* crypto.uuidV4().pipe(Effect.orDie);
       const merged = mergeWakes(pendingWakes, wakes);
       // With nothing in flight the wake starts a turn; the held queue only blocks
       // queued sends. Sending before cancelling means a failure between the two
@@ -225,7 +225,7 @@ const make = Effect.gen(function* () {
         runId: pending.runId,
       });
     } else if (wakes.length > 0) {
-      const wakeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const wakeId = yield* crypto.uuidV4().pipe(Effect.orDie);
       if (pending !== undefined) {
         // At most one wake waits: fold this pass into the one already queued.
         const merged = mergeWakes(pendingWakes, wakes);

@@ -5,8 +5,6 @@ import { useControlTheme } from "../../components/ui/useControlTheme";
 import { useNavigationTabOrder, useHiddenNavigationTabs } from "./navigation-tabs";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
-import { useWorkTabAvailable } from "../work/WorkTabState"; // fork: work
-import { navigationTabCapacity, visibleWorkspaceTabs } from "../work/WorkTab.logic"; // fork: work
 
 const NativeSidebarTabBar = requireNativeView<
   ViewProps & {
@@ -29,14 +27,7 @@ export function WorkspaceSidebarTabs(props: {
   const workspace = useWorkspaceTabs()!;
   const order = useNavigationTabOrder();
   const hidden = useHiddenNavigationTabs();
-  // fork: work: Work leads the bar and takes one of its slots.
-  const workAvailable = useWorkTabAvailable();
-  const capacity = navigationTabCapacity(4, workAvailable);
-  const tabs = [
-    ...visibleWorkspaceTabs(workAvailable, visibleNavigationTabs(order, hidden, capacity)),
-    "settings" as const,
-  ];
-  const selectedTab = workspace.state.selectedTab;
+  const tabs = [...visibleNavigationTabs(order, hidden), "settings" as const];
   const selectTab = useSelectWorkspaceTab();
   const { colors, colorScheme } = useControlTheme();
   // UIKit loses accessible names when updating nil-titled items in place.
@@ -45,13 +36,12 @@ export function WorkspaceSidebarTabs(props: {
     <NativeSidebarTabBar
       key={tabBarKey}
       tabs={tabs}
-      selectedTab={
-        selectedTab === "work" // fork: work
-          ? workspace.settingsOpen
-            ? "settings"
-            : "work"
-          : selectedNavigationTab(order, selectedTab, workspace.settingsOpen, hidden, capacity)
-      }
+      selectedTab={selectedNavigationTab(
+        order,
+        workspace.state.selectedTab,
+        workspace.settingsOpen,
+        hidden,
+      )}
       selectedColor={colors["--color-primary"]}
       appearance={colorScheme}
       showsCompose={Boolean(props.onNewTask)}

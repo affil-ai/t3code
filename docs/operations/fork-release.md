@@ -325,10 +325,9 @@ of deployed worker behavior.
 
 ## iPhone app
 
-The paired release does not build the iPhone app. Build and install it
-separately from the released commit, as described in
-[Installing T3 Work on Vivek's iPhone](mobile-device-install.md). A plain build
-from `main` fails at provisioning.
+The fork no longer customizes the mobile app: `apps/mobile` tracks upstream
+unchanged, and the paired release does not build it. Use upstream's T3 Code
+app to connect to a fork server.
 
 ## Cleanup
 

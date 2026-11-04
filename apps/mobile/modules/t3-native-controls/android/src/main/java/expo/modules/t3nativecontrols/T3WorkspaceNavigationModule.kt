@@ -415,7 +415,6 @@ class T3WorkspaceNavigationView(
   private fun tabTitle(tab: String) = when (tab) {
     "threads" -> "Chats"
     "pullRequests" -> "Pulls"
-    "work" -> "Work" // fork: work
     "usage" -> "Usage"
     else -> "Settings"
   }
@@ -428,7 +427,6 @@ class T3WorkspaceNavigationView(
     when (tab) {
       "threads" -> R.drawable.t3_chats
       "pullRequests" -> R.drawable.t3_pull_requests
-      "work" -> R.drawable.t3_work // fork: work
       "usage" -> R.drawable.t3_usage
       else -> R.drawable.t3_settings
     }

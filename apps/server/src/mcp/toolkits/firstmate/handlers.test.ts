@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
+import * as ManagedPolicy from "../../../policy/ManagedPolicy.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../../secrets/SecretRequests.ts";
@@ -103,6 +104,7 @@ const makeHarness = Effect.fn("firstmateToolkitTestHarness")(function* () {
         Layer.mock(SecretRequests.SecretRequests)({}),
         Scheduler.layer,
         NodeCrypto.layer,
+        ManagedPolicy.layerTest(),
         SqlitePersistence.layerMemory,
       ),
     ),

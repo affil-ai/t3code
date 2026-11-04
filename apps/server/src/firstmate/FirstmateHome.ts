@@ -24,7 +24,7 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -148,7 +148,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const projects = yield* ProjectService.ProjectService;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const config = yield* ServerConfig.ServerConfig;
   const repoRoot = yield* resolveRepoRoot();
   const legacyRoot = yield* resolveLegacyRoot();
@@ -285,7 +285,7 @@ const make = Effect.gen(function* () {
 
   const ensureProject = Effect.fn("FirstmateHome.ensureProject")(
     function* (folder: string, name: string) {
-      const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const id = yield* crypto.uuidV4().pipe(Effect.orDie);
       const { project } = yield* projects
         .bootstrap({
           commandId: CommandId.make(`firstmate-home:${id}`),
@@ -331,7 +331,7 @@ const make = Effect.gen(function* () {
         .getByWorkspaceRoot(agentFolder(input.slug))
         .pipe(Effect.catchTags({ ProjectOperationError: () => Effect.succeedNone }));
       if (Option.isNone(project) || project.value.title === input.name) return;
-      const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const id = yield* crypto.uuidV4().pipe(Effect.orDie);
       yield* projects.update({
         commandId: CommandId.make(`firstmate-home-rename:${id}`),
         projectId: project.value.id,
@@ -378,7 +378,7 @@ const make = Effect.gen(function* () {
       // Task ids carry a colon; keep the folder name portable.
       const folder = path.join(artifactsRoot, input.taskId.replace(/[^A-Za-z0-9._-]+/g, "-"));
       yield* fileSystem.makeDirectory(folder, { recursive: true });
-      const stamp = (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).slice(0, 8);
+      const stamp = (yield* crypto.uuidV4().pipe(Effect.orDie)).slice(0, 8);
       const target = path.join(folder, `${stamp}-${path.basename(source)}`);
       yield* fileSystem.copyFile(source, target);
       return target;
@@ -457,7 +457,7 @@ const make = Effect.gen(function* () {
       yield* commitPaths(shared, "Add the shared agents home files");
       // Firstmate's chat keeps its project; the project follows the folder.
       if (Option.isSome(project)) {
-        const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        const id = yield* crypto.uuidV4().pipe(Effect.orDie);
         yield* projects.update({
           commandId: CommandId.make(`firstmate-home-move:${id}`),
           projectId: project.value.id,
@@ -501,7 +501,7 @@ const make = Effect.gen(function* () {
         yield* fileSystem.makeDirectory(path.dirname(to), { recursive: true });
         yield* fileSystem.rename(from, to);
         if (Option.isSome(project)) {
-          const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+          const id = yield* crypto.uuidV4().pipe(Effect.orDie);
           yield* projects.update({
             commandId: CommandId.make(`firstmate-home-crew:${id}`),
             projectId: project.value.id,

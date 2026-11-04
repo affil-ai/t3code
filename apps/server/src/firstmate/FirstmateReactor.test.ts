@@ -501,6 +501,8 @@ describe("FirstmateReactor", () => {
                 yield* decodePendingBackgroundTask({
                   kind,
                   taskId: "pending:one",
+                  // Commands and monitors hold completion only when the agent awaits them.
+                  ...(kind === "monitor" ? { awaited: true } : {}),
                 }),
               ],
             }),
@@ -1139,7 +1141,9 @@ describe("FirstmateReactor", () => {
             shell(workerId, {
               status: "completed",
               latestRunId: RunId.make("run:done"),
-              pendingBackgroundTasks: [{ kind, taskId: "pending:one" }],
+              pendingBackgroundTasks: [
+                { kind, taskId: "pending:one", ...(kind === "monitor" ? { awaited: true } : {}) },
+              ],
             }),
           );
           yield* TestClock.adjust("11 minutes");
