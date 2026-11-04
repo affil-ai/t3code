@@ -58,9 +58,16 @@ export class RunFeed {
     this.cursor = oldestOpen === undefined ? read.lastPosition : oldestOpen - 1;
   }
 
-  /** The task rows, with every agent message but the newest as a note. */
+  /**
+   * The task rows, with the agent's messages as notes. The newest message may
+   * be the answer, so it becomes a note only once a step follows it. Slack
+   * keeps rows in the order they first arrive, so a note must arrive then.
+   */
   rows(): Array<TaskRow> {
-    const notes = [...this.notes.values()].toSorted((a, b) => a.order - b.order).slice(0, -1);
-    return [...this.taskRows.values(), ...notes];
+    const notes = [...this.notes.values()].toSorted((a, b) => a.order - b.order);
+    const lastStep = Math.max(-1, ...[...this.taskRows.values()].map((row) => row.order));
+    const newest = notes.at(-1);
+    const held = newest !== undefined && newest.order > lastStep ? 1 : 0;
+    return [...this.taskRows.values(), ...notes.slice(0, notes.length - held)];
   }
 }

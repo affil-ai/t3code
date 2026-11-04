@@ -611,8 +611,16 @@ it("shows the agent's earlier messages as rows, and only its final message as th
     itemId: "cmd",
     type: "command_execution",
     runId: "run-1",
+    status: "running",
     text: "$ uname -a",
   });
+  await t3.tick();
+  // Once a step follows it, the message is a note, shown before that step.
+  assert.deepStrictEqual(
+    shown[0]?.progress.at(-1)?.rows.map((row) => row.title),
+    ["I'll run the shell commands first.", "Ran `uname -a`"],
+  );
+  t3.activity[1]!.status = "completed";
   t3.finish("run-1", "completed", "Kernel: Linux.");
   await bridge.idle();
   assert.deepStrictEqual(
