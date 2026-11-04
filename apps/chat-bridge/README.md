@@ -1,6 +1,6 @@
 # T3 chat bridge
 
-Talk to T3 Code agents from Slack. Mention the bot in a mapped channel and it
+Talk to T3 Code agents from Slack and iMessage, and later Linear. Mention the bot in a mapped channel and it
 starts a T3 thread in that channel's project. Replies in the Slack thread go to
 the same T3 thread. Each run shows in Slack as it works, with Slack's own agent
 features, and ends with the agent's final message.
@@ -283,6 +283,98 @@ pm2). Stop it with Ctrl-C or SIGTERM.
 Run one bridge per Slack app. Two processes on the same app token would split
 Slack's events between them.
 
+## How platforms plug in
+
+All platforms run on one Chat SDK `Chat` (`src/chatHost.ts`), one adapter
+each: the official `@chat-adapter/slack`, and `src/imessage/adapter.ts`, a Chat
+SDK adapter over `imsg`. The SDK does dedupe, thread locks, queueing,
+subscriptions, Markdown and card fallback for all of them.
+
+The bridge core (`src/bridge.ts`) does everything about T3: bindings, the
+inbox, runs, questions, model switches and access. It reaches a platform only
+through `ChatPlatform` (`src/platform.ts`), which carries what the SDK doesn't
+model:
+
+- who may use it: an allowlist, and `allowEveryone`;
+- where a new conversation starts its thread: a project, and optionally a new
+  worktree and a note;
+- how a person, a message and the reply rules read to the agent;
+- optional extras: Slack's agent session status, titles and Block Kit
+  questions. A platform without buttons gets questions as numbered text, and
+  people answer by replying with a number, an option or their own words.
+
+A new platform is a Chat SDK adapter (an official one where it exists, such as
+`@chat-adapter/linear`), a `Deliver` that turns its SDK messages into
+`InboundEvent`s, and a `ChatPlatform`.
+
+## iMessage
+
+The agent answers iMessages sent to a Mac's Messages account. Today that's
+iMessage only; SMS may come later. `imessage.services` lists the services
+that are read (default `["iMessage"]`), and chats on any other service are
+left alone. Each conversation is one ongoing T3 thread, and group chats are
+allowed. In a group, every message goes to the agent, which decides whether to
+answer. Photos and files arrive as attachments, and iPhone HEIC photos become
+JPEG. The agent sends files with `chat_post`. Answers are sent as plain text.
+
+How it connects:
+
+- **On the Mac.** `mac/affil-imessage.swift` runs a pinned, reviewed `imsg`
+  (v0.20.0) and serves a limited set of its JSON-RPC methods on
+  `127.0.0.1:47821`. It watches every chat from the moment `imsg` starts and
+  subscribes again whenever `imsg` restarts or falls behind. It also stages
+  outgoing files and reads incoming ones, but only from the Messages
+  attachments folder. macOS grants Full Disk Access and Automation to this
+  service, and `imsg`, its child, inherits them. Sign it with a stable
+  identity, not ad hoc, so a rebuild keeps the grants. It serves one client
+  at a time, and a new connection replaces the old one, so don't probe it
+  while the bridge is connected.
+- **On the bridge's host.** An SSH tunnel carries that port. The adapter
+  connects through it and reconnects by itself. After a reconnect it catches
+  up from its saved Messages row id with `messages.after`.
+
+Config, in `config.json`:
+
+```json
+"imessage": {
+  "host": "127.0.0.1",
+  "port": 47821,
+  "projectId": "<T3 project id>",
+  "worktreeFrom": "dev",
+  "allowEveryone": false,
+  "allowedHandles": ["+14155550100", "someone@example.com"]
+}
+```
+
+`worktreeFrom` and `note` are optional, as in `channelProjects`.
+`allowEveryone: true` lets anyone who messages the account start runs, and the
+bridge logs a warning when it starts with it on. `startAfterRowId` also
+answers messages already waiting on the very first start.
+
+### Always on
+
+Every piece starts by itself and comes back by itself. Nobody starts anything
+by hand. Only macOS permission prompts need a person.
+
+- **Mac:** a LaunchAgent in the Messages user's login session
+  (`mac/com.affil.imessage.plist`: `RunAtLoad`, `KeepAlive`). The Mac stays
+  awake and logged in to that user.
+- **Bridge host:** systemd user units with `Restart=always`, enabled with
+  lingering, so they start at boot: the SSH tunnel (`ssh -N -L
+  127.0.0.1:47821:127.0.0.1:47821 …` with `ExitOnForwardFailure` and
+  keepalives), the bridge, and the T3 server it talks to.
+
+Checked on 2026-11-04 by killing each piece in turn: the bridge, the tunnel,
+the T3 server and the Mac service each came back without help, and the bridge
+reconnected to each.
+
+### What iMessage can't do here
+
+`imsg` can't send tapbacks, typing bubbles or read receipts, or edit and unsend
+messages, without Apple's private Messages framework, which needs SIP turned
+off on the Mac. So `chat_react` isn't offered, there is no "typing" while a run
+works, and messages show as delivered, not read.
+
 ## Limits
 
 - The bridge, T3 and the agents must share a machine. `chat_post` reads files
@@ -303,17 +395,22 @@ pnpm --filter @t3tools/chat-bridge typecheck
 pnpm --filter @t3tools/chat-bridge test
 ```
 
-| File                | What it does                                           |
-| ------------------- | ------------------------------------------------------ |
-| `src/bin.ts`        | The `start`, `login` and `manifest` commands.          |
-| `src/bridge.ts`     | Turns Slack events into T3 turns and watches each run. |
-| `src/runFeed.ts`    | What a run is doing now, from T3's activity view.      |
-| `src/activity.ts`   | T3 activity items as status lines; redaction.          |
-| `src/questions.ts`  | Agents' questions as buttons, and their answers.       |
-| `src/threads.ts`    | The T3 MCP calls: launch, send, wait, read, rename.    |
-| `src/t3Client.ts`   | The MCP client for T3.                                 |
-| `src/slackHost.ts`  | Slack over Socket Mode, through the Chat SDK.          |
-| `src/toolServer.ts` | The `chat_post` / `chat_react` MCP server.             |
-| `src/store.ts`      | Inbox, bindings, handled messages and owed replies.    |
-| `src/chatState.ts`  | The Chat SDK's state on the same SQLite file.          |
-| `src/login.ts`      | T3's MCP OAuth sign-in.                                |
+| File                   | What it does                                                          |
+| ---------------------- | --------------------------------------------------------------------- |
+| `src/bin.ts`           | The `start`, `login` and `manifest` commands.                         |
+| `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                |
+| `src/platform.ts`      | `ChatPlatform`: what the core needs beyond the SDK.                   |
+| `src/slackPlatform.ts` | Slack as a `ChatPlatform`.                                            |
+| `src/imessage/`        | The iMessage Chat SDK adapter, its RPC client and its `ChatPlatform`. |
+| `mac/`                 | The Mac service and its LaunchAgent.                                  |
+| `src/bridge.ts`        | Turns Slack events into T3 turns and watches each run.                |
+| `src/runFeed.ts`       | What a run is doing now, from T3's activity view.                     |
+| `src/activity.ts`      | T3 activity items as status lines; redaction.                         |
+| `src/questions.ts`     | Agents' questions as buttons, and their answers.                      |
+| `src/threads.ts`       | The T3 MCP calls: launch, send, wait, read, configure.                |
+| `src/t3Client.ts`      | The MCP client for T3.                                                |
+| `src/slackHost.ts`     | Slack's adapter, its messages, and Slack-only calls.                  |
+| `src/toolServer.ts`    | The `chat_post` / `chat_react` MCP server.                            |
+| `src/store.ts`         | Inbox, bindings, handled messages and owed replies.                   |
+| `src/chatState.ts`     | The Chat SDK's state on the same SQLite file.                         |
+| `src/login.ts`         | T3's MCP OAuth sign-in.                                               |

@@ -2,9 +2,11 @@ import { assert, it } from "vite-plus/test";
 
 import {
   applyClick,
+  applyReply,
   applyText,
   type Asked,
   finalAnswers,
+  numberedQuestion,
   type Question,
   questionBlocks,
 } from "./questions.ts";
@@ -130,4 +132,31 @@ it("lists only the option descriptions that add to their labels", () => {
   const plain = { ...question, options: question.options.slice(0, 2) };
   const contexts = questionBlocks(asked([plain])).filter((b) => b.type === "context");
   assert.notInclude(JSON.stringify(contexts), "*Red*");
+});
+
+it("asks without buttons as numbered text, and takes a number, a label or own words", () => {
+  const asked: Asked = {
+    requestId: "r",
+    questions: [
+      {
+        id: "q",
+        header: "Color",
+        question: "Which color?",
+        options: [
+          { label: "Red", description: "" },
+          { label: "Blue", description: "Calm" },
+        ],
+      },
+    ],
+    answers: {},
+    submitted: [],
+  };
+  assert.strictEqual(
+    numberedQuestion(asked),
+    "Color\nWhich color?\n1. Red\n2. Blue – Calm\n\nReply with a number, or with your own answer.",
+  );
+  assert.deepStrictEqual(applyReply(asked, "2")?.answers, { q: "Blue" });
+  assert.deepStrictEqual(applyReply(asked, " red ")?.answers, { q: "Red" });
+  assert.deepStrictEqual(applyReply(asked, "green")?.answers, { q: "green" });
+  assert.deepStrictEqual(applyReply(asked, "1, 2")?.answers, { q: "1, 2" });
 });

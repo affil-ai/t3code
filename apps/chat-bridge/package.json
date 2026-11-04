@@ -13,6 +13,7 @@
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
+    "@chat-adapter/shared": "4.43.0",
     "@chat-adapter/slack": "4.43.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "chat": "4.43.0"

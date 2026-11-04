@@ -1,18 +1,12 @@
 // @effect-diagnostics globalFetch:off globalTimers:off -- A plain Node app; it does not use Effect.
 /**
- * The Chat SDK side of the bridge. It owns the `Chat` instance and the Slack
- * adapter in Socket Mode, turns SDK messages into `InboundEvent`s for the
- * bridge, and posts its replies. Nothing here touches T3.
+ * Slack on the shared `Chat` (see `chatHost.ts`): the Slack adapter in Socket
+ * Mode, Slack messages as `InboundEvent`s, and what Chat SDK has no API for,
+ * such as agent session status, Block Kit questions and file uploads with a
+ * comment. Nothing here touches T3.
  */
 import { createSlackAdapter, type SlackAdapter, SlackFormatConverter } from "@chat-adapter/slack";
-import {
-  Chat,
-  type Logger,
-  type Message,
-  type MessageContext,
-  type StateAdapter,
-  type Thread,
-} from "chat";
+import type { Chat, Logger, Message, MessageContext, Thread } from "chat";
 
 import type {
   BlockMessage,
@@ -24,7 +18,7 @@ import type {
   MissedRequest,
   SessionState,
 } from "./bridge.ts";
-import { ANSWER_ACTION_ID } from "./questions.ts";
+import type { Deliver, Route } from "./chatHost.ts";
 import {
   slackErrorCode,
   slackTitle,
@@ -51,15 +45,7 @@ export interface SlackChatHostOptions {
   readonly botToken: string;
   /** The app-level token (`xapp-…`) Socket Mode connects with. */
   readonly appToken: string;
-  readonly state: StateAdapter;
   readonly onEvent: (event: InboundEvent) => Promise<InboundOutcome>;
-  readonly onError: (error: unknown) => void;
-  /** Someone pressed the stop button on a thread. */
-  readonly onStop?: ((chatThreadKey: string, userId: string) => Promise<unknown>) | undefined;
-  /** Someone pressed an answer button under a question; `value` is the button's. */
-  readonly onAnswer?:
-    | ((chatThreadKey: string, userId: string, value: string) => Promise<unknown>)
-    | undefined;
   /** Tests point the Web API at an address that refuses connections. */
   readonly apiUrl?: string | undefined;
   /**
@@ -120,8 +106,6 @@ export interface SlackChatHost {
    * message in a direct-message channel).
    */
   readonly missedEvents: (request: MissedRequest) => Promise<Array<InboundEvent>>;
-  /** Disconnects from Slack. */
-  readonly shutdown: () => Promise<void>;
 }
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -354,7 +338,15 @@ export async function waitUntil(
   }
 }
 
-export async function startSlackChatHost(options: SlackChatHostOptions): Promise<SlackChatHost> {
+/**
+ * The Slack adapter for the shared `Chat`, its message conversion, and
+ * `connect`, which gives the Slack-only calls once the `Chat` is running.
+ */
+export function createSlackHost(options: SlackChatHostOptions): {
+  readonly adapter: SlackAdapter;
+  readonly deliver: Deliver;
+  readonly connect: (chat: Chat) => SlackChatHost;
+} {
   const slack: SlackAdapter = createSlackAdapter({
     mode: "socket",
     botToken: options.botToken,
@@ -371,16 +363,6 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     // The T3 thread's title is the one title; the bridge sets it.
     sessionTitle: false,
   });
-  const chat = new Chat({
-    userName: "t3",
-    adapters: { slack },
-    state: options.state,
-    // A handler only hands a message to T3, so queueing behind the thread lock
-    // costs little and keeps a quick follow-up from racing the first mention's binding.
-    concurrency: "queue",
-    logger: "warn",
-  });
-
   // The adapter caches user lookups in state, so this costs one Slack call per
   // cache period. A failed lookup renders the mention as the bare user id.
   const botMentionNames = async (): Promise<ReadonlyArray<string>> => {
@@ -479,8 +461,7 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     });
   };
 
-  type Route = "mention" | "subscribed" | "direct";
-  const deliver = async (
+  const deliver: Deliver = async (
     thread: Thread,
     message: Message,
     context: MessageContext | undefined,
@@ -562,239 +543,209 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     }
     return events.toSorted((a, b) => Number(a.messageId) - Number(b.messageId));
   };
-  const guarded =
-    (route: Route) => async (thread: Thread, message: Message, context?: MessageContext) => {
+  const log = options.log ?? (() => {});
+  const connect = (chat: Chat): SlackChatHost => {
+    const mrkdwn = new SlackFormatConverter();
+    const api = async (method: string, args: Record<string, unknown>) =>
+      (await slack.webClient.apiCall(method, args)) as unknown as Record<string, unknown>;
+
+    /** Workspace membership by user, for `allowEveryone`, checked again after a while. */
+    const members = new Map<string, { member: boolean; until: number }>();
+    let ownTeam: string | undefined;
+    /** Chat threads where Slack refused agent session calls; they use the legacy status. */
+    const legacyThreads = new Set<string>();
+    let legacyLogged = false;
+    let legacyUnavailable = false;
+    /**
+     * The status text under the thread, as Office and Devin show it: Slack draws
+     * `loading_messages` beside the app's icon with a spinner. Empty clears it.
+     */
+    const setStatusText = async (channel: string, threadTs: string, text: string) => {
+      if (legacyUnavailable) return;
       try {
-        await deliver(thread, message, context, route);
+        await api("assistant.threads.setStatus", {
+          channel_id: channel,
+          thread_ts: threadTs,
+          status: text,
+          ...(text === "" ? {} : { loading_messages: [text] }),
+        });
       } catch (error) {
-        options.onError(error);
+        const code = slackErrorCode(error);
+        if (code === "missing_scope" || code === "not_allowed_token_type") {
+          legacyUnavailable = true;
+          log(
+            "warn",
+            `Thread status is off: Slack answered ${code}. Add the assistant:write scope to show it.`,
+          );
+          return;
+        }
+        throw error;
       }
     };
-  chat.onNewMention(guarded("mention"));
-  chat.onSubscribedMessage(guarded("subscribed"));
-  chat.onDirectMessage((thread, message, _channel, context) =>
-    guarded("direct")(thread, message, context),
-  );
+    /** Errors that may pass on a retry, so they don't switch a thread to the legacy status. */
+    const TRANSIENT = new Set([
+      "ratelimited",
+      "rate_limited",
+      "internal_error",
+      "fatal_error",
+      "service_unavailable",
+      "request_timeout",
+    ]);
 
-  const log = options.log ?? (() => {});
-  chat.onAgentSessionStopped(async (event) => {
-    try {
-      await options.onStop?.(event.threadId, event.userId);
-    } catch (error) {
-      options.onError(error);
-    }
-  });
-  chat.onAppContextChanged((event) => {
-    log(
-      "info",
-      `app_context_changed from ${event.userId} (${event.entities.length} entities); ignored.`,
-    );
-  });
-
-  chat.onAction(async (event) => {
-    if (!event.actionId.startsWith(ANSWER_ACTION_ID)) return;
-    try {
-      await options.onAnswer?.(event.threadId, event.user.userId, event.value ?? "");
-    } catch (error) {
-      options.onError(error);
-    }
-  });
-
-  await chat.initialize();
-  const mrkdwn = new SlackFormatConverter();
-  const api = async (method: string, args: Record<string, unknown>) =>
-    (await slack.webClient.apiCall(method, args)) as unknown as Record<string, unknown>;
-
-  /** Workspace membership by user, for `allowEveryone`, checked again after a while. */
-  const members = new Map<string, { member: boolean; until: number }>();
-  let ownTeam: string | undefined;
-  /** Chat threads where Slack refused agent session calls; they use the legacy status. */
-  const legacyThreads = new Set<string>();
-  let legacyLogged = false;
-  let legacyUnavailable = false;
-  /**
-   * The status text under the thread, as Office and Devin show it: Slack draws
-   * `loading_messages` beside the app's icon with a spinner. Empty clears it.
-   */
-  const setStatusText = async (channel: string, threadTs: string, text: string) => {
-    if (legacyUnavailable) return;
-    try {
-      await api("assistant.threads.setStatus", {
-        channel_id: channel,
-        thread_ts: threadTs,
-        status: text,
-        ...(text === "" ? {} : { loading_messages: [text] }),
-      });
-    } catch (error) {
-      const code = slackErrorCode(error);
-      if (code === "missing_scope" || code === "not_allowed_token_type") {
-        legacyUnavailable = true;
-        log(
-          "warn",
-          `Thread status is off: Slack answered ${code}. Add the assistant:write scope to show it.`,
-        );
-        return;
-      }
-      throw error;
-    }
-  };
-  /** Errors that may pass on a retry, so they don't switch a thread to the legacy status. */
-  const TRANSIENT = new Set([
-    "ratelimited",
-    "rate_limited",
-    "internal_error",
-    "fatal_error",
-    "service_unavailable",
-    "request_timeout",
-  ]);
-
-  return {
-    post: async (message) => {
-      const files = message.files ?? [];
-      const parts = splitMarkdown(message.text);
-      // Every part but the last goes alone; the last carries the files, if any.
-      const last = parts.pop() ?? "";
-      for (const part of parts) await chat.thread(message.chatThreadKey).post({ markdown: part });
-      if (files.length === 0) {
-        if (last !== "") await chat.thread(message.chatThreadKey).post({ markdown: last });
-        return;
-      }
-      // The SDK uploads files and posts the text as two messages. Slack's
-      // `initial_comment` puts the text on the file message itself, in mrkdwn.
-      const { channel, threadTs } = slack.decodeThreadId(message.chatThreadKey);
-      const comment = last.trim() === "" ? "" : mrkdwn.toResponseUrlText({ markdown: last });
-      const uploaded = (await slack.webClient.files.uploadV2({
-        channel_id: channel,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-        ...(comment ? { initial_comment: comment } : {}),
-        file_uploads: files.map((file) => ({ file: file.data, filename: file.filename })),
-      })) as unknown as UploadResult;
-      // Slack posts the file in the background, sometimes most of a minute later. Wait
-      // for it, so the agent's next message, often its answer, can't land first.
-      const ids = uploadedFileIds(uploaded);
-      const waited = await waitUntil(
-        async () => {
-          for (const id of ids) {
-            const info = (await slack.webClient.files.info({ file: id })) as unknown as {
-              file?: FileShares;
-            };
-            if (!fileShared(info.file, channel, threadTs)) return false;
-          }
-          return true;
-        },
-        { timeoutMs: FILE_SHARE_TIMEOUT_MS, intervalMs: FILE_SHARE_POLL_MS },
-      );
-      if (!waited) log("warn", `Slack hadn't shown ${ids.join(", ")} in ${channel} after 60 s.`);
-    },
-    react: async ({ chatThreadKey, messageId, emoji }) => {
-      const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
-      // Slack returns the thread's parent plus the reply at `messageId`, if the thread has one.
-      const replies = await slack.webClient.conversations.replies({
-        channel,
-        ts: threadTs,
-        oldest: messageId,
-        latest: messageId,
-        inclusive: true,
-        limit: 2,
-      });
-      if (!replies.messages?.some((reply) => reply.ts === messageId)) {
-        throw new Error(`Message ${messageId} is not in this Slack thread.`);
-      }
-      try {
-        await slack.webClient.reactions.add({ channel, timestamp: messageId, name: emoji });
-      } catch (error) {
-        if ((error as { data?: { error?: string } }).data?.error !== "already_reacted") throw error;
-      }
-    },
-    setState: async (chatThreadKey, state, text) => {
-      const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
-      if (!threadTs) return;
-      // Slack's `processing` state draws a "Stop" pill in place of the status
-      // text, so a working thread stays `active` and shows only the text, as
-      // Devin does; people stop a run with the `stop` command. `suspended`
-      // marks a thread that waits on an answer.
-      const statusText = state === "processing" ? text : "";
-      const sessionState = state === "processing" ? "active" : state;
-      if (!legacyThreads.has(chatThreadKey)) {
-        try {
-          await slack.setSessionStatus(channel, threadTs, sessionState);
-          if (statusText !== "") await setStatusText(channel, threadTs, statusText);
+    return {
+      post: async (message) => {
+        const files = message.files ?? [];
+        const parts = splitMarkdown(message.text);
+        // Every part but the last goes alone; the last carries the files, if any.
+        const last = parts.pop() ?? "";
+        for (const part of parts) await chat.thread(message.chatThreadKey).post({ markdown: part });
+        if (files.length === 0) {
+          if (last !== "") await chat.thread(message.chatThreadKey).post({ markdown: last });
           return;
+        }
+        // The SDK uploads files and posts the text as two messages. Slack's
+        // `initial_comment` puts the text on the file message itself, in mrkdwn.
+        const { channel, threadTs } = slack.decodeThreadId(message.chatThreadKey);
+        const comment = last.trim() === "" ? "" : mrkdwn.toResponseUrlText({ markdown: last });
+        const uploaded = (await slack.webClient.files.uploadV2({
+          channel_id: channel,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+          ...(comment ? { initial_comment: comment } : {}),
+          file_uploads: files.map((file) => ({ file: file.data, filename: file.filename })),
+        })) as unknown as UploadResult;
+        // Slack posts the file in the background, sometimes most of a minute later. Wait
+        // for it, so the agent's next message, often its answer, can't land first.
+        const ids = uploadedFileIds(uploaded);
+        const waited = await waitUntil(
+          async () => {
+            for (const id of ids) {
+              const info = (await slack.webClient.files.info({ file: id })) as unknown as {
+                file?: FileShares;
+              };
+              if (!fileShared(info.file, channel, threadTs)) return false;
+            }
+            return true;
+          },
+          { timeoutMs: FILE_SHARE_TIMEOUT_MS, intervalMs: FILE_SHARE_POLL_MS },
+        );
+        if (!waited) log("warn", `Slack hadn't shown ${ids.join(", ")} in ${channel} after 60 s.`);
+      },
+      react: async ({ chatThreadKey, messageId, emoji }) => {
+        const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+        // Slack returns the thread's parent plus the reply at `messageId`, if the thread has one.
+        const replies = await slack.webClient.conversations.replies({
+          channel,
+          ts: threadTs,
+          oldest: messageId,
+          latest: messageId,
+          inclusive: true,
+          limit: 2,
+        });
+        if (!replies.messages?.some((reply) => reply.ts === messageId)) {
+          throw new Error(`Message ${messageId} is not in this Slack thread.`);
+        }
+        try {
+          await slack.webClient.reactions.add({ channel, timestamp: messageId, name: emoji });
         } catch (error) {
-          const code = slackErrorCode(error);
-          if (code === undefined || TRANSIENT.has(code)) throw error;
-          legacyThreads.add(chatThreadKey);
-          if (!legacyLogged) {
-            legacyLogged = true;
-            log(
-              "warn",
-              `Slack refused agents.sessions.setStatus (${code}) in ${chatThreadKey}; using assistant.threads.setStatus there.`,
-            );
+          if ((error as { data?: { error?: string } }).data?.error !== "already_reacted")
+            throw error;
+        }
+      },
+      setState: async (chatThreadKey, state, text) => {
+        const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+        if (!threadTs) return;
+        // Slack's `processing` state draws a "Stop" pill in place of the status
+        // text, so a working thread stays `active` and shows only the text, as
+        // Devin does; people stop a run with the `stop` command. `suspended`
+        // marks a thread that waits on an answer.
+        const statusText = state === "processing" ? text : "";
+        const sessionState = state === "processing" ? "active" : state;
+        if (!legacyThreads.has(chatThreadKey)) {
+          try {
+            await slack.setSessionStatus(channel, threadTs, sessionState);
+            if (statusText !== "") await setStatusText(channel, threadTs, statusText);
+            return;
+          } catch (error) {
+            const code = slackErrorCode(error);
+            if (code === undefined || TRANSIENT.has(code)) throw error;
+            legacyThreads.add(chatThreadKey);
+            if (!legacyLogged) {
+              legacyLogged = true;
+              log(
+                "warn",
+                `Slack refused agents.sessions.setStatus (${code}) in ${chatThreadKey}; using assistant.threads.setStatus there.`,
+              );
+            }
           }
         }
-      }
-      await setStatusText(channel, threadTs, statusText);
-    },
-    isWorkspaceMember: async (userId) => {
-      const cached = members.get(userId);
-      if (cached !== undefined && cached.until > performance.now()) return cached.member;
-      ownTeam ??= String(
-        ((await slack.webClient.auth.test()) as { team_id?: string }).team_id ?? "",
-      );
-      const { user } = (await slack.webClient.users.info({ user: userId })) as {
-        user?: SlackMember;
-      };
-      const member =
-        user !== undefined &&
-        ownTeam !== "" &&
-        user.team_id === ownTeam &&
-        user.deleted !== true &&
-        user.is_bot !== true &&
-        user.is_restricted !== true &&
-        user.is_ultra_restricted !== true;
-      members.set(userId, { member, until: performance.now() + MEMBER_CACHE_MS });
-      return member;
-    },
-    rename: async (chatThreadKey, title) => {
-      // agents.sessions.rename with channel_id and thread_ts, in DMs and channel threads alike.
-      const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
-      if (!threadTs) return;
-      const plain = slackTitle(title);
-      if (plain === "") return;
-      try {
-        await slack.setAssistantTitle(channel, threadTs, plain);
-      } catch (error) {
-        // Slack refuses some characters; try once more with plain ones only.
-        if (slackErrorCode(error) !== "invalid_name") throw error;
-        const strict = slackTitle(title, true);
-        if (strict === "" || strict === plain) throw error;
-        await slack.setAssistantTitle(channel, threadTs, strict);
-      }
-    },
-    postBlocks: async ({ chatThreadKey, text, blocks }) => {
-      const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
-      const posted = await slack.webClient.chat.postMessage({
-        channel,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-        text,
-        blocks: blocks as never,
-      });
-      return String(posted.ts ?? "");
-    },
-    updateBlocks: async ({ chatThreadKey, messageId, text, blocks }) => {
-      const { channel } = slack.decodeThreadId(chatThreadKey);
-      await slack.webClient.chat.update({ channel, ts: messageId, text, blocks: blocks as never });
-    },
-    history,
-    download,
-    follow: async (chatThreadKey) => {
-      // Direct messages all reach the bot anyway; a channel thread needs following.
-      if (slack.decodeThreadId(chatThreadKey).channel.startsWith("D")) return;
-      await chat.thread(chatThreadKey).subscribe();
-    },
-    missedEvents,
-    shutdown: () => chat.shutdown(),
+        await setStatusText(channel, threadTs, statusText);
+      },
+      isWorkspaceMember: async (userId) => {
+        const cached = members.get(userId);
+        if (cached !== undefined && cached.until > performance.now()) return cached.member;
+        ownTeam ??= String(
+          ((await slack.webClient.auth.test()) as { team_id?: string }).team_id ?? "",
+        );
+        const { user } = (await slack.webClient.users.info({ user: userId })) as {
+          user?: SlackMember;
+        };
+        const member =
+          user !== undefined &&
+          ownTeam !== "" &&
+          user.team_id === ownTeam &&
+          user.deleted !== true &&
+          user.is_bot !== true &&
+          user.is_restricted !== true &&
+          user.is_ultra_restricted !== true;
+        members.set(userId, { member, until: performance.now() + MEMBER_CACHE_MS });
+        return member;
+      },
+      rename: async (chatThreadKey, title) => {
+        // agents.sessions.rename with channel_id and thread_ts, in DMs and channel threads alike.
+        const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+        if (!threadTs) return;
+        const plain = slackTitle(title);
+        if (plain === "") return;
+        try {
+          await slack.setAssistantTitle(channel, threadTs, plain);
+        } catch (error) {
+          // Slack refuses some characters; try once more with plain ones only.
+          if (slackErrorCode(error) !== "invalid_name") throw error;
+          const strict = slackTitle(title, true);
+          if (strict === "" || strict === plain) throw error;
+          await slack.setAssistantTitle(channel, threadTs, strict);
+        }
+      },
+      postBlocks: async ({ chatThreadKey, text, blocks }) => {
+        const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+        const posted = await slack.webClient.chat.postMessage({
+          channel,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+          text,
+          blocks: blocks as never,
+        });
+        return String(posted.ts ?? "");
+      },
+      updateBlocks: async ({ chatThreadKey, messageId, text, blocks }) => {
+        const { channel } = slack.decodeThreadId(chatThreadKey);
+        await slack.webClient.chat.update({
+          channel,
+          ts: messageId,
+          text,
+          blocks: blocks as never,
+        });
+      },
+      history,
+      download,
+      follow: async (chatThreadKey) => {
+        // Direct messages all reach the bot anyway; a channel thread needs following.
+        if (slack.decodeThreadId(chatThreadKey).channel.startsWith("D")) return;
+        await chat.thread(chatThreadKey).subscribe();
+      },
+      missedEvents,
+    };
   };
+  return { adapter: slack, deliver, connect };
 }
 
 const LOG_LINE_LIMIT = 500;

@@ -222,3 +222,60 @@ export function questionText(asked: Asked): string {
     .join("\n")
     .slice(0, 3000);
 }
+
+/**
+ * The open question as plain text with numbered options, for a platform
+ * without buttons. It is answered with `applyReply`.
+ */
+export function numberedQuestion(asked: Asked): string {
+  const question = openQuestion(asked);
+  if (question === undefined) return "";
+  const title = [question.header, question.question].filter(Boolean);
+  const lines = [title.length === 2 && title[0] === "Question" ? title[1]! : title.join("\n")];
+  question.options.forEach((option, index) => {
+    const description = sameText(option.description, option.label)
+      ? ""
+      : ` – ${option.description}`;
+    lines.push(`${index + 1}. ${option.label}${description}`);
+  });
+  if (question.options.length > 0) {
+    const how = question.multiSelect
+      ? "Reply with one or more numbers, such as 1, 3"
+      : "Reply with a number";
+    lines.push("", allowsText(question) ? `${how}, or with your own answer.` : `${how}.`);
+  }
+  return lines.join("\n").slice(0, 3000);
+}
+
+/**
+ * Applies a typed reply to the open question: option numbers, an option's
+ * label, or, where the question takes it, the text itself.
+ */
+export function applyReply(asked: Asked, text: string): Asked | undefined {
+  const question = openQuestion(asked);
+  if (question === undefined) return undefined;
+  const trimmed = text.trim();
+  const numbers = /^\d+(?:\s*[,\s]\s*\d+)*$/.test(trimmed)
+    ? trimmed.split(/[,\s]+/).map((each) => Number(each) - 1)
+    : undefined;
+  const byLabel = question.options.findIndex(
+    (option) => option.label.trim().toLowerCase() === trimmed.toLowerCase(),
+  );
+  const picked =
+    numbers !== undefined && numbers.every((index) => question.options[index] !== undefined)
+      ? [...new Set(numbers)]
+      : byLabel >= 0
+        ? [byLabel]
+        : undefined;
+  if (picked === undefined || (!question.multiSelect && picked.length > 1)) {
+    return applyText(asked, text);
+  }
+  const values = picked.map((index) => optionValue(question.options[index]!));
+  return question.multiSelect
+    ? {
+        ...asked,
+        answers: { ...asked.answers, [question.id]: values },
+        submitted: [...asked.submitted, question.id],
+      }
+    : { ...asked, answers: { ...asked.answers, [question.id]: values[0]! } };
+}

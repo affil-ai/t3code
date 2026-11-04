@@ -8,7 +8,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import type { ChannelRoute } from "./bridge.ts";
+import type { ChannelRoute, ThreadRoute } from "./platform.ts";
 import type { FollowUpMode } from "./threads.ts";
 
 export interface BridgeConfig {
@@ -37,6 +37,24 @@ export interface BridgeConfig {
    * "options": [{ "id": "effort", "value": "medium" }] }`. Omit for the project's default.
    */
   readonly modelSelection?: ModelSelection | undefined;
+  /** iMessage through `affil-imessage` on a Mac. Omit to run without iMessage. */
+  readonly imessage?: ImessageConfig | undefined;
+}
+
+export interface ImessageConfig {
+  /** Where `affil-imessage` listens, usually an SSH tunnel to the Mac: `127.0.0.1:47821`. */
+  readonly host: string;
+  readonly port: number;
+  /** Where each new conversation starts its thread: a project, and optionally a new worktree and a note. */
+  readonly route: ThreadRoute;
+  /** Phone numbers and emails, as Messages shows them, that may use the bot. */
+  readonly allowedHandles: ReadonlyArray<string>;
+  /** Also allow anyone who messages the account. Off unless set to true. */
+  readonly allowEveryone: boolean;
+  /** Messages services to read. Default `["iMessage"]`; others, such as SMS, are left alone. */
+  readonly services: ReadonlyArray<string>;
+  /** On the very first start, also answer messages after this Messages row id. */
+  readonly startAfterRowId?: number | undefined;
 }
 
 export const DEFAULT_TOOLS_PORT = 3920;
@@ -64,7 +82,7 @@ const optionalText = (entry: Record<string, unknown>, field: string): string | u
   if (value === undefined) return undefined;
   return typeof value === "string" && value.trim() !== ""
     ? value
-    : fail(`channelProjects ${field} must be non-empty text.`);
+    : fail(`${field} must be non-empty text.`);
 };
 
 function parseRoute(entry: unknown): ChannelRoute {
@@ -83,6 +101,48 @@ function parseRoute(entry: unknown): ChannelRoute {
     ...(match === undefined ? {} : { match }),
     ...(worktreeFrom === undefined ? {} : { worktreeFrom }),
     ...(note === undefined ? {} : { note }),
+  };
+}
+
+function parseImessage(raw: unknown): ImessageConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) return fail("imessage must be an object.");
+  const host = raw.host ?? "127.0.0.1";
+  const port = raw.port ?? 47821;
+  if (typeof host !== "string" || host === "") fail("imessage.host must be a host name.");
+  if (typeof port !== "number" || !Number.isInteger(port) || port <= 0) {
+    fail("imessage.port must be a port number.");
+  }
+  if (typeof raw.projectId !== "string" || raw.projectId === "") {
+    fail("imessage.projectId is required.");
+  }
+  if (raw.allowEveryone !== undefined && typeof raw.allowEveryone !== "boolean") {
+    fail("imessage.allowEveryone must be true or false.");
+  }
+  if (
+    raw.startAfterRowId !== undefined &&
+    (typeof raw.startAfterRowId !== "number" || !Number.isInteger(raw.startAfterRowId))
+  ) {
+    fail("imessage.startAfterRowId must be a whole number.");
+  }
+  const worktreeFrom = optionalText(raw, "worktreeFrom");
+  const note = optionalText(raw, "note");
+  return {
+    host: host as string,
+    port: port as number,
+    route: {
+      projectId: raw.projectId as string,
+      ...(worktreeFrom === undefined ? {} : { worktreeFrom }),
+      ...(note === undefined ? {} : { note }),
+    },
+    allowedHandles:
+      raw.allowedHandles === undefined
+        ? []
+        : stringList(raw.allowedHandles, "imessage.allowedHandles"),
+    allowEveryone: raw.allowEveryone === true,
+    services:
+      raw.services === undefined ? ["iMessage"] : stringList(raw.services, "imessage.services"),
+    startAfterRowId: raw.startAfterRowId as number | undefined,
   };
 }
 
@@ -132,6 +192,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
     toolsPort: toolsPort as number,
     runtimeMode: raw.runtimeMode as string | undefined,
     modelSelection: raw.modelSelection as ModelSelection | undefined,
+    imessage: parseImessage(raw.imessage),
   };
 }
 

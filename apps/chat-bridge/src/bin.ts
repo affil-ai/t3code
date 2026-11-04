@@ -9,12 +9,19 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 
-import { Bridge } from "./bridge.ts";
+import type { Chat } from "chat";
+
+import { Bridge, type InboundEvent } from "./bridge.ts";
+import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
 import { dataDir, loadConfig } from "./config.ts";
 import { login, savedToken } from "./login.ts";
+import { createImessageAdapter } from "./imessage/adapter.ts";
+import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./manifest.ts";
-import { redactSlackSecrets, type SlackChatHost, startSlackChatHost } from "./slackHost.ts";
+import { type ChatPlatform, platformFor } from "./platform.ts";
+import { createSlackHost, redactSlackSecrets, type SlackChatHost } from "./slackHost.ts";
+import { slackPlatform } from "./slackPlatform.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
@@ -64,56 +71,107 @@ async function start(): Promise<void> {
     await t3.call("t3_project_read", { projectId });
   }
   if (config.dmProjectId) await t3.call("t3_project_read", { projectId: config.dmProjectId });
+  if (config.imessage)
+    await t3.call("t3_project_read", { projectId: config.imessage.route.projectId });
 
-  let host: SlackChatHost | undefined;
-  const connected = () => {
-    if (host === undefined) throw new Error("Slack is not connected yet.");
-    return host;
+  // One core and one Chat SDK `Chat`; each platform is an adapter on it.
+  let chat: Chat | undefined;
+  let slackHost: SlackChatHost | undefined;
+  let bridge: Bridge | undefined;
+  const receive = (event: InboundEvent) => {
+    if (bridge === undefined) throw new Error("The bridge is not running yet.");
+    return bridge.receive(event);
   };
-  const bridge = new Bridge({
+  const platforms: Array<ChatPlatform> = [
+    slackPlatform({
+      host: () => slackHost,
+      access: { allowedUserIds: config.allowedUserIds, allowEveryone: config.allowEveryone },
+      channelRoutes: config.channelProjects,
+      directRoute: config.dmProjectId ? { projectId: config.dmProjectId } : undefined,
+    }),
+  ];
+  const imessage = config.imessage
+    ? (() => {
+        const settings = config.imessage;
+        const adapter = createImessageAdapter({
+          host: settings.host,
+          port: settings.port,
+          services: settings.services,
+          startAfterRowId: settings.startAfterRowId,
+          log,
+        });
+        const { platform, deliver } = imessagePlatform({
+          chat: () => chat,
+          adapter,
+          access: {
+            allowedUserIds: settings.allowedHandles,
+            allowEveryone: settings.allowEveryone,
+          },
+          route: settings.route,
+          onEvent: receive,
+        });
+        platforms.push(platform);
+        return { adapter, deliver };
+      })()
+    : undefined;
+  bridge = new Bridge({
     store,
     threads,
-    settings: config,
-    post: (reply) => connected().post({ chatThreadKey: reply.chatThreadKey, text: reply.text }),
-    status: async (chatThreadKey, state, text) => host?.setState(chatThreadKey, state, text),
-    postBlocks: (message) => connected().postBlocks(message),
-    updateBlocks: (message) => connected().updateBlocks(message),
-    rename: (chatThreadKey, title) => connected().rename(chatThreadKey, title),
-    download: (url) => connected().download(url),
-    history: (chatThreadKey, messageId) => connected().history(chatThreadKey, messageId),
-    bound: (chatThreadKey) => connected().follow(chatThreadKey),
-    isWorkspaceMember: (userId) => connected().isWorkspaceMember(userId),
+    settings: { followUpMode: config.followUpMode, modelSelection: config.modelSelection },
+    platforms,
     log,
   });
-  host = await startSlackChatHost({
+  const core = bridge;
+  const slackParts = createSlackHost({
     botToken,
     appToken,
-    state: createChatState(db),
     // The bridge logs each outcome as it handles the event.
-    onEvent: (event) => bridge.receive(event),
-    onError: (error) => log(`Slack message failed: ${String(error)}`),
-    onStop: (chatThreadKey, userId) => bridge.stopRequested(chatThreadKey, userId),
-    onAnswer: (chatThreadKey, userId, value) =>
-      bridge.questionClicked(chatThreadKey, userId, value),
+    onEvent: receive,
     log: (level, line) => log(`slack ${level}: ${line}`),
   });
-  const slack = host;
+  chat = await startChatHost({
+    adapters: {
+      slack: slackParts.adapter,
+      ...(imessage ? { imessage: imessage.adapter } : {}),
+    },
+    deliver: {
+      slack: slackParts.deliver,
+      ...(imessage ? { imessage: imessage.deliver } : {}),
+    },
+    state: createChatState(db),
+    onError: (error) => log(`Chat message failed: ${String(error)}`),
+    onStop: (chatThreadKey, userId) => core.stopRequested(chatThreadKey, userId),
+    onAnswer: (chatThreadKey, userId, value) => core.questionClicked(chatThreadKey, userId, value),
+    log,
+  });
+  const running = chat;
+  const slack = slackParts.connect(running);
+  slackHost = slack;
   const tools = await startToolServer(
     {
       bindingByChatKey: (chatKey) => store.bindingByChatKey(chatKey),
       workspaceRoots: (threadId) => threads.workspaceRoots(threadId),
-      post: (message) => slack.post(message),
-      react: (reaction) => slack.react(reaction),
-      setStatus: (chatThreadKey, status) => bridge.setStatus(chatThreadKey, status),
+      post: (message) => platformFor(platforms, message.chatThreadKey).post(message),
+      react: async (reaction) => {
+        const platform = platformFor(platforms, reaction.chatThreadKey);
+        if (platform.react === undefined) throw new Error(`${platform.name} has no reactions.`);
+        await platform.react(reaction);
+      },
+      setStatus: (chatThreadKey, status) => core.setStatus(chatThreadKey, status),
     },
     config.toolsPort,
   );
   // What a restart left in the inbox first, then what Slack sent while the bridge was down.
-  await bridge.resume();
-  await bridge.catchUp((request) => slack.missedEvents(request));
+  await core.resume();
+  await core.catchUp("slack", (request) => slack.missedEvents(request));
   log(
-    `Connected to Slack and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
+    `Connected to Slack${imessage ? ", iMessage (connects by itself)" : ""} and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
   );
+  if (config.imessage?.allowEveryone) {
+    log(
+      "WARNING: imessage.allowEveryone is on. Anyone who sends this Apple account an iMessage can start runs, with this bridge's T3 access.",
+    );
+  }
   if (config.allowEveryone) {
     log(
       "WARNING: allowEveryone is on. Every full member of this Slack workspace can start runs, and each run has this bridge's T3 access (often full access on this machine, as the user T3 runs as).",
@@ -122,9 +180,9 @@ async function start(): Promise<void> {
 
   const shutdown = async () => {
     log("Shutting down.");
-    bridge.stop();
+    core.stop();
     tools.close();
-    await slack.shutdown().catch(() => {});
+    await running.shutdown().catch(() => {});
     await t3.close();
     db.close();
     process.exit(0);

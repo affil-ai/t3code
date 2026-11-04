@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 
 import { assert, it } from "vite-plus/test";
 
-import type { SlackOutboundMessage, SlackReaction } from "./slackHost.ts";
+import type { OutboundMessage, Reaction } from "./platform.ts";
 import { callTool, type ToolDeps } from "./toolServer.ts";
 
 function harness() {
@@ -14,8 +14,8 @@ function harness() {
   NodeFS.mkdirSync(workspace);
   NodeFS.writeFileSync(NodePath.join(workspace, "report.txt"), "hello");
   NodeFS.writeFileSync(NodePath.join(root, "secret.txt"), "nope");
-  const posts: Array<SlackOutboundMessage> = [];
-  const reactions: Array<SlackReaction> = [];
+  const posts: Array<OutboundMessage> = [];
+  const reactions: Array<Reaction> = [];
   const deps: ToolDeps = {
     bindingByChatKey: (chatKey) =>
       chatKey === "key-1"
@@ -88,7 +88,7 @@ it("reacts with a bare emoji name and checks the message id", async () => {
   ]);
   const bad = await callTool(deps, "chat_react", {
     chatKey: "key-1",
-    messageId: "abc",
+    messageId: "../abc",
     emoji: "eyes",
   });
   assert.isTrue(bad.isError);

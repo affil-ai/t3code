@@ -13,9 +13,17 @@ import {
   type BlockMessage,
   type Reply,
 } from "./bridge.ts";
+import { slackFirstTurnNote, slackPlatform } from "./slackPlatform.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
 import { type RunStatus, T3Threads } from "./threads.ts";
+
+/** Slack's wording, for helpers that format text without a connection. */
+const SLACK = slackPlatform({
+  host: () => undefined,
+  access: { allowedUserIds: [] },
+  channelRoutes: [],
+});
 
 const PROJECT = "project-1";
 const THREAD = "thread-1";
@@ -264,34 +272,43 @@ function harness(
   const bridge = new Bridge({
     store,
     threads: new T3Threads(t3.tools),
-    settings: {
-      channelProjects: options.routes ?? [{ channelId: "C1", projectId: PROJECT }],
-      allowedUserIds: ["U1"],
-      allowEveryone: options.allowEveryone,
-      followUpMode: "steer",
-      dmProjectId: options.dmProjectId,
-    },
-    post: options.post ?? (async (reply) => void posted.push(reply)),
-    status: async (chatThreadKey, state, text) =>
-      void statuses.push(`${chatThreadKey} ${state}${text ? ` ${text}` : ""}`),
-    postBlocks: async (message) => {
-      blockPosts.push(message);
-      return `900.${blockPosts.length}`;
-    },
-    updateBlocks: async (message) => void blockPosts.push(message),
-    isWorkspaceMember: async (userId) => (options.members ?? []).includes(userId),
-    rename: async (chatThreadKey, title) => {
-      if (renameFailures > 0) {
-        renameFailures -= 1;
-        throw new Error("session_not_found");
-      }
-      renamed.push(`${chatThreadKey} ${title}`);
-    },
-    download: async (url) => {
-      downloads.push(url);
-      return new Uint8Array([1, 2, 3]);
-    },
-    ...(options.history ? { history: options.history } : {}),
+    settings: { followUpMode: "steer" },
+    platforms: [
+      {
+        id: "slack",
+        name: "Slack",
+        place: "Slack thread",
+        access: { allowedUserIds: ["U1"], allowEveryone: options.allowEveryone },
+        isEligible: async (userId) => (options.members ?? []).includes(userId),
+        channelRoutes: options.routes ?? [{ channelId: "C1", projectId: PROJECT }],
+        directRoute:
+          options.dmProjectId === undefined ? undefined : { projectId: options.dmProjectId },
+        person: (userId, name) => `${name} (<@${userId}>)`,
+        firstTurnNote: slackFirstTurnNote,
+        refusal: (userId) =>
+          `Sorry, you can't use this bot yet. Ask whoever runs it to add your Slack member ID (${userId}) to its allowed users.`,
+        post: options.post ?? (async (reply) => void posted.push(reply)),
+        setState: async (chatThreadKey, state, text) =>
+          void statuses.push(`${chatThreadKey} ${state}${text ? ` ${text}` : ""}`),
+        postBlocks: async (message) => {
+          blockPosts.push(message);
+          return `900.${blockPosts.length}`;
+        },
+        updateBlocks: async (message) => void blockPosts.push(message),
+        rename: async (chatThreadKey, title) => {
+          if (renameFailures > 0) {
+            renameFailures -= 1;
+            throw new Error("session_not_found");
+          }
+          renamed.push(`${chatThreadKey} ${title}`);
+        },
+        download: async (url) => {
+          downloads.push(url);
+          return new Uint8Array([1, 2, 3]);
+        },
+        ...(options.history ? { history: options.history } : {}),
+      },
+    ],
     // Tests run retries themselves, by moving the clock and calling `resume`.
     schedule: (ms) => void scheduled.push(ms),
     sleep: async () => {},
@@ -514,13 +531,13 @@ it("starts the thread without history when reading it fails", async () => {
 
 it("keeps the newest earlier messages within the size limit", () => {
   const many = Array.from({ length: 300 }, (_, index) => said("Ada", `message ${index}`));
-  assert.notInclude(earlierText(many), "left out");
+  assert.notInclude(earlierText(SLACK, many), "left out");
 
   const long = [said("Ada", "x".repeat(50_000)), said("Grace", "y".repeat(50_000))];
-  const kept = earlierText(long);
+  const kept = earlierText(SLACK, long);
   assert.include(kept, "(1 older messages left out)");
   assert.include(kept, "Grace");
-  assert.strictEqual(earlierText([]), "");
+  assert.strictEqual(earlierText(SLACK, []), "");
 });
 
 it("lets every workspace member in with allowEveryone, and only them", async () => {
@@ -969,7 +986,7 @@ it("stops a run that asks for a permission, and says why, once", async () => {
     t3.calls.filter((call) => call.tool === "t3_thread_interrupt"),
     1,
   );
-  assert.include(posted[0]?.text ?? "", "can't grant from Slack");
+  assert.include(posted[0]?.text ?? "", "can't grant from chat");
   t3.finish("run-1", "interrupted");
   await bridge.idle();
 });
@@ -1062,7 +1079,7 @@ it("makes a short, readable title from a request", () => {
   );
   assert.isAtMost(long.length, 60);
   assert.isTrue(long.endsWith("…"));
-  assert.strictEqual(threadTitle("  "), "Slack request");
+  assert.strictEqual(threadTitle("  ", "Slack request"), "Slack request");
 });
 
 it("interrupts the T3 thread when an allowed user presses stop", async () => {
@@ -1205,7 +1222,7 @@ it("catches up on messages sent while down, without duplicates", async () => {
   first.setClock(1_000_000);
   // The first start only sets the mark.
   let asked = 0;
-  await first.bridge.catchUp(async () => {
+  await first.bridge.catchUp("slack", async () => {
     asked++;
     return [];
   });
@@ -1223,7 +1240,7 @@ it("catches up on messages sent while down, without duplicates", async () => {
     event("100.2", { kind: "follow_up", text: "while you were down" }),
     event("100.2", { kind: "follow_up", text: "while you were down" }),
   ];
-  await second.bridge.catchUp(async (request) => {
+  await second.bridge.catchUp("slack", async (request) => {
     requests.push(request);
     return missed;
   });
@@ -1253,7 +1270,7 @@ it("keeps the old mark when catch-up cannot read Slack", async () => {
   const { bridge, store, setClock } = harness(db);
   store.setCaughtUpTo(500);
   setClock(9_000_000);
-  await bridge.catchUp(async () => {
+  await bridge.catchUp("slack", async () => {
     throw new Error("ratelimited");
   });
   assert.strictEqual(store.caughtUpTo(), 500);
