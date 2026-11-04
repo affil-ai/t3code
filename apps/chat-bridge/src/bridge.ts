@@ -91,11 +91,34 @@ export type InboundOutcome =
       readonly reason: "duplicate" | "not_allowed" | "unmapped_channel" | "unbound_thread";
     };
 
+/** Where a new thread from a channel goes. A channel may have several; the first that matches wins. */
+export interface ChannelRoute {
+  readonly channelId: string;
+  readonly projectId: string;
+  /** Only messages containing this text, any case, such as "[nextcard]". Without it, any message. */
+  readonly match?: string | undefined;
+  /** Start each thread in a new worktree from this branch on origin, such as "dev". Without it, the project's checkout. */
+  readonly worktreeFrom?: string | undefined;
+  /** Added to the thread's first turn, such as limits on what the agent may run. */
+  readonly note?: string | undefined;
+}
+
+/** The route a new thread from this channel message takes, if any. */
+export function routeFor(
+  routes: ReadonlyArray<ChannelRoute>,
+  channelId: string,
+  text: string,
+): ChannelRoute | undefined {
+  const lower = text.toLowerCase();
+  return routes.find(
+    (route) =>
+      route.channelId === channelId &&
+      (route.match === undefined || lower.includes(route.match.toLowerCase())),
+  );
+}
+
 export interface BridgeSettings {
-  readonly channelProjects: ReadonlyArray<{
-    readonly channelId: string;
-    readonly projectId: string;
-  }>;
+  readonly channelProjects: ReadonlyArray<ChannelRoute>;
   readonly allowedUserIds: ReadonlyArray<string>;
   readonly followUpMode: FollowUpMode;
   /** The project a new direct message starts its thread in. Without it, direct messages are ignored. */
@@ -283,6 +306,7 @@ function turnText(
   chatKey: string,
   first: boolean,
   context = "",
+  note?: string | undefined,
 ): string {
   const lines = [
     ...(context ? [context, ""] : []),
@@ -298,6 +322,7 @@ function turnText(
     const files = skipped.map((file) => `${file.name} (${file.reason})`);
     lines.push("", `Attached in Slack but not imported: ${files.join(", ")}`);
   }
+  if (first && note) lines.push("", note);
   lines.push(
     "",
     first
@@ -569,10 +594,10 @@ export class Bridge {
     }
     if (event.kind === "follow_up") return { type: "ignored", reason: "unbound_thread" };
 
-    const projectId = event.direct
-      ? this.settings.dmProjectId
-      : this.settings.channelProjects.find((entry) => entry.channelId === event.channelId)
-          ?.projectId;
+    const route = event.direct
+      ? undefined
+      : routeFor(this.settings.channelProjects, event.channelId, event.text);
+    const projectId = event.direct ? this.settings.dmProjectId : route?.projectId;
     if (projectId === undefined) return { type: "ignored", reason: "unmapped_channel" };
     const chatKey = NodeCrypto.randomBytes(16).toString("hex");
     const earlier = await this.loadEarlier(event);
@@ -585,9 +610,10 @@ export class Bridge {
     const started = await this.threads.start({
       projectId,
       title: threadTitle(event.text),
-      text: turnText(event, imported.skipped, chatKey, true, earlierText(earlier)),
+      text: turnText(event, imported.skipped, chatKey, true, earlierText(earlier), route?.note),
       attachments: imported.attachments,
       requestId: requestId(event.eventId),
+      ...(route?.worktreeFrom === undefined ? {} : { worktreeFrom: route.worktreeFrom }),
     });
     this.store.insertBinding({
       chatThreadKey: event.chatThreadKey,

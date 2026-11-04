@@ -7,16 +7,18 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import type { ChannelRoute } from "./bridge.ts";
 import type { FollowUpMode } from "./threads.ts";
 
 export interface BridgeConfig {
   /** The T3 server's origin, such as `http://127.0.0.1:3773`. */
   readonly t3Url: string;
-  /** Which T3 project a mention in each Slack channel starts its thread in. */
-  readonly channelProjects: ReadonlyArray<{
-    readonly channelId: string;
-    readonly projectId: string;
-  }>;
+  /**
+   * Which T3 project a mention in each Slack channel starts its thread in. A
+   * channel may have several entries; the first whose `match` the message
+   * contains, or the first without `match`, wins.
+   */
+  readonly channelProjects: ReadonlyArray<ChannelRoute>;
   /** The T3 project a direct message to the bot starts its thread in. Omit to ignore direct messages. */
   readonly dmProjectId?: string | undefined;
   /** Slack user ids who may use the bot. Everyone else gets a short refusal. */
@@ -51,18 +53,39 @@ const stringList = (value: unknown, field: string): Array<string> =>
     ? value
     : fail(`${field} must be a list of ids.`);
 
+const optionalText = (entry: Record<string, unknown>, field: string): string | undefined => {
+  const value = entry[field];
+  if (value === undefined) return undefined;
+  return typeof value === "string" && value.trim() !== ""
+    ? value
+    : fail(`channelProjects ${field} must be non-empty text.`);
+};
+
+function parseRoute(entry: unknown): ChannelRoute {
+  if (
+    !isRecord(entry) ||
+    typeof entry.channelId !== "string" ||
+    typeof entry.projectId !== "string"
+  )
+    return fail("Each channelProjects entry needs channelId and projectId.");
+  const match = optionalText(entry, "match");
+  const worktreeFrom = optionalText(entry, "worktreeFrom");
+  const note = optionalText(entry, "note");
+  return {
+    channelId: entry.channelId,
+    projectId: entry.projectId,
+    ...(match === undefined ? {} : { match }),
+    ...(worktreeFrom === undefined ? {} : { worktreeFrom }),
+    ...(note === undefined ? {} : { note }),
+  };
+}
+
 export function parseConfig(raw: unknown): BridgeConfig {
   if (!isRecord(raw)) return fail("The config must be a JSON object.");
   const t3Url = typeof raw.t3Url === "string" ? raw.t3Url : fail("t3Url is required.");
   if (!URL.canParse(t3Url)) fail(`t3Url is not a URL: ${t3Url}`);
   const channelProjects = Array.isArray(raw.channelProjects)
-    ? raw.channelProjects.map((entry) =>
-        isRecord(entry) &&
-        typeof entry.channelId === "string" &&
-        typeof entry.projectId === "string"
-          ? { channelId: entry.channelId, projectId: entry.projectId }
-          : fail("Each channelProjects entry needs channelId and projectId."),
-      )
+    ? raw.channelProjects.map(parseRoute)
     : fail("channelProjects must be a list.");
   const followUpMode = raw.followUpMode ?? "steer";
   if (followUpMode !== "steer" && followUpMode !== "queue") {

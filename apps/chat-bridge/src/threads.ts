@@ -140,6 +140,8 @@ export class T3Threads {
     readonly text: string;
     readonly attachments: ReadonlyArray<T3Attachment>;
     readonly requestId: string;
+    /** A new worktree from this branch on origin; without it, the project's checkout. */
+    readonly worktreeFrom?: string | undefined;
   }): Promise<{ readonly threadId: string; readonly runId: string | null }> {
     const result = await this.t3.call<{ threadId: string; runId: string | null }>(
       "t3_thread_launch",
@@ -148,6 +150,15 @@ export class T3Threads {
         title: input.title,
         message: input.text,
         ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+        ...(input.worktreeFrom === undefined
+          ? {}
+          : {
+              workspaceStrategy: {
+                type: "worktree",
+                baseRef: input.worktreeFrom,
+                startFromOrigin: true,
+              },
+            }),
         ...(this.launchOptions.runtimeMode ? { runtimeMode: this.launchOptions.runtimeMode } : {}),
         ...(this.launchOptions.modelSelection
           ? { modelSelection: this.launchOptions.modelSelection }

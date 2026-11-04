@@ -164,7 +164,14 @@ when that is set. Create `config.json` there:
 - `t3Url`: your T3 server's address.
 - `channelProjects`: which T3 project a mention in each channel starts its
   thread in. A channel id is in the channel's **About** panel. A project id is
-  in T3, or from the `t3_project_list` MCP tool.
+  in T3, or from the `t3_project_list` MCP tool. A channel can have several
+  entries; the first that matches wins. Optional fields per entry:
+  - `match`: only messages containing this text, in any case, such as
+    `[nextcard]`. An entry without it takes every message.
+  - `worktreeFrom`: start each thread in a new worktree from this branch on
+    origin, such as `dev`, instead of the project's own checkout.
+  - `note`: text added to the thread's first turn, such as limits on what the
+    agent may run.
 - `dmProjectId`: optional. The T3 project direct messages start their threads
   in. Without it, direct messages are ignored.
 - `allowedUserIds`: Slack member ids (profile → **⋯** → **Copy member ID**).

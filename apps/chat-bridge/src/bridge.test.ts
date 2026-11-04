@@ -6,7 +6,9 @@ import {
   Bridge,
   type EarlierMessage,
   earlierText,
+  type ChannelRoute,
   type InboundEvent,
+  routeFor,
   threadTitle,
   type Reply,
   type RunEnd,
@@ -156,6 +158,7 @@ function harness(
     display?: boolean;
     /** Renames to the chat thread fail this many times before they succeed. */
     renameFailures?: number;
+    routes?: ReadonlyArray<ChannelRoute>;
   } = {},
 ) {
   const shown: Array<{
@@ -177,7 +180,7 @@ function harness(
     store,
     threads: new T3Threads(t3.tools),
     settings: {
-      channelProjects: [{ channelId: "C1", projectId: PROJECT }],
+      channelProjects: options.routes ?? [{ channelId: "C1", projectId: PROJECT }],
       allowedUserIds: ["U1"],
       followUpMode: "steer",
       dmProjectId: options.dmProjectId,
@@ -682,6 +685,37 @@ it("keeps titles in step both ways without looping", async () => {
   assert.isFalse(await bridge.titleChanged("slack:C1:999.1", "unbound"));
   t3.finish("run-1", "completed", "Done.");
   await bridge.idle();
+});
+
+it("routes a channel message by its text, and starts a matched one in a new worktree", async () => {
+  const routes: ReadonlyArray<ChannelRoute> = [
+    {
+      channelId: "C1",
+      projectId: "nextcard",
+      match: "[nextcard]",
+      worktreeFrom: "dev",
+      note: "Keep it light: no installs or builds.",
+    },
+    { channelId: "C1", projectId: PROJECT },
+  ];
+  assert.strictEqual(routeFor(routes, "C1", "[NextCard] find the map")?.projectId, "nextcard");
+  assert.strictEqual(routeFor(routes, "C1", "what is 12 squared?")?.projectId, PROJECT);
+  assert.isUndefined(routeFor(routes, "C9", "[nextcard] elsewhere"));
+
+  const { t3, bridge } = harness(undefined, { routes });
+  await bridge.receive(event("100.1", { text: "[nextcard] find the map" }));
+  await bridge.receive(event("200.1", { chatThreadKey: "slack:C1:200.1", text: "12 squared?" }));
+  const [nextcard, plain] = t3.calls.filter((call) => call.tool === "t3_thread_launch");
+  assert.strictEqual(nextcard?.args.projectId, "nextcard");
+  assert.deepStrictEqual(nextcard?.args.workspaceStrategy, {
+    type: "worktree",
+    baseRef: "dev",
+    startFromOrigin: true,
+  });
+  assert.include(String(nextcard?.args.message), "Keep it light: no installs or builds.");
+  assert.strictEqual(plain?.args.projectId, PROJECT);
+  assert.isUndefined(plain?.args.workspaceStrategy);
+  assert.notInclude(String(plain?.args.message), "Keep it light");
 });
 
 it("asks T3 for a summary title when it starts a thread", async () => {
