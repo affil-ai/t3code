@@ -34,10 +34,11 @@ Socket Mode, so it needs no public URL.
   …", "Editing bridge.ts", or "Thinking…" between steps. It is the status
   Office and Devin show (`assistant.threads.setStatus`), read from T3's
   `t3_thread_read` activity view every 2.5 seconds, at most 50 characters,
-  with anything that looks like a secret redacted. The agent session is
-  `processing` while a run goes, `suspended` while it waits on a person, and
-  `active` when no run is left (`agents.sessions.setStatus`); `processing` is
-  what brings Slack's stop button. Both are sent again every 90 seconds.
+  with anything that looks like a secret redacted. The agent session
+  (`agents.sessions.setStatus`) is `suspended` while T3 waits on a person and
+  `active` otherwise. The bridge never sets `processing`: Slack draws a "Stop"
+  pill in its place and hides the status text. Both are sent again every 90
+  seconds.
 - **Answers are normal replies.** When a run ends, its final message is posted
   to the thread in parts of up to 12,000 characters, Slack's limit. A run that
   ends without a final message posts nothing. A failed run posts a short
@@ -46,8 +47,9 @@ Socket Mode, so it needs no public URL.
   it in the thread with a button for each option, and Submit for a multiple
   choice. Where the question takes free text, a reply in the thread answers it
   instead of starting a new turn. The answer goes back through
-  `t3_pending_request`, so the same run carries on, and the question then
-  shows what was picked. Only people in `allowedUserIds` can answer.
+  `t3_pending_request` (or `t3_pending_request_respond` on T3 servers from
+  before the per-action tools were merged), so the same run carries on, and
+  the question then shows what was picked. Only people in `allowedUserIds` can answer.
 - **Permissions can't be granted from Slack.** T3's tools can't approve a
   permission request, so a run that asks for one is stopped, and the thread
   says why. Threads start in `full-access` mode, so this is rare.
@@ -64,9 +66,10 @@ Socket Mode, so it needs no public URL.
   tried again on later checks, up to three times per title. Renaming the
   thread in Slack renames the T3 thread. A title both sides already have
   changes nothing, so the two never rename each other back and forth.
-- **Stop button.** Slack shows a stop button while a run goes. Pressing it
-  interrupts the T3 run (`t3_thread_interrupt`), and the thread says "The run
-  was stopped." Only people in `allowedUserIds` can stop a run.
+- **Stop.** `@bot stop` in a thread interrupts its T3 run
+  (`t3_thread_interrupt`), and the bot answers "Stopped." Slack's own stop
+  button (`agent_session_stopped`) does the same where Slack shows it. Only
+  people in `allowedUserIds` can stop a run.
 - **Nothing is lost.** Each Slack message is saved to an inbox table in SQLite
   before the bridge acts on it, and each Slack thread's messages are handled
   from that table in order. If T3 can't take a message, it stays in the inbox

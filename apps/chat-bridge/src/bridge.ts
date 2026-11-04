@@ -92,14 +92,19 @@ export type InboundOutcome =
   | { readonly type: "followed_up"; readonly threadId: string; readonly delivery: Delivery }
   /** Kept for the thread's next turn without starting one. */
   | { readonly type: "noted"; readonly threadId: string }
-  | { readonly type: "muted" | "unmuted"; readonly threadId: string }
+  | { readonly type: "muted" | "unmuted" | "stopped"; readonly threadId: string }
   /** Answered a question the agent asked. */
   | { readonly type: "answered"; readonly threadId: string }
   /** Saved, and handled later: after a failed hand-off, or behind an earlier message in its thread. */
   | { readonly type: "pending" }
   | {
       readonly type: "ignored";
-      readonly reason: "duplicate" | "not_allowed" | "unmapped_channel" | "unbound_thread";
+      readonly reason:
+        | "duplicate"
+        | "not_allowed"
+        | "unmapped_channel"
+        | "unbound_thread"
+        | "not_running";
     };
 
 /** Where a new thread from a channel goes. A channel may have several; the first that matches wins. */
@@ -152,8 +157,9 @@ export interface Reply {
 }
 
 /**
- * A chat thread's agent session: `processing` while a run is going,
- * `suspended` while T3 waits on a person, `active` when no run is left.
+ * A chat thread's agent session: `processing` while a run is going (Slack
+ * shows the status text), `suspended` while T3 waits on a person, `active`
+ * when no run is left.
  */
 export type SessionState = "processing" | "suspended" | "active";
 
@@ -271,10 +277,15 @@ function keptText(lines: ReadonlyArray<string>): string {
   );
 }
 
-/** `mute` or `unmute`, when that is the whole message after the bot's mention. */
-function controlCommand(text: string): "mute" | "unmute" | undefined {
-  const command = text.trim().toLowerCase();
-  return command === "mute" || command === "unmute" ? command : undefined;
+type ControlCommand = "mute" | "unmute" | "stop";
+
+/** `mute`, `unmute` or `stop`, when that is the whole message after the bot's mention. */
+function controlCommand(text: string): ControlCommand | undefined {
+  const command = text
+    .trim()
+    .toLowerCase()
+    .replace(/[.!]+$/, "");
+  return command === "mute" || command === "unmute" || command === "stop" ? command : undefined;
 }
 
 /** A message led by the word "aside" is for the people in the thread, not the agent. */
@@ -666,11 +677,24 @@ export class Bridge {
   private async control(
     event: InboundEvent,
     binding: Binding | undefined,
-    command: "mute" | "unmute",
+    command: ControlCommand,
   ): Promise<InboundOutcome> {
     if (binding === undefined) {
       await this.notify(event, `There is no T3 thread here to ${command} yet.`);
       return { type: "ignored", reason: "unbound_thread" };
+    }
+    if (command === "stop") {
+      if (!this.running.has(binding.chatThreadKey)) {
+        await this.notify(event, "Nothing is running here.");
+        return { type: "ignored", reason: "not_running" };
+      }
+      await this.threads.interrupt(
+        binding.threadId,
+        `Stopped from chat by ${event.author.userId}.`,
+      );
+      this.log(`Stopped ${binding.threadId} from ${binding.chatThreadKey}.`);
+      await this.notify(event, "Stopped.");
+      return { type: "stopped", threadId: binding.threadId };
     }
     this.store.setMuted(binding.chatThreadKey, command === "mute");
     await this.notify(

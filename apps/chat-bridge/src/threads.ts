@@ -123,6 +123,8 @@ export class T3Threads {
   private readonly t3: T3Tools;
   private readonly launchOptions: LaunchOptions;
   private readonly log: (line: string) => void;
+  /** The server names one pending-request tool per action. */
+  private splitPendingTools = false;
 
   constructor(
     t3: T3Tools,
@@ -376,16 +378,15 @@ export class T3Threads {
   async pendingQuestions(
     threadId: string,
   ): Promise<Array<{ readonly requestId: string; readonly questions: ReadonlyArray<Question> }>> {
-    const listed = await this.t3.call<{ requestIds: ReadonlyArray<string> }>("t3_pending_request", {
-      action: "list",
+    const listed = await this.pendingRequest<{ requestIds: ReadonlyArray<string> }>("list", {
       threadId,
     });
     const pending = [];
     for (const requestId of listed.requestIds) {
-      const read = await this.t3.call<{ questions: ReadonlyArray<Question> }>(
-        "t3_pending_request",
-        { action: "read", threadId, requestId },
-      );
+      const read = await this.pendingRequest<{ questions: ReadonlyArray<Question> }>("read", {
+        threadId,
+        requestId,
+      });
       pending.push({ requestId, questions: read.questions });
     }
     return pending;
@@ -397,7 +398,27 @@ export class T3Threads {
     requestId: string,
     answers: Readonly<Record<string, Answer>>,
   ): Promise<void> {
-    await this.t3.call("t3_pending_request", { action: "respond", threadId, requestId, answers });
+    await this.pendingRequest("respond", { threadId, requestId, answers });
+  }
+
+  /**
+   * Calls `t3_pending_request` with an action. T3 servers from before the
+   * tools were merged name one tool per action (`t3_pending_request_list`);
+   * the first "not found" switches to those for the rest of the session.
+   */
+  private async pendingRequest<T>(
+    action: "list" | "read" | "respond",
+    args: Record<string, unknown>,
+  ): Promise<T> {
+    if (!this.splitPendingTools) {
+      try {
+        return await this.t3.call<T>("t3_pending_request", { action, ...args });
+      } catch (error) {
+        if (!/Tool 't3_pending_request' not found/.test(String(error))) throw error;
+        this.splitPendingTools = true;
+      }
+    }
+    return this.t3.call<T>(`t3_pending_request_${action}`, args);
   }
 
   /** Asks T3 to write a short title for the thread from its conversation. */

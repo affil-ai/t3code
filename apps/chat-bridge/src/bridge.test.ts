@@ -35,6 +35,8 @@ function fakeT3() {
   const thread = { title: "fix the build", pendingRequestCount: 0 };
   /** Questions T3 waits on, by request id. */
   const questions = new Map<string, ReadonlyArray<Record<string, unknown>>>();
+  /** Older T3 servers name one pending-request tool per action. */
+  const options = { splitPendingTools: false };
   /** Waits in flight end as timed out when the test calls `tick`. */
   let tickNow = () => {};
   let ticked = new Promise<void>((resolve) => (tickNow = resolve));
@@ -53,8 +55,20 @@ function fakeT3() {
   };
   const tools: T3Tools = {
     upload: async () => {},
-    call: async <T>(tool: string, args: Record<string, unknown>) => {
-      calls.push({ tool, args });
+    call: async <T>(called: string, input: Record<string, unknown>) => {
+      calls.push({ tool: called, args: input });
+      let tool = called;
+      let args = input;
+      if (options.splitPendingTools) {
+        if (tool === "t3_pending_request") {
+          throw new Error("MCP error -32602: Tool 't3_pending_request' not found");
+        }
+        const action = /^t3_pending_request_(\w+)$/.exec(tool)?.[1];
+        if (action !== undefined) {
+          tool = "t3_pending_request";
+          args = { ...input, action };
+        }
+      }
       if (hangs.delete(tool)) return new Promise<T>(() => {});
       const failing = failures.get(tool) ?? 0;
       if (failing > 0) {
@@ -133,6 +147,7 @@ function fakeT3() {
     activity,
     thread,
     questions,
+    options,
     /**
      * Ends the waits in flight as timed out, and resolves once the watcher has
      * checked the run's activity and is waiting again.
@@ -648,6 +663,46 @@ it("asks the agent's question with buttons and hands a click back to T3", async 
   await bridge.idle();
 });
 
+it("asks through the per-action question tools of an older T3 server", async () => {
+  const { t3, bridge, blockPosts } = harness();
+  t3.options.splitPendingTools = true;
+  await bridge.receive(event("100.1"));
+  t3.questions.set("req-1", [
+    {
+      id: "q1",
+      header: "Colour",
+      question: "Which colour?",
+      options: [{ label: "Red", description: "" }],
+    },
+  ]);
+  t3.activity.push({
+    itemId: "ask",
+    type: "user_input_request",
+    runId: "run-1",
+    status: "waiting",
+  });
+  await t3.tick();
+  assert.lengthOf(blockPosts, 1);
+  const actions = blockPosts[0]!.blocks.find((block) => block.type === "actions") as {
+    elements: Array<{ value: string }>;
+  };
+  await bridge.questionClicked("slack:C1:100.1", "U1", actions.elements[0]!.value);
+  const respond = t3.calls.find((call) => call.tool === "t3_pending_request_respond");
+  assert.deepStrictEqual(respond?.args, {
+    threadId: THREAD,
+    requestId: "req-1",
+    answers: { q1: "Red" },
+  });
+  // The merged tool is tried once, then the session uses the per-action names.
+  assert.lengthOf(
+    t3.calls.filter((call) => call.tool === "t3_pending_request"),
+    1,
+  );
+  t3.activity[0]!.status = "completed";
+  t3.finish("run-1", "completed", "Red it is.");
+  await bridge.idle();
+});
+
 it("takes a typed reply as the answer while a question is open, not as a new message", async () => {
   const { t3, bridge, posted } = harness();
   await bridge.receive(event("100.1"));
@@ -839,6 +894,31 @@ it("interrupts the T3 thread when an allowed user presses stop", async () => {
   assert.strictEqual(interrupts[0]?.args.threadId, THREAD);
   t3.finish("run-1", "interrupted");
   await bridge.idle();
+});
+
+it("stops the run when an allowed user says stop", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  assert.deepStrictEqual(
+    await bridge.receive(event("100.2", { kind: "follow_up", text: "Stop." })),
+    { type: "stopped", threadId: THREAD },
+  );
+  const interrupts = t3.calls.filter((call) => call.tool === "t3_thread_interrupt");
+  assert.lengthOf(interrupts, 1);
+  assert.isUndefined(t3.calls.find((call) => call.args.message === "Stop."));
+  t3.finish("run-1", "interrupted");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    await bridge.receive(event("100.3", { kind: "follow_up", text: "stop" })),
+    { type: "ignored", reason: "not_running" },
+  );
+  assert.deepStrictEqual(
+    posted
+      .slice(0, 1)
+      .concat(posted.slice(-1))
+      .map((reply) => reply.text),
+    ["Stopped.", "Nothing is running here."],
+  );
 });
 
 it("remembers who asked for each owed reply", async () => {

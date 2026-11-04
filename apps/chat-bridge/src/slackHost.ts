@@ -704,11 +704,15 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     setState: async (chatThreadKey, state, text) => {
       const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
       if (!threadTs) return;
-      // The session state brings the stop button and the waiting mark; the text says what is going on.
+      // Slack's `processing` state draws a "Stop" pill in place of the status
+      // text, so a working thread stays `active` and shows only the text, as
+      // Devin does; people stop a run with the `stop` command. `suspended`
+      // marks a thread that waits on an answer.
       const statusText = state === "processing" ? text : "";
+      const sessionState = state === "processing" ? "active" : state;
       if (!legacyThreads.has(chatThreadKey)) {
         try {
-          await slack.setSessionStatus(channel, threadTs, state);
+          await slack.setSessionStatus(channel, threadTs, sessionState);
           if (statusText !== "") await setStatusText(channel, threadTs, statusText);
           return;
         } catch (error) {
