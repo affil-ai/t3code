@@ -1,9 +1,9 @@
 /**
- * One T3 run in a Slack thread: task rows and text streamed into a plan, a
- * plan block once the run outlasts Slack's 10-minute stream, and the answer
- * with feedback buttons.
+ * One T3 run in a Slack thread: task rows streamed into a plan, a plan block
+ * once the run outlasts Slack's 10-minute stream, and the final answer as the
+ * reply's text.
  */
-import { buildFeedbackButtonsBlock, SlackFormatConverter } from "@chat-adapter/slack";
+import { SlackFormatConverter } from "@chat-adapter/slack";
 
 import type { TaskRow, TaskStatus } from "./activity.ts";
 import type { RunDisplay, RunEnd, RunProgress } from "./bridge.ts";
@@ -23,7 +23,6 @@ export const PLAN_UPDATE_MS = 15_000;
 export const STREAM_TEXT_BUDGET = 11_000;
 /** Slack keeps the first 50 task ids in a stream and 50 tasks in a plan block. */
 const TASK_LIMIT = 50;
-export const FEEDBACK_ACTION_ID = "t3_feedback";
 const MORE_ID = "more";
 const EARLIER_ID = "earlier";
 
@@ -46,18 +45,6 @@ export interface SlackRunOptions {
   readonly api: SlackApi;
   readonly now?: () => number;
   readonly log?: (line: string) => void;
-}
-
-/**
- * The part of `answer` a stream that carried `streamed` left out. `text` is
- * the run's whole text, which ends with the answer.
- */
-export function unsentAnswer(streamed: string, text: string, answer: string): string {
-  if (text.startsWith(streamed) && text.endsWith(answer)) {
-    const answerStart = text.length - answer.length;
-    return answer.slice(Math.max(0, streamed.length - answerStart)).trim();
-  }
-  return streamed.includes(answer) ? "" : answer;
 }
 
 /** A row's status once the run is over: what was still going finished, or was cut off. */
@@ -108,15 +95,39 @@ export function planBlock(rows: ReadonlyArray<TaskRow>, title: string): Record<s
   return { type: "plan", title, tasks };
 }
 
+/** The plan's title, which Slack also shows as "Tasks performed: …". */
+export function planTitle(steps: number, final: boolean, failed: boolean): string {
+  const count = `${steps} step${steps === 1 ? "" : "s"}`;
+  if (!final) return "Working";
+  return failed ? `Stopped after ${count}` : `Completed ${count}`;
+}
+
+/**
+ * A title Slack takes. Slack refuses some characters in session titles with
+ * `invalid_name`, such as square brackets; `strict` keeps only plain ones.
+ */
+export function slackTitle(title: string, strict = false): string {
+  const cleaned = strict
+    ? title.replace(/[^\p{L}\p{N} .,?!'’:;()&/+-]/gu, " ")
+    : title.replace(/[[\]{}<>#|\\`*~]/g, " ");
+  return cleaned.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
 const converter = new SlackFormatConverter();
+
+/** What the display sends: the rows, and the answer's text once the run has ended. */
+interface View {
+  readonly rows: ReadonlyArray<TaskRow>;
+  readonly text: string;
+}
 
 export class SlackRunDisplay implements RunDisplay {
   private mode: "waiting" | "stream" | "plan" | "closed" = "waiting";
   private streamTs: string | undefined;
   private streamStartedAt = 0;
-  /** The text the stream has carried. */
+  /** The answer text the stream has carried. */
   private streamed = "";
-  /** The stream takes no more text: over budget, or the text changed under it. */
+  /** The stream takes no more text: over budget, or it closed early. */
   private textDone = false;
   private planTitled = false;
   /** Each row as last sent to the stream, by id. */
@@ -127,6 +138,7 @@ export class SlackRunDisplay implements RunDisplay {
   /** Parts of the answer already posted, so a retried finish does not post them again. */
   private postedParts = 0;
   private noticePosted = false;
+  private failed = false;
   private readonly options: SlackRunOptions;
   private readonly now: () => number;
   private readonly log: (line: string) => void;
@@ -138,33 +150,35 @@ export class SlackRunDisplay implements RunDisplay {
   }
 
   async progress(progress: RunProgress): Promise<void> {
-    await this.show(progress, false);
+    await this.show({ rows: progress.rows, text: "" }, false);
   }
 
   async finish(end: RunEnd): Promise<void> {
     const failed = end.notice !== undefined;
+    this.failed = failed;
     const rows = end.rows.map((row) => ({ ...row, status: settled(row.status, failed) }));
-    await this.show({ rows, text: end.text }, true);
-    const rest = end.answer === undefined ? "" : unsentAnswer(this.streamed, end.text, end.answer);
-    const feedback = buildFeedbackButtonsBlock({ actionId: FEEDBACK_ACTION_ID });
+    const answer = end.answer ?? "";
+    await this.show({ rows, text: answer }, true);
     if (this.mode === "stream") {
-      const withFeedback = end.answer !== undefined && rest === "";
-      await this.stopStream({
-        ...(this.planTitled
-          ? { chunks: [{ type: "plan_update", title: failed ? "Stopped" : "Done" }] }
-          : {}),
-        ...(withFeedback ? { blocks: [feedback] } : {}),
-      });
+      await this.stopStream(
+        this.planTitled
+          ? { chunks: [{ type: "plan_update", title: planTitle(rows.length, true, failed) }] }
+          : {},
+      );
     }
     this.mode = "closed";
+    // What of the answer the stream had no room for, or all of it when there was no stream.
+    const rest = answer.startsWith(this.streamed)
+      ? answer.slice(this.streamed.length).trim()
+      : answer;
     const parts = rest === "" ? [] : splitMarkdown(rest);
     for (const [index, part] of parts.entries()) {
       if (index < this.postedParts) continue;
-      await this.postMarkdown(part, index === parts.length - 1 ? [feedback] : []);
+      await this.postMarkdown(part);
       this.postedParts = index + 1;
     }
     if (end.notice !== undefined && !this.noticePosted) {
-      await this.postMarkdown(end.notice, []);
+      await this.postMarkdown(end.notice);
       this.noticePosted = true;
     }
   }
@@ -173,7 +187,7 @@ export class SlackRunDisplay implements RunDisplay {
     return this.options.channel.startsWith("D") || this.options.recipient !== undefined;
   }
 
-  private async show(progress: RunProgress, final: boolean): Promise<void> {
+  private async show(progress: View, final: boolean): Promise<void> {
     if (this.mode === "waiting") {
       if (progress.rows.length === 0 && progress.text === "") return;
       if (this.canStream()) await this.startStream(progress);
@@ -214,7 +228,7 @@ export class SlackRunDisplay implements RunDisplay {
       add({ id: MORE_ID, title: `${overflow.length} more steps`, status: groupStatus(overflow) });
     }
     if (!this.planTitled && chunks.length > 0) {
-      chunks.unshift({ type: "plan_update", title: "Working on it" });
+      chunks.unshift({ type: "plan_update", title: planTitle(rows.length, false, false) });
     }
     return {
       chunks,
@@ -249,7 +263,7 @@ export class SlackRunDisplay implements RunDisplay {
     };
   }
 
-  private chunksFor(progress: RunProgress) {
+  private chunksFor(progress: View) {
     const rows = this.rowChunks(progress.rows);
     const text = this.textDelta(progress.text);
     const chunks = [
@@ -269,7 +283,7 @@ export class SlackRunDisplay implements RunDisplay {
     return { channel: this.options.channel, thread_ts: this.options.threadTs };
   }
 
-  private async startStream(progress: RunProgress): Promise<void> {
+  private async startStream(progress: View): Promise<void> {
     const { chunks, commit } = this.chunksFor(progress);
     if (chunks.length === 0) return;
     const recipient = this.options.recipient;
@@ -294,7 +308,7 @@ export class SlackRunDisplay implements RunDisplay {
     }
   }
 
-  private async appendStream(progress: RunProgress): Promise<void> {
+  private async appendStream(progress: View): Promise<void> {
     const { chunks, commit } = this.chunksFor(progress);
     if (chunks.length === 0) return;
     try {
@@ -354,7 +368,7 @@ export class SlackRunDisplay implements RunDisplay {
 
   private async updatePlan(rows: ReadonlyArray<TaskRow>, final: boolean): Promise<void> {
     if (rows.length === 0) return;
-    const block = planBlock(rows, final ? "Done" : "Working on it");
+    const block = planBlock(rows, planTitle(rows.length, final, this.failed));
     const key = JSON.stringify(block);
     if (key === this.planSent) return;
     if (this.planTs !== undefined && !final && this.now() - this.planSentAt < PLAN_UPDATE_MS)
@@ -385,13 +399,13 @@ export class SlackRunDisplay implements RunDisplay {
     }
   }
 
-  /** Posts markdown as a reply, with `extra` blocks under it. */
-  private async postMarkdown(markdown: string, extra: ReadonlyArray<unknown>): Promise<void> {
+  /** Posts markdown as a reply. */
+  private async postMarkdown(markdown: string): Promise<void> {
     const payload = converter.toSlackPayload({ markdown }) as { markdown_text?: string };
     await this.options.api("chat.postMessage", {
       ...this.target(),
       text: converter.toResponseUrlText({ markdown }).slice(0, 3_000),
-      blocks: [{ type: "markdown", text: payload.markdown_text ?? markdown }, ...extra],
+      blocks: [{ type: "markdown", text: payload.markdown_text ?? markdown }],
     });
   }
 }

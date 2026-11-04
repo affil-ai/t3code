@@ -131,15 +131,13 @@ export interface RunTarget {
   readonly requestedBy?: string | undefined;
 }
 
-/** What a run has done so far. */
+/** What a run has done so far, as task rows; the agent's earlier messages are rows too. */
 export interface RunProgress {
   readonly rows: ReadonlyArray<TaskRow>;
-  /** The run's assistant messages so far, joined by blank lines. Only grows. */
-  readonly text: string;
 }
 
 export interface RunEnd extends RunProgress {
-  /** The run's final message, which `text` ends with; none when the run chose to stay quiet. */
+  /** The run's final message, the reply's text; none when the run chose to stay quiet. */
   readonly answer?: string | undefined;
   /** Said instead of an answer when the run failed or was stopped. */
   readonly notice?: string | undefined;
@@ -151,14 +149,6 @@ export interface RunDisplay {
   readonly progress: (progress: RunProgress) => Promise<void>;
   /** Called once the run has ended. Throws if the answer could not be posted, so it is retried. */
   readonly finish: (end: RunEnd) => Promise<void>;
-}
-
-/** Feedback someone gave on an answer, such as a thumbs-up button. */
-export interface Feedback {
-  readonly chatThreadKey: string;
-  readonly messageId: string;
-  readonly userId: string;
-  readonly value: string;
 }
 
 /** Without a display, a run posts only its answer, or its notice, when it ends. */
@@ -832,14 +822,6 @@ export class Bridge {
     }
   }
 
-  /** Records feedback on an answer. Nothing acts on it yet. */
-  feedback(feedback: Feedback): void {
-    this.store.recordFeedback({ ...feedback, at: this.now() });
-    this.log(
-      `Feedback ${feedback.value} from ${feedback.userId} on ${feedback.messageId} in ${feedback.chatThreadKey}.`,
-    );
-  }
-
   /** Counts a thread's runs in flight; the first sets `processing`, and the state refreshes until the last ends. */
   private runStarted(chatThreadKey: string): void {
     const entry = this.running.get(chatThreadKey);
@@ -912,10 +894,7 @@ export class Bridge {
     this.runWaiting(reply.chatThreadKey, reply.runId, feed.waiting);
     this.syncTitle(reply.chatThreadKey, feed.title);
     try {
-      await display.progress({
-        rows: this.rowsOf(reply, feed, false),
-        text: await feed.text(),
-      });
+      await display.progress({ rows: this.rowsOf(reply, feed, false) });
     } catch (error) {
       this.log(`Showing the progress of ${reply.runId} failed: ${String(error)}`);
     }
@@ -987,7 +966,6 @@ export class Bridge {
           : undefined;
       await display.finish({
         rows: this.rowsOf(reply, feed, true),
-        text: await feed.text(true),
         answer,
         notice: status === "completed" ? undefined : TERMINAL_TEXT[status],
       });

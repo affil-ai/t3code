@@ -1,18 +1,11 @@
 /**
  * What one T3 run has done so far, read from the thread's activity: its task
- * rows, its assistant text, whether it waits on a person, and the thread's
- * title. Each read starts at the run's oldest unfinished item, so rows that
+ * rows, whether it waits on a person, and the thread's title. The agent's
+ * messages before its newest one are rows too; the newest may be the answer. Each read starts at the run's oldest unfinished item, so rows that
  * change after they first appear are read again.
  */
-import { isOpen, type TaskRow, taskRow, waitsOnUser } from "./activity.ts";
+import { isOpen, noteRow, type TaskRow, taskRow, waitsOnUser } from "./activity.ts";
 import type { T3Threads } from "./threads.ts";
-
-interface TextItem {
-  readonly position: number;
-  readonly text: string;
-  readonly truncated: boolean;
-  readonly open: boolean;
-}
 
 export class RunFeed {
   /** The run and any run T3 continued it in after a restart. */
@@ -20,9 +13,8 @@ export class RunFeed {
   /** Undefined until the first read, which starts a few dozen items back. */
   private cursor: number | undefined;
   private readonly taskRows = new Map<string, TaskRow>();
-  private readonly texts = new Map<string, TextItem>();
-  /** Whole texts of items cut short in the activity read, read once each. */
-  private readonly wholeTexts = new Map<string, string>();
+  /** The agent's messages, as note rows; the newest is held back. */
+  private readonly notes = new Map<string, TaskRow>();
   private readonly threads: T3Threads;
   private readonly threadId: string;
   /** The thread's title at the last read. */
@@ -55,12 +47,8 @@ export class RunFeed {
       if (open) oldestOpen = Math.min(oldestOpen ?? item.position, item.position);
       if (waitsOnUser(item)) waiting = true;
       if (item.type === "assistant_message") {
-        this.texts.set(item.itemId, {
-          position: item.position,
-          text: item.text ?? "",
-          truncated: item.textTruncated === true,
-          open,
-        });
+        const note = noteRow(item);
+        if (note !== undefined) this.notes.set(note.id, note);
         continue;
       }
       const row = taskRow(item);
@@ -70,27 +58,9 @@ export class RunFeed {
     this.cursor = oldestOpen === undefined ? read.lastPosition : oldestOpen - 1;
   }
 
+  /** The task rows, with every agent message but the newest as a note. */
   rows(): Array<TaskRow> {
-    return [...this.taskRows.values()];
-  }
-
-  /**
-   * The run's assistant messages joined by blank lines. A finished message
-   * the read cut short is read whole; one still being written stays cut until
-   * it finishes, so the text only grows. `whole` reads every message whole.
-   */
-  async text(whole = false): Promise<string> {
-    const items = [...this.texts.entries()].toSorted(([, a], [, b]) => a.position - b.position);
-    const parts: Array<string> = [];
-    for (const [itemId, item] of items) {
-      let text = item.text;
-      if (item.truncated && (whole || !item.open)) {
-        text = this.wholeTexts.get(itemId) ?? (await this.threads.itemText(this.threadId, itemId));
-        this.wholeTexts.set(itemId, text);
-      }
-      const trimmed = text.trim();
-      if (trimmed !== "") parts.push(trimmed);
-    }
-    return parts.join("\n\n");
+    const notes = [...this.notes.values()].toSorted((a, b) => a.order - b.order).slice(0, -1);
+    return [...this.taskRows.values(), ...notes];
   }
 }

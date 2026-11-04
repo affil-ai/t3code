@@ -32,10 +32,15 @@ Socket Mode, so it needs no public URL.
   `task_display_mode: "plan"`). Each step the agent takes shows as a task row:
   commands, web and file searches, file edits, to-do lists, tool calls and
   subagents, each with a short output. Reasoning shows as a short title, never
-  its text. Outputs are cut to 400 characters, and anything that looks like a
+  its text. T3's own setup steps, such as preparing the workspace, are left
+  out. Outputs are cut to 400 characters, and anything that looks like a
   secret (tokens, keys, passwords, credentials in URLs) is redacted. The
-  agent's text streams in after the rows. The bridge reads the run from T3's
-  `t3_thread_read` activity view every 2.5 seconds.
+  bridge reads the run from T3's `t3_thread_read` activity view every 2.5
+  seconds.
+- **The reply's text is the final message.** The agent's earlier messages in a
+  run, such as "I'll run the tests first", show as done rows in the task list.
+  Its last message is the answer, streamed as the reply's text when the run
+  ends. A run with no steps shows only its answer.
 - **Long runs switch to a plan block.** Slack ends a stream after 10 minutes,
   so at 9 minutes the bridge closes it and carries on in a plan block, a normal
   message it updates at most every 15 seconds. The answer then comes as a
@@ -44,13 +49,6 @@ Socket Mode, so it needs no public URL.
   carry (all of it after a plan block, or the rest past the stream's 12,000
   characters) is posted as replies of up to 12,000 characters. A run that ends
   without a final message posts nothing. A failed run posts a short notice.
-- **Feedback buttons.** Each answer carries Slack's 👍 / 👎 buttons. Clicks are
-  saved in the bridge database (`feedback` table) and logged. Nothing acts on
-  them yet.
-- **Files go both ways.** Slack files are uploaded to T3 as attachments: images
-  up to 10 MB as images, anything else up to 50 MB as files, at most 8 per
-  message. Agents send files back with the `chat_post` tool.
-- **Reactions.** Agents react to a Slack message with the `chat_react` tool.
 - **Status.** The thread's agent session is `processing` while a run goes,
   `suspended` while T3 waits on someone (a question or an approval), and
   `active` when no run is left (`agents.sessions.setStatus`). The bridge sets
@@ -62,8 +60,10 @@ Socket Mode, so it needs no public URL.
 - **Titles both ways.** The Slack thread takes the T3 thread's title, and again
   whenever T3 renames it (`agents.sessions.rename`). Renaming the thread in
   Slack renames the T3 thread. A title both sides already have changes
-  nothing, so the two never rename each other back and forth. Where Slack has
-  no title, such as some channel threads, the bridge skips it quietly.
+  nothing, so the two never rename each other back and forth. Slack refuses
+  some characters in titles, such as square brackets, so the bridge leaves
+  them out. Where Slack has no title, such as some channel threads, the
+  bridge skips it quietly.
 - **Stop button.** Slack shows a stop button while a run goes. Pressing it
   interrupts the T3 run (`t3_thread_interrupt`), and the thread says "The run
   was stopped." Only people in `allowedUserIds` can stop a run.
@@ -126,8 +126,8 @@ The manifest turns on Socket Mode and asks for these bot scopes:
 `app_mentions:read`, `assistant:write`, `channels:history`, `groups:history`,
 `im:history`, `chat:write`, `files:read`, `files:write`, `reactions:write` and
 `users:read`. It turns on Slack's agent features (`agent_view` and agent
-tasks), the Messages tab so people can send it direct messages, and
-interactivity for the feedback buttons. It subscribes to
+tasks) and the Messages tab, so people can send it direct messages. It
+subscribes to
 `agent_session_stopped` (the stop button), `agent_session_title_changed` and
 `app_context_changed` (logged, nothing else) as well as messages and mentions.
 
@@ -271,11 +271,11 @@ pnpm --filter @t3tools/chat-bridge test
 | `src/bridge.ts`     | Turns Slack events into T3 turns and watches each run.  |
 | `src/runFeed.ts`    | What a run has done, from T3's activity view.           |
 | `src/activity.ts`   | T3 activity items as task rows; trimming and redaction. |
-| `src/slackRun.ts`   | A run in Slack: stream, plan block, answer, feedback.   |
+| `src/slackRun.ts`   | A run in Slack: stream, plan block and answer.          |
 | `src/threads.ts`    | The T3 MCP calls: launch, send, wait, read, rename.     |
 | `src/t3Client.ts`   | The MCP client for T3.                                  |
 | `src/slackHost.ts`  | Slack over Socket Mode, through the Chat SDK.           |
 | `src/toolServer.ts` | The `chat_post` / `chat_react` MCP server.              |
-| `src/store.ts`      | Inbox, bindings, owed replies and feedback.             |
+| `src/store.ts`      | Inbox, bindings, handled messages and owed replies.     |
 | `src/chatState.ts`  | The Chat SDK's state on the same SQLite file.           |
 | `src/login.ts`      | T3's MCP OAuth sign-in.                                 |

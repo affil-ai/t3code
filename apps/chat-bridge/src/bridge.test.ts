@@ -592,7 +592,34 @@ it("shows each run's work as rows, with the agent's notes, then its answer", asy
     ["Ran `pnpm test` complete", "Reading the logs complete"],
   );
   assert.strictEqual(run?.end?.answer, "Fixed.");
-  assert.strictEqual(run?.end?.text, "x");
+});
+
+it("shows the agent's earlier messages as rows, and only its final message as the answer", async () => {
+  const { t3, bridge, shown } = harness(undefined, { display: true });
+  await bridge.receive(event("100.1"));
+  t3.activity.push({
+    itemId: "note",
+    type: "assistant_message",
+    runId: "run-1",
+    status: "completed",
+    text: "I'll run the shell commands first.",
+  });
+  await t3.tick();
+  // The newest message may be the answer, so it is not a row yet.
+  assert.deepStrictEqual(shown[0]?.progress.at(-1)?.rows, []);
+  t3.activity.push({
+    itemId: "cmd",
+    type: "command_execution",
+    runId: "run-1",
+    text: "$ uname -a",
+  });
+  t3.finish("run-1", "completed", "Kernel: Linux.");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    shown[0]?.end?.rows.map((row) => row.title),
+    ["I'll run the shell commands first.", "Ran `uname -a`"],
+  );
+  assert.strictEqual(shown[0]?.end?.answer, "Kernel: Linux.");
 });
 
 it("gives a failed run a notice and no answer", async () => {
@@ -648,19 +675,6 @@ it("interrupts the T3 thread when an allowed user presses stop", async () => {
   assert.strictEqual(interrupts[0]?.args.threadId, THREAD);
   t3.finish("run-1", "interrupted");
   await bridge.idle();
-});
-
-it("records feedback on answers", () => {
-  const { bridge, store } = harness();
-  bridge.feedback({
-    chatThreadKey: "slack:C1:100.1",
-    messageId: "200.1",
-    userId: "U1",
-    value: "positive",
-  });
-  assert.deepStrictEqual(store.feedbackRecords(), [
-    { chatThreadKey: "slack:C1:100.1", messageId: "200.1", userId: "U1", value: "positive", at: 0 },
-  ]);
 });
 
 it("remembers who asked for each owed reply", async () => {

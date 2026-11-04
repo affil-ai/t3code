@@ -46,8 +46,6 @@ export function slackAppManifest(appName: string): string {
             "message.im",
           ],
         },
-        // The feedback buttons under answers.
-        interactivity: { is_enabled: true },
         org_deploy_enabled: false,
         socket_mode_enabled: true,
         token_rotation_enabled: false,

@@ -6,6 +6,7 @@ import {
   redactSecrets,
   TITLE_LIMIT,
   taskRow,
+  noteRow,
   trimOutput,
   unwrapShell,
   waitsOnUser,
@@ -54,20 +55,31 @@ it("turns each kind of work into a task row", () => {
   assert.strictEqual(rows[0]?.order, 7);
 });
 
-it("names a command without its shell wrapper, and T3's own steps by their title", () => {
+it("names a command without its shell wrapper, and leaves out T3's own setup steps", () => {
   const wrapped = item({
     type: "command_execution",
     text: "$ /bin/bash -lc 'pnpm test --run'\nok",
   });
   assert.strictEqual(taskRow(wrapped)?.title, "Ran `pnpm test --run`");
+  // Codex sends several commands as one script; the read shows its first line.
+  const script = item({
+    type: "command_execution",
+    text: "$ /bin/bash -lc 'uname -a\ndate -u'\nLinux",
+  });
+  assert.strictEqual(taskRow(script)?.title, "Ran `uname -a …`");
   assert.strictEqual(unwrapShell(`zsh -c "ls -la"`), "ls -la");
   assert.strictEqual(unwrapShell("bash scripts/run.sh"), "bash scripts/run.sh");
-  const step = item({
+  const setup = item({
     type: "command_execution",
     title: "Workspace ready",
     text: "$ Preparing workspace\nWorkspace preparation completed.",
   });
-  assert.strictEqual(taskRow(step)?.title, "Workspace ready");
+  assert.isUndefined(taskRow(setup));
+  assert.strictEqual(
+    taskRow(item({ type: "command_execution", title: "Installed dependencies", text: "$ pnpm i" }))
+      ?.title,
+    "Installed dependencies",
+  );
 });
 
 it("shows reasoning as a short title, never its text", () => {
@@ -147,4 +159,20 @@ it("trims long text from the start or the end", () => {
   assert.strictEqual(trimOutput("abcdef", 4), "abc…");
   assert.strictEqual(trimOutput("abcdef", 4, "end"), "…def");
   assert.strictEqual(trimOutput("  short  ", 40), "short");
+});
+
+it("turns an agent message into a done row, redacted and on one line", () => {
+  const note = noteRow(
+    item({
+      type: "assistant_message",
+      text: "Checking the deploy.\nUsing token=abcdef123456 now.",
+    }),
+  );
+  assert.deepStrictEqual(note, {
+    id: "item-1",
+    title: "Checking the deploy. Using token=<redacted> now.",
+    status: "complete",
+    order: 7,
+  });
+  assert.isUndefined(noteRow(item({ type: "assistant_message", text: "  " })));
 });

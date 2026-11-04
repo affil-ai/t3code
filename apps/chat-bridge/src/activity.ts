@@ -153,9 +153,18 @@ function reasoningTitle(item: ActivityItem): string {
 
 /** `/bin/bash -lc 'pnpm test'` as `pnpm test`: agents wrap each command in a shell. */
 export function unwrapShell(command: string): string {
-  const match = /^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(command.trim());
-  return (match?.[2] ?? command).trim();
+  const trimmed = command.trim();
+  const match = /^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)$/.exec(trimmed);
+  if (match === null) return trimmed;
+  const [, quote = "", body = ""] = match;
+  // The first line of a multi-line script has no closing quote; mark that more follows.
+  return body.endsWith(quote) ? body.slice(0, -1).trim() : `${body.trim()} …`;
 }
+
+/** T3's own setup steps, such as preparing the workspace; not the agent's work. */
+const isSetupStep = (item: ActivityItem) =>
+  item.type === "command_execution" &&
+  (item.title === "Workspace ready" || (item.text ?? "").startsWith("$ Preparing workspace"));
 
 function describe(item: ActivityItem): { title: string; output?: string | undefined } | undefined {
   const text = item.text ?? "";
@@ -235,7 +244,7 @@ function describe(item: ActivityItem): { title: string; output?: string | undefi
 
 /** The item as a task row, or nothing for conversation and bookkeeping items. */
 export function taskRow(item: ActivityItem): TaskRow | undefined {
-  if (NOT_A_TASK.has(item.type)) return undefined;
+  if (NOT_A_TASK.has(item.type) || isSetupStep(item)) return undefined;
   const described = describe(item);
   if (described === undefined) return undefined;
   const output = described.output ? redactSecrets(described.output) : "";
@@ -246,6 +255,14 @@ export function taskRow(item: ActivityItem): TaskRow | undefined {
     ...(output === "" ? {} : { output }),
     order: item.position,
   };
+}
+
+/** An agent message as a done row, such as "I'll run the tests first." */
+export function noteRow(item: ActivityItem): TaskRow | undefined {
+  const text = oneLine(redactSecrets(item.text ?? ""));
+  return text === ""
+    ? undefined
+    : { id: item.itemId, title: text, status: "complete", order: item.position };
 }
 
 /** True while the item is still going or waiting. */

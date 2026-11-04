@@ -17,7 +17,6 @@ import {
 import type {
   EarlierMessage,
   EventFile,
-  Feedback,
   InboundEvent,
   InboundOutcome,
   MentionedUser,
@@ -26,7 +25,7 @@ import type {
   RunTarget,
   SessionState,
 } from "./bridge.ts";
-import { FEEDBACK_ACTION_ID, slackErrorCode, SlackRunDisplay } from "./slackRun.ts";
+import { slackErrorCode, SlackRunDisplay, slackTitle } from "./slackRun.ts";
 import { splitMarkdown, withoutAttribution, withRichContent } from "./slackText.ts";
 
 export { splitMarkdown };
@@ -45,8 +44,6 @@ export interface SlackChatHostOptions {
   readonly onTitleChanged?:
     | ((chatThreadKey: string, title: string) => Promise<unknown>)
     | undefined;
-  /** Someone pressed a feedback button under an answer. */
-  readonly onFeedback?: ((feedback: Feedback) => void) | undefined;
   /** Tests point the Web API at an address that refuses connections. */
   readonly apiUrl?: string | undefined;
   /**
@@ -519,14 +516,6 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
       `app_context_changed from ${event.userId} (${event.entities.length} entities); ignored.`,
     );
   });
-  chat.onAction(FEEDBACK_ACTION_ID, (event) => {
-    options.onFeedback?.({
-      chatThreadKey: event.threadId,
-      messageId: event.messageId,
-      userId: event.user.userId,
-      value: event.value ?? "",
-    });
-  });
 
   await chat.initialize();
   const mrkdwn = new SlackFormatConverter();
@@ -649,20 +638,36 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
       if (untitled.has(chatThreadKey)) return;
       const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
       if (!threadTs) return;
-      try {
-        await slack.setAssistantTitle(channel, threadTs, title.slice(0, 200));
-      } catch (error) {
-        const code = slackErrorCode(error);
-        if (code === undefined || TRANSIENT.has(code)) throw error;
-        // Not a session with a title here; skip it quietly from now on.
-        untitled.add(chatThreadKey);
-        if (!renameRefusals.has(code)) {
-          renameRefusals.add(code);
-          log(
-            "info",
-            `Slack has no title for ${chatThreadKey} (${code}); not renaming threads like it.`,
-          );
+      const attempt = async (each: string) => {
+        if (each === "") return "skipped";
+        try {
+          await slack.setAssistantTitle(channel, threadTs, each);
+          return "renamed";
+        } catch (error) {
+          const code = slackErrorCode(error);
+          if (code === undefined || TRANSIENT.has(code)) throw error;
+          return code;
         }
+      };
+      let outcome = await attempt(slackTitle(title));
+      // Slack refuses some characters; try once more with plain ones only.
+      if (outcome === "invalid_name") outcome = await attempt(slackTitle(title, true));
+      if (outcome === "renamed" || outcome === "skipped") return;
+      if (outcome === "invalid_name") {
+        log(
+          "info",
+          `Slack refused the title for ${chatThreadKey} (invalid_name); kept the old one.`,
+        );
+        return;
+      }
+      // This thread has no session title, such as a channel thread that isn't a session.
+      untitled.add(chatThreadKey);
+      if (!renameRefusals.has(outcome)) {
+        renameRefusals.add(outcome);
+        log(
+          "info",
+          `Slack has no title for ${chatThreadKey} (${outcome}); not renaming that thread.`,
+        );
       }
     },
     runDisplay: (run) => {

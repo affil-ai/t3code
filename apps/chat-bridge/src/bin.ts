@@ -92,7 +92,6 @@ async function start(): Promise<void> {
     onError: (error) => log(`Slack message failed: ${String(error)}`),
     onStop: (chatThreadKey, userId) => bridge.stopRequested(chatThreadKey, userId),
     onTitleChanged: (chatThreadKey, title) => bridge.titleChanged(chatThreadKey, title),
-    onFeedback: (feedback) => bridge.feedback(feedback),
     log: (level, line) => log(`slack ${level}: ${line}`),
   });
   const slack = host;
