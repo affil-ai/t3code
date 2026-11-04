@@ -57,7 +57,7 @@ Socket Mode, so it needs no public URL.
   says why. Threads start in `full-access` mode, so this is rare.
 - **Status from the agent.** The `chat_status` tool sets the status text, such
   as "Running the tests", until the agent's next step.
-- **Titles both ways.** A new T3 thread starts with a short title: the
+- **Titles follow T3.** A new T3 thread starts with a short title: the
   request's first sentence, without tags such as `[t3 bridge test]` or
   mentions, at most 60 characters. The bridge then asks T3 to write a summary
   title (`t3_thread_update` with `regenerate_title`), which needs T3's title
@@ -65,9 +65,9 @@ Socket Mode, so it needs no public URL.
   threads alike, and again whenever T3 renames it (`agents.sessions.rename`
   with `channel_id` and `thread_ts`). Slack refuses some characters, such as
   square brackets, so the bridge leaves them out. A rename Slack refuses is
-  tried again on later checks, up to three times per title. Renaming the
-  thread in Slack renames the T3 thread. A title both sides already have
-  changes nothing, so the two never rename each other back and forth.
+  tried again on later checks, up to three times per title. The T3 title is
+  the only source: renaming the thread in Slack doesn't rename the T3 thread,
+  and Slack takes the T3 title again the next time T3 changes it.
 - **Stop.** `@bot stop` in a thread interrupts its T3 run
   (`t3_thread_interrupt`), and the thread says "The run was stopped." Slack's own stop
   button (`agent_session_stopped`) does the same where Slack shows it. Only
@@ -133,8 +133,7 @@ The manifest turns on Socket Mode and asks for these bot scopes:
 `users:read`. It turns on Slack's agent features (`agent_view` and agent
 tasks), the Messages tab so people can send it direct messages, and
 interactivity for the answer buttons. It subscribes to
-`agent_session_stopped` (the stop button), `agent_session_title_changed` and
-`app_context_changed` (logged, nothing else) as well as messages and mentions.
+`agent_session_stopped` (the stop button) and `app_context_changed` (logged, nothing else) as well as messages and mentions.
 
 Then:
 

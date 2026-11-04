@@ -825,7 +825,7 @@ it("stops a run that asks for a permission, and says why, once", async () => {
   await bridge.idle();
 });
 
-it("keeps titles in step both ways without looping", async () => {
+it("gives the chat thread the T3 thread's title, once per title", async () => {
   const { t3, bridge, renamed } = harness();
   await bridge.receive(event("100.1"));
   await t3.tick();
@@ -837,22 +837,10 @@ it("keeps titles in step both ways without looping", async () => {
     "slack:C1:100.1 fix the build",
     "slack:C1:100.1 Fix the CI build",
   ]);
-
-  // Slack echoing the title the bridge set does not rename T3.
-  assert.isFalse(await bridge.titleChanged("slack:C1:100.1", "Fix the CI build"));
-  // Someone renames it in Slack: T3 follows, and the next check does not rename Slack back.
-  assert.isTrue(await bridge.titleChanged("slack:C1:100.1", "CI is red"));
-  t3.thread.title = "CI is red";
-  await t3.tick();
-  assert.lengthOf(renamed, 2);
-  const updates = t3.calls.filter(
-    (call) => call.tool === "t3_thread_update" && call.args.action === "rename",
+  // The bridge never renames the T3 thread.
+  assert.isUndefined(
+    t3.calls.find((call) => call.tool === "t3_thread_update" && call.args.action === "rename"),
   );
-  assert.deepStrictEqual(
-    updates.map((call) => call.args),
-    [{ threadId: THREAD, action: "rename", title: "CI is red" }],
-  );
-  assert.isFalse(await bridge.titleChanged("slack:C1:999.1", "unbound"));
   t3.finish("run-1", "completed", "Done.");
   await bridge.idle();
 });

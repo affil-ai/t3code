@@ -38,7 +38,6 @@ export function slackAppManifest(appName: string): string {
         event_subscriptions: {
           bot_events: [
             "agent_session_stopped",
-            "agent_session_title_changed",
             "app_context_changed",
             "app_mention",
             "message.channels",

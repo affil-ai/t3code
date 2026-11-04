@@ -71,8 +71,6 @@ const ACTIVITY_CHARS = 1_000;
 const ACTIVITY_LOOKBACK = 40;
 /** Pages read per activity call; a busier tick catches up on the next one. */
 const ACTIVITY_PAGES = 5;
-/** Slack titles take up to 200 characters, T3's up to 512. */
-const RENAME_LIMIT = 200;
 
 interface ReadItem {
   readonly position: number;
@@ -363,15 +361,6 @@ export class T3Threads {
       maxCharsPerItem: 1,
     });
     return Math.max(-1, (head.thread.itemCount ?? 0) - ACTIVITY_LOOKBACK - 1);
-  }
-
-  /** Renames the thread in T3. */
-  async rename(threadId: string, title: string): Promise<void> {
-    await this.t3.call("t3_thread_update", {
-      threadId,
-      action: "rename",
-      title: title.trim().slice(0, RENAME_LIMIT),
-    });
   }
 
   /** The thread's questions waiting for an answer, each with its parts. */

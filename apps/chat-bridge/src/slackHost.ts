@@ -49,10 +49,6 @@ export interface SlackChatHostOptions {
   readonly onAnswer?:
     | ((chatThreadKey: string, userId: string, value: string) => Promise<unknown>)
     | undefined;
-  /** Someone renamed a thread in Slack. */
-  readonly onTitleChanged?:
-    | ((chatThreadKey: string, title: string) => Promise<unknown>)
-    | undefined;
   /** Tests point the Web API at an address that refuses connections. */
   readonly apiUrl?: string | undefined;
   /**
@@ -571,13 +567,6 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
   chat.onAgentSessionStopped(async (event) => {
     try {
       await options.onStop?.(event.threadId, event.userId);
-    } catch (error) {
-      options.onError(error);
-    }
-  });
-  chat.onAgentSessionTitleChanged(async (event) => {
-    try {
-      await options.onTitleChanged?.(event.threadId, event.title);
     } catch (error) {
       options.onError(error);
     }

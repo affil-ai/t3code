@@ -958,25 +958,6 @@ export class Bridge {
       .catch((error: unknown) => this.log(`Stopping ${reply.threadId} failed: ${String(error)}`));
   }
 
-  /** Copies a title someone gave the chat thread to its T3 thread. A title that is already agreed changes nothing. */
-  async titleChanged(chatThreadKey: string, title: string): Promise<boolean> {
-    const binding = this.store.binding(chatThreadKey);
-    const trimmed = title.trim();
-    if (binding === undefined || trimmed === "" || this.titles.get(chatThreadKey) === trimmed) {
-      return false;
-    }
-    this.titles.set(chatThreadKey, trimmed);
-    try {
-      await this.threads.rename(binding.threadId, trimmed);
-      this.log(`Renamed ${binding.threadId} from ${chatThreadKey}.`);
-      return true;
-    } catch (error) {
-      this.titles.delete(chatThreadKey);
-      this.log(`Renaming ${binding.threadId} failed: ${String(error)}`);
-      return false;
-    }
-  }
-
   /** Sends the T3 thread's title to the chat thread when it is new or changed. */
   private syncTitle(chatThreadKey: string, title: string): void {
     const trimmed = title.trim();

@@ -94,7 +94,6 @@ async function start(): Promise<void> {
     onStop: (chatThreadKey, userId) => bridge.stopRequested(chatThreadKey, userId),
     onAnswer: (chatThreadKey, userId, value) =>
       bridge.questionClicked(chatThreadKey, userId, value),
-    onTitleChanged: (chatThreadKey, title) => bridge.titleChanged(chatThreadKey, title),
     log: (level, line) => log(`slack ${level}: ${line}`),
   });
   const slack = host;
