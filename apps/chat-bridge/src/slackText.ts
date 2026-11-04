@@ -208,3 +208,42 @@ export function withoutAttribution(text: string): string {
     .replace(/\n{2,}$/, "")
     .trim();
 }
+
+/** Slack refuses `markdown_text` over 12,000 characters, so a longer message goes out in parts. */
+const SLACK_MARKDOWN_LIMIT = 12_000;
+/** Room in a part for a code fence closed at its end and reopened in the next. */
+const FENCE_ROOM = 100;
+const FENCE = /^\s*```/;
+
+/**
+ * Splits markdown into parts Slack accepts, at line breaks. A code block cut
+ * in two is closed at the end of one part and reopened in the next.
+ */
+export function splitMarkdown(text: string, limit = SLACK_MARKDOWN_LIMIT): Array<string> {
+  if (text.length <= limit) return [text];
+  const lineLimit = limit - 2 * FENCE_ROOM;
+  const lines = text.split("\n").flatMap((line) => {
+    if (line.length <= lineLimit) return [line];
+    const pieces: Array<string> = [];
+    for (let at = 0; at < line.length; at += lineLimit) pieces.push(line.slice(at, at + lineLimit));
+    return pieces;
+  });
+  const parts: Array<string> = [];
+  let current: Array<string> = [];
+  let size = 0;
+  let fence: string | undefined;
+  for (const line of lines) {
+    const closing = fence === undefined ? 0 : 4;
+    if (current.length > 0 && size + 1 + line.length + closing > limit) {
+      parts.push([...current, ...(fence === undefined ? [] : ["```"])].join("\n"));
+      current = fence === undefined ? [] : [fence];
+      size = fence?.length ?? 0;
+    }
+    size += (current.length > 0 ? 1 : 0) + line.length;
+    current.push(line);
+    if (FENCE.test(line))
+      fence = fence === undefined ? line.trim().slice(0, FENCE_ROOM - 10) : undefined;
+  }
+  parts.push(current.join("\n"));
+  return parts.map((part) => part.trim()).filter((part) => part !== "");
+}

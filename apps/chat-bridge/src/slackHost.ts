@@ -17,12 +17,19 @@ import {
 import type {
   EarlierMessage,
   EventFile,
+  Feedback,
   InboundEvent,
   InboundOutcome,
   MentionedUser,
   MissedRequest,
+  RunDisplay,
+  RunTarget,
+  SessionState,
 } from "./bridge.ts";
-import { withoutAttribution, withRichContent } from "./slackText.ts";
+import { FEEDBACK_ACTION_ID, slackErrorCode, SlackRunDisplay } from "./slackRun.ts";
+import { splitMarkdown, withoutAttribution, withRichContent } from "./slackText.ts";
+
+export { splitMarkdown };
 import type { InboundFile } from "./threads.ts";
 
 export interface SlackChatHostOptions {
@@ -32,6 +39,14 @@ export interface SlackChatHostOptions {
   readonly state: StateAdapter;
   readonly onEvent: (event: InboundEvent) => Promise<InboundOutcome>;
   readonly onError: (error: unknown) => void;
+  /** Someone pressed the stop button on a thread. */
+  readonly onStop?: ((chatThreadKey: string, userId: string) => Promise<unknown>) | undefined;
+  /** Someone renamed a thread in Slack. */
+  readonly onTitleChanged?:
+    | ((chatThreadKey: string, title: string) => Promise<unknown>)
+    | undefined;
+  /** Someone pressed a feedback button under an answer. */
+  readonly onFeedback?: ((feedback: Feedback) => void) | undefined;
   /** Tests point the Web API at an address that refuses connections. */
   readonly apiUrl?: string | undefined;
   /**
@@ -68,11 +83,14 @@ export interface SlackChatHost {
   /** Adds a reaction; reacting twice with the same emoji is not an error. */
   readonly react: (reaction: SlackReaction) => Promise<void>;
   /**
-   * Shows a status under the thread, such as "is working…", through
-   * `assistant.threads.setStatus` (scope `assistant:write`). Empty clears it.
-   * Without the scope it does nothing after the first refusal.
+   * Sets the thread's agent session state with `agents.sessions.setStatus`.
+   * Where Slack refuses it, falls back to `assistant.threads.setStatus` text.
    */
-  readonly setStatus: (chatThreadKey: string, status: string) => Promise<void>;
+  readonly setState: (chatThreadKey: string, state: SessionState) => Promise<void>;
+  /** Sets the thread's title with `agents.sessions.rename`; skipped where Slack has no titles. */
+  readonly rename: (chatThreadKey: string, title: string) => Promise<void>;
+  /** Shows one run in its thread: streamed task rows and text, then the answer. */
+  readonly runDisplay: (run: RunTarget) => RunDisplay;
   /** The thread's messages before `messageId`, oldest first; none when the message starts the thread. */
   readonly history: (chatThreadKey: string, messageId: string) => Promise<Array<EarlierMessage>>;
   /** Downloads a Slack file with the bot's token. */
@@ -258,45 +276,6 @@ export function toInboundEvent(
   };
 }
 
-/** Slack refuses `markdown_text` over 12,000 characters, so a longer message goes out in parts. */
-const SLACK_MARKDOWN_LIMIT = 12_000;
-/** Room in a part for a code fence closed at its end and reopened in the next. */
-const FENCE_ROOM = 100;
-const FENCE = /^\s*```/;
-
-/**
- * Splits markdown into parts Slack accepts, at line breaks. A code block cut
- * in two is closed at the end of one part and reopened in the next.
- */
-export function splitMarkdown(text: string, limit = SLACK_MARKDOWN_LIMIT): Array<string> {
-  if (text.length <= limit) return [text];
-  const lineLimit = limit - 2 * FENCE_ROOM;
-  const lines = text.split("\n").flatMap((line) => {
-    if (line.length <= lineLimit) return [line];
-    const pieces: Array<string> = [];
-    for (let at = 0; at < line.length; at += lineLimit) pieces.push(line.slice(at, at + lineLimit));
-    return pieces;
-  });
-  const parts: Array<string> = [];
-  let current: Array<string> = [];
-  let size = 0;
-  let fence: string | undefined;
-  for (const line of lines) {
-    const closing = fence === undefined ? 0 : 4;
-    if (current.length > 0 && size + 1 + line.length + closing > limit) {
-      parts.push([...current, ...(fence === undefined ? [] : ["```"])].join("\n"));
-      current = fence === undefined ? [] : [fence];
-      size = fence?.length ?? 0;
-    }
-    size += (current.length > 0 ? 1 : 0) + line.length;
-    current.push(line);
-    if (FENCE.test(line))
-      fence = fence === undefined ? line.trim().slice(0, FENCE_ROOM - 10) : undefined;
-  }
-  parts.push(current.join("\n"));
-  return parts.map((part) => part.trim()).filter((part) => part !== "");
-}
-
 export async function startSlackChatHost(options: SlackChatHostOptions): Promise<SlackChatHost> {
   const slack: SlackAdapter = createSlackAdapter({
     mode: "socket",
@@ -309,6 +288,10 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
       ? { apiUrl: options.apiUrl, webClientOptions: { retryConfig: { retries: 0 } } }
       : {}),
     logger: options.log ? redactingLogger(options.log) : quietLogger,
+    // Slack's agent experience: per-message DM threads, the stop button, session titles.
+    agentView: true,
+    // The T3 thread's title is the one title; the bridge sets it.
+    sessionTitle: false,
   });
   const chat = new Chat({
     userName: "t3",
@@ -515,9 +498,88 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     guarded("direct")(thread, message, context),
   );
 
+  const log = options.log ?? (() => {});
+  chat.onAgentSessionStopped(async (event) => {
+    try {
+      await options.onStop?.(event.threadId, event.userId);
+    } catch (error) {
+      options.onError(error);
+    }
+  });
+  chat.onAgentSessionTitleChanged(async (event) => {
+    try {
+      await options.onTitleChanged?.(event.threadId, event.title);
+    } catch (error) {
+      options.onError(error);
+    }
+  });
+  chat.onAppContextChanged((event) => {
+    log(
+      "info",
+      `app_context_changed from ${event.userId} (${event.entities.length} entities); ignored.`,
+    );
+  });
+  chat.onAction(FEEDBACK_ACTION_ID, (event) => {
+    options.onFeedback?.({
+      chatThreadKey: event.threadId,
+      messageId: event.messageId,
+      userId: event.user.userId,
+      value: event.value ?? "",
+    });
+  });
+
   await chat.initialize();
-  let statusUnavailable = false;
   const mrkdwn = new SlackFormatConverter();
+  // A channel stream names its reader by user and workspace.
+  const teamId = await slack.webClient.auth
+    .test()
+    .then((result) => (typeof result.team_id === "string" ? result.team_id : undefined))
+    .catch(() => undefined);
+  const api = async (method: string, args: Record<string, unknown>) =>
+    (await slack.webClient.apiCall(method, args)) as unknown as Record<string, unknown>;
+
+  /** Chat threads where Slack refused agent session calls; they use the legacy status. */
+  const legacyThreads = new Set<string>();
+  let legacyLogged = false;
+  let legacyUnavailable = false;
+  const legacyText: Record<SessionState, string> = {
+    processing: "is working…",
+    suspended: "is waiting for you in T3 Code…",
+    active: "",
+  };
+  const setLegacyStatus = async (channel: string, threadTs: string, state: SessionState) => {
+    if (legacyUnavailable) return;
+    try {
+      await api("assistant.threads.setStatus", {
+        channel_id: channel,
+        thread_ts: threadTs,
+        status: legacyText[state],
+      });
+    } catch (error) {
+      const code = slackErrorCode(error);
+      if (code === "missing_scope" || code === "not_allowed_token_type") {
+        legacyUnavailable = true;
+        log(
+          "warn",
+          `Thread status is off: Slack answered ${code}. Add the assistant:write scope to show it.`,
+        );
+        return;
+      }
+      throw error;
+    }
+  };
+  /** Errors that may pass on a retry, so they don't switch a thread to the legacy status. */
+  const TRANSIENT = new Set([
+    "ratelimited",
+    "rate_limited",
+    "internal_error",
+    "fatal_error",
+    "service_unavailable",
+    "request_timeout",
+  ]);
+  /** Threads where Slack has no session title, such as channel threads that aren't sessions. */
+  const untitled = new Set<string>();
+  const renameRefusals = new Set<string>();
 
   return {
     post: async (message) => {
@@ -561,28 +623,60 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
         if ((error as { data?: { error?: string } }).data?.error !== "already_reacted") throw error;
       }
     },
-    setStatus: async (chatThreadKey, status) => {
-      if (statusUnavailable) return;
+    setState: async (chatThreadKey, state) => {
+      const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+      if (!threadTs) return;
+      if (!legacyThreads.has(chatThreadKey)) {
+        try {
+          await slack.setSessionStatus(channel, threadTs, state);
+          return;
+        } catch (error) {
+          const code = slackErrorCode(error);
+          if (code === undefined || TRANSIENT.has(code)) throw error;
+          legacyThreads.add(chatThreadKey);
+          if (!legacyLogged) {
+            legacyLogged = true;
+            log(
+              "warn",
+              `Slack refused agents.sessions.setStatus (${code}) in ${chatThreadKey}; using assistant.threads.setStatus there.`,
+            );
+          }
+        }
+      }
+      await setLegacyStatus(channel, threadTs, state);
+    },
+    rename: async (chatThreadKey, title) => {
+      if (untitled.has(chatThreadKey)) return;
       const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
       if (!threadTs) return;
       try {
-        await slack.webClient.apiCall("assistant.threads.setStatus", {
-          channel_id: channel,
-          thread_ts: threadTs,
-          status,
-        });
+        await slack.setAssistantTitle(channel, threadTs, title.slice(0, 200));
       } catch (error) {
-        const code = (error as { data?: { error?: string } }).data?.error;
-        if (code === "missing_scope" || code === "not_allowed_token_type") {
-          statusUnavailable = true;
-          options.log?.(
-            "warn",
-            `Thread status is off: Slack answered ${code}. Add the assistant:write scope to show it.`,
+        const code = slackErrorCode(error);
+        if (code === undefined || TRANSIENT.has(code)) throw error;
+        // Not a session with a title here; skip it quietly from now on.
+        untitled.add(chatThreadKey);
+        if (!renameRefusals.has(code)) {
+          renameRefusals.add(code);
+          log(
+            "info",
+            `Slack has no title for ${chatThreadKey} (${code}); not renaming threads like it.`,
           );
-          return;
         }
-        throw error;
       }
+    },
+    runDisplay: (run) => {
+      const { channel, threadTs } = slack.decodeThreadId(run.chatThreadKey);
+      return new SlackRunDisplay({
+        channel,
+        threadTs,
+        recipient:
+          run.requestedBy !== undefined && teamId !== undefined
+            ? { userId: run.requestedBy, teamId }
+            : undefined,
+        api,
+        log: (line) => log("info", line),
+      });
     },
     history,
     download,

@@ -8,6 +8,8 @@ import {
   earlierText,
   type InboundEvent,
   type Reply,
+  type RunEnd,
+  type RunProgress,
 } from "./bridge.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
@@ -26,6 +28,14 @@ function fakeT3() {
   /** Calls to fail or never answer, by tool, before the next one succeeds. */
   const failures = new Map<string, number>();
   const hangs = new Set<string>();
+  /** Activity items besides the answers, and the thread as a read shows it. */
+  const activity: Array<Record<string, unknown>> = [];
+  const thread = { title: "fix the build", pendingRequestCount: 0 };
+  /** Waits in flight end as timed out when the test calls `tick`. */
+  let tickNow = () => {};
+  let ticked = new Promise<void>((resolve) => (tickNow = resolve));
+  /** Resolved by the next `t3_thread_wait` call: the watcher has finished its check. */
+  let waitCalled = () => {};
   let runs = 0;
   const run = (runId: string) => {
     let entry = ended.get(runId);
@@ -63,25 +73,38 @@ function fakeT3() {
               runId: args.mode === "queue" ? `run-${++runs}` : `run-${runs}`,
               delivery: "steered",
             };
-          case "t3_thread_wait":
-            return run(String(args.runId)).done.then(() => ({
-              runId: args.runId,
-              status: run(String(args.runId)).status,
-              timedOut: false,
-            }));
+          case "t3_thread_wait": {
+            waitCalled();
+            const entry = run(String(args.runId));
+            return Promise.race([
+              entry.done.then(() => ({ runId: args.runId, status: entry.status, timedOut: false })),
+              ticked.then(() => ({ runId: args.runId, status: "running", timedOut: true })),
+            ]);
+          }
+          case "t3_thread_update":
+          case "t3_thread_interrupt":
+            return { threadId: args.threadId };
           case "t3_thread_read": {
             if (args.itemId !== undefined) {
               const runId = String(args.itemId).replace("item-", "");
               return { thread: {}, items: [{ itemId: args.itemId, text: answers.get(runId) }] };
             }
-            const items = [...answers.keys()].map((runId, position) => ({
-              position,
+            const answerItems = [...answers.keys()].map((runId) => ({
               itemId: `item-${runId}`,
               type: "assistant_message",
               runId,
               text: "x",
             }));
-            return { thread: {}, items, nextPosition: null, hasMore: false };
+            const items = [...activity, ...answerItems].map((item, position) => ({
+              position,
+              ...item,
+            }));
+            return {
+              thread: { ...thread, itemCount: items.length },
+              items,
+              nextPosition: null,
+              hasMore: false,
+            };
           }
           default:
             throw new Error(`unexpected ${tool}`);
@@ -93,6 +116,18 @@ function fakeT3() {
   return {
     tools,
     calls,
+    activity,
+    thread,
+    /**
+     * Ends the waits in flight as timed out, and resolves once the watcher has
+     * checked the run's activity and is waiting again.
+     */
+    tick: async () => {
+      const waiting = new Promise<void>((resolve) => (waitCalled = resolve));
+      tickNow();
+      ticked = new Promise<void>((resolve) => (tickNow = resolve));
+      await waiting;
+    },
     fail: (tool: string, times: number) => failures.set(tool, times),
     hang: (tool: string) => hangs.add(tool),
     finish: (runId: string, status: RunStatus, answer?: string) => {
@@ -116,8 +151,17 @@ function harness(
     dmProjectId?: string;
     post?: (reply: Reply) => Promise<void>;
     history?: () => Promise<ReadonlyArray<EarlierMessage>>;
+    /** Record what each run's display is shown, instead of posting answers. */
+    display?: boolean;
   } = {},
 ) {
+  const shown: Array<{
+    runId: string;
+    requestedBy?: string | undefined;
+    progress: Array<RunProgress>;
+    end?: RunEnd;
+  }> = [];
+  const renamed: Array<string> = [];
   const t3 = fakeT3();
   const posted: Array<Reply> = [];
   const statuses: Array<string> = [];
@@ -136,6 +180,23 @@ function harness(
     },
     post: options.post ?? (async (reply) => void posted.push(reply)),
     status: async (chatThreadKey, status) => void statuses.push(`${chatThreadKey} ${status}`),
+    rename: async (chatThreadKey, title) => void renamed.push(`${chatThreadKey} ${title}`),
+    ...(options.display
+      ? {
+          display: (run) => {
+            const record: (typeof shown)[number] = {
+              runId: run.runId,
+              requestedBy: run.requestedBy,
+              progress: [],
+            };
+            shown.push(record);
+            return {
+              progress: async (progress) => void record.progress.push(progress),
+              finish: async (end) => void (record.end = end),
+            };
+          },
+        }
+      : {}),
     download: async (url) => {
       downloads.push(url);
       return new Uint8Array([1, 2, 3]);
@@ -152,6 +213,8 @@ function harness(
     store,
     posted,
     statuses,
+    shown,
+    renamed,
     scheduled,
     downloads,
     db,
@@ -465,19 +528,145 @@ it("stops posting an answer Slack keeps refusing", async () => {
   assert.lengthOf(store.pendingReplies(), 1);
 });
 
-it("shows a status while a run is in flight and clears it after", async () => {
+it("sets processing while a run goes, suspended while T3 waits on the user, and active after", async () => {
   const { t3, bridge, statuses } = harness();
   await bridge.receive(event("100.1"));
-  assert.isTrue(bridge.setStatus("slack:C1:100.1", "is reading the logs…"));
-  assert.isFalse(bridge.setStatus("slack:C1:999.1", "elsewhere"));
+  t3.activity.push({
+    itemId: "ask",
+    type: "user_input_request",
+    runId: "run-1",
+    status: "waiting",
+  });
+  await t3.tick();
+  t3.activity[0]!.status = "completed";
+  await t3.tick();
+  t3.thread.pendingRequestCount = 1;
+  await t3.tick();
+  t3.thread.pendingRequestCount = 0;
   t3.finish("run-1", "completed", "Done.");
   await bridge.idle();
-  assert.isFalse(bridge.setStatus("slack:C1:100.1", "too late"));
   assert.deepStrictEqual(statuses, [
-    "slack:C1:100.1 is working…",
-    "slack:C1:100.1 is reading the logs…",
-    "slack:C1:100.1 ",
+    "slack:C1:100.1 processing",
+    "slack:C1:100.1 suspended",
+    "slack:C1:100.1 processing",
+    "slack:C1:100.1 suspended",
+    "slack:C1:100.1 processing",
+    "slack:C1:100.1 active",
   ]);
+});
+
+it("shows each run's work as rows, with the agent's notes, then its answer", async () => {
+  const { t3, bridge, shown } = harness(undefined, { display: true });
+  await bridge.receive(event("100.1"));
+  t3.activity.push({
+    itemId: "cmd",
+    type: "command_execution",
+    runId: "run-1",
+    status: "running",
+    text: "$ pnpm test",
+  });
+  // Another thread's run is not this run's work.
+  t3.activity.push({ itemId: "other", type: "command_execution", runId: "run-9", text: "$ ls" });
+  await t3.tick();
+  assert.isTrue(bridge.setStatus("slack:C1:100.1", "Reading the logs"));
+  assert.isFalse(bridge.setStatus("slack:C1:999.1", "elsewhere"));
+  await t3.tick();
+  t3.activity[0]!.status = "completed";
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  assert.isFalse(bridge.setStatus("slack:C1:100.1", "too late"));
+
+  const [run] = shown;
+  assert.strictEqual(run?.requestedBy, "U1");
+  assert.deepStrictEqual(
+    run?.progress.map((progress) => progress.rows.map((row) => `${row.title} ${row.status}`)),
+    [
+      ["Ran `pnpm test` in_progress"],
+      ["Ran `pnpm test` in_progress", "Reading the logs in_progress"],
+      // The final check, after the run ended.
+      ["Ran `pnpm test` complete", "Reading the logs in_progress"],
+    ],
+  );
+  assert.deepStrictEqual(
+    run?.end?.rows.map((row) => `${row.title} ${row.status}`),
+    ["Ran `pnpm test` complete", "Reading the logs complete"],
+  );
+  assert.strictEqual(run?.end?.answer, "Fixed.");
+  assert.strictEqual(run?.end?.text, "x");
+});
+
+it("gives a failed run a notice and no answer", async () => {
+  const { t3, bridge, shown } = harness(undefined, { display: true });
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "failed");
+  await bridge.idle();
+  assert.isUndefined(shown[0]?.end?.answer);
+  assert.strictEqual(
+    shown[0]?.end?.notice,
+    "The run failed. Open the thread in T3 Code for details.",
+  );
+});
+
+it("keeps titles in step both ways without looping", async () => {
+  const { t3, bridge, renamed } = harness();
+  await bridge.receive(event("100.1"));
+  await t3.tick();
+  // The same title again changes nothing.
+  await t3.tick();
+  t3.thread.title = "Fix the CI build";
+  await t3.tick();
+  assert.deepStrictEqual(renamed, [
+    "slack:C1:100.1 fix the build",
+    "slack:C1:100.1 Fix the CI build",
+  ]);
+
+  // Slack echoing the title the bridge set does not rename T3.
+  assert.isFalse(await bridge.titleChanged("slack:C1:100.1", "Fix the CI build"));
+  // Someone renames it in Slack: T3 follows, and the next check does not rename Slack back.
+  assert.isTrue(await bridge.titleChanged("slack:C1:100.1", "CI is red"));
+  t3.thread.title = "CI is red";
+  await t3.tick();
+  assert.lengthOf(renamed, 2);
+  const updates = t3.calls.filter((call) => call.tool === "t3_thread_update");
+  assert.deepStrictEqual(
+    updates.map((call) => call.args),
+    [{ threadId: THREAD, action: "rename", title: "CI is red" }],
+  );
+  assert.isFalse(await bridge.titleChanged("slack:C1:999.1", "unbound"));
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+});
+
+it("interrupts the T3 thread when an allowed user presses stop", async () => {
+  const { t3, bridge } = harness();
+  await bridge.receive(event("100.1"));
+  assert.isFalse(await bridge.stopRequested("slack:C1:100.1", "U9"));
+  assert.isFalse(await bridge.stopRequested("slack:C1:999.1", "U1"));
+  assert.isTrue(await bridge.stopRequested("slack:C1:100.1", "U1"));
+  const interrupts = t3.calls.filter((call) => call.tool === "t3_thread_interrupt");
+  assert.lengthOf(interrupts, 1);
+  assert.strictEqual(interrupts[0]?.args.threadId, THREAD);
+  t3.finish("run-1", "interrupted");
+  await bridge.idle();
+});
+
+it("records feedback on answers", () => {
+  const { bridge, store } = harness();
+  bridge.feedback({
+    chatThreadKey: "slack:C1:100.1",
+    messageId: "200.1",
+    userId: "U1",
+    value: "positive",
+  });
+  assert.deepStrictEqual(store.feedbackRecords(), [
+    { chatThreadKey: "slack:C1:100.1", messageId: "200.1", userId: "U1", value: "positive", at: 0 },
+  ]);
+});
+
+it("remembers who asked for each owed reply", async () => {
+  const { bridge, store } = harness();
+  await bridge.receive(event("100.1"));
+  assert.strictEqual(store.pendingReplies()[0]?.requestedBy, "U1");
 });
 
 it("hands over a saved message after a crash mid hand-off, once", async () => {

@@ -75,7 +75,9 @@ async function start(): Promise<void> {
     threads,
     settings: config,
     post: (reply) => connected().post({ chatThreadKey: reply.chatThreadKey, text: reply.text }),
-    status: async (chatThreadKey, status) => host?.setStatus(chatThreadKey, status),
+    status: async (chatThreadKey, state) => host?.setState(chatThreadKey, state),
+    display: (run) => connected().runDisplay(run),
+    rename: (chatThreadKey, title) => connected().rename(chatThreadKey, title),
     download: (url) => connected().download(url),
     history: (chatThreadKey, messageId) => connected().history(chatThreadKey, messageId),
     bound: (chatThreadKey) => connected().follow(chatThreadKey),
@@ -88,6 +90,9 @@ async function start(): Promise<void> {
     // The bridge logs each outcome as it handles the event.
     onEvent: (event) => bridge.receive(event),
     onError: (error) => log(`Slack message failed: ${String(error)}`),
+    onStop: (chatThreadKey, userId) => bridge.stopRequested(chatThreadKey, userId),
+    onTitleChanged: (chatThreadKey, title) => bridge.titleChanged(chatThreadKey, title),
+    onFeedback: (feedback) => bridge.feedback(feedback),
     log: (level, line) => log(`slack ${level}: ${line}`),
   });
   const slack = host;

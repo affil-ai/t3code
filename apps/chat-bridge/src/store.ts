@@ -30,6 +30,17 @@ export interface OwedReply {
   readonly runId: string;
   readonly threadId: string;
   readonly chatThreadKey: string;
+  /** The chat user whose message started or joined the run; Slack streams a channel reply to them. */
+  readonly requestedBy?: string | undefined;
+}
+
+/** A click on an answer's feedback buttons. */
+export interface FeedbackRecord {
+  readonly chatThreadKey: string;
+  readonly messageId: string;
+  readonly userId: string;
+  readonly value: string;
+  readonly at: number;
 }
 
 /** A Slack message saved before the bridge acts on it, so a crash or a T3 failure cannot lose it. */
@@ -97,11 +108,24 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       chat_thread_key TEXT NOT NULL,
       line TEXT NOT NULL
     );
+    -- Clicks on the feedback buttons under answers. Recorded only; nothing acts on them yet.
+    CREATE TABLE IF NOT EXISTS feedback (
+      chat_thread_key TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      value TEXT NOT NULL,
+      at INTEGER NOT NULL
+    );
   `);
-  // Databases made before threads could be muted.
-  const columns = db.prepare("PRAGMA table_info(binding)").all();
-  if (!columns.some((column) => column.name === "muted")) {
-    db.exec("ALTER TABLE binding ADD COLUMN muted INTEGER NOT NULL DEFAULT 0");
+  // Databases made before threads could be muted, or replies knew who asked.
+  addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "owed_reply", "requested_by", "TEXT");
+}
+
+function addColumn(db: NodeSqlite.DatabaseSync, table: string, column: string, type: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((each) => each.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 }
 
@@ -276,9 +300,38 @@ export class BridgeStore {
   oweReply(reply: OwedReply): void {
     this.db
       .prepare(
-        "INSERT OR IGNORE INTO owed_reply (run_id, thread_id, chat_thread_key) VALUES (?, ?, ?)",
+        `INSERT OR IGNORE INTO owed_reply (run_id, thread_id, chat_thread_key, requested_by)
+          VALUES (?, ?, ?, ?)`,
       )
-      .run(reply.runId, reply.threadId, reply.chatThreadKey);
+      .run(reply.runId, reply.threadId, reply.chatThreadKey, reply.requestedBy ?? null);
+  }
+
+  recordFeedback(feedback: FeedbackRecord): void {
+    this.db
+      .prepare(
+        "INSERT INTO feedback (chat_thread_key, message_id, user_id, value, at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run(
+        feedback.chatThreadKey,
+        feedback.messageId,
+        feedback.userId,
+        feedback.value,
+        feedback.at,
+      );
+  }
+
+  /** Every recorded feedback click, oldest first. */
+  feedbackRecords(): Array<FeedbackRecord> {
+    return this.db
+      .prepare("SELECT * FROM feedback ORDER BY rowid")
+      .all()
+      .map((row) => ({
+        chatThreadKey: String(row.chat_thread_key),
+        messageId: String(row.message_id),
+        userId: String(row.user_id),
+        value: String(row.value),
+        at: Number(row.at),
+      }));
   }
 
   /** Replies not yet posted, oldest first; the watcher resumes these at startup. */
@@ -290,6 +343,7 @@ export class BridgeStore {
         runId: String(row.run_id),
         threadId: String(row.thread_id),
         chatThreadKey: String(row.chat_thread_key),
+        ...(row.requested_by === null ? {} : { requestedBy: String(row.requested_by) }),
       }));
   }
 

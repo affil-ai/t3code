@@ -7,6 +7,8 @@
  */
 import * as NodeCrypto from "node:crypto";
 
+import type { TaskRow } from "./activity.ts";
+import { RunFeed } from "./runFeed.ts";
 import type { Binding, BridgeStore, OwedReply } from "./store.ts";
 import {
   type Delivery,
@@ -115,6 +117,61 @@ export interface Reply {
   readonly text: string;
 }
 
+/**
+ * A chat thread's agent session: `processing` while a run is going,
+ * `suspended` while T3 waits on a person, `active` when no run is left.
+ */
+export type SessionState = "processing" | "suspended" | "active";
+
+/** The run a display shows, and who asked for it. */
+export interface RunTarget {
+  readonly chatThreadKey: string;
+  readonly runId: string;
+  /** The chat user whose message started or joined the run, when known. */
+  readonly requestedBy?: string | undefined;
+}
+
+/** What a run has done so far. */
+export interface RunProgress {
+  readonly rows: ReadonlyArray<TaskRow>;
+  /** The run's assistant messages so far, joined by blank lines. Only grows. */
+  readonly text: string;
+}
+
+export interface RunEnd extends RunProgress {
+  /** The run's final message, which `text` ends with; none when the run chose to stay quiet. */
+  readonly answer?: string | undefined;
+  /** Said instead of an answer when the run failed or was stopped. */
+  readonly notice?: string | undefined;
+}
+
+/** How one run shows in the chat thread while it lasts, and its answer at the end. */
+export interface RunDisplay {
+  /** Called on each check while the run goes; the display decides what to send. */
+  readonly progress: (progress: RunProgress) => Promise<void>;
+  /** Called once the run has ended. Throws if the answer could not be posted, so it is retried. */
+  readonly finish: (end: RunEnd) => Promise<void>;
+}
+
+/** Feedback someone gave on an answer, such as a thumbs-up button. */
+export interface Feedback {
+  readonly chatThreadKey: string;
+  readonly messageId: string;
+  readonly userId: string;
+  readonly value: string;
+}
+
+/** Without a display, a run posts only its answer, or its notice, when it ends. */
+const answerOnlyDisplay =
+  (post: (reply: Reply) => Promise<void>) =>
+  (run: RunTarget): RunDisplay => ({
+    progress: async () => {},
+    finish: async (end) => {
+      const text = end.answer ?? end.notice;
+      if (text !== undefined) await post({ chatThreadKey: run.chatThreadKey, text });
+    },
+  });
+
 const TERMINAL_TEXT: Partial<Record<RunStatus, string>> = {
   failed: "The run failed. Open the thread in T3 Code for details.",
   cancelled: "The run was stopped.",
@@ -123,8 +180,8 @@ const TERMINAL_TEXT: Partial<Record<RunStatus, string>> = {
 };
 
 const TITLE_LIMIT = 80;
-/** One `t3_thread_wait` call; the watcher calls again until the run ends. */
-const WAIT_SLICE_MS = 10 * 60_000;
+/** One `t3_thread_wait` call; between calls the watcher reads what the run did. */
+const TICK_MS = 2_500;
 const RETRY_DELAY_MS = 15_000;
 /** The earlier thread messages a first turn carries, newest kept; T3 takes up to 100,000 characters a message. */
 const EARLIER_CHARS_LIMIT = 80_000;
@@ -133,9 +190,14 @@ const KEPT_MESSAGE_LIMIT = 50;
 const KEPT_CHARS_LIMIT = 20_000;
 /** One refusal notice per person in this long, so a busy channel is not flooded. */
 const REFUSAL_INTERVAL_MS = 60 * 60_000;
-/** Slack drops a thread's status after about two minutes, so a running thread sets it again sooner. */
+/**
+ * A running thread sets its state again this often. Slack's agent status
+ * lapses after an hour and the legacy status it falls back to after about two
+ * minutes, so one interval serves both.
+ */
 const STATUS_REFRESH_MS = 90_000;
-const DEFAULT_STATUS = "is working…";
+/** Agent notes from `chat_status` sort just after the item the run was last seen at. */
+const NOTE_ORDER_OFFSET = 0.5;
 /** Posting an answer stops after this many failures in a row; a restart tries again. */
 const MAX_POST_ATTEMPTS = 5;
 /** A hand-off to T3 is tried this many times, waiting 15 s, 30 s, 1 min … up to 10 min between, about 36 minutes in all. */
@@ -268,11 +330,22 @@ const requestId = (eventId: string) => `chat-bridge:${eventId}`.slice(0, 256);
 export class Bridge {
   /** Runs with a watcher, so a run is watched once. */
   private readonly watching = new Map<string, Promise<void>>();
-  /** Runs being watched in each chat thread, and the status the agent last set there. */
+  /** The chat thread of each run being watched. */
+  private readonly watchedRuns = new Map<string, string>();
+  /** Each chat thread with runs being watched: which runs wait on a person, and the state last sent. */
   private readonly running = new Map<
     string,
-    { runs: number; status: string; timer: NodeJS.Timeout }
+    { runs: number; waiting: Set<string>; state: SessionState; timer: NodeJS.Timeout }
   >();
+  /** Notes the agent added with `chat_status`, by chat thread, shown as rows of its runs. */
+  private readonly notes = new Map<
+    string,
+    Array<TaskRow & { readonly runIds: ReadonlySet<string> }>
+  >();
+  /** The newest activity position seen in each chat thread, so a note sorts after it. */
+  private readonly seenPosition = new Map<string, number>();
+  /** Each chat thread's title as both sides last agreed on it; a rename to it changes nothing. */
+  private readonly titles = new Map<string, string>();
   /** When each refused person was last told, by Slack user id. */
   private readonly refusedAt = new Map<string, number>();
   /** Each chat thread's inbox is worked through by one drain at a time, chained here. */
@@ -285,7 +358,11 @@ export class Bridge {
   private readonly threads: T3Threads;
   private readonly settings: BridgeSettings;
   private readonly post: (reply: Reply) => Promise<void>;
-  private readonly status: ((chatThreadKey: string, status: string) => Promise<void>) | undefined;
+  private readonly status:
+    | ((chatThreadKey: string, state: SessionState) => Promise<void>)
+    | undefined;
+  private readonly display: (run: RunTarget) => RunDisplay;
+  private readonly rename: ((chatThreadKey: string, title: string) => Promise<void>) | undefined;
   private readonly download: ((url: string) => Promise<Uint8Array>) | undefined;
   private readonly history:
     | ((chatThreadKey: string, messageId: string) => Promise<ReadonlyArray<EarlierMessage>>)
@@ -300,9 +377,14 @@ export class Bridge {
     readonly store: BridgeStore;
     readonly threads: T3Threads;
     readonly settings: BridgeSettings;
+    /** Posts a notice, such as a refusal; and a run's answer when there is no `display`. */
     readonly post: (reply: Reply) => Promise<void>;
-    /** Shows what a thread is doing, such as "is working…"; an empty status clears it. */
-    readonly status?: (chatThreadKey: string, status: string) => Promise<void>;
+    /** Sets the chat thread's agent session state. */
+    readonly status?: (chatThreadKey: string, state: SessionState) => Promise<void>;
+    /** Shows a run as it goes and posts its answer. Without it, only the answer is posted. */
+    readonly display?: (run: RunTarget) => RunDisplay;
+    /** Sets the chat thread's title to the T3 thread's. */
+    readonly rename?: (chatThreadKey: string, title: string) => Promise<void>;
     /** Downloads a file on a chat message. Without it, files are named but not imported. */
     readonly download?: (url: string) => Promise<Uint8Array>;
     /** The thread's messages before `messageId`, oldest first, read when a message starts a binding. */
@@ -324,6 +406,8 @@ export class Bridge {
     this.settings = options.settings;
     this.post = options.post;
     this.status = options.status;
+    this.display = options.display ?? answerOnlyDisplay(options.post);
+    this.rename = options.rename;
     this.download = options.download;
     this.history = options.history;
     this.bound = options.bound;
@@ -472,6 +556,7 @@ export class Bridge {
         runId: sent.runId,
         threadId: binding.threadId,
         chatThreadKey: binding.chatThreadKey,
+        requestedBy: event.author.userId,
       });
       return { type: "followed_up", threadId: binding.threadId, delivery: sent.delivery };
     }
@@ -513,6 +598,7 @@ export class Bridge {
         runId: started.runId,
         threadId: started.threadId,
         chatThreadKey: event.chatThreadKey,
+        requestedBy: event.author.userId,
       });
     }
     return { type: "started", threadId: started.threadId };
@@ -654,75 +740,220 @@ export class Bridge {
 
   private watch(reply: OwedReply): void {
     if (this.watching.has(reply.runId)) return;
-    this.showRunning(reply.chatThreadKey, 1);
+    this.runStarted(reply.chatThreadKey);
     this.watching.set(
       reply.runId,
       this.watchUntilAnswered(reply).finally(() => {
-        this.watching.delete(reply.runId);
-        this.showRunning(reply.chatThreadKey, -1);
+        this.runEnded(reply.chatThreadKey, reply.runId);
       }),
     );
   }
 
   /**
-   * Sets the status the agent chose, such as "is running the tests…", in a
-   * thread with a run in flight. Returns false when no run is in flight there.
+   * Shows the agent's note, such as "Running the tests", as a row in the
+   * thread's runs in flight. The previous note is marked done. Returns false
+   * when no run is in flight there.
    */
   setStatus(chatThreadKey: string, status: string): boolean {
-    const entry = this.running.get(chatThreadKey);
-    if (entry === undefined) return false;
-    entry.status = status.trim() || DEFAULT_STATUS;
-    this.sendStatus(chatThreadKey, entry.status);
+    if (!this.running.has(chatThreadKey)) return false;
+    const runIds = new Set(
+      [...this.watchedRuns.entries()]
+        .filter(([, key]) => key === chatThreadKey)
+        .map(([runId]) => runId),
+    );
+    const notes = (this.notes.get(chatThreadKey) ?? []).map((note) =>
+      note.status === "in_progress" ? { ...note, status: "complete" as const } : note,
+    );
+    notes.push({
+      id: `note-${notes.length + 1}`,
+      title: status.trim().slice(0, 100) || "Working",
+      status: "in_progress",
+      order: (this.seenPosition.get(chatThreadKey) ?? -1) + NOTE_ORDER_OFFSET,
+      runIds,
+    });
+    this.notes.set(chatThreadKey, notes);
     return true;
   }
 
-  /** Counts a thread's runs in flight; the status shows while there is one and clears after the last. */
-  private showRunning(chatThreadKey: string, change: 1 | -1): void {
-    if (this.status === undefined) return;
-    const entry = this.running.get(chatThreadKey);
-    if (change === 1 && entry !== undefined) {
-      entry.runs += 1;
-      return;
-    }
-    if (change === 1) {
-      const timer = setInterval(() => {
-        const current = this.running.get(chatThreadKey);
-        if (current !== undefined) this.sendStatus(chatThreadKey, current.status);
-      }, STATUS_REFRESH_MS);
-      timer.unref();
-      this.running.set(chatThreadKey, { runs: 1, status: DEFAULT_STATUS, timer });
-      this.sendStatus(chatThreadKey, DEFAULT_STATUS);
-      return;
-    }
-    if (entry === undefined) return;
-    entry.runs -= 1;
-    if (entry.runs > 0) return;
-    clearInterval(entry.timer);
-    this.running.delete(chatThreadKey);
-    this.sendStatus(chatThreadKey, "");
+  /** The notes shown with a run; a finished run shows its open notes as done. */
+  private notesFor(chatThreadKey: string, runId: string, finished: boolean): Array<TaskRow> {
+    return (this.notes.get(chatThreadKey) ?? [])
+      .filter((note) => note.runIds.has(runId))
+      .map(({ runIds: _runIds, ...row }) =>
+        finished && row.status === "in_progress" ? { ...row, status: "complete" as const } : row,
+      );
   }
 
-  /** A status is a courtesy; failing to set one is only logged. */
-  private sendStatus(chatThreadKey: string, status: string): void {
-    this.status?.(chatThreadKey, status).catch((error: unknown) => {
-      this.log(`Setting the status in ${chatThreadKey} failed: ${String(error)}`);
+  /** Copies a title someone gave the chat thread to its T3 thread. A title that is already agreed changes nothing. */
+  async titleChanged(chatThreadKey: string, title: string): Promise<boolean> {
+    const binding = this.store.binding(chatThreadKey);
+    const trimmed = title.trim();
+    if (binding === undefined || trimmed === "" || this.titles.get(chatThreadKey) === trimmed) {
+      return false;
+    }
+    this.titles.set(chatThreadKey, trimmed);
+    try {
+      await this.threads.rename(binding.threadId, trimmed);
+      this.log(`Renamed ${binding.threadId} from ${chatThreadKey}.`);
+      return true;
+    } catch (error) {
+      this.titles.delete(chatThreadKey);
+      this.log(`Renaming ${binding.threadId} failed: ${String(error)}`);
+      return false;
+    }
+  }
+
+  /** Sends the T3 thread's title to the chat thread when it is new or changed. */
+  private syncTitle(chatThreadKey: string, title: string): void {
+    const trimmed = title.trim();
+    if (this.rename === undefined || trimmed === "" || this.titles.get(chatThreadKey) === trimmed)
+      return;
+    this.titles.set(chatThreadKey, trimmed);
+    this.rename(chatThreadKey, trimmed).catch((error: unknown) => {
+      this.log(`Renaming ${chatThreadKey} failed: ${String(error)}`);
     });
   }
 
+  /** Someone pressed stop on the chat thread: interrupt its T3 thread's run. */
+  async stopRequested(chatThreadKey: string, userId: string): Promise<boolean> {
+    const binding = this.store.binding(chatThreadKey);
+    if (binding === undefined) return false;
+    if (!this.settings.allowedUserIds.includes(userId)) {
+      this.log(`Ignored a stop in ${chatThreadKey} from ${userId}, who is not allowed.`);
+      return false;
+    }
+    try {
+      await this.threads.interrupt(binding.threadId, `Stopped from chat by ${userId}.`);
+      this.log(`Stopped ${binding.threadId} from ${chatThreadKey}.`);
+      return true;
+    } catch (error) {
+      this.log(`Stopping ${binding.threadId} failed: ${String(error)}`);
+      return false;
+    }
+  }
+
+  /** Records feedback on an answer. Nothing acts on it yet. */
+  feedback(feedback: Feedback): void {
+    this.store.recordFeedback({ ...feedback, at: this.now() });
+    this.log(
+      `Feedback ${feedback.value} from ${feedback.userId} on ${feedback.messageId} in ${feedback.chatThreadKey}.`,
+    );
+  }
+
+  /** Counts a thread's runs in flight; the first sets `processing`, and the state refreshes until the last ends. */
+  private runStarted(chatThreadKey: string): void {
+    const entry = this.running.get(chatThreadKey);
+    if (entry !== undefined) {
+      entry.runs += 1;
+      return;
+    }
+    const timer = setInterval(() => {
+      const current = this.running.get(chatThreadKey);
+      if (current !== undefined) this.sendState(chatThreadKey, current.state);
+    }, STATUS_REFRESH_MS);
+    timer.unref();
+    this.running.set(chatThreadKey, {
+      runs: 1,
+      waiting: new Set(),
+      state: "processing",
+      timer,
+    });
+    this.sendState(chatThreadKey, "processing");
+  }
+
+  /** Marks one run as waiting on a person or not, and sends the thread's state if it changed. */
+  private runWaiting(chatThreadKey: string, runId: string, waiting: boolean): void {
+    const entry = this.running.get(chatThreadKey);
+    if (entry === undefined) return;
+    if (waiting) entry.waiting.add(runId);
+    else entry.waiting.delete(runId);
+    const state: SessionState = entry.waiting.size > 0 ? "suspended" : "processing";
+    if (state === entry.state) return;
+    entry.state = state;
+    this.sendState(chatThreadKey, state);
+  }
+
+  private runEnded(chatThreadKey: string, runId: string): void {
+    this.watchedRuns.delete(runId);
+    this.watching.delete(runId);
+    const entry = this.running.get(chatThreadKey);
+    if (entry === undefined) return;
+    entry.runs -= 1;
+    entry.waiting.delete(runId);
+    if (entry.runs > 0) {
+      // The run's display may have closed the session; the runs left set it back.
+      entry.state = entry.waiting.size > 0 ? "suspended" : "processing";
+      this.sendState(chatThreadKey, entry.state);
+      return;
+    }
+    clearInterval(entry.timer);
+    this.running.delete(chatThreadKey);
+    this.notes.delete(chatThreadKey);
+    this.sendState(chatThreadKey, "active");
+  }
+
+  /** A state is a courtesy; failing to set one is only logged. */
+  private sendState(chatThreadKey: string, state: SessionState): void {
+    this.status?.(chatThreadKey, state).catch((error: unknown) => {
+      this.log(`Setting the state in ${chatThreadKey} failed: ${String(error)}`);
+    });
+  }
+
+  /** Reads what the run did since the last check and shows it. A failed read is only logged. */
+  private async check(reply: OwedReply, feed: RunFeed, display: RunDisplay): Promise<void> {
+    try {
+      await feed.read();
+    } catch (error) {
+      this.log(`Reading the activity of ${reply.runId} failed: ${String(error)}`);
+      return;
+    }
+    const seen = this.seenPosition.get(reply.chatThreadKey) ?? -1;
+    this.seenPosition.set(reply.chatThreadKey, Math.max(seen, feed.lastPosition));
+    this.runWaiting(reply.chatThreadKey, reply.runId, feed.waiting);
+    this.syncTitle(reply.chatThreadKey, feed.title);
+    try {
+      await display.progress({
+        rows: this.rowsOf(reply, feed, false),
+        text: await feed.text(),
+      });
+    } catch (error) {
+      this.log(`Showing the progress of ${reply.runId} failed: ${String(error)}`);
+    }
+  }
+
+  private rowsOf(reply: OwedReply, feed: RunFeed, finished: boolean): Array<TaskRow> {
+    return [...feed.rows(), ...this.notesFor(reply.chatThreadKey, reply.runId, finished)].toSorted(
+      (a, b) => a.order - b.order,
+    );
+  }
+
   private async watchUntilAnswered(reply: OwedReply): Promise<void> {
+    this.watchedRuns.set(reply.runId, reply.chatThreadKey);
+    const feed = new RunFeed(this.threads, reply.threadId, reply.runId);
+    const display = this.display({
+      chatThreadKey: reply.chatThreadKey,
+      runId: reply.runId,
+      requestedBy: reply.requestedBy,
+    });
     let postFailures = 0;
+    let runId = reply.runId;
     while (!this.stopped) {
       let waited: Awaited<ReturnType<T3Threads["waitForRun"]>>;
       try {
-        waited = await this.threads.waitForRun(reply.threadId, reply.runId, WAIT_SLICE_MS);
+        waited = await this.threads.waitForRun(reply.threadId, runId, TICK_MS);
       } catch (error) {
         this.log(`Waiting for ${reply.runId} failed; retrying: ${String(error)}`);
         await this.sleep(RETRY_DELAY_MS);
         continue;
       }
+      if (waited.runId !== runId) {
+        runId = waited.runId;
+        feed.follow(runId);
+      }
+      await this.check(reply, feed, display);
       if (waited.timedOut || !TERMINAL_STATUSES.has(waited.status)) continue;
       try {
-        await this.answer(reply, waited.runId, waited.status);
+        await this.answer(reply, waited.runId, waited.status, feed, display);
         return;
       } catch (error) {
         postFailures += 1;
@@ -738,17 +969,28 @@ export class Bridge {
   }
 
   /** Posts the run's answer once. A completed run with no final message chose to stay quiet. */
-  private async answer(reply: OwedReply, finalRunId: string, status: RunStatus): Promise<void> {
+  private async answer(
+    reply: OwedReply,
+    finalRunId: string,
+    status: RunStatus,
+    feed: RunFeed,
+    display: RunDisplay,
+  ): Promise<void> {
     if (!this.store.claimReply(reply)) return;
     // A restart continues in a new run; claim it too, so a later message that joins it does not answer twice.
     if (finalRunId !== reply.runId && !this.store.claimReply({ ...reply, runId: finalRunId }))
       return;
     try {
-      const text =
+      const answer =
         status === "completed"
           ? await this.threads.finalAnswer(reply.threadId, finalRunId)
-          : TERMINAL_TEXT[status];
-      if (text !== undefined) await this.post({ chatThreadKey: reply.chatThreadKey, text });
+          : undefined;
+      await display.finish({
+        rows: this.rowsOf(reply, feed, true),
+        text: await feed.text(true),
+        answer,
+        notice: status === "completed" ? undefined : TERMINAL_TEXT[status],
+      });
     } catch (error) {
       this.store.releaseReply(reply.runId);
       if (finalRunId !== reply.runId) this.store.releaseReply(finalRunId);

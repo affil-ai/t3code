@@ -35,7 +35,7 @@ export interface ToolDeps {
   readonly workspaceRoots: (threadId: string) => Promise<ReadonlyArray<string>>;
   readonly post: (message: SlackOutboundMessage) => Promise<void>;
   readonly react: (reaction: SlackReaction) => Promise<void>;
-  /** False when the thread has no run in flight. */
+  /** Adds a step row to the thread's runs in flight; false when there is none. */
   readonly setStatus: (chatThreadKey: string, status: string) => boolean;
 }
 
@@ -87,7 +87,7 @@ const TOOLS = [
   {
     name: "chat_status",
     description:
-      'Show what you are doing under the Slack thread with this chat key, such as "is running the tests…", while the run lasts. Slack shows it after the bot\'s name. It clears when the run ends.',
+      'Add a step to the task list Slack shows for your run in the thread with this chat key, such as "Running the tests". The previous step you added is marked done. Your commands, searches and edits show there already, so use this for a phase of work they don\'t name.',
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -196,8 +196,11 @@ export async function callTool(
       if (status === "" || status.length > MAX_STATUS)
         return text(`status must be 1 to ${MAX_STATUS} characters.`, true);
       if (!deps.setStatus(binding.chatThreadKey, status))
-        return text("This Slack thread has no run in flight, so there is no status to set.", true);
-      return text("Status set.");
+        return text(
+          "This Slack thread has no run in flight, so there is no task list to add to.",
+          true,
+        );
+      return text("Step added.");
     }
     return text(`Unknown tool ${name}.`, true);
   } catch (error) {
@@ -217,7 +220,7 @@ const INSTRUCTIONS = [
   "Some threads take their messages from a Slack thread. Their turns start with a Slack message and carry a chat key.",
   "In those threads your final message in each run is posted to the Slack thread. If a message needs no reply, end the run without a final message and nothing is posted.",
   "To mention someone in Slack, write <@USERID>; the turn shows each person's id.",
-  "Use chat_post to send files or an update before the run ends, chat_react to react to a message, and chat_status to show what you are doing during a long run. All take the thread's chat key.",
+  "Use chat_post to send files or an update before the run ends, chat_react to react to a message, and chat_status to add a step to the task list Slack shows during a long run. All take the thread's chat key.",
 ].join(" ");
 
 function mcpServer(deps: ToolDeps): Server {

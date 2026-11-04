@@ -1,6 +1,7 @@
 /**
  * The T3 thread operations the bridge needs, as calls to T3's MCP tools.
  */
+import type { ActivityItem } from "./activity.ts";
 import type { T3Tools } from "./t3Client.ts";
 
 export type FollowUpMode = "steer" | "queue";
@@ -63,21 +64,48 @@ const NAME_LIMIT = 255;
 const MIME_LIMIT = 100;
 const SCAN_PAGE = 100;
 const MAX_ANSWER_CHARS = 50_000;
+/** Activity rows show a short output, so an item needs only its start. */
+const ACTIVITY_CHARS = 1_000;
+/** A watch that starts mid-thread reads this many items back for its run's earlier work. */
+const ACTIVITY_LOOKBACK = 40;
+/** Pages read per activity call; a busier tick catches up on the next one. */
+const ACTIVITY_PAGES = 5;
+/** Slack titles take up to 200 characters, T3's up to 512. */
+const RENAME_LIMIT = 200;
 
 interface ReadItem {
   readonly position: number;
   readonly itemId: string;
   readonly type: string;
   readonly runId: string | null;
+  readonly status?: string | undefined;
+  readonly title?: string | null | undefined;
   readonly text: string | null;
+  readonly textTruncated?: boolean | undefined;
   readonly nextTextOffset?: number | null;
 }
 
 interface ReadResult {
-  readonly thread: { readonly projectId: string; readonly worktreePath: string | null };
+  readonly thread: {
+    readonly projectId: string;
+    readonly worktreePath: string | null;
+    readonly title?: string | undefined;
+    readonly itemCount?: number | undefined;
+    readonly pendingRequestCount?: number | undefined;
+  };
   readonly items: ReadonlyArray<ReadItem>;
   readonly nextPosition: number | null;
   readonly hasMore: boolean;
+}
+
+/** A thread's activity after a position, with what the thread looks like now. */
+export interface ActivityRead {
+  readonly title: string;
+  /** User-input and approval requests T3 is waiting on. */
+  readonly pendingRequests: number;
+  readonly items: ReadonlyArray<ActivityItem>;
+  /** Pass back as `afterPosition` to read on from here. */
+  readonly lastPosition: number;
 }
 
 function attachmentName(name: string): string {
@@ -252,16 +280,89 @@ export class T3Threads {
     }
     if (answer === undefined) return undefined;
 
+    const text = (await this.itemText(threadId, answer.itemId)).trim();
+    return text === "" ? undefined : text;
+  }
+
+  /** One item's text, up to 50,000 characters. */
+  async itemText(threadId: string, itemId: string): Promise<string> {
     const full = await this.t3.call<ReadResult>("t3_thread_read", {
       threadId,
-      itemId: answer.itemId,
-      view: "messages",
+      itemId,
+      view: "activity",
       runLimit: 1,
       maxCharsPerItem: MAX_ANSWER_CHARS,
     });
-    const item = full.items.find((each) => each.itemId === answer.itemId);
-    const text = item?.text?.trim() ?? "";
-    return text === "" ? undefined : text;
+    return full.items.find((each) => each.itemId === itemId)?.text ?? "";
+  }
+
+  /**
+   * The thread's activity items after `afterPosition` (-1 for all), each cut
+   * to its first 1,000 characters. Without a position it starts a few dozen
+   * items back from the end, so watching a long thread doesn't read all of it.
+   */
+  async activity(threadId: string, afterPosition: number | undefined): Promise<ActivityRead> {
+    let after: number = afterPosition ?? (await this.lookbackStart(threadId));
+    const items: Array<ActivityItem> = [];
+    let thread: ReadResult["thread"] | undefined;
+    for (let page = 0; page < ACTIVITY_PAGES; page++) {
+      const read: ReadResult = await this.t3.call<ReadResult>("t3_thread_read", {
+        threadId,
+        view: "activity",
+        limit: 100,
+        runLimit: 1,
+        maxCharsPerItem: ACTIVITY_CHARS,
+        ...(after < 0 ? {} : { afterPosition: after }),
+      });
+      thread = read.thread;
+      for (const item of read.items) {
+        items.push({
+          position: item.position,
+          itemId: item.itemId,
+          type: item.type,
+          runId: item.runId,
+          status: item.status ?? "completed",
+          title: item.title ?? null,
+          text: item.text,
+          textTruncated: item.textTruncated,
+        });
+        after = item.position;
+      }
+      if (!read.hasMore || read.nextPosition === null) break;
+      after = read.nextPosition;
+    }
+    return {
+      title: thread?.title ?? "",
+      pendingRequests: thread?.pendingRequestCount ?? 0,
+      items,
+      lastPosition: after,
+    };
+  }
+
+  /** The position a few dozen items before the thread's end, or -1 for a short thread. */
+  private async lookbackStart(threadId: string): Promise<number> {
+    const head = await this.t3.call<ReadResult>("t3_thread_read", {
+      threadId,
+      view: "activity",
+      limit: 1,
+      runLimit: 1,
+      maxCharsPerItem: 1,
+    });
+    return Math.max(-1, (head.thread.itemCount ?? 0) - ACTIVITY_LOOKBACK - 1);
+  }
+
+  /** Renames the thread in T3. */
+  async rename(threadId: string, title: string): Promise<void> {
+    await this.t3.call("t3_thread_update", {
+      threadId,
+      action: "rename",
+      title: title.trim().slice(0, RENAME_LIMIT),
+    });
+  }
+
+  /** Stops the thread's running turn; nothing happens when it is idle. */
+  async interrupt(threadId: string, reason: string): Promise<void> {
+    await this.t3.call("t3_thread_interrupt", { threadId, reason });
   }
 
   /** The folders a thread may share files from: its worktree, or its project's checkout. */

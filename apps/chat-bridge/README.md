@@ -2,7 +2,8 @@
 
 Talk to T3 Code agents from Slack. Mention the bot in a mapped channel and it
 starts a T3 thread in that channel's project. Replies in the Slack thread go to
-the same T3 thread, and the agent's final message in each run is posted back.
+the same T3 thread. Each run shows in Slack as it works, with Slack's own agent
+features, and ends with the agent's final message.
 
 It works with stock T3 Code. The bridge is a separate process that talks to T3
 through T3's MCP endpoint, the same one Claude and Codex use, and to Slack over
@@ -27,20 +28,45 @@ Socket Mode, so it needs no public URL.
   run. The agent sees them, up to the newest 50, with the next message it gets.
 - **Mute.** `@bot mute` in a thread makes the bot answer only messages that
   mention it; the rest become context. `@bot unmute` undoes it.
-- **Answers come back.** When a run ends, its final assistant message is posted
-  to the Slack thread, split into parts at 12,000 characters, Slack's limit. A
-  run that ends without a final message posts nothing. A failed run posts a
-  short notice.
+- **Runs stream in.** A run's reply is a Slack stream (`chat.startStream` with
+  `task_display_mode: "plan"`). Each step the agent takes shows as a task row:
+  commands, web and file searches, file edits, to-do lists, tool calls and
+  subagents, each with a short output. Reasoning shows as a short title, never
+  its text. Outputs are cut to 400 characters, and anything that looks like a
+  secret (tokens, keys, passwords, credentials in URLs) is redacted. The
+  agent's text streams in after the rows. The bridge reads the run from T3's
+  `t3_thread_read` activity view every 2.5 seconds.
+- **Long runs switch to a plan block.** Slack ends a stream after 10 minutes,
+  so at 9 minutes the bridge closes it and carries on in a plan block, a normal
+  message it updates at most every 15 seconds. The answer then comes as a
+  normal reply.
+- **Answers come back.** Whatever of the final message the stream didn't
+  carry (all of it after a plan block, or the rest past the stream's 12,000
+  characters) is posted as replies of up to 12,000 characters. A run that ends
+  without a final message posts nothing. A failed run posts a short notice.
+- **Feedback buttons.** Each answer carries Slack's 👍 / 👎 buttons. Clicks are
+  saved in the bridge database (`feedback` table) and logged. Nothing acts on
+  them yet.
 - **Files go both ways.** Slack files are uploaded to T3 as attachments: images
   up to 10 MB as images, anything else up to 50 MB as files, at most 8 per
   message. Agents send files back with the `chat_post` tool.
 - **Reactions.** Agents react to a Slack message with the `chat_react` tool.
-- **Status.** While a run lasts, Slack shows "is working…" under the thread.
-  Agents can change it with the `chat_status` tool, such as "is running the
-  tests…". This needs the `assistant:write` scope, which the manifest leaves
-  out: Slack treats an app with it as an agent and changes how its DMs work.
-  Add it yourself if you want the status; without it the bridge logs one
-  warning and carries on.
+- **Status.** The thread's agent session is `processing` while a run goes,
+  `suspended` while T3 waits on someone (a question or an approval), and
+  `active` when no run is left (`agents.sessions.setStatus`). The bridge sets
+  it again every 90 seconds, well inside Slack's one-hour limit. Where Slack
+  refuses the method, the bridge logs it once and shows the older
+  `assistant.threads.setStatus` text there instead.
+- **Steps from the agent.** The `chat_status` tool adds a row to the run's
+  task list, such as "Running the tests"; the previous one is marked done.
+- **Titles both ways.** The Slack thread takes the T3 thread's title, and again
+  whenever T3 renames it (`agents.sessions.rename`). Renaming the thread in
+  Slack renames the T3 thread. A title both sides already have changes
+  nothing, so the two never rename each other back and forth. Where Slack has
+  no title, such as some channel threads, the bridge skips it quietly.
+- **Stop button.** Slack shows a stop button while a run goes. Pressing it
+  interrupts the T3 run (`t3_thread_interrupt`), and the thread says "The run
+  was stopped." Only people in `allowedUserIds` can stop a run.
 - **Nothing is lost.** Each Slack message is saved to an inbox table in SQLite
   before the bridge acts on it, and each Slack thread's messages are handled
   from that table in order. If T3 can't take a message, it stays in the inbox
@@ -97,9 +123,13 @@ node src/bin.ts manifest --name "T3 Code"
 ```
 
 The manifest turns on Socket Mode and asks for these bot scopes:
-`app_mentions:read`, `channels:history`, `groups:history`, `im:history`,
-`chat:write`, `files:read`, `files:write`, `reactions:write` and `users:read`.
-It also turns on the app's Messages tab, so people can send it direct messages.
+`app_mentions:read`, `assistant:write`, `channels:history`, `groups:history`,
+`im:history`, `chat:write`, `files:read`, `files:write`, `reactions:write` and
+`users:read`. It turns on Slack's agent features (`agent_view` and agent
+tasks), the Messages tab so people can send it direct messages, and
+interactivity for the feedback buttons. It subscribes to
+`agent_session_stopped` (the stop button), `agent_session_title_changed` and
+`app_context_changed` (logged, nothing else) as well as messages and mentions.
 
 Then:
 
@@ -217,6 +247,12 @@ Slack's events between them.
   and a first direct message from someone the bot has never answered.
 - T3 issues no refresh tokens, so the login needs renewing every 30 days.
 - Answers are posted up to 50,000 characters, in parts of up to 12,000.
+- A stream shows at most 50 steps; later ones fold into one "N more steps"
+  row. A plan block shows the newest 49 and folds the rest.
+- A step's output is cut from the first 1,000 characters T3 returns, so a long
+  command's last lines may not show.
+- In a channel, Slack streams only to a named person, the one whose message
+  started or joined the run.
 - A T3 message takes at most 8 attachments, so a mention with more files (its
   own plus the thread's) imports the first 8 and names the rest.
 - If Slack refuses an answer five times in a row, the bridge stops trying until
@@ -232,11 +268,14 @@ pnpm --filter @t3tools/chat-bridge test
 | File                | What it does                                            |
 | ------------------- | ------------------------------------------------------- |
 | `src/bin.ts`        | The `start`, `login` and `manifest` commands.           |
-| `src/bridge.ts`     | Turns Slack events into T3 turns and posts the answers. |
-| `src/threads.ts`    | The T3 MCP calls: launch, send, upload, wait, read.     |
+| `src/bridge.ts`     | Turns Slack events into T3 turns and watches each run.  |
+| `src/runFeed.ts`    | What a run has done, from T3's activity view.           |
+| `src/activity.ts`   | T3 activity items as task rows; trimming and redaction. |
+| `src/slackRun.ts`   | A run in Slack: stream, plan block, answer, feedback.   |
+| `src/threads.ts`    | The T3 MCP calls: launch, send, wait, read, rename.     |
 | `src/t3Client.ts`   | The MCP client for T3.                                  |
 | `src/slackHost.ts`  | Slack over Socket Mode, through the Chat SDK.           |
 | `src/toolServer.ts` | The `chat_post` / `chat_react` MCP server.              |
-| `src/store.ts`      | Inbox, bindings, handled messages and owed replies.     |
+| `src/store.ts`      | Inbox, bindings, owed replies and feedback.             |
 | `src/chatState.ts`  | The Chat SDK's state on the same SQLite file.           |
 | `src/login.ts`      | T3's MCP OAuth sign-in.                                 |
