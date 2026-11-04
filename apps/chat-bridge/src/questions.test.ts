@@ -87,10 +87,27 @@ it("shows answers in place of buttons, and a closing note", () => {
   const blocks = questionBlocks(answered);
   assert.isUndefined(blocks.find((block) => block.type === "actions"));
   assert.include(JSON.stringify(blocks), "Answered: Staging");
+  assert.include(
+    JSON.stringify(questionBlocks({ ...answered, answeredBy: "U1" })),
+    "Answered by <@U1>: Staging",
+  );
   const closed = JSON.stringify(questionBlocks(asked([pick]), "Answered elsewhere."));
   assert.include(closed, "Answered elsewhere.");
   assert.notInclude(closed, '"actions"');
   // Each button has its own action id, as Slack requires within a message.
   const ids = buttons(asked([pick, many])).map((button) => JSON.stringify(button));
   assert.strictEqual(new Set(ids).size, ids.length);
+});
+
+it("bolds a header on its own line and leaves out a generic one", () => {
+  const sectionText = (question: Question) =>
+    (questionBlocks(asked([question]))[0] as { text: { text: string } }).text.text;
+  assert.strictEqual(
+    sectionText({ ...pick, header: "Question", question: "Which <colour>?" }),
+    "Which &lt;colour&gt;?",
+  );
+  assert.strictEqual(
+    sectionText({ ...pick, header: "Deploy", question: "Which environment?" }),
+    "*Deploy*\nWhich environment?",
+  );
 });

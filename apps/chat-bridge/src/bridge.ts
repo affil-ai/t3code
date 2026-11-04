@@ -837,7 +837,7 @@ export class Bridge {
     if (record === undefined || record.closed || record.chatThreadKey !== chatThreadKey) return;
     const asked = applyClick(record.asked, value);
     if (asked === record.asked) return;
-    await this.saveAnswer(record, asked);
+    await this.saveAnswer(record, { ...asked, answeredBy: userId });
   }
 
   /** Text sent while a question is open answers it; text it can't take is refused. */
@@ -851,7 +851,7 @@ export class Bridge {
       await this.notify(event, "Pick one of the buttons above to answer.");
       return { type: "noted", threadId: binding.threadId };
     }
-    await this.saveAnswer(record, asked);
+    await this.saveAnswer(record, { ...asked, answeredBy: event.author.userId });
     return { type: "answered", threadId: binding.threadId };
   }
 

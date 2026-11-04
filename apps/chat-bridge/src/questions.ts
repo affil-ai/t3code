@@ -28,6 +28,8 @@ export interface Asked {
   readonly answers: Readonly<Record<string, Answer>>;
   /** Multiple-choice questions whose picks were submitted. */
   readonly submitted: ReadonlyArray<string>;
+  /** The chat user who gave the last answer. */
+  readonly answeredBy?: string | undefined;
 }
 
 export const ANSWER_ACTION_ID = "t3_answer";
@@ -119,6 +121,25 @@ function answerText(question: Question, answer: Answer | undefined): string {
     .join(", ");
 }
 
+/** Slack's mrkdwn special characters, escaped so agent text shows as written. */
+const escapeMrkdwn = (text: string) =>
+  text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+
+/**
+ * A question's text, with its header in bold on a line of its own; Slack's
+ * bold can't span a line break. A header that only says "Question" is left out.
+ */
+function heading(question: Question): string {
+  const header = question.header.trim();
+  const text = question.question.trim();
+  const lines = [];
+  if (header !== "" && !/^question$/i.test(header) && header !== text) {
+    lines.push(`*${escapeMrkdwn(header)}*`);
+  }
+  if (text !== "") lines.push(escapeMrkdwn(text));
+  return lines.join("\n").slice(0, 2900) || "*Question*";
+}
+
 /**
  * The Slack blocks for the questions: answered ones show their answer, the
  * open ones a button per option. `closed` drops the buttons, with a note.
@@ -129,11 +150,7 @@ export function questionBlocks(
 ): Array<Record<string, unknown>> {
   const blocks: Array<Record<string, unknown>> = [];
   for (const [index, question] of asked.questions.entries()) {
-    const heading = [question.header, question.question].filter(Boolean).join("\n");
-    blocks.push({
-      type: "section",
-      text: { type: "mrkdwn", text: `*${heading.slice(0, 2900)}*` },
-    });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: heading(question) } });
     const descriptions = question.options
       .filter((option) => option.description.trim() !== "")
       .map((option) => `• *${option.label}*: ${option.description}`);
@@ -147,7 +164,10 @@ export function questionBlocks(
       blocks.push({
         type: "context",
         elements: [
-          { type: "mrkdwn", text: `Answered: ${answerText(question, asked.answers[question.id])}` },
+          {
+            type: "mrkdwn",
+            text: `Answered${asked.answeredBy ? ` by <@${asked.answeredBy}>` : ""}: ${answerText(question, asked.answers[question.id])}`,
+          },
         ],
       });
       continue;
