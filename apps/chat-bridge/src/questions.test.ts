@@ -111,3 +111,23 @@ it("bolds a header on its own line and leaves out a generic one", () => {
     "*Deploy*\nWhich environment?",
   );
 });
+
+it("lists only the option descriptions that add to their labels", () => {
+  const question: Question = {
+    ...pick,
+    options: [
+      { label: "Red", description: "Red" },
+      { label: "Green", description: "green." },
+      { label: "Blue", description: "The calm one" },
+    ],
+  };
+  const text = JSON.stringify(
+    questionBlocks(asked([question])).filter((b) => b.type === "context"),
+  );
+  assert.include(text, "*Blue*: The calm one");
+  assert.notInclude(text, "*Red*");
+  assert.notInclude(text, "*Green*");
+  const plain = { ...question, options: question.options.slice(0, 2) };
+  const contexts = questionBlocks(asked([plain])).filter((b) => b.type === "context");
+  assert.notInclude(JSON.stringify(contexts), "*Red*");
+});

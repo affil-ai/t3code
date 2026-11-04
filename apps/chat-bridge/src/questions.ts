@@ -125,6 +125,16 @@ function answerText(question: Question, answer: Answer | undefined): string {
 const escapeMrkdwn = (text: string) =>
   text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
+/** True when the description is empty or says no more than the label. */
+const sameText = (description: string, label: string) => {
+  const plainText = (text: string) =>
+    text
+      .trim()
+      .toLowerCase()
+      .replace(/[.!]+$/, "");
+  return plainText(description) === "" || plainText(description) === plainText(label);
+};
+
 /**
  * A question's text, with its header in bold on a line of its own; Slack's
  * bold can't span a line break. A header that only says "Question" is left out.
@@ -151,9 +161,10 @@ export function questionBlocks(
   const blocks: Array<Record<string, unknown>> = [];
   for (const [index, question] of asked.questions.entries()) {
     blocks.push({ type: "section", text: { type: "mrkdwn", text: heading(question) } });
+    // A description that only repeats its option's label would show every option twice.
     const descriptions = question.options
-      .filter((option) => option.description.trim() !== "")
-      .map((option) => `• *${option.label}*: ${option.description}`);
+      .filter((option) => !sameText(option.description, option.label))
+      .map((option) => `*${escapeMrkdwn(option.label)}*: ${escapeMrkdwn(option.description)}`);
     if (descriptions.length > 0 && !isAnswered(asked, question) && closed === undefined) {
       blocks.push({
         type: "context",
