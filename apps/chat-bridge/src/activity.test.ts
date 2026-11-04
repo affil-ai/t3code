@@ -176,3 +176,14 @@ it("turns an agent message into a done row, redacted and on one line", () => {
   });
   assert.isUndefined(noteRow(item({ type: "assistant_message", text: "  " })));
 });
+
+it("names a tool call whose output was cut off", () => {
+  const row = taskRow(
+    item({
+      type: "dynamic_tool",
+      textTruncated: true,
+      text: '{\n  "toolName": "t3-code.orchestrator_capabilities",\n  "input": {"search": "op',
+    }),
+  );
+  assert.strictEqual(row?.title, "Called t3-code.orchestrator_capabilities");
+});

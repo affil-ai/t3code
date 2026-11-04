@@ -219,7 +219,10 @@ function describe(item: ActivityItem): { title: string; output?: string | undefi
       return { title: "Updated the to-do list", output: trimOutput(text) };
     case "dynamic_tool": {
       const parsed = json(item);
-      const tool = typeof parsed?.toolName === "string" ? parsed.toolName : (item.title ?? "");
+      // A long tool output is cut off, so the JSON doesn't parse; its name comes first.
+      const named = /"toolName":\s*"([^"]+)"/.exec(item.text ?? "")?.[1];
+      const tool =
+        typeof parsed?.toolName === "string" ? parsed.toolName : (named ?? item.title ?? "");
       return { title: tool === "" ? "Called a tool" : `Called ${oneLine(tool, TITLE_LIMIT - 7)}` };
     }
     case "subagent":
