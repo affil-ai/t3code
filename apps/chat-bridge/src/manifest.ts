@@ -47,6 +47,8 @@ export function slackAppManifest(appName: string): string {
           ],
         },
         org_deploy_enabled: false,
+        // The answer buttons under agents' questions.
+        interactivity: { is_enabled: true },
         socket_mode_enabled: true,
         token_rotation_enabled: false,
       },

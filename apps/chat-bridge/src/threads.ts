@@ -2,6 +2,7 @@
  * The T3 thread operations the bridge needs, as calls to T3's MCP tools.
  */
 import type { ActivityItem } from "./activity.ts";
+import type { Answer, Question } from "./questions.ts";
 import type { T3Tools } from "./t3Client.ts";
 
 export type FollowUpMode = "steer" | "queue";
@@ -369,6 +370,34 @@ export class T3Threads {
       action: "rename",
       title: title.trim().slice(0, RENAME_LIMIT),
     });
+  }
+
+  /** The thread's questions waiting for an answer, each with its parts. */
+  async pendingQuestions(
+    threadId: string,
+  ): Promise<Array<{ readonly requestId: string; readonly questions: ReadonlyArray<Question> }>> {
+    const listed = await this.t3.call<{ requestIds: ReadonlyArray<string> }>("t3_pending_request", {
+      action: "list",
+      threadId,
+    });
+    const pending = [];
+    for (const requestId of listed.requestIds) {
+      const read = await this.t3.call<{ questions: ReadonlyArray<Question> }>(
+        "t3_pending_request",
+        { action: "read", threadId, requestId },
+      );
+      pending.push({ requestId, questions: read.questions });
+    }
+    return pending;
+  }
+
+  /** Answers a pending question, so the run carries on. */
+  async answerQuestions(
+    threadId: string,
+    requestId: string,
+    answers: Readonly<Record<string, Answer>>,
+  ): Promise<void> {
+    await this.t3.call("t3_pending_request", { action: "respond", threadId, requestId, answers });
   }
 
   /** Asks T3 to write a short title for the thread from its conversation. */

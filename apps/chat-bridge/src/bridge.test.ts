@@ -10,9 +10,8 @@ import {
   type InboundEvent,
   routeFor,
   threadTitle,
+  type BlockMessage,
   type Reply,
-  type RunEnd,
-  type RunProgress,
 } from "./bridge.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
@@ -34,6 +33,8 @@ function fakeT3() {
   /** Activity items besides the answers, and the thread as a read shows it. */
   const activity: Array<Record<string, unknown>> = [];
   const thread = { title: "fix the build", pendingRequestCount: 0 };
+  /** Questions T3 waits on, by request id. */
+  const questions = new Map<string, ReadonlyArray<Record<string, unknown>>>();
   /** Waits in flight end as timed out when the test calls `tick`. */
   let tickNow = () => {};
   let ticked = new Promise<void>((resolve) => (tickNow = resolve));
@@ -87,6 +88,16 @@ function fakeT3() {
           case "t3_thread_update":
           case "t3_thread_interrupt":
             return { threadId: args.threadId };
+          case "t3_pending_request":
+            if (args.action === "list") return { requestIds: [...questions.keys()] };
+            if (args.action === "read") {
+              return {
+                requestId: args.requestId,
+                questions: questions.get(String(args.requestId)),
+              };
+            }
+            questions.delete(String(args.requestId));
+            return { sequence: 1 };
           case "t3_thread_read": {
             if (args.itemId !== undefined) {
               const runId = String(args.itemId).replace("item-", "");
@@ -121,6 +132,7 @@ function fakeT3() {
     calls,
     activity,
     thread,
+    questions,
     /**
      * Ends the waits in flight as timed out, and resolves once the watcher has
      * checked the run's activity and is waiting again.
@@ -154,19 +166,12 @@ function harness(
     dmProjectId?: string;
     post?: (reply: Reply) => Promise<void>;
     history?: () => Promise<ReadonlyArray<EarlierMessage>>;
-    /** Record what each run's display is shown, instead of posting answers. */
-    display?: boolean;
     /** Renames to the chat thread fail this many times before they succeed. */
     renameFailures?: number;
     routes?: ReadonlyArray<ChannelRoute>;
   } = {},
 ) {
-  const shown: Array<{
-    runId: string;
-    requestedBy?: string | undefined;
-    progress: Array<RunProgress>;
-    end?: RunEnd;
-  }> = [];
+  const blockPosts: Array<BlockMessage & { messageId?: string }> = [];
   const renamed: Array<string> = [];
   let renameFailures = options.renameFailures ?? 0;
   const t3 = fakeT3();
@@ -186,7 +191,13 @@ function harness(
       dmProjectId: options.dmProjectId,
     },
     post: options.post ?? (async (reply) => void posted.push(reply)),
-    status: async (chatThreadKey, status) => void statuses.push(`${chatThreadKey} ${status}`),
+    status: async (chatThreadKey, state, text) =>
+      void statuses.push(`${chatThreadKey} ${state}${text ? ` ${text}` : ""}`),
+    postBlocks: async (message) => {
+      blockPosts.push(message);
+      return `900.${blockPosts.length}`;
+    },
+    updateBlocks: async (message) => void blockPosts.push(message),
     rename: async (chatThreadKey, title) => {
       if (renameFailures > 0) {
         renameFailures -= 1;
@@ -194,22 +205,6 @@ function harness(
       }
       renamed.push(`${chatThreadKey} ${title}`);
     },
-    ...(options.display
-      ? {
-          display: (run) => {
-            const record: (typeof shown)[number] = {
-              runId: run.runId,
-              requestedBy: run.requestedBy,
-              progress: [],
-            };
-            shown.push(record);
-            return {
-              progress: async (progress) => void record.progress.push(progress),
-              finish: async (end) => void (record.end = end),
-            };
-          },
-        }
-      : {}),
     download: async (url) => {
       downloads.push(url);
       return new Uint8Array([1, 2, 3]);
@@ -226,7 +221,7 @@ function harness(
     store,
     posted,
     statuses,
-    shown,
+    blockPosts,
     renamed,
     scheduled,
     downloads,
@@ -559,100 +554,175 @@ it("sets processing while a run goes, suspended while T3 waits on the user, and 
   t3.finish("run-1", "completed", "Done.");
   await bridge.idle();
   assert.deepStrictEqual(statuses, [
-    "slack:C1:100.1 processing",
-    "slack:C1:100.1 suspended",
-    "slack:C1:100.1 processing",
-    "slack:C1:100.1 suspended",
-    "slack:C1:100.1 processing",
+    "slack:C1:100.1 processing Thinking…",
+    "slack:C1:100.1 suspended Thinking…",
+    "slack:C1:100.1 processing Thinking…",
+    "slack:C1:100.1 suspended Thinking…",
+    "slack:C1:100.1 processing Thinking…",
     "slack:C1:100.1 active",
   ]);
 });
 
-it("shows each run's work as rows, with the agent's notes, then its answer", async () => {
-  const { t3, bridge, shown } = harness(undefined, { display: true });
+it("shows what the run is doing as the status, and the agent's own words until its next step", async () => {
+  const { t3, bridge, statuses, posted } = harness();
   await bridge.receive(event("100.1"));
   t3.activity.push({
     itemId: "cmd",
     type: "command_execution",
     runId: "run-1",
     status: "running",
-    text: "$ pnpm test",
+    text: "$ /bin/bash -lc 'pnpm test'",
   });
   // Another thread's run is not this run's work.
-  t3.activity.push({ itemId: "other", type: "command_execution", runId: "run-9", text: "$ ls" });
+  t3.activity.push({ itemId: "other", type: "web_search", runId: "run-9", status: "running" });
   await t3.tick();
   assert.isTrue(bridge.setStatus("slack:C1:100.1", "Reading the logs"));
   assert.isFalse(bridge.setStatus("slack:C1:999.1", "elsewhere"));
   await t3.tick();
   t3.activity[0]!.status = "completed";
+  t3.activity.push({ itemId: "next", type: "reasoning", runId: "run-1", status: "running" });
+  await t3.tick();
   t3.finish("run-1", "completed", "Fixed.");
   await bridge.idle();
   assert.isFalse(bridge.setStatus("slack:C1:100.1", "too late"));
-
-  const [run] = shown;
-  assert.strictEqual(run?.requestedBy, "U1");
-  assert.deepStrictEqual(
-    run?.progress.map((progress) => progress.rows.map((row) => `${row.title} ${row.status}`)),
-    [
-      ["Ran `pnpm test` in_progress"],
-      ["Ran `pnpm test` in_progress", "Reading the logs in_progress"],
-      // The final check, after the run ended.
-      ["Ran `pnpm test` complete", "Reading the logs in_progress"],
-    ],
-  );
-  assert.deepStrictEqual(
-    run?.end?.rows.map((row) => `${row.title} ${row.status}`),
-    ["Ran `pnpm test` complete", "Reading the logs complete"],
-  );
-  assert.strictEqual(run?.end?.answer, "Fixed.");
+  assert.deepStrictEqual(statuses, [
+    "slack:C1:100.1 processing Thinking…",
+    "slack:C1:100.1 processing Running `pnpm test`",
+    "slack:C1:100.1 processing Reading the logs",
+    "slack:C1:100.1 processing Thinking…",
+    "slack:C1:100.1 active",
+  ]);
+  // The answer is one normal reply.
+  assert.deepStrictEqual(posted, [{ chatThreadKey: "slack:C1:100.1", text: "Fixed." }]);
 });
 
-it("shows the agent's earlier messages as rows, and only its final message as the answer", async () => {
-  const { t3, bridge, shown } = harness(undefined, { display: true });
+it("asks the agent's question with buttons and hands a click back to T3", async () => {
+  const { t3, bridge, blockPosts, statuses } = harness();
   await bridge.receive(event("100.1"));
+  t3.questions.set("req-1", [
+    {
+      id: "q1",
+      header: "Deploy",
+      question: "Which environment?",
+      options: [
+        { label: "Staging", description: "Safe" },
+        { label: "Production", description: "Live", value: "prod" },
+      ],
+    },
+  ]);
   t3.activity.push({
-    itemId: "note",
-    type: "assistant_message",
+    itemId: "ask",
+    type: "user_input_request",
     runId: "run-1",
-    status: "completed",
-    text: "I'll run the shell commands first.",
+    status: "waiting",
   });
   await t3.tick();
-  // The newest message may be the answer, so it is not a row yet.
-  assert.deepStrictEqual(shown[0]?.progress.at(-1)?.rows, []);
-  t3.activity.push({
-    itemId: "cmd",
-    type: "command_execution",
-    runId: "run-1",
-    status: "running",
-    text: "$ uname -a",
-  });
   await t3.tick();
-  // Once a step follows it, the message is a note, shown before that step.
+  assert.lengthOf(blockPosts, 1, "asked once, however many checks see it");
+  assert.include(statuses, "slack:C1:100.1 suspended Thinking…");
+  const actions = blockPosts[0]!.blocks.find((block) => block.type === "actions") as {
+    elements: Array<{ value: string; text: { text: string } }>;
+  };
   assert.deepStrictEqual(
-    shown[0]?.progress.at(-1)?.rows.map((row) => row.title),
-    ["I'll run the shell commands first.", "Ran `uname -a`"],
+    actions.elements.map((button) => button.text.text),
+    ["Staging", "Production"],
   );
-  t3.activity[1]!.status = "completed";
-  t3.finish("run-1", "completed", "Kernel: Linux.");
+
+  // Someone not allowed can't answer.
+  await bridge.questionClicked("slack:C1:100.1", "U9", actions.elements[1]!.value);
+  assert.isUndefined(t3.calls.find((call) => call.args.action === "respond"));
+  await bridge.questionClicked("slack:C1:100.1", "U1", actions.elements[1]!.value);
+  const respond = t3.calls.find((call) => call.args.action === "respond");
+  assert.deepStrictEqual(respond?.args, {
+    action: "respond",
+    threadId: THREAD,
+    requestId: "req-1",
+    answers: { q1: "prod" },
+  });
+  // The question shows its answer, without buttons.
+  const shownAnswer = blockPosts.at(-1)!;
+  assert.strictEqual(shownAnswer.messageId, "900.1");
+  assert.isUndefined(shownAnswer.blocks.find((block) => block.type === "actions"));
+  t3.activity[0]!.status = "completed";
+  t3.finish("run-1", "completed", "Deployed.");
   await bridge.idle();
-  assert.deepStrictEqual(
-    shown[0]?.end?.rows.map((row) => row.title),
-    ["I'll run the shell commands first.", "Ran `uname -a`"],
-  );
-  assert.strictEqual(shown[0]?.end?.answer, "Kernel: Linux.");
 });
 
-it("gives a failed run a notice and no answer", async () => {
-  const { t3, bridge, shown } = harness(undefined, { display: true });
+it("takes a typed reply as the answer while a question is open, not as a new message", async () => {
+  const { t3, bridge, posted } = harness();
   await bridge.receive(event("100.1"));
-  t3.finish("run-1", "failed");
-  await bridge.idle();
-  assert.isUndefined(shown[0]?.end?.answer);
-  assert.strictEqual(
-    shown[0]?.end?.notice,
-    "The run failed. Open the thread in T3 Code for details.",
+  t3.questions.set("req-1", [
+    { id: "q1", header: "Name", question: "What should it be called?", options: [] },
+  ]);
+  t3.activity.push({
+    itemId: "ask",
+    type: "user_input_request",
+    runId: "run-1",
+    status: "waiting",
+  });
+  await t3.tick();
+  const outcome = await bridge.receive(
+    event("100.2", { kind: "follow_up", addressed: false, text: "Falcon" }),
   );
+  assert.deepStrictEqual(outcome, { type: "answered", threadId: THREAD });
+  assert.isUndefined(t3.calls.find((call) => call.tool === "t3_thread_send"));
+  const respond = t3.calls.find((call) => call.args.action === "respond");
+  assert.deepStrictEqual(respond?.args.answers, { q1: "Falcon" });
+
+  // With nothing left to answer, a reply is a normal message again.
+  await bridge.receive(event("100.3", { kind: "follow_up", text: "thanks" }));
+  assert.isDefined(t3.calls.find((call) => call.tool === "t3_thread_send"));
+  t3.activity[0]!.status = "completed";
+  t3.finish("run-1", "completed", "Called it Falcon.");
+  await bridge.idle();
+  assert.deepStrictEqual(posted.at(-1), {
+    chatThreadKey: "slack:C1:100.1",
+    text: "Called it Falcon.",
+  });
+});
+
+it("refuses a typed answer to a question that only takes its buttons", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.questions.set("req-1", [
+    {
+      id: "q1",
+      header: "Go?",
+      question: "Proceed?",
+      options: [{ label: "Yes", description: "" }],
+      allowCustomAnswer: false,
+    },
+  ]);
+  t3.activity.push({
+    itemId: "ask",
+    type: "user_input_request",
+    runId: "run-1",
+    status: "waiting",
+  });
+  await t3.tick();
+  await bridge.receive(event("100.2", { kind: "follow_up", text: "maybe" }));
+  assert.deepStrictEqual(posted.at(-1), {
+    chatThreadKey: "slack:C1:100.1",
+    text: "Pick one of the buttons above to answer.",
+  });
+  assert.isUndefined(t3.calls.find((call) => call.args.action === "respond"));
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+});
+
+it("stops a run that asks for a permission, and says why, once", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.activity.push({ itemId: "perm", type: "approval_request", runId: "run-1", status: "waiting" });
+  await t3.tick();
+  await t3.tick();
+  assert.lengthOf(
+    t3.calls.filter((call) => call.tool === "t3_thread_interrupt"),
+    1,
+  );
+  assert.include(posted[0]?.text ?? "", "can't grant from Slack");
+  t3.finish("run-1", "interrupted");
+  await bridge.idle();
 });
 
 it("keeps titles in step both ways without looping", async () => {

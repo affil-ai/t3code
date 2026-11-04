@@ -1,6 +1,6 @@
 import { assert, it } from "vite-plus/test";
 
-import { withoutAttribution, withRichContent } from "./slackText.ts";
+import { slackTitle, withoutAttribution, withRichContent } from "./slackText.ts";
 
 it("leaves a plain message alone", () => {
   assert.strictEqual(withRichContent("fix the build", { text: "fix the build" }), "fix the build");
@@ -76,4 +76,18 @@ it("drops the footer an app adds when it posts for someone", () => {
     "aside: heron",
   );
   assert.strictEqual(withoutAttribution("ask <@U0GRACE> about it"), "ask <@U0GRACE> about it");
+});
+
+it("makes titles Slack accepts", () => {
+  // Slack answered invalid_name for square brackets and colons (2026-11-04).
+  assert.strictEqual(
+    slackTitle("[t3 bridge test] What is 17 times 23? Reply with just the number."),
+    "t3 bridge test What is 17 times 23? Reply with just the number.",
+  );
+  assert.strictEqual(
+    slackTitle("test E falcon: Find where the map fetches hotel…"),
+    "test E falcon - Find where the map fetches hotel…",
+  );
+  assert.strictEqual(slackTitle("Fix `ci` #42 <now> ✅", true), "Fix ci 42 now");
+  assert.strictEqual(slackTitle("x".repeat(300)).length, 200);
 });

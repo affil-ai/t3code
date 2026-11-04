@@ -1,7 +1,8 @@
 /**
- * T3 activity items as task rows: what a run is doing, one row per item, with
- * a short title and a trimmed, redacted output. Plain data, so any chat
- * platform can show it. Nothing here touches Slack or T3.
+ * What a T3 run is doing now, as one short line in the present tense, such as
+ * "Running `pnpm test`" or "Searching the web for slack streams". Slack shows
+ * it in the thread's status, the way Devin and Office do. Nothing here
+ * touches Slack or T3.
  */
 import { redactSlackSecrets } from "./slackHost.ts";
 
@@ -17,44 +18,9 @@ export interface ActivityItem {
   readonly textTruncated?: boolean | undefined;
 }
 
-export type TaskStatus = "pending" | "in_progress" | "complete" | "error";
-
-export interface TaskRow {
-  /** Stable across updates, so the chat platform updates the row in place. */
-  readonly id: string;
-  readonly title: string;
-  readonly status: TaskStatus;
-  readonly output?: string | undefined;
-  /** Rows show in this order: the item's position in the thread. */
-  readonly order: number;
-}
-
-export const TITLE_LIMIT = 100;
-export const OUTPUT_LIMIT = 400;
-
-/** Item types that are conversation, bookkeeping or shown elsewhere, not work. */
-const NOT_A_TASK = new Set([
-  "user_message",
-  "assistant_message",
-  "proposed_plan",
-  "checkpoint",
-  "notification",
-  "system_notice",
-  "compaction",
-  "handoff",
-  "fork",
-  "thread_created",
-  "run_interrupt_request",
-  "run_interrupt_result",
-]);
-
-/** Requests that stop the run until a person answers. */
-const USER_REQUESTS = new Set([
-  "user_input_request",
-  "approval_request",
-  "secret_request",
-  "link_request",
-]);
+/** Slack's status takes up to 50 characters. */
+export const STATUS_LIMIT = 50;
+export const THINKING = "Thinking…";
 
 const OPEN_STATUSES = new Set(["idle", "pending", "running", "waiting"]);
 
@@ -93,30 +59,9 @@ export function redactSecrets(text: string): string {
 }
 
 /** One line, at most `limit` characters. */
-export function oneLine(text: string, limit = TITLE_LIMIT): string {
+export function oneLine(text: string, limit = STATUS_LIMIT): string {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
-}
-
-/**
- * At most `limit` characters. Command output keeps its end, where results and
- * errors are; anything else keeps its start.
- */
-export function trimOutput(
-  text: string,
-  limit = OUTPUT_LIMIT,
-  keep: "start" | "end" = "start",
-): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= limit) return trimmed;
-  return keep === "end" ? `…${trimmed.slice(-(limit - 1))}` : `${trimmed.slice(0, limit - 1)}…`;
-}
-
-function taskStatus(status: string): TaskStatus {
-  if (status === "completed") return "complete";
-  if (status === "failed" || status === "cancelled" || status === "interrupted") return "error";
-  if (status === "pending" || status === "idle") return "pending";
-  return "in_progress";
 }
 
 /** The item's text as JSON, when it is whole and parses. */
@@ -132,23 +77,18 @@ function json(item: ActivityItem): Record<string, unknown> | undefined {
   }
 }
 
-const strings = (value: unknown): Array<string> =>
-  Array.isArray(value) ? value.filter((each): each is string => typeof each === "string") : [];
+const firstString = (value: unknown): string | undefined =>
+  Array.isArray(value) ? value.find((each): each is string => typeof each === "string") : undefined;
 
-const countOf = (value: unknown): number | undefined =>
-  Array.isArray(value) ? value.length : undefined;
-
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-
-/** A reasoning summary's heading, such as "**Checking the tests**", as a short title. */
-function reasoningTitle(item: ActivityItem): string {
+/** A reasoning summary's heading, such as "**Checking the tests**", or thinking. */
+function reasoningLine(item: ActivityItem): string {
   const source = item.title ?? item.text ?? "";
   const firstLine = source.trim().split("\n", 1)[0] ?? "";
   const heading = firstLine
     .replace(/^#+\s*/, "")
     .replace(/\*\*|__/g, "")
     .trim();
-  return heading === "" ? "Thinking" : `Thinking: ${oneLine(heading, TITLE_LIMIT - 10)}`;
+  return heading === "" ? THINKING : heading;
 }
 
 /** `/bin/bash -lc 'pnpm test'` as `pnpm test`: agents wrap each command in a shell. */
@@ -166,112 +106,84 @@ const isSetupStep = (item: ActivityItem) =>
   item.type === "command_execution" &&
   (item.title === "Workspace ready" || (item.text ?? "").startsWith("$ Preparing workspace"));
 
-function describe(item: ActivityItem): { title: string; output?: string | undefined } | undefined {
+/** What the item is doing, as a line for the status; nothing for items that aren't work. */
+function describe(item: ActivityItem): string | undefined {
   const text = item.text ?? "";
+  const with_ = (prefix: string, value: string | undefined | null, fallback: string) => {
+    const trimmed = (value ?? "").trim();
+    return trimmed === "" ? fallback : `${prefix}${trimmed}`;
+  };
   switch (item.type) {
     case "reasoning":
-      return { title: reasoningTitle(item) };
+      return reasoningLine(item);
     case "command_execution": {
-      const [first = "", ...rest] = text.split("\n");
-      const output = trimOutput(rest.join("\n"), OUTPUT_LIMIT, "end");
-      // T3 titles its own steps, such as "Workspace ready"; an agent's command has no title.
-      if (item.title) return { title: oneLine(item.title), output };
+      if (isSetupStep(item)) return undefined;
+      // T3 titles its own steps; an agent's command has no title.
+      if (item.title) return item.title;
+      const first = text.split("\n", 1)[0] ?? "";
       const command = unwrapShell(first.startsWith("$ ") ? first.slice(2) : first);
-      return {
-        title: command === "" ? "Ran a command" : `Ran \`${oneLine(command, TITLE_LIMIT - 8)}\``,
-        output,
-      };
+      return with_("Running ", command && `\`${command}\``, "Running a command");
     }
-    case "web_search": {
-      const parsed = json(item);
-      const patterns = strings(parsed?.patterns);
-      const query = patterns[0] ?? item.title ?? "";
-      const results = countOf(parsed?.results);
-      return {
-        title:
-          query === ""
-            ? "Searched the web"
-            : `Searched the web for ${oneLine(query, TITLE_LIMIT - 24)}`,
-        output: results === undefined ? undefined : plural(results, "result"),
-      };
-    }
+    case "web_search":
+      return with_(
+        "Searching the web for ",
+        firstString(json(item)?.patterns) ?? item.title,
+        "Searching the web",
+      );
     case "file_search": {
-      const parsed = json(item);
-      const pattern = typeof parsed?.pattern === "string" ? parsed.pattern : (item.title ?? "");
-      const results = countOf(parsed?.results);
-      return {
-        title:
-          pattern === ""
-            ? "Searched files"
-            : `Searched files for ${oneLine(pattern, TITLE_LIMIT - 20)}`,
-        output: results === undefined ? undefined : plural(results, "match"),
-      };
+      const pattern = json(item)?.pattern;
+      return with_(
+        "Searching files for ",
+        typeof pattern === "string" ? pattern : item.title,
+        "Searching files",
+      );
     }
-    case "file_change": {
-      const [fileName = "", counts = ""] = text.split("\n");
-      const name = fileName.trim() || item.title || "";
-      return {
-        title: name === "" ? "Changed files" : `Edited ${oneLine(name, TITLE_LIMIT - 7)}`,
-        output: /^\+\d+ -\d+$/.test(counts.trim()) ? counts.trim() : undefined,
-      };
-    }
+    case "file_change":
+      return with_("Editing ", text.split("\n", 1)[0] || item.title, "Editing files");
     case "todo_list":
-      return { title: "Updated the to-do list", output: trimOutput(text) };
+      return "Planning";
     case "dynamic_tool": {
       const parsed = json(item);
       // A long tool output is cut off, so the JSON doesn't parse; its name comes first.
-      const named = /"toolName":\s*"([^"]+)"/.exec(item.text ?? "")?.[1];
-      const tool =
-        typeof parsed?.toolName === "string" ? parsed.toolName : (named ?? item.title ?? "");
-      return { title: tool === "" ? "Called a tool" : `Called ${oneLine(tool, TITLE_LIMIT - 7)}` };
+      const named = /"toolName":\s*"([^"]+)"/.exec(text)?.[1];
+      const tool = typeof parsed?.toolName === "string" ? parsed.toolName : named;
+      return with_("Using ", tool?.split(".").at(-1)?.replaceAll("_", " "), "Using a tool");
     }
     case "subagent":
-      return {
-        title: item.title ? `Subagent: ${oneLine(item.title, TITLE_LIMIT - 10)}` : "Ran a subagent",
-        output: trimOutput(text),
-      };
-    case "user_input_request":
-      return { title: "Waiting for your answer in T3 Code" };
-    case "approval_request":
-      return { title: "Waiting for approval in T3 Code", output: trimOutput(text) };
-    case "secret_request":
-    case "link_request":
-      return { title: "Waiting for you in T3 Code", output: trimOutput(text) };
-    case "error":
-      return { title: "Error", output: trimOutput(text) };
+      return with_("Delegating: ", item.title, "Delegating to a subagent");
     default:
-      // A tool call T3 added later: show it by its title, if it has one.
-      return item.title ? { title: oneLine(item.title) } : undefined;
+      return undefined;
   }
 }
 
-/** The item as a task row, or nothing for conversation and bookkeeping items. */
-export function taskRow(item: ActivityItem): TaskRow | undefined {
-  if (NOT_A_TASK.has(item.type) || isSetupStep(item)) return undefined;
-  const described = describe(item);
-  if (described === undefined) return undefined;
-  const output = described.output ? redactSecrets(described.output) : "";
-  return {
-    id: item.itemId,
-    title: redactSecrets(described.title),
-    status: item.type === "error" ? "error" : taskStatus(item.status),
-    ...(output === "" ? {} : { output }),
-    order: item.position,
-  };
+/** The line for one item, redacted and short; nothing for items that aren't work. */
+export function statusLine(item: ActivityItem): string | undefined {
+  const line = describe(item);
+  return line === undefined ? undefined : oneLine(redactSecrets(line));
 }
 
-/** An agent message as a done row, such as "I'll run the tests first." */
-export function noteRow(item: ActivityItem): TaskRow | undefined {
-  const text = oneLine(redactSecrets(item.text ?? ""));
-  return text === ""
-    ? undefined
-    : { id: item.itemId, title: text, status: "complete", order: item.position };
+/**
+ * The status for a run: the newest step still going, or thinking between
+ * steps.
+ */
+export function currentStatus(items: ReadonlyArray<ActivityItem>): string {
+  // A finished step means the agent is reading its result, so it is thinking.
+  const going = items
+    .filter((item) => isOpen(item.status))
+    .flatMap((item) => {
+      const line = statusLine(item);
+      return line === undefined ? [] : [line];
+    });
+  return going.at(-1) ?? THINKING;
 }
 
 /** True while the item is still going or waiting. */
 export const isOpen = (status: string): boolean => OPEN_STATUSES.has(status);
 
-/** True while the item asks a person for something and has no answer yet. */
-export function waitsOnUser(item: ActivityItem): boolean {
-  return USER_REQUESTS.has(item.type) && isOpen(item.status);
-}
+/** A question for the person in the chat. */
+export const isQuestion = (item: ActivityItem): boolean =>
+  item.type === "user_input_request" && isOpen(item.status);
+
+/** A permission request, which only T3 itself can grant. */
+export const isPermissionRequest = (item: ActivityItem): boolean =>
+  item.type === "approval_request" && isOpen(item.status);

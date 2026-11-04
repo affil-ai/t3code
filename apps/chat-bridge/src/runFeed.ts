@@ -1,10 +1,17 @@
 /**
- * What one T3 run has done so far, read from the thread's activity: its task
- * rows, whether it waits on a person, and the thread's title. The agent's
- * messages before its newest one are rows too; the newest may be the answer. Each read starts at the run's oldest unfinished item, so rows that
- * change after they first appear are read again.
+ * What one T3 run is doing now, read from the thread's activity: a status
+ * line, whether it asks a question or a permission, and the thread's title.
+ * Each read starts at the run's oldest unfinished item, so an item that
+ * changes after it first appears is read again.
  */
-import { isOpen, noteRow, type TaskRow, taskRow, waitsOnUser } from "./activity.ts";
+import {
+  type ActivityItem,
+  currentStatus,
+  isOpen,
+  isPermissionRequest,
+  isQuestion,
+  THINKING,
+} from "./activity.ts";
 import type { T3Threads } from "./threads.ts";
 
 export class RunFeed {
@@ -12,16 +19,21 @@ export class RunFeed {
   private readonly runIds = new Set<string>();
   /** Undefined until the first read, which starts a few dozen items back. */
   private cursor: number | undefined;
-  private readonly taskRows = new Map<string, TaskRow>();
-  /** The agent's messages, as note rows; the newest is held back. */
-  private readonly notes = new Map<string, TaskRow>();
+  /** The run's unfinished items as of the last read, by id. */
+  private readonly open = new Map<string, ActivityItem>();
   private readonly threads: T3Threads;
   private readonly threadId: string;
   /** The thread's title at the last read. */
   title = "";
-  /** True while T3 waits on a person: a user-input or approval request. */
+  /** What the run is doing, as one short line. */
+  status = THINKING;
+  /** The run asks the person a question. */
+  asking = false;
+  /** T3 waits on a person: a question, a permission, or a request T3 counts as pending. */
   waiting = false;
-  /** The newest position read, for ordering notes after it. */
+  /** The run asks for a permission. */
+  askingPermission = false;
+  /** The newest position read. */
   lastPosition = -1;
 
   constructor(threads: T3Threads, threadId: string, runId: string) {
@@ -38,36 +50,18 @@ export class RunFeed {
   async read(): Promise<void> {
     const read = await this.threads.activity(this.threadId, this.cursor);
     this.title = read.title;
-    let oldestOpen: number | undefined;
-    let waiting = false;
     for (const item of read.items) {
       this.lastPosition = Math.max(this.lastPosition, item.position);
       if (item.runId === null || !this.runIds.has(item.runId)) continue;
-      const open = isOpen(item.status);
-      if (open) oldestOpen = Math.min(oldestOpen ?? item.position, item.position);
-      if (waitsOnUser(item)) waiting = true;
-      if (item.type === "assistant_message") {
-        const note = noteRow(item);
-        if (note !== undefined) this.notes.set(note.id, note);
-        continue;
-      }
-      const row = taskRow(item);
-      if (row !== undefined) this.taskRows.set(row.id, row);
+      if (isOpen(item.status)) this.open.set(item.itemId, item);
+      else this.open.delete(item.itemId);
     }
-    this.waiting = waiting || read.pendingRequests > 0;
+    const open = [...this.open.values()].toSorted((a, b) => a.position - b.position);
+    this.status = currentStatus(open);
+    this.asking = open.some(isQuestion);
+    this.askingPermission = open.some(isPermissionRequest);
+    this.waiting = this.asking || this.askingPermission || read.pendingRequests > 0;
+    const oldestOpen = open[0]?.position;
     this.cursor = oldestOpen === undefined ? read.lastPosition : oldestOpen - 1;
-  }
-
-  /**
-   * The task rows, with the agent's messages as notes. The newest message may
-   * be the answer, so it becomes a note only once a step follows it. Slack
-   * keeps rows in the order they first arrive, so a note must arrive then.
-   */
-  rows(): Array<TaskRow> {
-    const notes = [...this.notes.values()].toSorted((a, b) => a.order - b.order);
-    const lastStep = Math.max(-1, ...[...this.taskRows.values()].map((row) => row.order));
-    const newest = notes.at(-1);
-    const held = newest !== undefined && newest.order > lastStep ? 1 : 0;
-    return [...this.taskRows.values(), ...notes.slice(0, notes.length - held)];
   }
 }

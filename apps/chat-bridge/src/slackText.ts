@@ -247,3 +247,18 @@ export function splitMarkdown(text: string, limit = SLACK_MARKDOWN_LIMIT): Array
   parts.push(current.join("\n"));
   return parts.map((part) => part.trim()).filter((part) => part !== "");
 }
+
+export const slackErrorCode = (error: unknown): string | undefined =>
+  (error as { data?: { error?: string } } | undefined)?.data?.error;
+
+/**
+ * A title Slack takes. Slack refuses some characters in session titles with
+ * `invalid_name`, such as square brackets and colons (checked 2026-11-04), so
+ * a colon becomes a dash; `strict` keeps only plain characters.
+ */
+export function slackTitle(title: string, strict = false): string {
+  const cleaned = strict
+    ? title.replace(/[^\p{L}\p{N} .,?!'’()&+-]/gu, " ")
+    : title.replace(/[[\]{}<>#|\\`*~]/g, " ").replace(/\s*[:;/]\s*/g, " - ");
+  return cleaned.replace(/\s+/g, " ").trim().slice(0, 200);
+}

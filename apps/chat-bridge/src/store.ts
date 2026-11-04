@@ -7,6 +7,8 @@
  */
 import * as NodeSqlite from "node:sqlite";
 
+import type { Asked } from "./questions.ts";
+
 export interface Binding {
   /** The Chat SDK thread id, such as `slack:C0123:1700000000.000100`. */
   readonly chatThreadKey: string;
@@ -32,6 +34,16 @@ export interface OwedReply {
   readonly chatThreadKey: string;
   /** The chat user whose message started or joined the run; Slack streams a channel reply to them. */
   readonly requestedBy?: string | undefined;
+}
+
+/** An agent's question as asked in the chat, with what has been answered. */
+export interface AskedRecord {
+  readonly chatThreadKey: string;
+  readonly threadId: string;
+  readonly asked: Asked;
+  /** The chat message that shows the question; empty until it is posted. */
+  readonly messageId: string;
+  readonly closed: boolean;
 }
 
 /** A Slack message saved before the bridge acts on it, so a crash or a T3 failure cannot lose it. */
@@ -99,6 +111,16 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       chat_thread_key TEXT NOT NULL,
       line TEXT NOT NULL
     );
+    -- Agents' questions asked in a chat thread; kept so a restart neither asks twice nor forgets answers.
+    CREATE TABLE IF NOT EXISTS question (
+      request_id TEXT PRIMARY KEY,
+      chat_thread_key TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      asked TEXT NOT NULL,
+      message_id TEXT NOT NULL DEFAULT '',
+      closed INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS question_thread ON question (chat_thread_key);
   `);
   // Databases made before threads could be muted, or replies knew who asked.
   addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
@@ -122,6 +144,14 @@ const fromRow = (row: Record<string, unknown>): Binding => ({
   chatKey: String(row.chat_key),
   createdByUserId: String(row.created_by_user_id),
   muted: row.muted === 1,
+});
+
+const questionFromRow = (row: Record<string, unknown>): AskedRecord => ({
+  chatThreadKey: String(row.chat_thread_key),
+  threadId: String(row.thread_id),
+  asked: JSON.parse(String(row.asked)) as Asked,
+  messageId: String(row.message_id),
+  closed: row.closed === 1,
 });
 
 export class BridgeStore {
@@ -289,6 +319,48 @@ export class BridgeStore {
           VALUES (?, ?, ?, ?)`,
       )
       .run(reply.runId, reply.threadId, reply.chatThreadKey, reply.requestedBy ?? null);
+  }
+
+  /** Saves a question when it is first seen. False when it was already saved. */
+  addQuestion(record: AskedRecord): boolean {
+    const inserted = this.db
+      .prepare(
+        `INSERT INTO question (request_id, chat_thread_key, thread_id, asked, message_id, closed)
+          VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO NOTHING RETURNING request_id`,
+      )
+      .all(
+        record.asked.requestId,
+        record.chatThreadKey,
+        record.threadId,
+        JSON.stringify(record.asked),
+        record.messageId,
+        record.closed ? 1 : 0,
+      );
+    return inserted.length > 0;
+  }
+
+  updateQuestion(record: AskedRecord): void {
+    this.db
+      .prepare("UPDATE question SET asked = ?, message_id = ?, closed = ? WHERE request_id = ?")
+      .run(
+        JSON.stringify(record.asked),
+        record.messageId,
+        record.closed ? 1 : 0,
+        record.asked.requestId,
+      );
+  }
+
+  question(requestId: string): AskedRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM question WHERE request_id = ?").get(requestId);
+    return row === undefined ? undefined : questionFromRow(row);
+  }
+
+  /** The chat thread's questions still waiting, oldest first. */
+  openQuestions(chatThreadKey: string): Array<AskedRecord> {
+    return this.db
+      .prepare("SELECT * FROM question WHERE chat_thread_key = ? AND closed = 0 ORDER BY rowid")
+      .all(chatThreadKey)
+      .map(questionFromRow);
   }
 
   /** Replies not yet posted, oldest first; the watcher resumes these at startup. */

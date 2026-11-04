@@ -15,18 +15,23 @@ import {
 } from "chat";
 
 import type {
+  BlockMessage,
   EarlierMessage,
   EventFile,
   InboundEvent,
   InboundOutcome,
   MentionedUser,
   MissedRequest,
-  RunDisplay,
-  RunTarget,
   SessionState,
 } from "./bridge.ts";
-import { slackErrorCode, SlackRunDisplay, slackTitle } from "./slackRun.ts";
-import { splitMarkdown, withoutAttribution, withRichContent } from "./slackText.ts";
+import { ANSWER_ACTION_ID } from "./questions.ts";
+import {
+  slackErrorCode,
+  slackTitle,
+  splitMarkdown,
+  withoutAttribution,
+  withRichContent,
+} from "./slackText.ts";
 
 export { splitMarkdown };
 import type { InboundFile } from "./threads.ts";
@@ -40,6 +45,10 @@ export interface SlackChatHostOptions {
   readonly onError: (error: unknown) => void;
   /** Someone pressed the stop button on a thread. */
   readonly onStop?: ((chatThreadKey: string, userId: string) => Promise<unknown>) | undefined;
+  /** Someone pressed an answer button under a question; `value` is the button's. */
+  readonly onAnswer?:
+    | ((chatThreadKey: string, userId: string, value: string) => Promise<unknown>)
+    | undefined;
   /** Someone renamed a thread in Slack. */
   readonly onTitleChanged?:
     | ((chatThreadKey: string, title: string) => Promise<unknown>)
@@ -83,11 +92,13 @@ export interface SlackChatHost {
    * Sets the thread's agent session state with `agents.sessions.setStatus`.
    * Where Slack refuses it, falls back to `assistant.threads.setStatus` text.
    */
-  readonly setState: (chatThreadKey: string, state: SessionState) => Promise<void>;
+  readonly setState: (chatThreadKey: string, state: SessionState, text: string) => Promise<void>;
   /** Sets the thread's title with `agents.sessions.rename`; skipped where Slack has no titles. */
   readonly rename: (chatThreadKey: string, title: string) => Promise<void>;
-  /** Shows one run in its thread: streamed task rows and text, then the answer. */
-  readonly runDisplay: (run: RunTarget) => RunDisplay;
+  /** Posts a message with blocks, such as a question with buttons; returns its `ts`. */
+  readonly postBlocks: (message: BlockMessage) => Promise<string>;
+  /** Replaces a message posted with `postBlocks`. */
+  readonly updateBlocks: (message: BlockMessage & { readonly messageId: string }) => Promise<void>;
   /** The thread's messages before `messageId`, oldest first; none when the message starts the thread. */
   readonly history: (chatThreadKey: string, messageId: string) => Promise<Array<EarlierMessage>>;
   /** Downloads a Slack file with the bot's token. */
@@ -578,13 +589,17 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     );
   });
 
+  chat.onAction(async (event) => {
+    if (!event.actionId.startsWith(ANSWER_ACTION_ID)) return;
+    try {
+      await options.onAnswer?.(event.threadId, event.user.userId, event.value ?? "");
+    } catch (error) {
+      options.onError(error);
+    }
+  });
+
   await chat.initialize();
   const mrkdwn = new SlackFormatConverter();
-  // A channel stream names its reader by user and workspace.
-  const teamId = await slack.webClient.auth
-    .test()
-    .then((result) => (typeof result.team_id === "string" ? result.team_id : undefined))
-    .catch(() => undefined);
   const api = async (method: string, args: Record<string, unknown>) =>
     (await slack.webClient.apiCall(method, args)) as unknown as Record<string, unknown>;
 
@@ -592,18 +607,18 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
   const legacyThreads = new Set<string>();
   let legacyLogged = false;
   let legacyUnavailable = false;
-  const legacyText: Record<SessionState, string> = {
-    processing: "is working…",
-    suspended: "is waiting for you in T3 Code…",
-    active: "",
-  };
-  const setLegacyStatus = async (channel: string, threadTs: string, state: SessionState) => {
+  /**
+   * The status text under the thread, as Office and Devin show it: Slack draws
+   * `loading_messages` beside the app's icon with a spinner. Empty clears it.
+   */
+  const setStatusText = async (channel: string, threadTs: string, text: string) => {
     if (legacyUnavailable) return;
     try {
       await api("assistant.threads.setStatus", {
         channel_id: channel,
         thread_ts: threadTs,
-        status: legacyText[state],
+        status: text,
+        ...(text === "" ? {} : { loading_messages: [text] }),
       });
     } catch (error) {
       const code = slackErrorCode(error);
@@ -686,12 +701,15 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
         if ((error as { data?: { error?: string } }).data?.error !== "already_reacted") throw error;
       }
     },
-    setState: async (chatThreadKey, state) => {
+    setState: async (chatThreadKey, state, text) => {
       const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
       if (!threadTs) return;
+      // The session state brings the stop button and the waiting mark; the text says what is going on.
+      const statusText = state === "processing" ? text : "";
       if (!legacyThreads.has(chatThreadKey)) {
         try {
           await slack.setSessionStatus(channel, threadTs, state);
+          if (statusText !== "") await setStatusText(channel, threadTs, statusText);
           return;
         } catch (error) {
           const code = slackErrorCode(error);
@@ -706,7 +724,7 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
           }
         }
       }
-      await setLegacyStatus(channel, threadTs, state);
+      await setStatusText(channel, threadTs, statusText);
     },
     rename: async (chatThreadKey, title) => {
       // agents.sessions.rename with channel_id and thread_ts, in DMs and channel threads alike.
@@ -724,18 +742,19 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
         await slack.setAssistantTitle(channel, threadTs, strict);
       }
     },
-    runDisplay: (run) => {
-      const { channel, threadTs } = slack.decodeThreadId(run.chatThreadKey);
-      return new SlackRunDisplay({
+    postBlocks: async ({ chatThreadKey, text, blocks }) => {
+      const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
+      const posted = await slack.webClient.chat.postMessage({
         channel,
-        threadTs,
-        recipient:
-          run.requestedBy !== undefined && teamId !== undefined
-            ? { userId: run.requestedBy, teamId }
-            : undefined,
-        api,
-        log: (line) => log("info", line),
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        text,
+        blocks: blocks as never,
       });
+      return String(posted.ts ?? "");
+    },
+    updateBlocks: async ({ chatThreadKey, messageId, text, blocks }) => {
+      const { channel } = slack.decodeThreadId(chatThreadKey);
+      await slack.webClient.chat.update({ channel, ts: messageId, text, blocks: blocks as never });
     },
     history,
     download,
