@@ -17,6 +17,12 @@ import {
   questionBlocks,
   questionText,
 } from "./questions.ts";
+import {
+  describeModel,
+  type ModelSelection,
+  parseModelCommand,
+  resolveModelCommand,
+} from "./modelCommand.ts";
 import { RunFeed } from "./runFeed.ts";
 import type { AskedRecord, Binding, BridgeStore, OwedReply } from "./store.ts";
 import {
@@ -104,7 +110,8 @@ export type InboundOutcome =
         | "not_allowed"
         | "unmapped_channel"
         | "unbound_thread"
-        | "not_running";
+        | "not_running"
+        | "bad_command";
     };
 
 /** Where a new thread from a channel goes. A channel may have several; the first that matches wins. */
@@ -139,6 +146,8 @@ export interface BridgeSettings {
   readonly followUpMode: FollowUpMode;
   /** The project a new direct message starts its thread in. Without it, direct messages are ignored. */
   readonly dmProjectId?: string | undefined;
+  /** The model new threads start with; a `!model` switch starts from it. */
+  readonly modelSelection?: ModelSelection | undefined;
 }
 
 /** What startup catch-up asks the host to read from Slack. */
@@ -179,6 +188,15 @@ const TERMINAL_TEXT: Partial<Record<RunStatus, string>> = {
 };
 
 const TITLE_LIMIT = 60;
+/** What a `!high` switch starts from when the config names no model. */
+const DEFAULT_MODEL: ModelSelection = {
+  instanceId: "claudeAgent",
+  model: "claude-opus-5-5",
+  options: [{ id: "effort", value: "medium" }],
+};
+/** How long one wait for a thread's delegated work lasts, and how long the bridge keeps following it. */
+const DELEGATED_CHECK_MS = 20_000;
+const DELEGATED_FOLLOW_MS = 6 * 60 * 60 * 1000;
 /** How often, and how many times, to look for the run an answer starts. */
 const ANSWER_RUN_CHECK_MS = 1_000;
 const ANSWER_RUN_CHECKS = 20;
@@ -556,7 +574,8 @@ export class Bridge {
   }
 
   /** Decides what one saved event does. Throws when T3 could not take it, so it is retried. */
-  private async handle(event: InboundEvent): Promise<InboundOutcome> {
+  private async handle(received: InboundEvent): Promise<InboundOutcome> {
+    let event = received;
     if (this.store.isHandled(event.eventId)) return { type: "ignored", reason: "duplicate" };
     const binding = this.store.binding(event.chatThreadKey);
 
@@ -570,6 +589,11 @@ export class Bridge {
     const command = event.addressed ? controlCommand(event.text) : undefined;
     if (command !== undefined) return this.control(event, binding, command);
 
+    // `!opus`, `!sol-high` or `!high` picks the model; the rest of the message is the request.
+    const switched = parseModelCommand(event.text);
+    if (switched.command !== undefined) event = { ...event, text: switched.text };
+    const nothingElse = event.text === "" && event.files.length === 0;
+
     if (binding !== undefined) {
       if (
         isAside(event.text) ||
@@ -582,6 +606,19 @@ export class Bridge {
       const asking = this.store.openQuestions(binding.chatThreadKey)[0];
       if (asking !== undefined && openQuestion(asking.asked) !== undefined) {
         return this.answerByText(binding, asking, event);
+      }
+      if (switched.command !== undefined) {
+        const current = await this.threads.modelSelection(binding.threadId);
+        const resolved = resolveModelCommand(switched.command, current);
+        if ("error" in resolved) {
+          await this.notify(event, resolved.error);
+          return { type: "noted", threadId: binding.threadId };
+        }
+        await this.threads.setModel(binding.threadId, resolved.selection);
+        if (nothingElse) {
+          await this.notify(event, `Switched to ${describeModel(resolved.selection)}.`);
+          return { type: "noted", threadId: binding.threadId };
+        }
       }
       const kept = this.store.context(binding.chatThreadKey);
       const imported = await this.threads.importFiles(this.inboundFiles(event.files));
@@ -610,6 +647,25 @@ export class Bridge {
       : routeFor(this.settings.channelProjects, event.channelId, event.text);
     const projectId = event.direct ? this.settings.dmProjectId : route?.projectId;
     if (projectId === undefined) return { type: "ignored", reason: "unmapped_channel" };
+    let modelSelection: ModelSelection | undefined;
+    if (switched.command !== undefined) {
+      const resolved = resolveModelCommand(
+        switched.command,
+        this.settings.modelSelection ?? DEFAULT_MODEL,
+      );
+      if ("error" in resolved) {
+        await this.notify(event, resolved.error);
+        return { type: "ignored", reason: "bad_command" };
+      }
+      modelSelection = resolved.selection;
+    }
+    if (nothingElse) {
+      await this.notify(
+        event,
+        `Add what you'd like me to do after ${switched.command?.typed ?? "the mention"}.`,
+      );
+      return { type: "ignored", reason: "bad_command" };
+    }
     const chatKey = NodeCrypto.randomBytes(16).toString("hex");
     const earlier = await this.loadEarlier(event);
     // The mention's own files come first, so they are the ones kept when there are too many.
@@ -625,6 +681,7 @@ export class Bridge {
       attachments: imported.attachments,
       requestId: requestId(event.eventId),
       ...(route?.worktreeFrom === undefined ? {} : { worktreeFrom: route.worktreeFrom }),
+      ...(modelSelection === undefined ? {} : { modelSelection }),
     });
     this.store.insertBinding({
       chatThreadKey: event.chatThreadKey,
@@ -871,6 +928,46 @@ export class Bridge {
   }
 
   /**
+   * Keeps watching a thread after its run ends, while that run's subagents
+   * and background work are still going. When one reports back, T3 starts a
+   * run with a notification, and the chat is owed that run's answer too. A
+   * run started by a message typed in T3 stays in T3.
+   */
+  private followDelegatedWork(reply: OwedReply): void {
+    const key = `delegated:${reply.threadId}`;
+    if (this.watching.has(key)) return;
+    const follow = (async () => {
+      const first = await this.threads.activity(reply.threadId, undefined);
+      // Only what comes after this run; older notifications belong to older runs.
+      let cursor = Math.max(
+        -1,
+        ...first.items.filter((item) => item.runId === reply.runId).map((item) => item.position),
+      );
+      const until = this.now() + DELEGATED_FOLLOW_MS;
+      while (!this.stopped) {
+        const waited = await this.threads.waitForDelegatedWork(
+          reply.threadId,
+          reply.runId,
+          DELEGATED_CHECK_MS,
+        );
+        const read = await this.threads.activity(reply.threadId, cursor);
+        for (const item of read.items) {
+          if (item.type !== "notification" || item.runId === null) continue;
+          if (this.store.isOwed(item.runId)) continue;
+          this.owe({ ...reply, runId: item.runId });
+        }
+        cursor = Math.max(cursor, read.lastPosition);
+        if (!waited.timedOut || this.now() > until) return;
+      }
+    })()
+      .catch((error: unknown) => {
+        this.log(`Following ${reply.threadId}'s delegated work failed: ${String(error)}`);
+      })
+      .finally(() => this.watching.delete(key));
+    this.watching.set(key, follow);
+  }
+
+  /**
    * Watches the run an answer starts. Codex's question ends its run, and T3
    * hands the answer to a new run the chat didn't start, so its reply would
    * otherwise never be posted. An answer that continues a waiting run, as
@@ -1110,6 +1207,7 @@ export class Bridge {
       if (waited.timedOut || !TERMINAL_STATUSES.has(waited.status)) continue;
       try {
         await this.answer(reply, waited.runId, waited.status);
+        this.followDelegatedWork({ ...reply, runId: waited.runId });
         return;
       } catch (error) {
         postFailures += 1;

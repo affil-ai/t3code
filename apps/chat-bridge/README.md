@@ -55,6 +55,19 @@ Socket Mode, so it needs no public URL.
 - **Permissions can't be granted from Slack.** T3's tools can't approve a
   permission request, so a run that asks for one is stopped, and the thread
   says why. Threads start in `full-access` mode, so this is rare.
+- **Model switch.** As in Office, `!opus`, `!fable`, `!glm`, `!sol`, `!astra`
+  or `!terra` anywhere in a message picks the model, with an optional effort
+  (`!sol-high`, `!opus-low`); an effort alone (`!high`) keeps the model. The
+  first one outside code is taken out of the message. GPT models run on
+  Codex and the rest on Claude, and a thread can change provider between
+  turns (`t3_thread_configure`). A switch with nothing else confirms it in
+  the thread. New threads start on `modelSelection` from the config.
+- **Results that arrive later.** When a run ends while its subagents or
+  background work are still going, the bridge keeps following the thread
+  (`t3_thread_wait` with `untilDelegatedWorkSettled`, for up to six hours).
+  Each run T3 starts when that work reports back begins with a notification,
+  and its answer is posted like any other. A run started by a message typed
+  in T3 stays in T3.
 - **Status from the agent.** The `chat_status` tool sets the status text, such
   as "Running the tests", until the agent's next step.
 - **Titles follow T3.** A new T3 thread starts with a short title: the

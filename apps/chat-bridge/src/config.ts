@@ -3,6 +3,7 @@
  * The bridge's settings file. Secrets never go here: Slack tokens come from
  * the environment, and the T3 login is saved separately by `login`.
  */
+import type { ModelSelection } from "./modelCommand.ts";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -29,8 +30,11 @@ export interface BridgeConfig {
   readonly toolsPort: number;
   /** For new threads; T3 caps it at what the login was granted. Omit for T3's default. */
   readonly runtimeMode?: string | undefined;
-  /** For new threads, such as `{ "instanceId": "claudeAgent", "model": "claude-opus-5-5" }`. Omit for the project's default. */
-  readonly modelSelection?: Record<string, unknown> | undefined;
+  /**
+   * For new threads, such as `{ "instanceId": "claudeAgent", "model": "claude-opus-5-5",
+   * "options": [{ "id": "effort", "value": "medium" }] }`. Omit for the project's default.
+   */
+  readonly modelSelection?: ModelSelection | undefined;
 }
 
 export const DEFAULT_TOOLS_PORT = 3920;
@@ -104,8 +108,14 @@ export function parseConfig(raw: unknown): BridgeConfig {
   if (raw.runtimeMode !== undefined && typeof raw.runtimeMode !== "string") {
     fail("runtimeMode must be a string.");
   }
-  if (raw.modelSelection !== undefined && !isRecord(raw.modelSelection)) {
-    fail("modelSelection must be an object.");
+  if (
+    raw.modelSelection !== undefined &&
+    (!isRecord(raw.modelSelection) ||
+      typeof raw.modelSelection.instanceId !== "string" ||
+      typeof raw.modelSelection.model !== "string" ||
+      (raw.modelSelection.options !== undefined && !Array.isArray(raw.modelSelection.options)))
+  ) {
+    fail("modelSelection needs an instanceId and a model, and options must be a list.");
   }
   return {
     t3Url,
@@ -115,7 +125,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
     followUpMode: followUpMode as FollowUpMode,
     toolsPort: toolsPort as number,
     runtimeMode: raw.runtimeMode as string | undefined,
-    modelSelection: raw.modelSelection as Record<string, unknown> | undefined,
+    modelSelection: raw.modelSelection as ModelSelection | undefined,
   };
 }
 

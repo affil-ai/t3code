@@ -1,6 +1,7 @@
 /**
  * The T3 thread operations the bridge needs, as calls to T3's MCP tools.
  */
+import type { ModelSelection } from "./modelCommand.ts";
 import type { ActivityItem } from "./activity.ts";
 import type { Answer, Question } from "./questions.ts";
 import type { T3Tools } from "./t3Client.ts";
@@ -53,7 +54,7 @@ export const TERMINAL_STATUSES = new Set<RunStatus>([
 
 export interface LaunchOptions {
   readonly runtimeMode?: string | undefined;
-  readonly modelSelection?: Record<string, unknown> | undefined;
+  readonly modelSelection?: ModelSelection | undefined;
 }
 
 // T3's limits for message attachments.
@@ -143,6 +144,8 @@ export class T3Threads {
     readonly requestId: string;
     /** A new worktree from this branch on origin; without it, the project's checkout. */
     readonly worktreeFrom?: string | undefined;
+    /** Overrides the configured model for this thread. */
+    readonly modelSelection?: ModelSelection | undefined;
   }): Promise<{ readonly threadId: string; readonly runId: string | null }> {
     const result = await this.t3.call<{ threadId: string; runId: string | null }>(
       "t3_thread_launch",
@@ -161,9 +164,11 @@ export class T3Threads {
               },
             }),
         ...(this.launchOptions.runtimeMode ? { runtimeMode: this.launchOptions.runtimeMode } : {}),
-        ...(this.launchOptions.modelSelection
-          ? { modelSelection: this.launchOptions.modelSelection }
-          : {}),
+        ...(input.modelSelection
+          ? { modelSelection: input.modelSelection }
+          : this.launchOptions.modelSelection
+            ? { modelSelection: this.launchOptions.modelSelection }
+            : {}),
         clientRequestId: input.requestId,
       },
     );
@@ -268,6 +273,24 @@ export class T3Threads {
       { timeoutMs: timeoutMs + 30_000 },
     );
     return { runId: result.runId ?? runId, status: result.status, timedOut: result.timedOut };
+  }
+
+  /**
+   * Waits until the run's subagents and background work, and the runs T3
+   * starts when they report back, have all finished. `timedOut` means some
+   * are still going.
+   */
+  async waitForDelegatedWork(
+    threadId: string,
+    runId: string,
+    timeoutMs: number,
+  ): Promise<{ readonly timedOut: boolean }> {
+    const result = await this.t3.call<{ timedOut?: boolean }>(
+      "t3_thread_wait",
+      { threadId, runId, timeoutMs, untilDelegatedWorkSettled: true },
+      { timeoutMs: timeoutMs + 30_000 },
+    );
+    return { timedOut: result.timedOut === true };
   }
 
   /** The run's last assistant message, or nothing if the run ended without one. */
@@ -408,6 +431,19 @@ export class T3Threads {
       }
     }
     return this.t3.call<T>(`t3_pending_request_${action}`, args);
+  }
+
+  /** The thread's provider, model and options. */
+  async modelSelection(threadId: string): Promise<ModelSelection> {
+    const read = await this.t3.call<{ modelSelection: ModelSelection }>("t3_thread_configure", {
+      threadId,
+    });
+    return read.modelSelection;
+  }
+
+  /** Sets the model and options the thread's next turn runs with. */
+  async setModel(threadId: string, modelSelection: ModelSelection): Promise<void> {
+    await this.t3.call("t3_thread_configure", { threadId, modelSelection });
   }
 
   /** Asks T3 to write a short title for the thread from its conversation. */

@@ -36,8 +36,19 @@ function fakeT3() {
   /** Questions T3 waits on, by request id. */
   const questions = new Map<string, ReadonlyArray<Record<string, unknown>>>();
   /** Older T3 servers name one pending-request tool per action. */
-  const options: { splitPendingTools: boolean; answerStartsRun?: string } = {
+  const options: {
+    splitPendingTools: boolean;
+    answerStartsRun?: string;
+    /** A subagent reports back after the run ends: T3 starts this run with a notification. */
+    delegatedWakes?: string | undefined;
+  } = {
     splitPendingTools: false,
+  };
+  /** Items T3 adds after the answers, such as a wake-up's notification. */
+  const later: Array<Record<string, unknown>> = [];
+  let modelSelection: Record<string, unknown> = {
+    instanceId: "claudeAgent",
+    model: "claude-opus-5-5",
   };
   /** Waits in flight end as timed out when the test calls `tick`. */
   let tickNow = () => {};
@@ -94,6 +105,18 @@ function fakeT3() {
               delivery: "steered",
             };
           case "t3_thread_wait": {
+            if (args.untilDelegatedWorkSettled === true) {
+              if (options.delegatedWakes !== undefined) {
+                later.push({
+                  itemId: `wake-${options.delegatedWakes}`,
+                  type: "notification",
+                  runId: options.delegatedWakes,
+                  status: "completed",
+                });
+                options.delegatedWakes = undefined;
+              }
+              return { runId: args.runId, status: "completed", timedOut: false };
+            }
             waitCalled();
             const entry = run(String(args.runId));
             return Promise.race([
@@ -101,6 +124,12 @@ function fakeT3() {
               ticked.then(() => ({ runId: args.runId, status: "running", timedOut: true })),
             ]);
           }
+          case "t3_thread_configure":
+            if (args.modelSelection !== undefined) {
+              modelSelection = args.modelSelection as Record<string, unknown>;
+              return { sequence: 1 };
+            }
+            return { threadId: args.threadId, modelSelection };
           case "t3_thread_update":
           case "t3_thread_interrupt":
             return { threadId: args.threadId };
@@ -134,7 +163,7 @@ function fakeT3() {
               runId,
               text: "x",
             }));
-            const items = [...activity, ...answerItems].map((item, position) => ({
+            const items = [...activity, ...answerItems, ...later].map((item, position) => ({
               position,
               ...item,
             }));
@@ -746,6 +775,61 @@ it("posts the reply of the run an answer starts, when the question ended its run
   t3.finish("run-7", "completed", "You picked Yes.");
   await bridge.idle();
   assert.deepStrictEqual(posted, [{ chatThreadKey: "slack:C1:100.1", text: "You picked Yes." }]);
+});
+
+it("starts a thread on the model a switch names, without the switch in its message", async () => {
+  const { t3, bridge } = harness();
+  await bridge.receive(event("100.1", { text: "!sol-high fix the build" }));
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  assert.deepStrictEqual(launch.args.modelSelection, {
+    instanceId: "codex",
+    model: "gpt-6.1-sol",
+    options: [{ id: "reasoningEffort", value: "high" }],
+  });
+  assert.notInclude(String(launch.args.message), "!sol");
+  assert.include(String(launch.args.message), "fix the build");
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+});
+
+it("switches a thread's model, provider included, from a follow-up", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    await bridge.receive(event("100.2", { kind: "follow_up", text: "!astra-low" })),
+    { type: "noted", threadId: THREAD },
+  );
+  const configured = t3.calls.filter(
+    (call) => call.tool === "t3_thread_configure" && call.args.modelSelection !== undefined,
+  );
+  assert.deepStrictEqual(configured.at(-1)?.args.modelSelection, {
+    instanceId: "codex",
+    model: "gpt-6-astra",
+    options: [{ id: "reasoningEffort", value: "low" }],
+  });
+  assert.strictEqual(posted.at(-1)?.text, "Switched to GPT-6 Astra, low effort.");
+  // A switch with a request sends the request on the new model.
+  await bridge.receive(event("100.3", { kind: "follow_up", text: "!high now the docs" }));
+  const sent = t3.calls.filter((call) => call.tool === "t3_thread_send").at(-1)!;
+  assert.include(String(sent.args.message), "now the docs");
+  assert.notInclude(String(sent.args.message), "!high");
+  t3.finish("run-2", "completed", "Done.");
+  await bridge.idle();
+});
+
+it("posts the answer of a run a subagent wakes after the first run ended", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedWakes = "run-5";
+  t3.finish("run-1", "completed", "Started a research agent.");
+  t3.finish("run-5", "completed", "The research agent found three options.");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Started a research agent.", "The research agent found three options."],
+  );
 });
 
 it("takes a typed reply as the answer while a question is open, not as a new message", async () => {
