@@ -142,7 +142,10 @@ export function routeFor(
 
 export interface BridgeSettings {
   readonly channelProjects: ReadonlyArray<ChannelRoute>;
+  /** People who may use the bot. They are allowed even when `allowEveryone` is off. */
   readonly allowedUserIds: ReadonlyArray<string>;
+  /** Also allow every full member of the workspace (not guests or other companies' people). */
+  readonly allowEveryone?: boolean | undefined;
   readonly followUpMode: FollowUpMode;
   /** The project a new direct message starts its thread in. Without it, direct messages are ignored. */
   readonly dmProjectId?: string | undefined;
@@ -197,6 +200,8 @@ const DEFAULT_MODEL: ModelSelection = {
 /** How long one wait for a thread's delegated work lasts, and how long the bridge keeps following it. */
 const DELEGATED_CHECK_MS = 20_000;
 const DELEGATED_FOLLOW_MS = 6 * 60 * 60 * 1000;
+/** How long after T3 calls the work settled the bridge looks once more for a run reporting it. */
+const SETTLE_GRACE_MS = 5_000;
 /** How often, and how many times, to look for the run an answer starts. */
 const ANSWER_RUN_CHECK_MS = 1_000;
 const ANSWER_RUN_CHECKS = 20;
@@ -420,6 +425,7 @@ export class Bridge {
     | ((chatThreadKey: string, messageId: string) => Promise<ReadonlyArray<EarlierMessage>>)
     | undefined;
   private readonly bound: ((chatThreadKey: string) => Promise<void>) | undefined;
+  private readonly isWorkspaceMember: ((userId: string) => Promise<boolean>) | undefined;
   private readonly schedule: (ms: number, run: () => void) => void;
   private readonly log: (line: string) => void;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -450,6 +456,8 @@ export class Bridge {
     ) => Promise<ReadonlyArray<EarlierMessage>>;
     /** Called once a chat thread is bound, so the host can follow it. */
     readonly bound?: (chatThreadKey: string) => Promise<void>;
+    /** Whether someone is a full member of the workspace, for `allowEveryone`. */
+    readonly isWorkspaceMember?: (userId: string) => Promise<boolean>;
     /** Runs `run` after `ms`; tests run retries themselves. */
     readonly schedule?: (ms: number, run: () => void) => void;
     readonly log?: (line: string) => void;
@@ -468,6 +476,7 @@ export class Bridge {
     this.download = options.download;
     this.history = options.history;
     this.bound = options.bound;
+    this.isWorkspaceMember = options.isWorkspaceMember;
     this.schedule = options.schedule ?? ((ms, run) => this.timer(ms, run));
     this.log = options.log ?? (() => {});
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -579,7 +588,7 @@ export class Bridge {
     if (this.store.isHandled(event.eventId)) return { type: "ignored", reason: "duplicate" };
     const binding = this.store.binding(event.chatThreadKey);
 
-    if (!this.settings.allowedUserIds.includes(event.author.userId)) {
+    if (!(await this.isAllowed(event.author.userId))) {
       // What other people say in a bound thread is still context for the agent.
       if (binding !== undefined) this.keep(binding, event);
       if (event.addressed) await this.refuse(event);
@@ -766,6 +775,21 @@ export class Bridge {
     return { type: command === "mute" ? "muted" : "unmuted", threadId: binding.threadId };
   }
 
+  /**
+   * Whether someone may use the bot: anyone in `allowedUserIds`, and with
+   * `allowEveryone`, any full member of the workspace. A failed lookup refuses.
+   */
+  private async isAllowed(userId: string): Promise<boolean> {
+    if (this.settings.allowedUserIds.includes(userId)) return true;
+    if (this.settings.allowEveryone !== true || this.isWorkspaceMember === undefined) return false;
+    try {
+      return await this.isWorkspaceMember(userId);
+    } catch (error) {
+      this.log(`Checking whether ${userId} is a workspace member failed: ${String(error)}`);
+      return false;
+    }
+  }
+
   /** Tells someone outside `allowedUserIds` why nothing happened, at most once an hour each. */
   private async refuse(event: InboundEvent): Promise<void> {
     const last = this.refusedAt.get(event.author.userId);
@@ -883,7 +907,7 @@ export class Bridge {
 
   /** Someone pressed an answer button. Only allowed users may answer. */
   async questionClicked(chatThreadKey: string, userId: string, value: string): Promise<void> {
-    if (!this.settings.allowedUserIds.includes(userId)) {
+    if (!(await this.isAllowed(userId))) {
       this.log(`Ignored an answer in ${chatThreadKey} from ${userId}, who is not allowed.`);
       return;
     }
@@ -945,13 +969,10 @@ export class Bridge {
       );
       const until = this.now() + DELEGATED_FOLLOW_MS;
       this.log(`Following ${reply.threadId} after ${reply.runId} from position ${cursor}.`);
-      while (!this.stopped) {
-        const waited = await this.threads.waitForDelegatedWork(
-          reply.threadId,
-          reply.runId,
-          DELEGATED_CHECK_MS,
-        );
+      /** Owes each run a notification started since the cursor; true when there was one. */
+      const scan = async () => {
         const read = await this.threads.activity(reply.threadId, cursor);
+        let found = false;
         for (const item of read.items) {
           if (item.type !== "notification" || item.runId === null) continue;
           if (this.store.isOwed(item.runId)) continue;
@@ -959,8 +980,24 @@ export class Bridge {
             `${item.runId} started from a notification; its answer goes to ${reply.chatThreadKey}.`,
           );
           this.owe({ ...reply, runId: item.runId });
+          found = true;
         }
         cursor = Math.max(cursor, read.lastPosition);
+        return found;
+      };
+      while (!this.stopped) {
+        const waited = await this.threads.waitForDelegatedWork(
+          reply.threadId,
+          reply.runId,
+          DELEGATED_CHECK_MS,
+        );
+        if (await scan()) continue;
+        // T3 can call the work settled a moment before it records the run that
+        // reports it, so look once more before stopping.
+        if (!waited.timedOut) {
+          await this.sleep(SETTLE_GRACE_MS);
+          if (await scan()) continue;
+        }
         if (!waited.timedOut || this.now() > until) {
           this.log(
             `Stopped following ${reply.threadId}: ${waited.timedOut ? "six hours passed" : "its delegated work settled"} (read to ${cursor}).`,
@@ -1088,7 +1125,7 @@ export class Bridge {
   async stopRequested(chatThreadKey: string, userId: string): Promise<boolean> {
     const binding = this.store.binding(chatThreadKey);
     if (binding === undefined) return false;
-    if (!this.settings.allowedUserIds.includes(userId)) {
+    if (!(await this.isAllowed(userId))) {
       this.log(`Ignored a stop in ${chatThreadKey} from ${userId}, who is not allowed.`);
       return false;
     }

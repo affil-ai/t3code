@@ -10,6 +10,17 @@ it("fills defaults and rejects a bad config", () => {
   });
   assert.strictEqual(config.followUpMode, "steer");
   assert.strictEqual(config.toolsPort, DEFAULT_TOOLS_PORT);
+  assert.isFalse(config.allowEveryone, "the allowlist is the default");
+  assert.throws(
+    () =>
+      parseConfig({
+        t3Url: "http://x",
+        channelProjects: [],
+        allowedUserIds: [],
+        allowEveryone: "yes",
+      }),
+    /allowEveryone/,
+  );
   assert.throws(() => parseConfig({ channelProjects: [], allowedUserIds: [] }), /t3Url/);
   assert.throws(
     () =>

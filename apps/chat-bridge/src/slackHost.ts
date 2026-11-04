@@ -36,6 +36,17 @@ import {
 export { splitMarkdown };
 import type { InboundFile } from "./threads.ts";
 
+/** The `users.info` fields that tell a full member from a guest, a bot or another company's person. */
+interface SlackMember {
+  readonly team_id?: string;
+  readonly deleted?: boolean;
+  readonly is_bot?: boolean;
+  readonly is_restricted?: boolean;
+  readonly is_ultra_restricted?: boolean;
+}
+
+const MEMBER_CACHE_MS = 10 * 60 * 1000;
+
 export interface SlackChatHostOptions {
   readonly botToken: string;
   /** The app-level token (`xapp-…`) Socket Mode connects with. */
@@ -91,6 +102,8 @@ export interface SlackChatHost {
   readonly setState: (chatThreadKey: string, state: SessionState, text: string) => Promise<void>;
   /** Sets the thread's title with `agents.sessions.rename`; skipped where Slack has no titles. */
   readonly rename: (chatThreadKey: string, title: string) => Promise<void>;
+  /** Whether someone is a full member of this workspace: not a guest, a bot, or another company's. */
+  readonly isWorkspaceMember: (userId: string) => Promise<boolean>;
   /** Posts a message with blocks, such as a question with buttons; returns its `ts`. */
   readonly postBlocks: (message: BlockMessage) => Promise<string>;
   /** Replaces a message posted with `postBlocks`. */
@@ -592,6 +605,9 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
   const api = async (method: string, args: Record<string, unknown>) =>
     (await slack.webClient.apiCall(method, args)) as unknown as Record<string, unknown>;
 
+  /** Workspace membership by user, for `allowEveryone`, checked again after a while. */
+  const members = new Map<string, { member: boolean; until: number }>();
+  let ownTeam: string | undefined;
   /** Chat threads where Slack refused agent session calls; they use the legacy status. */
   const legacyThreads = new Set<string>();
   let legacyLogged = false;
@@ -718,6 +734,26 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
         }
       }
       await setStatusText(channel, threadTs, statusText);
+    },
+    isWorkspaceMember: async (userId) => {
+      const cached = members.get(userId);
+      if (cached !== undefined && cached.until > performance.now()) return cached.member;
+      ownTeam ??= String(
+        ((await slack.webClient.auth.test()) as { team_id?: string }).team_id ?? "",
+      );
+      const { user } = (await slack.webClient.users.info({ user: userId })) as {
+        user?: SlackMember;
+      };
+      const member =
+        user !== undefined &&
+        ownTeam !== "" &&
+        user.team_id === ownTeam &&
+        user.deleted !== true &&
+        user.is_bot !== true &&
+        user.is_restricted !== true &&
+        user.is_ultra_restricted !== true;
+      members.set(userId, { member, until: performance.now() + MEMBER_CACHE_MS });
+      return member;
     },
     rename: async (chatThreadKey, title) => {
       // agents.sessions.rename with channel_id and thread_ts, in DMs and channel threads alike.

@@ -24,6 +24,8 @@ export interface BridgeConfig {
   readonly dmProjectId?: string | undefined;
   /** Slack user ids who may use the bot. Everyone else gets a short refusal. */
   readonly allowedUserIds: ReadonlyArray<string>;
+  /** Also allow every full member of the workspace. Off unless set to true. */
+  readonly allowEveryone: boolean;
   /** `steer` joins a reply to the run in flight; `queue` runs it after. */
   readonly followUpMode: FollowUpMode;
   /** The port of the `chat_post` / `chat_react` MCP server on 127.0.0.1. */
@@ -105,6 +107,9 @@ export function parseConfig(raw: unknown): BridgeConfig {
   ) {
     fail("dmProjectId must be a project id.");
   }
+  if (raw.allowEveryone !== undefined && typeof raw.allowEveryone !== "boolean") {
+    fail("allowEveryone must be true or false.");
+  }
   if (raw.runtimeMode !== undefined && typeof raw.runtimeMode !== "string") {
     fail("runtimeMode must be a string.");
   }
@@ -122,6 +127,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
     channelProjects,
     dmProjectId: raw.dmProjectId as string | undefined,
     allowedUserIds: stringList(raw.allowedUserIds, "allowedUserIds"),
+    allowEveryone: raw.allowEveryone === true,
     followUpMode: followUpMode as FollowUpMode,
     toolsPort: toolsPort as number,
     runtimeMode: raw.runtimeMode as string | undefined,

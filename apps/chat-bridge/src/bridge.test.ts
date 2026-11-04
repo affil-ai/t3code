@@ -41,11 +41,15 @@ function fakeT3() {
     answerStartsRun?: string;
     /** A subagent reports back after the run ends: T3 starts this run with a notification. */
     delegatedWakes?: string | undefined;
+    /** T3 calls the work settled before it records the waking run. */
+    wakeAfterSettled?: boolean;
   } = {
     splitPendingTools: false,
   };
   /** Items T3 adds after the answers, such as a wake-up's notification. */
   const later: Array<Record<string, unknown>> = [];
+  /** Runs before each activity read, to add items between reads. */
+  let beforeRead = () => {};
   let modelSelection: Record<string, unknown> = {
     instanceId: "claudeAgent",
     model: "claude-opus-5-5",
@@ -106,6 +110,23 @@ function fakeT3() {
             };
           case "t3_thread_wait": {
             if (args.untilDelegatedWorkSettled === true) {
+              if (options.wakeAfterSettled === true && options.delegatedWakes !== undefined) {
+                // The next activity read still misses it; the one after sees it.
+                const wake = options.delegatedWakes;
+                options.delegatedWakes = undefined;
+                let reads = 0;
+                beforeRead = () => {
+                  reads += 1;
+                  if (reads !== 2) return;
+                  later.push({
+                    itemId: `wake-${wake}`,
+                    type: "notification",
+                    runId: wake,
+                    status: "completed",
+                  });
+                };
+                return { runId: args.runId, status: "completed", timedOut: false };
+              }
               if (options.delegatedWakes !== undefined) {
                 later.push({
                   itemId: `wake-${options.delegatedWakes}`,
@@ -153,6 +174,7 @@ function fakeT3() {
             }
             return { sequence: 1 };
           case "t3_thread_read": {
+            if (args.view === "activity" && args.itemId === undefined) beforeRead();
             if (args.itemId !== undefined) {
               const runId = String(args.itemId).replace("item-", "");
               return { thread: {}, items: [{ itemId: args.itemId, text: answers.get(runId) }] };
@@ -224,6 +246,9 @@ function harness(
     /** Renames to the chat thread fail this many times before they succeed. */
     renameFailures?: number;
     routes?: ReadonlyArray<ChannelRoute>;
+    allowEveryone?: boolean;
+    /** Full workspace members, for `allowEveryone`. */
+    members?: ReadonlyArray<string>;
   } = {},
 ) {
   const blockPosts: Array<BlockMessage & { messageId?: string }> = [];
@@ -242,6 +267,7 @@ function harness(
     settings: {
       channelProjects: options.routes ?? [{ channelId: "C1", projectId: PROJECT }],
       allowedUserIds: ["U1"],
+      allowEveryone: options.allowEveryone,
       followUpMode: "steer",
       dmProjectId: options.dmProjectId,
     },
@@ -253,6 +279,7 @@ function harness(
       return `900.${blockPosts.length}`;
     },
     updateBlocks: async (message) => void blockPosts.push(message),
+    isWorkspaceMember: async (userId) => (options.members ?? []).includes(userId),
     rename: async (chatThreadKey, title) => {
       if (renameFailures > 0) {
         renameFailures -= 1;
@@ -494,6 +521,30 @@ it("keeps the newest earlier messages within the size limit", () => {
   assert.include(kept, "(1 older messages left out)");
   assert.include(kept, "Grace");
   assert.strictEqual(earlierText([]), "");
+});
+
+it("lets every workspace member in with allowEveryone, and only them", async () => {
+  const author = (userId: string) => ({ author: { userId, userName: userId, fullName: userId } });
+  const closed = harness();
+  assert.deepStrictEqual(await closed.bridge.receive(event("100.1", author("U2"))), {
+    type: "ignored",
+    reason: "not_allowed",
+  });
+  const open = harness(undefined, { allowEveryone: true, members: ["U2"] });
+  assert.strictEqual((await open.bridge.receive(event("100.1", author("U2")))).type, "started");
+  // A guest or someone from another company is not a member.
+  assert.deepStrictEqual(
+    await open.bridge.receive(
+      event("200.1", {
+        ...author("U3"),
+        eventId: "slack:C1:200.1",
+        chatThreadKey: "slack:C1:200.1",
+      }),
+    ),
+    { type: "ignored", reason: "not_allowed" },
+  );
+  open.t3.finish("run-1", "completed", "Done.");
+  await open.bridge.idle();
 });
 
 it("mutes and unmutes a thread on command", async () => {
@@ -817,6 +868,20 @@ it("switches a thread's model, provider included, from a follow-up", async () =>
   assert.notInclude(String(sent.args.message), "!high");
   t3.finish("run-2", "completed", "Done.");
   await bridge.idle();
+});
+
+it("looks once more when T3 calls the work settled before recording the run it starts", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedWakes = "run-6";
+  t3.options.wakeAfterSettled = true;
+  t3.finish("run-1", "completed", "waiting");
+  t3.finish("run-6", "completed", "background done");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["waiting", "background done"],
+  );
 });
 
 it("posts the answer of a run a subagent wakes after the first run ended", async () => {

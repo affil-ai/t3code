@@ -82,6 +82,7 @@ async function start(): Promise<void> {
     download: (url) => connected().download(url),
     history: (chatThreadKey, messageId) => connected().history(chatThreadKey, messageId),
     bound: (chatThreadKey) => connected().follow(chatThreadKey),
+    isWorkspaceMember: (userId) => connected().isWorkspaceMember(userId),
     log,
   });
   host = await startSlackChatHost({
@@ -113,6 +114,11 @@ async function start(): Promise<void> {
   log(
     `Connected to Slack and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
   );
+  if (config.allowEveryone) {
+    log(
+      "WARNING: allowEveryone is on. Every full member of this Slack workspace can start runs, and each run has this bridge's T3 access (often full access on this machine, as the user T3 runs as).",
+    );
+  }
 
   const shutdown = async () => {
     log("Shutting down.");

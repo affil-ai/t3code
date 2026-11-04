@@ -99,9 +99,26 @@ Socket Mode, so it needs no public URL.
   in direct-message channels it has answered before. It reads from a minute
   before it last ran, and skips messages it already has.
 
-Only Slack users in `allowedUserIds` can use it. Anyone else who mentions or
-messages the bot gets a short reply, at most once an hour, with their member id
-to add. Messages from bots, including itself, are ignored.
+Who can use it is set in the config, in one of two ways:
+
+- **An allowlist (the default).** Only Slack users in `allowedUserIds` can use
+  it.
+- **Everyone in the workspace.** With `"allowEveryone": true`, every full
+  member of the workspace can use it as well. People in `allowedUserIds`
+  still can. Guests, bots, deactivated accounts and people from other
+  companies in shared channels can't. The bridge checks each person with
+  `users.info` (their team, `is_restricted`, `is_ultra_restricted`) and
+  remembers the answer for ten minutes. A failed check counts as not allowed.
+
+  Every run has the bridge's T3 access. With a `full-access` runtime mode,
+  anyone in the workspace can then run commands on the machine as the user
+  T3 runs as. The bridge logs a warning at start-up while this is on. Use it
+  with a project and a runtime mode that you would hand to everyone.
+
+The same rule covers starting a thread, follow-ups, answering a question and
+stopping a run. Anyone not allowed who mentions or messages the bot gets a
+short reply, at most once an hour, with their member id to add. Messages from
+bots, including itself, are ignored.
 
 ## How the agent posts files and reactions
 
@@ -187,7 +204,10 @@ when that is set. Create `config.json` there:
     agent may run.
 - `dmProjectId`: optional. The T3 project direct messages start their threads
   in. Without it, direct messages are ignored.
-- `allowedUserIds`: Slack member ids (profile → **⋯** → **Copy member ID**).
+- `allowedUserIds`: Slack member ids (profile → **⋯** → **Copy member ID**). Can be
+  empty when `allowEveryone` is on.
+- `allowEveryone`: optional, `false` by default. `true` also lets every full
+  member of the workspace use the bot (see above).
 - `followUpMode`: `steer` (default) or `queue`.
 - `toolsPort`: the port for the `chat_post` / `chat_react` server. Default 3920.
 - `runtimeMode` and `modelSelection`: optional, for new threads. Without them
