@@ -49,7 +49,9 @@ Socket Mode, so it needs no public URL.
   instead of starting a new turn. The answer goes back through
   `t3_pending_request` (or `t3_pending_request_respond` on T3 servers from
   before the per-action tools were merged), so the same run carries on, and
-  the question then shows what was picked. Only people in `allowedUserIds` can answer.
+  the question then shows what was picked. Codex's question ends its run and
+  T3 hands the answer to a new run; the bridge looks for that run after
+  answering and posts its reply like any other. Only people in `allowedUserIds` can answer.
 - **Permissions can't be granted from Slack.** T3's tools can't approve a
   permission request, so a run that asks for one is stopped, and the thread
   says why. Threads start in `full-access` mode, so this is rare.

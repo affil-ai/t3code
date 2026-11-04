@@ -300,6 +300,11 @@ export class BridgeStore {
       .run(String(time));
   }
 
+  /** True once the chat is owed the run's reply, whether or not it was posted. */
+  isOwed(runId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM owed_reply WHERE run_id = ?").get(runId) !== undefined;
+  }
+
   isHandled(eventId: string): boolean {
     return (
       this.db.prepare("SELECT 1 FROM handled_message WHERE event_id = ?").get(eventId) !== undefined

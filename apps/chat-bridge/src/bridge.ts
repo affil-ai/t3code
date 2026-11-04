@@ -179,6 +179,9 @@ const TERMINAL_TEXT: Partial<Record<RunStatus, string>> = {
 };
 
 const TITLE_LIMIT = 60;
+/** How often, and how many times, to look for the run an answer starts. */
+const ANSWER_RUN_CHECK_MS = 1_000;
+const ANSWER_RUN_CHECKS = 20;
 /** A title Slack refuses is tried again on later checks, at most this many times. */
 const RENAME_ATTEMPTS = 3;
 /** One `t3_thread_wait` call; between calls the watcher reads what the run did. */
@@ -864,6 +867,39 @@ export class Bridge {
     const next = { ...record, asked, closed: answers !== undefined };
     this.store.updateQuestion(next);
     await this.showQuestion(next);
+    if (answers !== undefined) this.followAnswer(next);
+  }
+
+  /**
+   * Watches the run an answer starts. Codex's question ends its run, and T3
+   * hands the answer to a new run the chat didn't start, so its reply would
+   * otherwise never be posted. An answer that continues a waiting run, as
+   * Claude's does, finds that run already owed and changes nothing.
+   */
+  private followAnswer(record: AskedRecord): void {
+    const key = `answer:${record.asked.requestId}`;
+    if (this.watching.has(key)) return;
+    const follow = (async () => {
+      for (let check = 0; check < ANSWER_RUN_CHECKS && !this.stopped; check++) {
+        const read = await this.threads.activity(record.threadId, undefined);
+        const runId = read.items.findLast((item) => item.runId !== null)?.runId;
+        if (runId !== undefined && runId !== null && !this.store.isOwed(runId)) {
+          this.owe({
+            runId,
+            threadId: record.threadId,
+            chatThreadKey: record.chatThreadKey,
+            requestedBy: record.asked.answeredBy,
+          });
+          return;
+        }
+        await this.sleep(ANSWER_RUN_CHECK_MS);
+      }
+    })()
+      .catch((error: unknown) => {
+        this.log(`Following the answer in ${record.chatThreadKey} failed: ${String(error)}`);
+      })
+      .finally(() => this.watching.delete(key));
+    this.watching.set(key, follow);
   }
 
   private async showQuestion(record: AskedRecord, closed?: string): Promise<void> {

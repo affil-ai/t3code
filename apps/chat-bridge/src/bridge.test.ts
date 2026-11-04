@@ -36,7 +36,9 @@ function fakeT3() {
   /** Questions T3 waits on, by request id. */
   const questions = new Map<string, ReadonlyArray<Record<string, unknown>>>();
   /** Older T3 servers name one pending-request tool per action. */
-  const options = { splitPendingTools: false };
+  const options: { splitPendingTools: boolean; answerStartsRun?: string } = {
+    splitPendingTools: false,
+  };
   /** Waits in flight end as timed out when the test calls `tick`. */
   let tickNow = () => {};
   let ticked = new Promise<void>((resolve) => (tickNow = resolve));
@@ -111,6 +113,15 @@ function fakeT3() {
               };
             }
             questions.delete(String(args.requestId));
+            // Codex's question ends its run; T3 hands the answer to a new one.
+            if (options.answerStartsRun !== undefined) {
+              activity.push({
+                itemId: `answer-${options.answerStartsRun}`,
+                type: "user_message",
+                runId: options.answerStartsRun,
+                status: "completed",
+              });
+            }
             return { sequence: 1 };
           case "t3_thread_read": {
             if (args.itemId !== undefined) {
@@ -701,6 +712,40 @@ it("asks through the per-action question tools of an older T3 server", async () 
   t3.activity[0]!.status = "completed";
   t3.finish("run-1", "completed", "Red it is.");
   await bridge.idle();
+});
+
+it("posts the reply of the run an answer starts, when the question ended its run", async () => {
+  const { t3, bridge, blockPosts, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.questions.set("req-1", [
+    {
+      id: "q1",
+      header: "Herons",
+      question: "Do you like herons?",
+      options: [{ label: "Yes", description: "" }],
+    },
+  ]);
+  t3.activity.push({
+    itemId: "ask",
+    type: "user_input_request",
+    runId: "run-1",
+    status: "waiting",
+  });
+  await t3.tick();
+  assert.lengthOf(blockPosts, 1);
+  // The run ends with an empty message while its question waits.
+  t3.finish("run-1", "completed", "");
+  await bridge.idle();
+  assert.deepStrictEqual(posted, []);
+
+  t3.options.answerStartsRun = "run-7";
+  const actions = blockPosts[0]!.blocks.find((block) => block.type === "actions") as {
+    elements: Array<{ value: string }>;
+  };
+  await bridge.questionClicked("slack:C1:100.1", "U1", actions.elements[0]!.value);
+  t3.finish("run-7", "completed", "You picked Yes.");
+  await bridge.idle();
+  assert.deepStrictEqual(posted, [{ chatThreadKey: "slack:C1:100.1", text: "You picked Yes." }]);
 });
 
 it("takes a typed reply as the answer while a question is open, not as a new message", async () => {
