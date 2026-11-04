@@ -944,6 +944,7 @@ export class Bridge {
         ...first.items.filter((item) => item.runId === reply.runId).map((item) => item.position),
       );
       const until = this.now() + DELEGATED_FOLLOW_MS;
+      this.log(`Following ${reply.threadId} after ${reply.runId} from position ${cursor}.`);
       while (!this.stopped) {
         const waited = await this.threads.waitForDelegatedWork(
           reply.threadId,
@@ -954,10 +955,18 @@ export class Bridge {
         for (const item of read.items) {
           if (item.type !== "notification" || item.runId === null) continue;
           if (this.store.isOwed(item.runId)) continue;
+          this.log(
+            `${item.runId} started from a notification; its answer goes to ${reply.chatThreadKey}.`,
+          );
           this.owe({ ...reply, runId: item.runId });
         }
         cursor = Math.max(cursor, read.lastPosition);
-        if (!waited.timedOut || this.now() > until) return;
+        if (!waited.timedOut || this.now() > until) {
+          this.log(
+            `Stopped following ${reply.threadId}: ${waited.timedOut ? "six hours passed" : "its delegated work settled"} (read to ${cursor}).`,
+          );
+          return;
+        }
       }
     })()
       .catch((error: unknown) => {
