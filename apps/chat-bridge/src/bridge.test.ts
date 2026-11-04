@@ -7,6 +7,7 @@ import {
   type EarlierMessage,
   earlierText,
   type InboundEvent,
+  threadTitle,
   type Reply,
   type RunEnd,
   type RunProgress,
@@ -153,6 +154,8 @@ function harness(
     history?: () => Promise<ReadonlyArray<EarlierMessage>>;
     /** Record what each run's display is shown, instead of posting answers. */
     display?: boolean;
+    /** Renames to the chat thread fail this many times before they succeed. */
+    renameFailures?: number;
   } = {},
 ) {
   const shown: Array<{
@@ -162,6 +165,7 @@ function harness(
     end?: RunEnd;
   }> = [];
   const renamed: Array<string> = [];
+  let renameFailures = options.renameFailures ?? 0;
   const t3 = fakeT3();
   const posted: Array<Reply> = [];
   const statuses: Array<string> = [];
@@ -180,7 +184,13 @@ function harness(
     },
     post: options.post ?? (async (reply) => void posted.push(reply)),
     status: async (chatThreadKey, status) => void statuses.push(`${chatThreadKey} ${status}`),
-    rename: async (chatThreadKey, title) => void renamed.push(`${chatThreadKey} ${title}`),
+    rename: async (chatThreadKey, title) => {
+      if (renameFailures > 0) {
+        renameFailures -= 1;
+        throw new Error("session_not_found");
+      }
+      renamed.push(`${chatThreadKey} ${title}`);
+    },
     ...(options.display
       ? {
           display: (run) => {
@@ -662,7 +672,9 @@ it("keeps titles in step both ways without looping", async () => {
   t3.thread.title = "CI is red";
   await t3.tick();
   assert.lengthOf(renamed, 2);
-  const updates = t3.calls.filter((call) => call.tool === "t3_thread_update");
+  const updates = t3.calls.filter(
+    (call) => call.tool === "t3_thread_update" && call.args.action === "rename",
+  );
   assert.deepStrictEqual(
     updates.map((call) => call.args),
     [{ threadId: THREAD, action: "rename", title: "CI is red" }],
@@ -670,6 +682,46 @@ it("keeps titles in step both ways without looping", async () => {
   assert.isFalse(await bridge.titleChanged("slack:C1:999.1", "unbound"));
   t3.finish("run-1", "completed", "Done.");
   await bridge.idle();
+});
+
+it("asks T3 for a summary title when it starts a thread", async () => {
+  const { t3, bridge } = harness();
+  await bridge.receive(event("100.1"));
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch");
+  assert.strictEqual(launch?.args.title, "fix the build");
+  const regenerate = t3.calls.find((call) => call.args.action === "regenerate_title");
+  assert.deepStrictEqual(regenerate?.args, { threadId: THREAD, action: "regenerate_title" });
+});
+
+it("tries a refused rename again on later checks, up to three times", async () => {
+  const { t3, bridge, renamed } = harness(undefined, { renameFailures: 5 });
+  await bridge.receive(event("100.1"));
+  for (let check = 0; check < 5; check++) await t3.tick();
+  assert.deepStrictEqual(renamed, [], "three tries, then it waits for a new title");
+  t3.thread.title = "Fix the CI build";
+  await t3.tick();
+  await t3.tick();
+  await t3.tick();
+  assert.deepStrictEqual(renamed, ["slack:C1:100.1 Fix the CI build"]);
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+});
+
+it("makes a short, readable title from a request", () => {
+  assert.strictEqual(
+    threadTitle("[t3 bridge test] What is 19 times 21? Reply with just the number."),
+    "What is 19 times 21?",
+  );
+  assert.strictEqual(
+    threadTitle("<@U0CD52L78DA> [t3 bridge test] test A otter: what is 19 × 21? Just the number."),
+    "test A otter: what is 19 × 21?",
+  );
+  const long = threadTitle(
+    "Please run the whole integration suite against staging and summarise every failure you find in detail",
+  );
+  assert.isAtMost(long.length, 60);
+  assert.isTrue(long.endsWith("…"));
+  assert.strictEqual(threadTitle("  "), "Slack request");
 });
 
 it("interrupts the T3 thread when an allowed user presses stop", async () => {

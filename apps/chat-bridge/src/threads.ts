@@ -360,6 +360,11 @@ export class T3Threads {
     });
   }
 
+  /** Asks T3 to write a short title for the thread from its conversation. */
+  async regenerateTitle(threadId: string): Promise<void> {
+    await this.t3.call("t3_thread_update", { threadId, action: "regenerate_title" });
+  }
+
   /** Stops the thread's running turn; nothing happens when it is idle. */
   async interrupt(threadId: string, reason: string): Promise<void> {
     await this.t3.call("t3_thread_interrupt", { threadId, reason });

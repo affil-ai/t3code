@@ -57,13 +57,17 @@ Socket Mode, so it needs no public URL.
   `assistant.threads.setStatus` text there instead.
 - **Steps from the agent.** The `chat_status` tool adds a row to the run's
   task list, such as "Running the tests"; the previous one is marked done.
-- **Titles both ways.** The Slack thread takes the T3 thread's title, and again
-  whenever T3 renames it (`agents.sessions.rename`). Renaming the thread in
-  Slack renames the T3 thread. A title both sides already have changes
-  nothing, so the two never rename each other back and forth. Slack refuses
-  some characters in titles, such as square brackets, so the bridge leaves
-  them out. Where Slack has no title, such as some channel threads, the
-  bridge skips it quietly.
+- **Titles both ways.** A new T3 thread starts with a short title: the
+  request's first sentence, without tags such as `[t3 bridge test]` or
+  mentions, at most 60 characters. The bridge then asks T3 to write a summary
+  title (`t3_thread_update` with `regenerate_title`), which needs T3's title
+  generation to work. The Slack thread takes the T3 title, in DMs and channel
+  threads alike, and again whenever T3 renames it (`agents.sessions.rename`
+  with `channel_id` and `thread_ts`). Slack refuses some characters, such as
+  square brackets, so the bridge leaves them out. A rename Slack refuses is
+  tried again on later checks, up to three times per title. Renaming the
+  thread in Slack renames the T3 thread. A title both sides already have
+  changes nothing, so the two never rename each other back and forth.
 - **Stop button.** Slack shows a stop button while a run goes. Pressing it
   interrupts the T3 run (`t3_thread_interrupt`), and the thread says "The run
   was stopped." Only people in `allowedUserIds` can stop a run.

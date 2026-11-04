@@ -169,7 +169,9 @@ const TERMINAL_TEXT: Partial<Record<RunStatus, string>> = {
   rolled_back: "The run was rolled back.",
 };
 
-const TITLE_LIMIT = 80;
+const TITLE_LIMIT = 60;
+/** A title Slack refuses is tried again on later checks, at most this many times. */
+const RENAME_ATTEMPTS = 3;
 /** One `t3_thread_wait` call; between calls the watcher reads what the run did. */
 const TICK_MS = 2_500;
 const RETRY_DELAY_MS = 15_000;
@@ -305,10 +307,23 @@ function turnText(
   return lines.join("\n");
 }
 
-function threadTitle(text: string): string {
-  const firstLine = text.trim().split("\n", 1)[0] ?? "";
-  if (firstLine === "") return "Slack request";
-  return firstLine.length > TITLE_LIMIT ? `${firstLine.slice(0, TITLE_LIMIT - 1)}…` : firstLine;
+/**
+ * A short, readable title for a request: its first sentence, without leading
+ * tags such as "[t3 bridge test]" or Slack mentions, cut at a word.
+ */
+export function threadTitle(text: string): string {
+  const cleaned = text
+    .replace(/<[@#!][^>]*>/g, " ")
+    .replace(/^\s*(?:\[[^\]\n]*\]\s*)+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const sentence = /^.*?[.?!](?=\s|$)/.exec(cleaned)?.[0] ?? cleaned;
+  const title = sentence.replace(/^["'“]+|["'”]+$/g, "").trim();
+  if (title === "") return "Slack request";
+  if (title.length <= TITLE_LIMIT) return title;
+  const cut = title.slice(0, TITLE_LIMIT - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${space > TITLE_LIMIT / 2 ? cut.slice(0, space) : cut}…`;
 }
 
 const describeOutcome = (outcome: InboundOutcome) =>
@@ -336,6 +351,8 @@ export class Bridge {
   private readonly seenPosition = new Map<string, number>();
   /** Each chat thread's title as both sides last agreed on it; a rename to it changes nothing. */
   private readonly titles = new Map<string, string>();
+  /** Failed renames to Slack, by chat thread and title. */
+  private readonly renameFailures = new Map<string, number>();
   /** When each refused person was last told, by Slack user id. */
   private readonly refusedAt = new Map<string, number>();
   /** Each chat thread's inbox is worked through by one drain at a time, chained here. */
@@ -580,6 +597,10 @@ export class Bridge {
       chatKey,
       createdByUserId: event.author.userId,
     });
+    // T3 can write a summary title; the request's first sentence stands until it does.
+    await this.threads.regenerateTitle(started.threadId).catch((error: unknown) => {
+      this.log(`Asking T3 for a title for ${started.threadId} failed: ${String(error)}`);
+    });
     await this.bound?.(event.chatThreadKey).catch((error: unknown) => {
       this.log(`Following ${event.chatThreadKey} failed: ${String(error)}`);
     });
@@ -798,10 +819,19 @@ export class Bridge {
     const trimmed = title.trim();
     if (this.rename === undefined || trimmed === "" || this.titles.get(chatThreadKey) === trimmed)
       return;
+    const key = `${chatThreadKey}\n${trimmed}`;
+    const failures = this.renameFailures.get(key) ?? 0;
+    if (failures >= RENAME_ATTEMPTS) return;
     this.titles.set(chatThreadKey, trimmed);
-    this.rename(chatThreadKey, trimmed).catch((error: unknown) => {
-      this.log(`Renaming ${chatThreadKey} failed: ${String(error)}`);
-    });
+    this.rename(chatThreadKey, trimmed).then(
+      () => this.renameFailures.delete(key),
+      (error: unknown) => {
+        // Forget it, so a later check tries again; a new title gets its own tries.
+        if (this.titles.get(chatThreadKey) === trimmed) this.titles.delete(chatThreadKey);
+        this.renameFailures.set(key, failures + 1);
+        this.log(`Renaming ${chatThreadKey} failed (try ${failures + 1}): ${String(error)}`);
+      },
+    );
   }
 
   /** Someone pressed stop on the chat thread: interrupt its T3 thread's run. */

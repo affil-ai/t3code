@@ -566,9 +566,6 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
     "service_unavailable",
     "request_timeout",
   ]);
-  /** Threads where Slack has no session title, such as channel threads that aren't sessions. */
-  const untitled = new Set<string>();
-  const renameRefusals = new Set<string>();
 
   return {
     post: async (message) => {
@@ -635,39 +632,19 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
       await setLegacyStatus(channel, threadTs, state);
     },
     rename: async (chatThreadKey, title) => {
-      if (untitled.has(chatThreadKey)) return;
+      // agents.sessions.rename with channel_id and thread_ts, in DMs and channel threads alike.
       const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
       if (!threadTs) return;
-      const attempt = async (each: string) => {
-        if (each === "") return "skipped";
-        try {
-          await slack.setAssistantTitle(channel, threadTs, each);
-          return "renamed";
-        } catch (error) {
-          const code = slackErrorCode(error);
-          if (code === undefined || TRANSIENT.has(code)) throw error;
-          return code;
-        }
-      };
-      let outcome = await attempt(slackTitle(title));
-      // Slack refuses some characters; try once more with plain ones only.
-      if (outcome === "invalid_name") outcome = await attempt(slackTitle(title, true));
-      if (outcome === "renamed" || outcome === "skipped") return;
-      if (outcome === "invalid_name") {
-        log(
-          "info",
-          `Slack refused the title for ${chatThreadKey} (invalid_name); kept the old one.`,
-        );
-        return;
-      }
-      // This thread has no session title, such as a channel thread that isn't a session.
-      untitled.add(chatThreadKey);
-      if (!renameRefusals.has(outcome)) {
-        renameRefusals.add(outcome);
-        log(
-          "info",
-          `Slack has no title for ${chatThreadKey} (${outcome}); not renaming that thread.`,
-        );
+      const plain = slackTitle(title);
+      if (plain === "") return;
+      try {
+        await slack.setAssistantTitle(channel, threadTs, plain);
+      } catch (error) {
+        // Slack refuses some characters; try once more with plain ones only.
+        if (slackErrorCode(error) !== "invalid_name") throw error;
+        const strict = slackTitle(title, true);
+        if (strict === "" || strict === plain) throw error;
+        await slack.setAssistantTitle(channel, threadTs, strict);
       }
     },
     runDisplay: (run) => {
