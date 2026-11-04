@@ -158,13 +158,16 @@ it("closes the stream before Slack's 10 minutes and goes on in a plan block", as
   ]);
   const close = slack.calls[2];
   assert.strictEqual(close?.args.session_status, "processing");
+  // Steps still going stay in progress, with a pointer to the plan block.
   assert.deepStrictEqual(
-    close?.args.chunks.map((chunk: any) => [chunk.id, chunk.status]),
+    close?.args.chunks.map((chunk: any) => [chunk.id, chunk.status, chunk.output]),
     [
-      ["a", "complete"],
-      ["b", "complete"],
+      ["a", "in_progress", "Continues in the next message."],
+      ["b", "in_progress", "Continues in the next message."],
     ],
   );
+  assert.strictEqual(slack.calls[3]?.args.text, "Working: 2 steps so far");
+  assert.strictEqual(slack.calls[4]?.args.text, "Completed 2 steps");
   assert.strictEqual(slack.calls[3]?.args.blocks[0].type, "plan");
   assert.strictEqual(slack.calls[4]?.args.blocks[0].title, "Completed 2 steps");
   assert.deepStrictEqual(slack.calls[5]?.args.blocks, [

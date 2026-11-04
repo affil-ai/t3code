@@ -353,7 +353,8 @@ export class SlackRunDisplay implements RunDisplay {
     const open = rows
       .filter((row) => this.sentRows.has(row.id))
       .filter((row) => row.status === "in_progress" || row.status === "pending")
-      .map((row) => taskChunk({ ...row, status: "complete", output: "Continues below." }));
+      // Still going: say where it goes on, without calling it done.
+      .map((row) => taskChunk({ ...row, output: "Continues in the next message." }));
     try {
       await this.stopStream({
         ...(open.length > 0 ? { chunks: open } : {}),
@@ -373,7 +374,10 @@ export class SlackRunDisplay implements RunDisplay {
     if (key === this.planSent) return;
     if (this.planTs !== undefined && !final && this.now() - this.planSentAt < PLAN_UPDATE_MS)
       return;
-    const fallback = `${rows.length} steps`;
+    // Slack shows this text in notifications and search.
+    const fallback = final
+      ? planTitle(rows.length, true, this.failed)
+      : `Working: ${rows.length} steps so far`;
     try {
       if (this.planTs === undefined) {
         const posted = await this.options.api("chat.postMessage", {
