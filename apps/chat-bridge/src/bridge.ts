@@ -692,8 +692,8 @@ export class Bridge {
         binding.threadId,
         `Stopped from chat by ${event.author.userId}.`,
       );
+      // The run's end posts "The run was stopped.", so the command posts nothing itself.
       this.log(`Stopped ${binding.threadId} from ${binding.chatThreadKey}.`);
-      await this.notify(event, "Stopped.");
       return { type: "stopped", threadId: binding.threadId };
     }
     this.store.setMuted(binding.chatThreadKey, command === "mute");

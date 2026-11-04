@@ -67,7 +67,7 @@ Socket Mode, so it needs no public URL.
   thread in Slack renames the T3 thread. A title both sides already have
   changes nothing, so the two never rename each other back and forth.
 - **Stop.** `@bot stop` in a thread interrupts its T3 run
-  (`t3_thread_interrupt`), and the bot answers "Stopped." Slack's own stop
+  (`t3_thread_interrupt`), and the thread says "The run was stopped." Slack's own stop
   button (`agent_session_stopped`) does the same where Slack shows it. Only
   people in `allowedUserIds` can stop a run.
 - **Nothing is lost.** Each Slack message is saved to an inbox table in SQLite

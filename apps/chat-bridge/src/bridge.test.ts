@@ -913,11 +913,8 @@ it("stops the run when an allowed user says stop", async () => {
     { type: "ignored", reason: "not_running" },
   );
   assert.deepStrictEqual(
-    posted
-      .slice(0, 1)
-      .concat(posted.slice(-1))
-      .map((reply) => reply.text),
-    ["Stopped.", "Nothing is running here."],
+    posted.map((reply) => reply.text),
+    ["The run was stopped.", "Nothing is running here."],
   );
 });
 
