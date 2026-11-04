@@ -3,7 +3,10 @@ import { assert, it } from "vite-plus/test";
 import {
   chatThreadKeyOf,
   mentionedUserIds,
+  fileShared,
   redactSlackSecrets,
+  uploadedFileIds,
+  waitUntil,
   splitMarkdown,
   stripBotMention,
   toEarlierMessages,
@@ -165,4 +168,34 @@ it("splits long markdown at line breaks and keeps code blocks whole", () => {
   const oneLine = "x".repeat(1000);
   // A line too long for one part is cut, so a part may end mid-line.
   assert.strictEqual(splitMarkdown(oneLine, 300).join("").replaceAll("\n", ""), oneLine);
+});
+
+it("finds the uploaded files and waits until Slack shows them in the thread", async () => {
+  assert.deepStrictEqual(
+    uploadedFileIds({ files: [{ files: [{ id: "F1" }] }, { files: [{ id: "F2" }, {}] }] }),
+    ["F1", "F2"],
+  );
+  const inThread = { shares: { public: { C1: [{ ts: "200.1", thread_ts: "100.1" }] } } };
+  assert.isTrue(fileShared(inThread, "C1", "100.1"));
+  assert.isFalse(fileShared(inThread, "C1", "999.1"));
+  assert.isFalse(fileShared({}, "C1", "100.1"));
+  assert.isTrue(fileShared({ shares: { private: { D1: [{ ts: "5.1" }] } } }, "D1", undefined));
+
+  let clock = 0;
+  let checks = 0;
+  const shown = await waitUntil(async () => ++checks === 3, {
+    timeoutMs: 60_000,
+    intervalMs: 2_000,
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+  });
+  assert.isTrue(shown);
+  assert.strictEqual(checks, 3);
+  const never = await waitUntil(async () => false, {
+    timeoutMs: 6_000,
+    intervalMs: 2_000,
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+  });
+  assert.isFalse(never);
 });

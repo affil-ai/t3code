@@ -1,4 +1,4 @@
-// @effect-diagnostics globalFetch:off -- A plain Node app; it does not use Effect.
+// @effect-diagnostics globalFetch:off globalTimers:off -- A plain Node app; it does not use Effect.
 /**
  * The Chat SDK side of the bridge. It owns the `Chat` instance and the Slack
  * adapter in Socket Mode, turns SDK messages into `InboundEvent`s for the
@@ -271,6 +271,67 @@ export function toInboundEvent(
     files: eventFiles(message.raw),
     mentions: options.mentions ?? [],
   };
+}
+
+/** What `files.uploadV2` returns: one completion per upload, each listing its files. */
+interface UploadResult {
+  readonly files?: ReadonlyArray<{ readonly files?: ReadonlyArray<{ readonly id?: string }> }>;
+}
+
+/** The fields of `files.info` that say where a file is shared. */
+export interface FileShares {
+  readonly shares?: {
+    readonly public?: Record<
+      string,
+      ReadonlyArray<{ readonly ts?: string; readonly thread_ts?: string }>
+    >;
+    readonly private?: Record<
+      string,
+      ReadonlyArray<{ readonly ts?: string; readonly thread_ts?: string }>
+    >;
+  };
+}
+
+const FILE_SHARE_TIMEOUT_MS = 60_000;
+const FILE_SHARE_POLL_MS = 2_000;
+
+export function uploadedFileIds(result: UploadResult): Array<string> {
+  return (result.files ?? []).flatMap((each) =>
+    (each.files ?? []).flatMap((file) => (file.id ? [file.id] : [])),
+  );
+}
+
+/** True once Slack shows the file in the channel, and in the thread when there is one. */
+export function fileShared(
+  file: FileShares | undefined,
+  channel: string,
+  threadTs: string | undefined,
+): boolean {
+  const shares = [
+    ...(file?.shares?.public?.[channel] ?? []),
+    ...(file?.shares?.private?.[channel] ?? []),
+  ];
+  return shares.some((share) => !threadTs || share.thread_ts === threadTs || share.ts === threadTs);
+}
+
+/** Calls `check` until it is true or the time is up; false when the time ran out. */
+export async function waitUntil(
+  check: () => Promise<boolean>,
+  options: {
+    readonly timeoutMs: number;
+    readonly intervalMs: number;
+    readonly now?: () => number;
+    readonly sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<boolean> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadline = now() + options.timeoutMs;
+  for (;;) {
+    if (await check()) return true;
+    if (now() >= deadline) return false;
+    await sleep(options.intervalMs);
+  }
 }
 
 export async function startSlackChatHost(options: SlackChatHostOptions): Promise<SlackChatHost> {
@@ -582,12 +643,28 @@ export async function startSlackChatHost(options: SlackChatHostOptions): Promise
       // `initial_comment` puts the text on the file message itself, in mrkdwn.
       const { channel, threadTs } = slack.decodeThreadId(message.chatThreadKey);
       const comment = last.trim() === "" ? "" : mrkdwn.toResponseUrlText({ markdown: last });
-      await slack.webClient.files.uploadV2({
+      const uploaded = (await slack.webClient.files.uploadV2({
         channel_id: channel,
         ...(threadTs ? { thread_ts: threadTs } : {}),
         ...(comment ? { initial_comment: comment } : {}),
         file_uploads: files.map((file) => ({ file: file.data, filename: file.filename })),
-      });
+      })) as unknown as UploadResult;
+      // Slack posts the file in the background, sometimes most of a minute later. Wait
+      // for it, so the agent's next message, often its answer, can't land first.
+      const ids = uploadedFileIds(uploaded);
+      const waited = await waitUntil(
+        async () => {
+          for (const id of ids) {
+            const info = (await slack.webClient.files.info({ file: id })) as unknown as {
+              file?: FileShares;
+            };
+            if (!fileShared(info.file, channel, threadTs)) return false;
+          }
+          return true;
+        },
+        { timeoutMs: FILE_SHARE_TIMEOUT_MS, intervalMs: FILE_SHARE_POLL_MS },
+      );
+      if (!waited) log("warn", `Slack hadn't shown ${ids.join(", ")} in ${channel} after 60 s.`);
     },
     react: async ({ chatThreadKey, messageId, emoji }) => {
       const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
