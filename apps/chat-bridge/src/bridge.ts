@@ -1349,8 +1349,13 @@ export class Bridge {
     });
   }
 
-  /** Reads what the run is doing and shows it. A failed read is only logged. */
-  private async check(reply: OwedReply, feed: RunFeed): Promise<void> {
+  /**
+   * Reads what the run is doing and shows it. A failed read is only logged.
+   * On the last read, once the run has ended, only its steps and plan are
+   * shown: a status sent then can land after the answer and, in Linear,
+   * reopen the session.
+   */
+  private async check(reply: OwedReply, feed: RunFeed, ended = false): Promise<void> {
     try {
       await feed.read();
     } catch (error) {
@@ -1359,8 +1364,13 @@ export class Bridge {
     }
     const key = reply.chatThreadKey;
     this.seenPosition.set(key, Math.max(this.seenPosition.get(key) ?? -1, feed.lastPosition));
-    this.runWaiting(key, reply.runId, feed.waiting);
     this.syncTitle(key, feed.title);
+    if (ended) {
+      await this.listSteps(reply, feed);
+      await this.showPlan(reply, feed);
+      return;
+    }
+    this.runWaiting(key, reply.runId, feed.waiting);
     // The agent's own words stand until it takes its next step.
     const note = this.notes.get(key);
     if (note !== undefined && feed.lastPosition > note.at) this.notes.delete(key);
@@ -1422,8 +1432,9 @@ export class Bridge {
         runId = waited.runId;
         feed.follow(runId);
       }
-      await this.check(reply, feed);
-      if (waited.timedOut || !TERMINAL_STATUSES.has(waited.status)) continue;
+      const ended = !waited.timedOut && TERMINAL_STATUSES.has(waited.status);
+      await this.check(reply, feed, ended);
+      if (!ended) continue;
       try {
         await this.answer(reply, waited.runId, waited.status);
         this.followDelegatedWork({ ...reply, runId: waited.runId });

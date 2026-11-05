@@ -761,7 +761,7 @@ it("sets processing while a run goes, suspended while T3 waits on the user, and 
     "slack:C1:100.1 suspended Thinking…",
     "slack:C1:100.1 processing Thinking…",
     "slack:C1:100.1 suspended Thinking…",
-    "slack:C1:100.1 processing Thinking…",
+    // Once the run has ended, no status before the answer; straight to active.
     "slack:C1:100.1 active",
   ]);
 });
@@ -1005,6 +1005,31 @@ it("asks without buttons as numbered text that carries the options to pick from"
   assert.deepStrictEqual(answered?.args.answers, { q1: "prod" });
   t3.finish("run-1", "completed", "Deployed.");
   await bridge.idle();
+});
+
+it("sends no status once the run has ended, so nothing lands after the answer", async () => {
+  const { t3, bridge, statuses, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.activity.push({
+    itemId: "count",
+    type: "command_execution",
+    runId: "run-1",
+    status: "running",
+    text: "$ /bin/bash -lc 'for i in $(seq 1 60); do echo $i; sleep 1; done'",
+  });
+  await t3.tick();
+  // Stopped: the command and the run end together.
+  t3.activity[0]!.status = "interrupted";
+  t3.finish("run-1", "interrupted");
+  await bridge.idle();
+  assert.deepStrictEqual(posted, [
+    { chatThreadKey: "slack:C1:100.1", text: "The run was stopped." },
+  ]);
+  assert.deepStrictEqual(statuses, [
+    "slack:C1:100.1 processing Thinking…",
+    "slack:C1:100.1 processing Running `for i in $(seq 1 60); do echo $i; sleep …",
+    "slack:C1:100.1 active",
+  ]);
 });
 
 it("asks the agent's question with buttons and hands a click back to T3", async () => {
