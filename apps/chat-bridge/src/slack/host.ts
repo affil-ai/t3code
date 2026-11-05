@@ -745,7 +745,6 @@ export function createSlackHost(options: SlackChatHostOptions): {
       download,
       startThread: async (channel, text) => {
         // A user id posts in the bot's DM with them, which needs only chat:write.
-        // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Slack's Web API, not window.postMessage.
         const posted = await slack.webClient.chat.postMessage({
           channel,
           text: mrkdwn.toResponseUrlText({ markdown: text }),
