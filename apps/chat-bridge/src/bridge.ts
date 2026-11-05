@@ -202,6 +202,8 @@ const DEFAULT_MODEL: ModelSelection = {
 /** How long one wait for a thread's delegated work lasts, and how long the bridge keeps following it. */
 const DELEGATED_CHECK_MS = 20_000;
 const DELEGATED_FOLLOW_MS = 6 * 60 * 60 * 1000;
+/** At most this long an answer waits for the one owed before it, so a stuck run can't hold up the rest. */
+const ANSWER_ORDER_WAIT_MS = 60_000;
 /** Posted when the bridge stops following work that is still running. */
 const CAP_NOTE =
   "Still working, but I've stopped watching for updates here after six hours. Check the thread in T3 for the rest.";
@@ -389,6 +391,12 @@ const requestId = (eventId: string) => `chat-bridge:${eventId}`.slice(0, 256);
 export class Bridge {
   /** Runs with a watcher, so a run is watched once. */
   private readonly watching = new Map<string, Promise<void>>();
+  /**
+   * Per conversation, settled once the answer owed last has been posted or
+   * given up on. Answers post in the order their runs were owed, so two runs
+   * ending together can't swap.
+   */
+  private readonly answerQueue = new Map<string, Promise<void>>();
   /** The chat thread of each run being watched. */
   private readonly watchedRuns = new Map<string, string>();
   /** Steps listed per run, for `MAX_STEPS_PER_RUN`. */
@@ -982,12 +990,32 @@ export class Bridge {
   private watch(reply: OwedReply): void {
     if (this.watching.has(reply.runId)) return;
     this.runStarted(reply.chatThreadKey);
+    const before = this.answerQueue.get(reply.chatThreadKey);
+    let answered = () => {};
+    const mine = new Promise<void>((resolve) => (answered = resolve));
+    this.answerQueue.set(reply.chatThreadKey, mine);
     this.watching.set(
       reply.runId,
-      this.watchUntilAnswered(reply).finally(() => {
+      this.watchUntilAnswered(reply, before).finally(() => {
+        answered();
+        if (this.answerQueue.get(reply.chatThreadKey) === mine) {
+          this.answerQueue.delete(reply.chatThreadKey);
+        }
         this.runEnded(reply.chatThreadKey, reply.runId);
       }),
     );
+  }
+
+  /** Waits for the answer owed before this one, for at most `ANSWER_ORDER_WAIT_MS`. */
+  private async afterEarlierAnswer(before: Promise<void> | undefined): Promise<void> {
+    if (before === undefined) return;
+    let timer: NodeJS.Timeout | undefined;
+    const limit = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ANSWER_ORDER_WAIT_MS);
+      timer.unref();
+    });
+    await Promise.race([before, limit]);
+    clearTimeout(timer);
   }
 
   /**
@@ -1534,7 +1562,7 @@ export class Bridge {
     });
   }
 
-  private async watchUntilAnswered(reply: OwedReply): Promise<void> {
+  private async watchUntilAnswered(reply: OwedReply, before?: Promise<void>): Promise<void> {
     this.watchedRuns.set(reply.runId, reply.chatThreadKey);
     const feed = new RunFeed(this.threads, reply.threadId, reply.runId);
     let postFailures = 0;
@@ -1555,6 +1583,7 @@ export class Bridge {
       const ended = !waited.timedOut && TERMINAL_STATUSES.has(waited.status);
       await this.check(reply, feed, ended);
       if (!ended) continue;
+      await this.afterEarlierAnswer(before);
       try {
         await this.answer(reply, waited.runId, waited.status);
         this.followDelegatedWork({ ...reply, runId: waited.runId });

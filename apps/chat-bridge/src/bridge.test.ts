@@ -1775,3 +1775,24 @@ it("says so in the chat when six hours pass with background work still running",
   assert.lengthOf(posted, 2);
   assert.lengthOf(store.follows(), 0);
 });
+
+it("posts the answers of runs that end together in the order they were owed", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", "Started a subagent.");
+  await t3.tick();
+  // The subagent's two completions start two runs, one after the other.
+  t3.activity.push({ itemId: "wake-5", type: "notification", runId: "run-5", status: "running" });
+  t3.activity.push({ itemId: "wake-6", type: "notification", runId: "run-6", status: "running" });
+  t3.options.delegatedPending = false;
+  await t3.tick();
+  // The later run's answer is ready first.
+  t3.finish("run-6", "completed", "subagent-result: done");
+  t3.finish("run-5", "completed", "subagent-result: still waiting");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Started a subagent.", "subagent-result: still waiting", "subagent-result: done"],
+  );
+});
