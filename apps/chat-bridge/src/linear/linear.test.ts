@@ -283,7 +283,11 @@ it("takes Linear uploads out of a prompt as files, leaving a note where each lin
   );
   assert.notInclude(text, "uploads.linear.app");
   assert.deepStrictEqual(uploadEventFiles(uploads), [
-    { name: "shot.png", url: "https://uploads.linear.app/a/b/shot.png?sig=1" },
+    {
+      name: "shot.png",
+      mimeType: "image/png",
+      url: "https://uploads.linear.app/a/b/shot.png?sig=1",
+    },
     { name: "report.pdf", url: "https://uploads.linear.app/c/report.pdf" },
     // HEIC arrives as JPEG, as iMessage photos do.
     { name: "IMG_1.jpg", mimeType: "image/jpeg", url: "https://uploads.linear.app/d/IMG_1.HEIC" },
@@ -553,4 +557,26 @@ it("logs each webhook's method, path, status and event type, and nothing from it
   } finally {
     server.close();
   }
+});
+
+it("turns Linear's <linear-image> tag into an image file named by its title, and drops the tag", () => {
+  const src =
+    "https://uploads.linear.app/org/cb49cf42-313f-4ab6-8667-297cbe3f8588?signature=secret";
+  const tag = (attrs: Record<string, unknown>) =>
+    `<linear-image>${JSON.stringify({ type: "image", attrs })}</linear-image>`;
+  const { text, uploads } = takeUploads(
+    `${tag({ src, title: "image.png", width: 1246 })}\n\nwhat is this?\n${tag({ src: "https://uploads.linear.app/org/untitled" })}`,
+  );
+  assert.strictEqual(text, "[image: image.png]\n\nwhat is this?\n[image: untitled]");
+  assert.notInclude(text, "signature");
+  assert.deepStrictEqual(uploadEventFiles(uploads), [
+    { name: "image.png", mimeType: "image/png", url: src },
+    // No extension: still an image, named so T3 shows it to the model.
+    { name: "untitled.png", mimeType: "image/png", url: "https://uploads.linear.app/org/untitled" },
+  ]);
+  // A tag that isn't JSON is left alone, and its link still never survives.
+  const broken = takeUploads(
+    "<linear-image>{not json https://uploads.linear.app/x/y}</linear-image>",
+  );
+  assert.notInclude(broken.text, "uploads.linear.app");
 });

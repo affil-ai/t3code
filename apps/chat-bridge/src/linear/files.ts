@@ -16,12 +16,28 @@ const UPLOAD_HOST = "uploads.linear.app";
 
 /** `![alt](url)` or `[name](url)` on Linear's upload host. */
 const UPLOAD_LINK = /(!?)\[([^\]\n]*)\]\((https:\/\/uploads\.linear\.app\/[^\s)]+)\)/g;
+/** Linear's own image tag in prompts: `<linear-image>{"type":"image","attrs":{"src":…,"title":…}}</linear-image>`. */
+const IMAGE_TAG = /<linear-image>([\s\S]*?)<\/linear-image>/g;
 /** An upload URL on its own. */
 const UPLOAD_URL = /https:\/\/uploads\.linear\.app\/[^\s)>\]"']+/g;
 
 export interface LinearUpload {
   readonly url: string;
   readonly name: string;
+  /** Linear said it is an image, even when its name doesn't. */
+  readonly image?: boolean | undefined;
+}
+
+/** The source and title of a `<linear-image>` tag's JSON; nothing when it doesn't parse. */
+function imageTag(json: string): { readonly src: string; readonly title: string } | undefined {
+  try {
+    const attrs = (JSON.parse(json) as { readonly attrs?: Record<string, unknown> }).attrs;
+    const src = attrs?.src;
+    if (typeof src !== "string") return undefined;
+    return { src, title: typeof attrs?.title === "string" ? attrs.title : "" };
+  } catch {
+    return undefined;
+  }
 }
 
 /** A safe file name from a link's text or its URL's last segment. */
@@ -47,11 +63,22 @@ export function takeUploads(markdown: string): {
 } {
   const uploads = new Map<string, LinearUpload>();
   const note = (image: boolean, label: string, url: string) => {
-    const name = uploads.get(url)?.name ?? uploadName(label, url);
-    uploads.set(url, { url, name });
-    return `[${image ? "image" : "file"}: ${name}]`;
+    const known = uploads.get(url);
+    const name = known?.name ?? uploadName(label, url);
+    const isImage = image || known?.image === true;
+    uploads.set(url, { url, name, ...(isImage ? { image: true } : {}) });
+    return `[${isImage ? "image" : "file"}: ${name}]`;
   };
   const text = markdown
+    // The whole tag goes, so its JSON (and the link inside) never reaches the agent.
+    .replace(IMAGE_TAG, (whole, json: string) => {
+      const tag = imageTag(json);
+      if (tag === undefined) return whole;
+      if (!tag.src.startsWith(`https://${UPLOAD_HOST}/`)) {
+        return `[image: ${uploadName(tag.title, tag.src)}]`;
+      }
+      return note(true, tag.title, tag.src);
+    })
     .replace(UPLOAD_LINK, (_whole, bang: string, label: string, url: string) =>
       note(bang === "!", label, url),
     )
@@ -88,12 +115,26 @@ export async function heicToJpeg(bytes: Uint8Array): Promise<Uint8Array> {
 
 /** The uploads as the event's files; `downloadUpload` fetches each when T3 imports it. */
 export function uploadEventFiles(uploads: ReadonlyArray<LinearUpload>): ReadonlyArray<EventFile> {
-  return uploads.map((upload) =>
-    HEIC.test(upload.name)
-      ? { name: upload.name.replace(HEIC, ".jpg"), mimeType: "image/jpeg", url: upload.url }
-      : { name: upload.name, url: upload.url },
-  );
+  return uploads.map((upload) => {
+    if (HEIC.test(upload.name)) {
+      return { name: upload.name.replace(HEIC, ".jpg"), mimeType: "image/jpeg", url: upload.url };
+    }
+    if (upload.image !== true) return { name: upload.name, url: upload.url };
+    // An image T3 can show the model; without a known extension, say PNG, as Linear's pastes are.
+    const type = IMAGE_TYPES[upload.name.split(".").pop()?.toLowerCase() ?? ""];
+    return type === undefined
+      ? { name: `${upload.name}.png`, mimeType: "image/png", url: upload.url }
+      : { name: upload.name, mimeType: type, url: upload.url };
+  });
 }
+
+const IMAGE_TYPES: Readonly<Record<string, string>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
 
 /** Downloads an upload with the bridge's token, sent to Linear's upload host alone; HEIC comes back as JPEG. */
 export async function downloadUpload(
