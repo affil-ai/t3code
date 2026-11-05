@@ -222,6 +222,35 @@ export class BridgeStore {
     for (const eventId of eventIds) remove.run(eventId);
   }
 
+  /** The keys of bound conversations that start with `prefix`, such as `linear:`. */
+  boundKeys(prefix: string): Array<string> {
+    return this.db
+      .prepare("SELECT chat_thread_key FROM binding WHERE substr(chat_thread_key, 1, ?) = ?")
+      .all(prefix.length, prefix)
+      .map((row) => String(row.chat_thread_key));
+  }
+
+  /**
+   * Gives a conversation a new key in every table, such as when Linear moved
+   * from one per session to one per issue. False when `to` is already bound.
+   */
+  moveConversation(from: string, to: string): boolean {
+    if (this.binding(to) !== undefined) return false;
+    this.db.exec("BEGIN");
+    try {
+      for (const table of ["binding", "thread_context", "owed_reply", "inbox", "question"]) {
+        this.db
+          .prepare(`UPDATE ${table} SET chat_thread_key = ? WHERE chat_thread_key = ?`)
+          .run(to, from);
+      }
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   /** Bindings made since `since` (epoch ms), newest first. */
   recentBindings(since: number, limit: number): Array<Binding> {
     return this.db
@@ -290,17 +319,27 @@ export class BridgeStore {
 
   /** Every Slack message before this time (epoch ms) has been saved or handled. */
   caughtUpTo(): number | undefined {
-    const row = this.db.prepare("SELECT value FROM bridge_meta WHERE key = 'caught_up_to'").get();
-    return row === undefined ? undefined : Number(row.value);
+    const value = this.meta("caught_up_to");
+    return value === undefined ? undefined : Number(value);
   }
 
   setCaughtUpTo(time: number): void {
+    this.setMeta("caught_up_to", String(time));
+  }
+
+  /** A value a platform keeps across restarts, such as the session a Linear issue answers in. */
+  meta(key: string): string | undefined {
+    const row = this.db.prepare("SELECT value FROM bridge_meta WHERE key = ?").get(key);
+    return row === undefined ? undefined : String(row.value);
+  }
+
+  setMeta(key: string, value: string): void {
     this.db
       .prepare(
-        `INSERT INTO bridge_meta (key, value) VALUES ('caught_up_to', ?)
+        `INSERT INTO bridge_meta (key, value) VALUES (?, ?)
           ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       )
-      .run(String(time));
+      .run(key, value);
   }
 
   /** True once the chat is owed the run's reply, whether or not it was posted. */

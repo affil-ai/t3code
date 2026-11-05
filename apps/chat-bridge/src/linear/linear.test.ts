@@ -580,3 +580,59 @@ it("turns Linear's <linear-image> tag into an image file named by its title, and
   );
   assert.notInclude(broken.text, "uploads.linear.app");
 });
+
+it("makes an issue one conversation: every session feeds it, and replies go to the latest session", async () => {
+  const events: Array<InboundEvent> = [];
+  const posts: Array<string> = [];
+  const thoughts: Array<string> = [];
+  const kept = new Map<string, string>();
+  const { deliver, platform } = linearPlatform({
+    chat: () =>
+      ({
+        thread: (id: string) => ({
+          post: async (message: { markdown: string }) =>
+            void posts.push(`${id} ${message.markdown}`),
+          subscribe: async () => {},
+        }),
+      }) as never,
+    adapter: () => ({
+      startTyping: async (thread: string, status?: string) =>
+        void thoughts.push(`${thread} ${status}`),
+      addReaction: async () => {},
+      linearClient: {
+        ...noSession,
+        issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
+        fileUpload: async () => ({}),
+      },
+    }),
+    access: { allowedUserIds: [], allowEveryone: true },
+    teams: [],
+    defaultRoute: { projectId: "p" },
+    onEvent: async (event) => {
+      events.push(event);
+      return { type: "pending" };
+    },
+    log: () => {},
+    // Kept across restarts.
+    sessions: { get: (key) => kept.get(key), set: (key, id) => void kept.set(key, id) },
+  });
+  const first = "linear:issue-1:c:c-1:s:session-1";
+  const second = "linear:issue-1:c:c-5:s:session-2";
+  await deliver({ id: first } as Thread, message("c-1"), undefined, "mention");
+  await platform.post({ chatThreadKey: "linear:issue-1", text: "first answer" });
+  // A new @office mention on the same issue opens session 2: same conversation.
+  await deliver({ id: second } as Thread, message("c-5"), undefined, "mention");
+  await platform.setState!("linear:issue-1", "processing", "Running `pnpm test`");
+  await platform.post({ chatThreadKey: "linear:issue-1", text: "second answer" });
+  assert.deepStrictEqual(
+    events.map((event) => event.chatThreadKey),
+    ["linear:issue-1", "linear:issue-1"],
+  );
+  assert.deepStrictEqual(posts, [`${first} first answer`, `${second} second answer`]);
+  assert.include(thoughts, `${second} Running \`pnpm test\``);
+  assert.strictEqual(kept.get("linear:issue-1"), second);
+  // A conversation bound to one session, from before issues shared a thread, still answers there.
+  await platform.post({ chatThreadKey: first, text: "old binding" });
+  assert.strictEqual(posts.at(-1), `${first} old binding`);
+  assert.include(platform.firstTurnNote("key", events[0]!), "every agent session");
+});

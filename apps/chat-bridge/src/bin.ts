@@ -18,7 +18,7 @@ import { createChatState } from "./chatState.ts";
 import { dataDir, loadConfig } from "./config.ts";
 import { login, savedToken } from "./login.ts";
 import { createImessageAdapter } from "./imessage/adapter.ts";
-import { type LinearApi, linearPlatform } from "./linear/platform.ts";
+import { type LinearApi, issueKeyOf, linearPlatform, sessionIdOf } from "./linear/platform.ts";
 import { authRetry, retryMethods, startInBackground } from "./linear/startup.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
@@ -171,6 +171,18 @@ async function start(): Promise<void> {
             ],
             retry,
           );
+          // A Linear issue is one conversation; bindings from when each session was one move to
+          // their issue, and the session stays the place to answer until a newer one comes.
+          for (const key of store.boundKeys("linear:")) {
+            if (sessionIdOf(key) === undefined) continue;
+            const issueKey = issueKeyOf(key);
+            if (store.moveConversation(key, issueKey)) {
+              if (store.meta(`linear_session:${issueKey}`) === undefined) {
+                store.setMeta(`linear_session:${issueKey}`, key);
+              }
+              log(`Linear: ${key} is now the conversation for ${issueKey}.`);
+            }
+          }
           const { platform, deliver } = linearPlatform({
             chat: () => chat,
             adapter: () =>
@@ -187,6 +199,10 @@ async function start(): Promise<void> {
             log,
             retry,
             isHandled: (eventId) => store.isHandled(eventId),
+            sessions: {
+              get: (issueKey) => store.meta(`linear_session:${issueKey}`),
+              set: (issueKey, threadId) => store.setMeta(`linear_session:${issueKey}`, threadId),
+            },
           });
           platforms.push(platform);
           // Chat starts adapters together; Linear's token fetch must not hold up or fail the others.

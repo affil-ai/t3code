@@ -1,8 +1,9 @@
 // @effect-diagnostics globalFetch:off -- A plain Node app; it does not use Effect.
 /**
- * Linear for the bridge core, in agent-sessions mode: a session is one T3
- * thread and its prompts are follow-ups. A run shows as thoughts for status,
- * an action per finished step, and a response for the answer alone.
+ * Linear for the bridge core, in agent-sessions mode. An issue is one T3
+ * thread: every session on it (each @mention or delegation) continues that
+ * thread, and replies go to the session the latest prompt came from. A run
+ * shows as thoughts for status, an action per step and a response for the answer.
  */
 import type { LinearAdapter } from "@chat-adapter/linear";
 import type { Chat, Message } from "chat";
@@ -70,6 +71,9 @@ const RECONCILE_LAST = 20;
 /** The issue a Linear thread id (`linear:{issueId}[:c:{commentId}][:s:{sessionId}]`) is on. */
 export const issueIdOf = (threadId: string) => threadId.split(":")[1] ?? "";
 
+/** The core's key for an issue's conversation, shared by all its sessions. */
+export const issueKeyOf = (threadId: string) => `linear:${issueIdOf(threadId)}`;
+
 /** The agent session a Linear thread id is in, if any. */
 export const sessionIdOf = (threadId: string): string | undefined => {
   const parts = threadId.split(":");
@@ -97,7 +101,7 @@ export function linearEvent(
   const text = takeUploads(message.text).text;
   return {
     eventId: `linear:${message.id}`,
-    chatThreadKey: threadId,
+    chatThreadKey: issueKeyOf(threadId),
     // The team routes the thread; a team without a route takes the default one.
     channelId: teamKey,
     messageId: message.id,
@@ -135,7 +139,7 @@ export function missedPromptEvent(
   const { text, uploads } = takeUploads(prompt.body);
   return {
     eventId: `linear:${prompt.id}`,
-    chatThreadKey: threadId,
+    chatThreadKey: issueKeyOf(threadId),
     channelId: teamKey,
     messageId: prompt.id,
     kind: "follow_up",
@@ -203,15 +207,36 @@ export function linearPlatform(options: {
   readonly retry?: Retry;
   /** Whether the core already handled an event, such as before a restart. */
   readonly isHandled?: (eventId: string) => boolean;
+  /** Each issue's latest session thread, kept across restarts so owed replies still find it. */
+  readonly sessions?: {
+    readonly get: (issueKey: string) => string | undefined;
+    readonly set: (issueKey: string, sessionThreadId: string) => void;
+  };
 }): { readonly platform: ChatPlatform; readonly deliver: Deliver } {
   const retry = options.retry ?? noRetry;
+  const latestSession = new Map<string, string>();
+  const sessions = options.sessions ?? {
+    get: (issueKey: string) => latestSession.get(issueKey),
+    set: (issueKey: string, threadId: string) => void latestSession.set(issueKey, threadId),
+  };
+  /**
+   * The Chat SDK thread to answer in: the session the issue's latest prompt
+   * came from. A key that is already a session thread (from before issues
+   * shared a thread) answers there.
+   */
+  const sessionThread = (chatThreadKey: string): string => {
+    if (sessionIdOf(chatThreadKey) !== undefined) return chatThreadKey;
+    const latest = sessions.get(chatThreadKey);
+    if (latest === undefined) throw new Error(`No Linear session for ${chatThreadKey} yet.`);
+    return latest;
+  };
   const client = () => options.adapter().linearClient;
   /** An activity in the thread's session; false outside a session. */
   const activity = async (
     chatThreadKey: string,
     content: Readonly<Record<string, string>>,
   ): Promise<boolean> => {
-    const agentSessionId = sessionIdOf(chatThreadKey);
+    const agentSessionId = sessionIdOf(sessionThread(chatThreadKey));
     if (agentSessionId === undefined) return false;
     await retry(() => client().createAgentActivity({ agentSessionId, content }));
     return true;
@@ -277,6 +302,8 @@ export function linearPlatform(options: {
   };
   const deliver: Deliver = async (thread, message, context, route) => {
     const kind = route === "subscribed" ? "follow_up" : "mention";
+    // Replies go where the person last asked.
+    sessions.set(issueKeyOf(thread.id), thread.id);
     // Linear marks a session unresponsive without an activity within seconds; say something
     // first, without holding up the hand-off.
     void options
@@ -317,14 +344,15 @@ export function linearPlatform(options: {
   const platform: ChatPlatform = {
     id: "linear",
     name: "Linear",
-    place: "Linear agent session",
+    place: "Linear issue's latest agent session",
     access: options.access,
     channelRoutes,
     directRoute: options.defaultRoute,
     person: (userId, name) => (name ? `${name} (Linear user ${userId})` : `Linear user ${userId}`),
     firstTurnNote: (chatKey) =>
       [
-        "Your final message in each run is posted to this Linear agent session as its response, in Markdown. Linear shows your progress while you work.",
+        "This thread is the Linear issue's conversation: every agent session and @mention of you on the issue continues it, so earlier sessions' messages are yours too.",
+        "Your final message in each run is posted, in Markdown, as the response in the session the latest message came from. Linear shows your progress while you work.",
         "If a message needs no reply, end the run without a final message and nothing is posted.",
         "Files and images people attach in Linear arrive as files in your turn.",
         `To attach files or images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace; images show inline.`,
@@ -344,7 +372,7 @@ export function linearPlatform(options: {
         return;
       if (kind === "update" && (await activity(chatThreadKey, { type: "thought", body: markdown })))
         return;
-      await chat().thread(chatThreadKey).post({ markdown });
+      await chat().thread(sessionThread(chatThreadKey)).post({ markdown });
     },
     step: async (chatThreadKey, step) => {
       await activity(chatThreadKey, {
@@ -361,15 +389,15 @@ export function linearPlatform(options: {
         }),
       ),
     react: ({ chatThreadKey, messageId, emoji }) =>
-      options.adapter().addReaction(chatThreadKey, messageId, emoji),
+      options.adapter().addReaction(sessionThread(chatThreadKey), messageId, emoji),
     setState: async (chatThreadKey, state, text) => {
       // A thought shows what the run is doing; the response ends the session's turn.
       if (state === "processing" && text !== "") {
-        await options.adapter().startTyping(chatThreadKey, text);
+        await options.adapter().startTyping(sessionThread(chatThreadKey), text);
       }
     },
     bound: async (chatThreadKey) => {
-      await chat().thread(chatThreadKey).subscribe();
+      await chat().thread(sessionThread(chatThreadKey)).subscribe();
     },
   };
   return { platform, deliver };

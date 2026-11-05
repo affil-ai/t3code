@@ -531,7 +531,8 @@ export class Bridge {
    */
   private async isPlainFollowUp(event: InboundEvent): Promise<boolean> {
     const binding = this.store.binding(event.chatThreadKey);
-    if (binding === undefined || event.kind !== "follow_up" || !event.addressed) return false;
+    // In a bound conversation a mention is a follow-up too, such as a new Linear session on the issue.
+    if (binding === undefined || !event.addressed) return false;
     if (isAside(event.text) || event.forAnotherBot === true) return false;
     if (controlCommand(event.text) !== undefined) return false;
     if (parseModelCommand(event.text).command !== undefined) return false;

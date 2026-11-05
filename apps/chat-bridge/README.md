@@ -432,14 +432,21 @@ mode, on Linear's Agents API), so it shows natively:
 
 - **What starts a run:** an agent session. Mentioning the app in a comment
   (`@office …`) starts one, and so does delegating or assigning an issue to
-  it. Each session is one T3 thread. Replies in the session follow up in the
-  same thread. Plain comments that don't mention the app start nothing.
-- **What shows in Linear:** a "thought" as soon as the session starts (Linear
-  marks a session unresponsive after a few seconds without one), the run's
-  status as thoughts while it works, and the final message as the session's
-  response, in Markdown.
-- **What the agent gets:** the comment, plus Linear's context for the session
-  (the issue, its description and comments) on the first turn.
+  it. Plain comments that don't mention the app start nothing.
+- **One T3 thread per issue.** Every session on an issue continues the
+  issue's thread, so a new `@office` mention picks up where the last session
+  left off. Prompts in any of its sessions follow up there and steer a run in
+  flight. Each answer goes to the session the latest prompt came from.
+- **What shows in Linear:** a "thought" as soon as a session gets a prompt
+  (Linear marks a session unresponsive after a few seconds without one), the
+  run's status as thoughts, an "action" for each finished step (such as "Ran
+  `pnpm test`", with no output), and the final message as the response, in
+  Markdown. Only the answer is a response; a question is an elicitation.
+- **What the agent gets:** the prompt, plus Linear's context for a new
+  session (the issue, its description and comments). Images and files in a
+  prompt are downloaded with the bridge's token and arrive as files, HEIC as
+  JPEG; their signed links never reach the agent. A prompt whose webhook was
+  lost is handed over with the next one.
 - **Files:** the agent sends files with `chat_post`. They are uploaded to
   Linear and linked in the response, and images show inline. `chat_react`
   reacts to comments.
