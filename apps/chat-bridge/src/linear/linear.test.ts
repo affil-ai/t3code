@@ -1011,3 +1011,88 @@ it("keeps a plain comment as context once a session hasn't claimed it, and never
   assert.include(events[0], { eventId: "linear:c-6", contextOnly: true, addressed: false });
   assert.strictEqual(events[0]!.text, "fyi: staging is down [image: shot]");
 });
+
+it("creates an issue and opens a session for an orchestrator, and ignores that session's own announcement", async () => {
+  const calls: Array<string> = [];
+  const thoughts: Array<string> = [];
+  const events: Array<InboundEvent> = [];
+  const kept = new Map<string, string>();
+  const issue = {
+    id: "issue-9",
+    identifier: "AFF-9",
+    url: "https://linear.app/affil/issue/AFF-9",
+    team: Promise.resolve({ key: "AFF" }),
+  };
+  const parts = linearPlatform({
+    chat: () => ({ thread: () => ({ subscribe: async () => {} }) }) as never,
+    adapter: () => ({
+      startTyping: async (thread: string, status?: string) =>
+        void thoughts.push(`${thread} ${status}`),
+      botUserId: "bot",
+      linearClient: {
+        ...noSession,
+        fileUpload: async () => ({}),
+        issue: async (id: string) => {
+          calls.push(`issue ${id}`);
+          return issue;
+        },
+        teams: async ({ filter }: { filter: { key: { eq: string } } }) => {
+          calls.push(`teams ${filter.key.eq}`);
+          return { nodes: [{ id: "team-1", key: filter.key.eq }] };
+        },
+        createIssue: async (input: { teamId: string; title: string; description?: string }) => {
+          calls.push(`create ${input.teamId} ${input.title} ${input.description}`);
+          return { issueId: "issue-9" };
+        },
+        agentSessionCreateOnIssue: async ({ issueId }: { issueId: string }) => {
+          calls.push(`session ${issueId}`);
+          return { agentSessionId: "session-9" };
+        },
+      },
+    }),
+    access: { allowedUserIds: [], allowEveryone: true },
+    teams: [],
+    defaultRoute: { projectId: "p" },
+    onEvent: async (event) => {
+      events.push(event);
+      return { type: "pending" };
+    },
+    log: () => {},
+    sessions: { get: (key) => kept.get(key), set: (key, id) => void kept.set(key, id) },
+  });
+  const created = await parts.createIssue({ team: "aff", title: "Fix it", description: "Why" });
+  assert.deepStrictEqual(created, {
+    issueId: "issue-9",
+    identifier: "AFF-9",
+    url: "https://linear.app/affil/issue/AFF-9",
+    teamKey: "AFF",
+  });
+  const sessionThread = await parts.openSession(created);
+  assert.strictEqual(sessionThread, "linear:issue-9:s:session-9");
+  assert.deepStrictEqual(calls, [
+    "teams AFF",
+    "create team-1 Fix it Why",
+    "issue issue-9",
+    "session issue-9",
+  ]);
+  // Answers go to the new session, which says something at once.
+  assert.strictEqual(kept.get("linear:issue-9"), sessionThread);
+  assert.deepStrictEqual(thoughts, [`${sessionThread} Working in T3`]);
+  assert.include(parts.workNote(created, "key-9"), "Chat key: key-9");
+  assert.include(parts.workNote(created, "key-9"), "AFF-9");
+
+  // Linear announces the session the bridge opened: not a prompt. A prompt in it later is.
+  const announcement = new Message({
+    ...message("x"),
+    id: "agent-session-session-9",
+    threadId: sessionThread,
+  });
+  await parts.deliver({ id: sessionThread } as Thread, announcement, undefined, "subscribed");
+  assert.lengthOf(events, 0);
+  const prompt = new Message({ ...message("x"), id: "c-20", threadId: sessionThread });
+  await parts.deliver({ id: sessionThread } as Thread, prompt, undefined, "subscribed");
+  assert.deepStrictEqual(
+    events.map((event) => event.eventId),
+    ["linear:c-20"],
+  );
+});

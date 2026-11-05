@@ -464,6 +464,17 @@ mode, on Linear's Agents API), so it shows natively:
 - **Stop:** the session menu's "Send stop request" interrupts the run. The
   bridge checks Linear's signature before acting, and the stopped run's last
   word is "The run was stopped." (or "Nothing was running.").
+- **Work an orchestrator starts:** an ordinary T3 thread can hand work to
+  Linear. It starts a subagent with stock `delegate_task`, then calls
+  `linear_start` with the `childThreadId` and an issue (`AFF-123`) or a new
+  one (`newIssue: {team, title, description}`). The bridge opens an agent
+  session on the issue and binds the issue to the child, so the child stays
+  under its orchestrator in T3's sidebar and its progress and final message
+  show in Linear. The answer of the child's run in flight posts once, whether
+  it ends before or after the call. Later prompts on the issue continue the
+  child. Only a `subagent` thread qualifies; an issue that already goes to
+  another thread needs `replace: true`. The orchestrator hears back through
+  `delegate_task`'s own completion wake.
 - **Routing:** by the issue's team. `teams` lists a project, and optionally a
   new worktree and a note, per team key; every other team takes the default
   route.

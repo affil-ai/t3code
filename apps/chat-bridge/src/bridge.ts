@@ -1265,10 +1265,86 @@ export class Bridge {
     );
   }
 
-  /** Someone pressed stop on the chat thread: interrupt its T3 thread's run. */
   /** True while a run the conversation is owed an answer from is going. */
   hasRunInFlight(chatThreadKey: string): boolean {
     return this.running.has(chatThreadKey);
+  }
+
+  /**
+   * Why `threadId` can't take over `chatThreadKey`, or nothing when it can. Only
+   * a subagent `delegate_task` made qualifies, so its parent hears back natively.
+   * Pass no key for a conversation that doesn't exist yet, such as a new issue.
+   */
+  async attachRefusal(input: {
+    readonly threadId: string;
+    readonly chatThreadKey?: string | undefined;
+    readonly replace: boolean;
+  }): Promise<string | undefined> {
+    const shape = await this.threads.shape(input.threadId);
+    if (shape.relationshipToParent !== "subagent") {
+      return `${input.threadId} isn't a subagent. Start it with delegate_task and pass its childThreadId.`;
+    }
+    const own = this.store.bindingByThreadId(input.threadId);
+    if (own !== undefined && own.chatThreadKey !== input.chatThreadKey) {
+      return `${input.threadId} already answers ${own.chatThreadKey}.`;
+    }
+    const bound = input.chatThreadKey ? this.store.binding(input.chatThreadKey) : undefined;
+    if (bound !== undefined && bound.threadId !== input.threadId && !input.replace) {
+      return `${input.chatThreadKey} already goes to thread ${bound.threadId}. Pass replace: true to move it to ${input.threadId}.`;
+    }
+    return undefined;
+  }
+
+  /**
+   * Binds a conversation to a thread started elsewhere, such as an
+   * orchestrator's subagent, and owes it the answer of the thread's latest run:
+   * one still going posts when it ends, one already over posts now, and either
+   * posts once. A run still going is told about the chat with `note`.
+   */
+  async attach(input: {
+    readonly chatThreadKey: string;
+    readonly channelId: string;
+    readonly threadId: string;
+    readonly createdByUserId: string;
+    readonly note: (chatKey: string) => string;
+  }): Promise<void> {
+    const shape = await this.threads.shape(input.threadId);
+    const existing = this.store.bindingByThreadId(input.threadId);
+    if (existing?.chatThreadKey === input.chatThreadKey) return;
+    const chatKey = NodeCrypto.randomBytes(16).toString("hex");
+    this.store.replaceBinding({
+      chatThreadKey: input.chatThreadKey,
+      channelId: input.channelId,
+      projectId: shape.projectId,
+      threadId: input.threadId,
+      chatKey,
+      createdByUserId: input.createdByUserId,
+    });
+    await this.platform(input.chatThreadKey)
+      .bound?.(input.chatThreadKey)
+      .catch((error: unknown) => {
+        this.log(`Following ${input.chatThreadKey} failed: ${String(error)}`);
+      });
+    const run = shape.latestRun;
+    this.log(
+      `${input.chatThreadKey} now goes to ${input.threadId}${run ? `, owed ${run.runId} (${run.status})` : ""}.`,
+    );
+    if (run === undefined) return;
+    this.owe({ runId: run.runId, threadId: input.threadId, chatThreadKey: input.chatThreadKey });
+    if (TERMINAL_STATUSES.has(run.status)) return;
+    // A run still starting would take the note as a run of its own.
+    await this.untilSteerable(input.chatThreadKey);
+    try {
+      // If T3 makes the note a run of its own, the note asks for no final message, so nothing posts.
+      await this.threads.send({
+        threadId: input.threadId,
+        text: input.note(chatKey),
+        attachments: [],
+        requestId: `attach:${input.chatThreadKey}:${input.threadId}`,
+      });
+    } catch (error) {
+      this.log(`Telling ${input.threadId} about ${input.chatThreadKey} failed: ${String(error)}`);
+    }
   }
 
   async stopRequested(chatThreadKey: string, userId: string): Promise<boolean> {

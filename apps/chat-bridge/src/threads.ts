@@ -97,6 +97,16 @@ interface ReadResult {
   readonly hasMore: boolean;
 }
 
+/** What the bridge needs to know about a thread it didn't start, such as a subagent. */
+export interface ThreadShape {
+  readonly projectId: string;
+  readonly title: string;
+  readonly parentThreadId: string | null;
+  /** `subagent` for a child `delegate_task` made. */
+  readonly relationshipToParent: string | null;
+  readonly latestRun: { readonly runId: string; readonly status: RunStatus } | undefined;
+}
+
 /** A thread's activity after a position, with what the thread looks like now. */
 export interface ActivityRead {
   readonly title: string;
@@ -453,6 +463,31 @@ export class T3Threads {
   /** Stops the thread's running turn; nothing happens when it is idle. */
   async interrupt(threadId: string, reason: string): Promise<void> {
     await this.t3.call("t3_thread_interrupt", { threadId, reason });
+  }
+
+  /** The thread's project, parent and latest run. */
+  async shape(threadId: string): Promise<ThreadShape> {
+    const read = await this.t3.call<{
+      readonly thread: {
+        readonly projectId: string;
+        readonly title?: string;
+        readonly parentThreadId?: string | null;
+        readonly relationshipToParent?: string | null;
+      };
+      readonly recentRuns?: ReadonlyArray<{
+        readonly runId: string;
+        readonly ordinal: number;
+        readonly status: RunStatus;
+      }>;
+    }>("t3_thread_read", { threadId, view: "messages", limit: 1, runLimit: 5, maxCharsPerItem: 1 });
+    const latest = [...(read.recentRuns ?? [])].toSorted((a, b) => b.ordinal - a.ordinal)[0];
+    return {
+      projectId: read.thread.projectId,
+      title: read.thread.title ?? "",
+      parentThreadId: read.thread.parentThreadId ?? null,
+      relationshipToParent: read.thread.relationshipToParent ?? null,
+      latestRun: latest === undefined ? undefined : { runId: latest.runId, status: latest.status },
+    };
   }
 
   /** The folders a thread may share files from: its worktree, or its project's checkout. */

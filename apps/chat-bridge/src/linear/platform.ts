@@ -27,9 +27,24 @@ const CONTEXT_CHARS = 20_000;
 
 /** The parts of the Linear SDK client the platform uses. */
 export interface LinearApi {
-  readonly issue: (
-    id: string,
-  ) => Promise<{ readonly team: Promise<{ readonly key: string } | undefined> | undefined }>;
+  readonly issue: (id: string) => Promise<{
+    readonly id?: string;
+    readonly identifier?: string;
+    readonly url?: string;
+    readonly team: Promise<{ readonly key: string } | undefined> | undefined;
+  }>;
+  /** For work an orchestrator starts: finding a team, making an issue, opening a session on it. */
+  readonly teams?: (variables: {
+    readonly filter: { readonly key: { readonly eq: string } };
+  }) => Promise<{ readonly nodes: ReadonlyArray<{ readonly id: string; readonly key: string }> }>;
+  readonly createIssue?: (input: {
+    readonly teamId: string;
+    readonly title: string;
+    readonly description?: string;
+  }) => Promise<{ readonly issueId?: string | undefined }>;
+  readonly agentSessionCreateOnIssue?: (input: {
+    readonly issueId: string;
+  }) => Promise<{ readonly agentSessionId?: string | undefined }>;
   readonly fileUpload: (
     contentType: string,
     filename: string,
@@ -237,6 +252,14 @@ const MIME: Readonly<Record<string, string>> = {
 export const mimeTypeOf = (filename: string) =>
   MIME[filename.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream";
 
+/** An issue an orchestrator's subagent works on. */
+export interface LinearIssueRef {
+  readonly issueId: string;
+  readonly identifier: string;
+  readonly url: string;
+  readonly teamKey: string;
+}
+
 export interface LinearTeamRoute extends ThreadRoute {
   /** The team key, as in issue ids such as ENG-123. */
   readonly team: string;
@@ -259,6 +282,11 @@ export function linearPlatform(options: {
   readonly botName?: string;
   /** Waits before a plain comment counts; tests pass a shorter wait. */
   readonly commentGrace?: () => Promise<void>;
+  /** Sessions the bridge opened itself, whose `created` event is not a prompt. Kept across restarts. */
+  readonly ownSessions?: {
+    readonly has: (sessionId: string) => boolean;
+    readonly add: (sessionId: string) => void;
+  };
   /** Whether the core already handled an event, such as before a restart. */
   readonly isHandled?: (eventId: string) => boolean;
   /** Each issue's latest session thread, kept across restarts so owed replies still find it. */
@@ -271,6 +299,17 @@ export function linearPlatform(options: {
   readonly deliver: Deliver;
   /** Keeps a plain comment as context for its issue's conversation, unless a session took it. */
   readonly comment: (comment: LinearComment) => Promise<void>;
+  /** An existing issue, by identifier such as AFF-123. Reads only. */
+  readonly findIssue: (identifier: string) => Promise<LinearIssueRef>;
+  readonly createIssue: (input: {
+    readonly team: string;
+    readonly title: string;
+    readonly description?: string | undefined;
+  }) => Promise<LinearIssueRef>;
+  /** Opens an agent session on the issue, which the issue's answers go to from now on. */
+  readonly openSession: (issue: LinearIssueRef) => Promise<string>;
+  /** What a subagent is told when its work becomes the issue's. */
+  readonly workNote: (issue: LinearIssueRef, chatKey: string) => string;
 } {
   const retry = options.retry ?? noRetry;
   /** Links to files the agent sent mid-run, by conversation, until the run's reply carries them. */
@@ -279,6 +318,11 @@ export function linearPlatform(options: {
     const held = heldFiles.get(chatThreadKey) ?? [];
     heldFiles.delete(chatThreadKey);
     return held;
+  };
+  const ownSessionIds = new Set<string>();
+  const ownSessions = options.ownSessions ?? {
+    has: (id: string) => ownSessionIds.has(id),
+    add: (id: string) => void ownSessionIds.add(id),
   };
   const latestSession = new Map<string, string>();
   const sessions = options.sessions ?? {
@@ -391,6 +435,15 @@ export function linearPlatform(options: {
   };
   const deliver: Deliver = async (thread, message, context, route) => {
     const kind = route === "subscribed" ? "follow_up" : "mention";
+    const ownSession = sessionIdOf(thread.id);
+    // A session the bridge opened announces itself; its work already has a thread.
+    if (
+      ownSession !== undefined &&
+      ownSessions.has(ownSession) &&
+      message.id === `agent-session-${ownSession}`
+    ) {
+      return;
+    }
     // Replies go where the person last asked.
     sessions.set(issueKeyOf(thread.id), thread.id);
     // Linear marks a session unresponsive without an activity within seconds; say something
@@ -447,6 +500,15 @@ export function linearPlatform(options: {
     ...route,
     channelId: team.toUpperCase(),
   }));
+  const firstTurn = (chatKey: string): string =>
+    [
+      "This thread is the Linear issue's conversation: every agent session and @mention of you on the issue continues it, so earlier sessions' messages are yours too.",
+      "Your final message in each run is posted, in Markdown, as the response in the session the latest message came from. Linear shows your progress while you work.",
+      "If a message needs no reply, end the run without a final message and nothing is posted.",
+      "Files and images people attach in Linear arrive as files in your turn.",
+      `To attach files or images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace; they appear with your final message, and images show inline.`,
+      "Linear doesn't show reactions on session messages, so acknowledge in words, or with a short chat_post update while you work.",
+    ].join(" ");
   const platform: ChatPlatform = {
     id: "linear",
     name: "Linear",
@@ -455,15 +517,7 @@ export function linearPlatform(options: {
     channelRoutes,
     directRoute: options.defaultRoute,
     person: (userId, name) => (name ? `${name} (Linear user ${userId})` : `Linear user ${userId}`),
-    firstTurnNote: (chatKey) =>
-      [
-        "This thread is the Linear issue's conversation: every agent session and @mention of you on the issue continues it, so earlier sessions' messages are yours too.",
-        "Your final message in each run is posted, in Markdown, as the response in the session the latest message came from. Linear shows your progress while you work.",
-        "If a message needs no reply, end the run without a final message and nothing is posted.",
-        "Files and images people attach in Linear arrive as files in your turn.",
-        `To attach files or images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace; they appear with your final message, and images show inline.`,
-        "Linear doesn't show reactions on session messages, so acknowledge in words, or with a short chat_post update while you work.",
-      ].join(" "),
+    firstTurnNote: (chatKey) => firstTurn(chatKey),
     refusal: () => "Sorry, you can't use this agent yet. Ask whoever runs it to allow you.",
     post: async ({ chatThreadKey, text, files, kind = "answer", choices }) => {
       const links: Array<string> = [];
@@ -539,5 +593,68 @@ export function linearPlatform(options: {
       await chat().thread(sessionThread(chatThreadKey)).subscribe();
     },
   };
-  return { platform, deliver, comment };
+  const linearApi = (name: "teams" | "createIssue" | "agentSessionCreateOnIssue") => {
+    const api = client();
+    if (api[name] === undefined) throw new Error(`This Linear client can't ${name}.`);
+    return api;
+  };
+  const refOf = async (issue: Awaited<ReturnType<LinearApi["issue"]>>): Promise<LinearIssueRef> => {
+    const team = await issue.team;
+    if (!issue.id || !issue.identifier || !issue.url || team === undefined) {
+      throw new Error("Linear didn't say which issue that is.");
+    }
+    return { issueId: issue.id, identifier: issue.identifier, url: issue.url, teamKey: team.key };
+  };
+  const findIssue = async (identifier: string) =>
+    refOf(await retry(() => client().issue(identifier)));
+  const createIssue = async (input: {
+    readonly team: string;
+    readonly title: string;
+    readonly description?: string | undefined;
+  }) => {
+    const key = input.team.toUpperCase();
+    const { nodes } = await retry(() =>
+      linearApi("teams").teams!({ filter: { key: { eq: key } } }),
+    );
+    const team = nodes[0];
+    if (team === undefined) throw new Error(`Linear has no team ${key}.`);
+    const created = await retry(() =>
+      linearApi("createIssue").createIssue!({
+        teamId: team.id,
+        title: input.title,
+        ...(input.description ? { description: input.description } : {}),
+      }),
+    );
+    if (!created.issueId) throw new Error("Linear didn't return the new issue.");
+    const ref = await findIssue(created.issueId);
+    options.log(`Linear: created ${ref.identifier} for an orchestrator.`);
+    return ref;
+  };
+  const openSession = async (issue: LinearIssueRef) => {
+    const opened = await retry(() =>
+      linearApi("agentSessionCreateOnIssue").agentSessionCreateOnIssue!({
+        issueId: issue.issueId,
+      }),
+    );
+    const sessionId = opened.agentSessionId;
+    if (!sessionId) throw new Error(`Linear didn't open a session on ${issue.identifier}.`);
+    ownSessions.add(sessionId);
+    const threadId = `linear:${issue.issueId}:s:${sessionId}`;
+    sessions.set(`linear:${issue.issueId}`, threadId);
+    // Linear marks a session unresponsive without an activity within seconds.
+    await options
+      .adapter()
+      .startTyping(threadId, "Working in T3")
+      .catch((error: unknown) => options.log(`Linear: the first thought failed: ${String(error)}`));
+    options.log(`Linear: opened session ${sessionId} on ${issue.identifier}.`);
+    return threadId;
+  };
+  const workNote = (issue: LinearIssueRef, chatKey: string) =>
+    [
+      `Your work is now Linear issue ${issue.identifier} (${issue.url}): its agent session shows your progress, and your final message is posted there.`,
+      firstTurn(chatKey),
+      "If you had already finished when this arrived, end this run without a final message.",
+      `Chat key: ${chatKey}`,
+    ].join("\n\n");
+  return { platform, deliver, comment, findIssue, createIssue, openSession, workNote };
 }

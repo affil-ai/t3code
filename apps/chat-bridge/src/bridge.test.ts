@@ -55,6 +55,8 @@ function fakeT3() {
     wakeAfterSettled?: boolean;
     /** The run ended as the message arrived, so T3 starts a new one instead of steering. */
     sendStartsRun?: boolean;
+    /** The runs a thread read lists, as for a subagent the bridge didn't start. */
+    recentRuns?: ReadonlyArray<{ runId: string; ordinal: number; status: RunStatus }>;
   } = {
     splitPendingTools: false,
   };
@@ -211,6 +213,7 @@ function fakeT3() {
             }));
             return {
               thread: { ...thread, itemCount: items.length },
+              recentRuns: options.recentRuns ?? [],
               items,
               nextPosition: null,
               hasMore: false,
@@ -1618,4 +1621,89 @@ it("keeps the old mark when catch-up cannot read Slack", async () => {
     throw new Error("ratelimited");
   });
   assert.strictEqual(store.caughtUpTo(), 500);
+});
+
+/** An orchestrator's subagent, already running its brief when its work becomes a chat's. */
+function subagentHarness(status: RunStatus) {
+  const parts = harness();
+  Object.assign(parts.t3.thread, {
+    projectId: PROJECT,
+    parentThreadId: "orchestrator",
+    relationshipToParent: "subagent",
+  });
+  parts.t3.options.recentRuns = [
+    { runId: "child-0", ordinal: 1, status: "completed" },
+    { runId: "child-1", ordinal: 2, status },
+  ];
+  if (status !== "running") parts.t3.finish("child-1", status, "Done: the flaky test is fixed.");
+  const attach = () =>
+    parts.bridge.attach({
+      chatThreadKey: "slack:C1:500.1",
+      channelId: "C1",
+      threadId: "child-thread",
+      createdByUserId: "",
+      note: (chatKey) => `Your work is now this chat's. Chat key: ${chatKey}`,
+    });
+  return { ...parts, attach };
+}
+
+it("posts the answer of a subagent's run still going when its work is attached, once", async () => {
+  const { t3, bridge, store, posted, attach } = subagentHarness("running");
+  await attach();
+  const binding = store.binding("slack:C1:500.1")!;
+  assert.strictEqual(binding.threadId, "child-thread");
+  // The run in flight is told about the chat, with the key it needs for the chat tools.
+  const sends = t3.calls.filter((call) => call.tool === "t3_thread_send");
+  assert.lengthOf(sends, 1);
+  assert.include(String(sends[0]!.args.message), `Chat key: ${binding.chatKey}`);
+  // Attaching again changes nothing.
+  await attach();
+  assert.lengthOf(
+    t3.calls.filter((call) => call.tool === "t3_thread_send"),
+    1,
+  );
+  t3.finish("child-1", "completed", "Done: the flaky test is fixed.");
+  await bridge.idle();
+  assert.deepStrictEqual(posted, [
+    { chatThreadKey: "slack:C1:500.1", text: "Done: the flaky test is fixed." },
+  ]);
+});
+
+it("posts the answer of a subagent's run that ended before its work was attached, once", async () => {
+  const { t3, bridge, posted, attach } = subagentHarness("completed");
+  await attach();
+  await bridge.idle();
+  await attach();
+  await bridge.idle();
+  // Nothing is sent to the finished child, so no run of its own starts.
+  assert.lengthOf(
+    t3.calls.filter((call) => call.tool === "t3_thread_send"),
+    0,
+  );
+  assert.deepStrictEqual(posted, [
+    { chatThreadKey: "slack:C1:500.1", text: "Done: the flaky test is fixed." },
+  ]);
+});
+
+it("attaches only a subagent, and moves a bound conversation only when asked", async () => {
+  const { t3, bridge, store } = subagentHarness("completed");
+  const refusal = (chatThreadKey: string | undefined, replace = false) =>
+    bridge.attachRefusal({ threadId: "child-thread", chatThreadKey, replace });
+  assert.isUndefined(await refusal(undefined));
+  await bridge.receive(event("100.1"));
+  // The conversation already goes to another thread.
+  assert.include(await refusal("slack:C1:100.1"), "replace: true");
+  assert.isUndefined(await refusal("slack:C1:100.1", true));
+  await bridge.attach({
+    chatThreadKey: "slack:C1:100.1",
+    channelId: "C1",
+    threadId: "child-thread",
+    createdByUserId: "",
+    note: () => "",
+  });
+  assert.strictEqual(store.binding("slack:C1:100.1")?.threadId, "child-thread");
+  // The child answers that conversation now, and no other.
+  assert.include(await refusal("slack:C1:900.1"), "already answers slack:C1:100.1");
+  Object.assign(t3.thread, { relationshipToParent: "fork" });
+  assert.include(await refusal(undefined), "isn't a subagent");
 });

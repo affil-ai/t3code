@@ -117,6 +117,46 @@ it("passes on what the platform says instead of reacting, such as on Linear", as
   assert.strictEqual(textOf(result), "Reactions don't show here.");
 });
 
+it("starts Linear work for a subagent only with a valid child and one issue", async () => {
+  const { deps } = harness();
+  const requests: Array<unknown> = [];
+  const linear = {
+    ...deps,
+    startLinear: async (request: unknown) => {
+      requests.push(request);
+      return "AFF-9 now shows the work.";
+    },
+  };
+  // No chat key: an orchestrator isn't a chat's thread.
+  const started = await callTool(linear, "linear_start", {
+    childThreadId: "mcp:launch:abc",
+    newIssue: { team: "AFF", title: "Fix it" },
+  });
+  assert.isUndefined(started.isError);
+  assert.strictEqual(textOf(started), "AFF-9 now shows the work.");
+  assert.deepStrictEqual(requests, [
+    {
+      childThreadId: "mcp:launch:abc",
+      issue: undefined,
+      newIssue: { team: "AFF", title: "Fix it", description: undefined },
+      replace: false,
+    },
+  ]);
+  for (const bad of [
+    { childThreadId: "mcp:launch:abc" },
+    { childThreadId: "mcp:launch:abc", issue: "AFF-1", newIssue: { team: "AFF", title: "x" } },
+    { childThreadId: "mcp:launch:abc", issue: "not an issue" },
+    { childThreadId: "../x y", issue: "AFF-1" },
+    { childThreadId: "mcp:launch:abc", newIssue: { team: "AFF", title: "" } },
+  ]) {
+    assert.isTrue((await callTool(linear, "linear_start", bad)).isError, JSON.stringify(bad));
+  }
+  assert.lengthOf(requests, 1);
+  // Without Linear the tool refuses.
+  const off = await callTool(deps, "linear_start", { childThreadId: "t", issue: "AFF-1" });
+  assert.isTrue(off.isError);
+});
+
 it("sets a status only while the thread has a run in flight", async () => {
   const { deps } = harness();
   const set = await callTool(deps, "chat_status", { chatKey: "key-1", status: "is testing…" });

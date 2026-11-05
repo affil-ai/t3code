@@ -184,7 +184,7 @@ async function start(): Promise<void> {
               log(`Linear: ${key} is now the conversation for ${issueKey}.`);
             }
           }
-          const { platform, deliver, comment } = linearPlatform({
+          const linearParts = linearPlatform({
             chat: () => chat,
             adapter: () =>
               adapter as unknown as Pick<LinearAdapter, "startTyping"> & {
@@ -202,11 +202,16 @@ async function start(): Promise<void> {
             retry,
             isHandled: (eventId) => store.isHandled(eventId),
             botName: settings.botName,
+            ownSessions: {
+              has: (sessionId) => store.meta(`linear_own_session:${sessionId}`) !== undefined,
+              add: (sessionId) => store.setMeta(`linear_own_session:${sessionId}`, "1"),
+            },
             sessions: {
               get: (issueKey) => store.meta(`linear_session:${issueKey}`),
               set: (issueKey, threadId) => store.setMeta(`linear_session:${issueKey}`, threadId),
             },
           });
+          const { platform, deliver, comment } = linearParts;
           platforms.push(platform);
           // Chat starts adapters together; Linear's token fetch must not hold up or fail the others.
           const started = startInBackground(adapter, { log });
@@ -214,6 +219,7 @@ async function start(): Promise<void> {
             adapter,
             deliver,
             comment,
+            parts: linearParts,
             started,
             platform,
             webhookSecret: linearSecrets.webhookSecret,
@@ -274,6 +280,31 @@ async function start(): Promise<void> {
         return undefined;
       },
       setStatus: (chatThreadKey, status) => core.setStatus(chatThreadKey, status),
+      startLinear:
+        linear === undefined
+          ? undefined
+          : async (request) => {
+              if (!linear.started.ready())
+                throw new Error("Linear is still starting; try again shortly.");
+              // Check everything before anything changes in Linear.
+              const found = request.issue ? await linear.parts.findIssue(request.issue) : undefined;
+              const refusal = await core.attachRefusal({
+                threadId: request.childThreadId,
+                chatThreadKey: found ? `linear:${found.issueId}` : undefined,
+                replace: request.replace,
+              });
+              if (refusal !== undefined) throw new Error(refusal);
+              const issue = found ?? (await linear.parts.createIssue(request.newIssue!));
+              await linear.parts.openSession(issue);
+              await core.attach({
+                chatThreadKey: `linear:${issue.issueId}`,
+                channelId: issue.teamKey,
+                threadId: request.childThreadId,
+                createdByUserId: "",
+                note: (chatKey) => linear.parts.workNote(issue, chatKey),
+              });
+              return `${issue.identifier} (${issue.url}) now shows thread ${request.childThreadId}'s work in a Linear agent session, and its final message posts there. Its completion still wakes you as usual.`;
+            },
     },
     config.toolsPort,
   );

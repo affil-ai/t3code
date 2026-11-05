@@ -39,7 +39,51 @@ export interface ToolDeps {
   readonly react: (reaction: Reaction) => Promise<string | undefined>;
   /** Sets the status of the thread's runs in flight; false when there is none. */
   readonly setStatus: (chatThreadKey: string, status: string) => boolean;
+  /** Makes a subagent's work a Linear issue's; absent without Linear. Returns what to tell the caller. */
+  readonly startLinear?: ((request: LinearStartRequest) => Promise<string>) | undefined;
 }
+
+export interface LinearStartRequest {
+  readonly childThreadId: string;
+  /** An existing issue, such as AFF-123. */
+  readonly issue?: string | undefined;
+  readonly newIssue?:
+    | { readonly team: string; readonly title: string; readonly description?: string | undefined }
+    | undefined;
+  /** Move an issue that already goes to another thread. */
+  readonly replace: boolean;
+}
+
+const ISSUE_ID = /^[A-Za-z][A-Za-z0-9]{0,9}-\d{1,7}$/;
+const THREAD_ID = /^[\w.:%-]{1,300}$/;
+
+const LINEAR_START_TOOL = {
+  name: "linear_start",
+  description:
+    "Make a subagent's work a Linear issue's: its progress and final message show in the issue's agent session, and later prompts there continue it. First start the subagent with delegate_task, then call this with its childThreadId and either issue (an existing one, such as AFF-123) or newIssue. Its completion still wakes you as delegate_task's do. No chat key needed.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      childThreadId: { type: "string", description: "The childThreadId delegate_task returned." },
+      issue: { type: "string", description: "An existing issue's identifier, such as AFF-123." },
+      newIssue: {
+        type: "object",
+        description: "An issue to create instead.",
+        properties: {
+          team: { type: "string", description: "The team key, such as AFF." },
+          title: { type: "string", maxLength: 255 },
+          description: { type: "string", maxLength: 20_000, description: "Markdown." },
+        },
+        required: ["team", "title"],
+      },
+      replace: {
+        type: "boolean",
+        description: "Move an issue that already goes to another thread to this one.",
+      },
+    },
+    required: ["childThreadId"],
+  },
+};
 
 class ToolInputError extends Error {}
 
@@ -145,12 +189,52 @@ async function readWorkspaceFile(
   };
 }
 
+function linearStartRequest(args: Record<string, unknown>): LinearStartRequest {
+  const childThreadId = stringArg(args, "childThreadId")?.trim() ?? "";
+  if (!THREAD_ID.test(childThreadId)) {
+    throw new ToolInputError("childThreadId must be the id delegate_task returned.");
+  }
+  const issue = stringArg(args, "issue")?.trim();
+  const raw = args.newIssue;
+  if ((issue === undefined) === (raw === undefined)) {
+    throw new ToolInputError("Pass either issue or newIssue.");
+  }
+  if (issue !== undefined && !ISSUE_ID.test(issue)) {
+    throw new ToolInputError("issue must be an identifier such as AFF-123.");
+  }
+  let newIssue: LinearStartRequest["newIssue"];
+  if (raw !== undefined) {
+    if (typeof raw !== "object" || raw === null)
+      throw new ToolInputError("newIssue must be an object.");
+    const fields = raw as Record<string, unknown>;
+    const team = stringArg(fields, "team")?.trim() ?? "";
+    const title = stringArg(fields, "title")?.trim() ?? "";
+    const description = stringArg(fields, "description");
+    if (!/^[A-Za-z][A-Za-z0-9]{0,9}$/.test(team))
+      throw new ToolInputError("newIssue.team must be a team key.");
+    if (title === "" || title.length > 255)
+      throw new ToolInputError("newIssue.title must be 1 to 255 characters.");
+    if (description !== undefined && description.length > 20_000) {
+      throw new ToolInputError("newIssue.description is longer than 20000 characters.");
+    }
+    newIssue = { team, title, description };
+  }
+  if (args.replace !== undefined && typeof args.replace !== "boolean") {
+    throw new ToolInputError("replace must be true or false.");
+  }
+  return { childThreadId, issue, newIssue, replace: args.replace === true };
+}
+
 export async function callTool(
   deps: ToolDeps,
   name: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
   try {
+    if (name === "linear_start") {
+      if (deps.startLinear === undefined) return text("Linear isn't set up on this bridge.", true);
+      return text(await deps.startLinear(linearStartRequest(args)));
+    }
     const chatKey = stringArg(args, "chatKey") ?? "";
     const binding = deps.bindingByChatKey(chatKey);
     if (binding === undefined) {
@@ -237,7 +321,9 @@ function mcpServer(deps: ToolDeps): Server {
     { name: "t3-chat-bridge", version: "0.1.0" },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: deps.startLinear === undefined ? TOOLS : [...TOOLS, LINEAR_START_TOOL],
+  }));
   server.setRequestHandler(CallToolRequestSchema, (request) =>
     callTool(deps, request.params.name, request.params.arguments ?? {}),
   );

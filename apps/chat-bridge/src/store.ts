@@ -175,6 +175,24 @@ export class BridgeStore {
     return row === undefined ? undefined : fromRow(row);
   }
 
+  bindingByThreadId(threadId: string): Binding | undefined {
+    const row = this.db.prepare("SELECT * FROM binding WHERE thread_id = ?").get(threadId);
+    return row === undefined ? undefined : fromRow(row);
+  }
+
+  /** Binds the conversation to another thread, replacing its binding if it has one. */
+  replaceBinding(binding: Binding): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM binding WHERE chat_thread_key = ?").run(binding.chatThreadKey);
+      this.insertBinding(binding);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   insertBinding(binding: Binding): void {
     this.db
       .prepare(
