@@ -14,7 +14,7 @@ import {
   type BlockMessage,
   type Reply,
 } from "./bridge.ts";
-import type { RunStep } from "./activity.ts";
+import type { PlanStep, RunStep } from "./activity.ts";
 import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
@@ -273,8 +273,10 @@ function harness(
     allowEveryone?: boolean;
     /** Full workspace members, for `allowEveryone`. */
     members?: ReadonlyArray<string>;
-    /** The platform lists each finished step, as Linear does. */
+    /** The platform lists each finished step and shows the plan, as Linear does. */
     steps?: boolean;
+    /** The platform has no buttons, as Linear and iMessage don't. */
+    noButtons?: boolean;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ) {
@@ -285,6 +287,7 @@ function harness(
   const posted: Array<Reply & { readonly kind?: string }> = [];
   const statuses: Array<string> = [];
   const steps: Array<string> = [];
+  const plans: Array<string> = [];
   const store = new BridgeStore(db);
   let clock = 0;
   const scheduled: Array<number> = [];
@@ -321,13 +324,19 @@ function harness(
                 // Steps come before the answer.
                 if (posted.length > 0) steps.push("after the answer");
               },
+              plan: async (_chatThreadKey: string, plan: ReadonlyArray<PlanStep>) =>
+                void plans.push(plan.map((step) => `${step.status} ${step.text}`).join(", ")),
             }
           : {}),
-        postBlocks: async (message) => {
-          blockPosts.push(message);
-          return `900.${blockPosts.length}`;
-        },
-        updateBlocks: async (message) => void blockPosts.push(message),
+        ...(options.noButtons === true
+          ? {}
+          : {
+              postBlocks: async (message) => {
+                blockPosts.push(message);
+                return `900.${blockPosts.length}`;
+              },
+              updateBlocks: async (message) => void blockPosts.push(message),
+            }),
         rename: async (chatThreadKey, title) => {
           if (renameFailures > 0) {
             renameFailures -= 1;
@@ -354,6 +363,7 @@ function harness(
     posted,
     statuses,
     steps,
+    plans,
     blockPosts,
     renamed,
     scheduled,
@@ -933,6 +943,68 @@ it("lists each finished step once, before the answer, where the platform shows s
     "Searched the web for|linear agent sessions|Failed",
   ]);
   assert.strictEqual(posted.length, 1);
+});
+
+it("shows the run's to-do list where the platform has a plan, once per change", async () => {
+  const { t3, bridge, plans } = harness(undefined, { steps: true });
+  await bridge.receive(event("100.1"));
+  const todo = {
+    itemId: "todo",
+    type: "todo_list",
+    runId: "run-1",
+    status: "completed",
+    text: "[running] check date\n[pending] list files",
+  };
+  t3.activity.push(todo);
+  await t3.tick();
+  // Re-read unchanged: no update.
+  await t3.tick();
+  todo.text = "[completed] check date\n[running] list files";
+  await t3.tick();
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+  assert.deepStrictEqual(plans, [
+    "running check date, pending list files",
+    "completed check date, running list files",
+  ]);
+});
+
+it("asks without buttons as numbered text that carries the options to pick from", async () => {
+  const { t3, bridge, posted } = harness(undefined, { noButtons: true });
+  await bridge.receive(event("100.1"));
+  t3.questions.set("req-1", [
+    {
+      id: "q1",
+      header: "Deploy",
+      question: "Which environment?",
+      options: [
+        { label: "Staging", description: "Safe" },
+        { label: "Production", description: "Live", value: "prod" },
+      ],
+    },
+  ]);
+  t3.activity.push({
+    itemId: "ask",
+    type: "user_input_request",
+    runId: "run-1",
+    status: "waiting",
+  });
+  await t3.tick();
+  await t3.tick();
+  const asked = posted.find((reply) => reply.kind === "question") as
+    | (Reply & { choices?: unknown })
+    | undefined;
+  assert.include(asked?.text, "1. Staging");
+  assert.deepStrictEqual(asked?.choices, {
+    question: "Deploy\nWhich environment?",
+    options: ["Staging", "Production"],
+  });
+  // Linear sends a pick back as the label.
+  await bridge.receive(event("100.2", { kind: "follow_up", text: "Production" }));
+  const answered = t3.calls.find((call) => call.args.action === "respond");
+  assert.deepStrictEqual(answered?.args.answers, { q1: "prod" });
+  t3.finish("run-1", "completed", "Deployed.");
+  await bridge.idle();
 });
 
 it("asks the agent's question with buttons and hands a click back to T3", async () => {

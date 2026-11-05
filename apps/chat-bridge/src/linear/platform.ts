@@ -8,6 +8,7 @@
 import type { LinearAdapter } from "@chat-adapter/linear";
 import type { Chat, Message } from "chat";
 
+import type { PlanStep } from "../activity.ts";
 import type { InboundEvent, InboundOutcome } from "../bridge.ts";
 import type { Deliver } from "../chatHost.ts";
 import type { Access, ChannelRoute, ChatPlatform, OutboundFile, ThreadRoute } from "../platform.ts";
@@ -39,7 +40,15 @@ export interface LinearApi {
     readonly agentSessionId: string;
     readonly content: Readonly<Record<string, string>>;
     readonly ephemeral?: boolean;
+    readonly signal?: "select";
+    readonly signalMetadata?: Readonly<Record<string, unknown>>;
   }) => Promise<unknown>;
+  readonly updateAgentSession: (
+    id: string,
+    input: {
+      readonly plan: ReadonlyArray<{ readonly content: string; readonly status: LinearPlanStatus }>;
+    },
+  ) => Promise<unknown>;
   readonly agentSession: (id: string) => Promise<{
     readonly activities: (variables: { readonly last: number }) => Promise<{
       readonly nodes: ReadonlyArray<SessionActivity>;
@@ -48,6 +57,9 @@ export interface LinearApi {
   /** The SDK client's options, which hold the current `Authorization` header. */
   readonly options?: { readonly headers?: Readonly<Record<string, string>> } | undefined;
 }
+
+/** Linear's statuses for a step of a session's plan. */
+export type LinearPlanStatus = "pending" | "inProgress" | "completed" | "canceled";
 
 /** The parts of a session activity the bridge reads to find prompts it never got. */
 export interface SessionActivity {
@@ -64,6 +76,12 @@ export interface SessionActivity {
     | PromiseLike<{ readonly name?: string; readonly displayName?: string } | undefined>
     | undefined;
 }
+
+const PLAN_STATUS: Readonly<Record<PlanStep["status"], LinearPlanStatus>> = {
+  pending: "pending",
+  running: "inProgress",
+  completed: "completed",
+};
 
 /** Prompts read back from a session per delivery; a burst bigger than this is rare. */
 const RECONCILE_LAST = 20;
@@ -235,12 +253,35 @@ export function linearPlatform(options: {
   const activity = async (
     chatThreadKey: string,
     content: Readonly<Record<string, string>>,
+    signal?: { readonly signal: "select"; readonly signalMetadata: Record<string, unknown> },
   ): Promise<boolean> => {
     const agentSessionId = sessionIdOf(sessionThread(chatThreadKey));
     if (agentSessionId === undefined) return false;
-    await retry(() => client().createAgentActivity({ agentSessionId, content }));
+    await retry(() => client().createAgentActivity({ agentSessionId, content, ...signal }));
     return true;
   };
+  /**
+   * A question with options, as Linear's own chooser. A pick comes back as a
+   * prompt with the label, which the core takes as the answer. False when
+   * Linear refuses it, so the numbered text is asked instead.
+   */
+  const askToPick = async (
+    chatThreadKey: string,
+    choices: { readonly question: string; readonly options: ReadonlyArray<string> },
+  ): Promise<boolean> =>
+    activity(
+      chatThreadKey,
+      { type: "elicitation", body: choices.question },
+      {
+        signal: "select",
+        signalMetadata: { options: choices.options.map((label) => ({ label, value: label })) },
+      },
+    ).catch((error: unknown) => {
+      options.log(
+        `Linear refused a question with options; asking it as numbered text: ${String(error)}`,
+      );
+      return false;
+    });
   const chat = () => {
     const running = options.chat();
     if (running === undefined) throw new Error("Chat is not running yet.");
@@ -359,12 +400,20 @@ export function linearPlatform(options: {
         `To react to a comment, call chat_react with chatKey "${chatKey}", the comment id and an emoji name such as thumbs_up, eyes or rocket.`,
       ].join(" "),
     refusal: () => "Sorry, you can't use this agent yet. Ask whoever runs it to allow you.",
-    post: async ({ chatThreadKey, text, files, kind = "answer" }) => {
+    post: async ({ chatThreadKey, text, files, kind = "answer", choices }) => {
       const links: Array<string> = [];
       for (const file of files ?? []) links.push(await retry(() => uploadToLinear(client(), file)));
       const markdown = [text, ...links].filter((part) => part.trim() !== "").join("\n\n");
       if (markdown === "") return;
       // Only the answer is a response, which ends the session's turn; a question waits for the person.
+      if (
+        kind === "question" &&
+        choices !== undefined &&
+        links.length === 0 &&
+        (await askToPick(chatThreadKey, choices))
+      ) {
+        return;
+      }
       if (
         kind === "question" &&
         (await activity(chatThreadKey, { type: "elicitation", body: markdown }))
@@ -373,6 +422,16 @@ export function linearPlatform(options: {
       if (kind === "update" && (await activity(chatThreadKey, { type: "thought", body: markdown })))
         return;
       await chat().thread(sessionThread(chatThreadKey)).post({ markdown });
+    },
+    plan: async (chatThreadKey, steps) => {
+      const agentSessionId = sessionIdOf(sessionThread(chatThreadKey));
+      if (agentSessionId === undefined) return;
+      // Linear replaces the plan whole on each update.
+      await retry(() =>
+        client().updateAgentSession(agentSessionId, {
+          plan: steps.map((step) => ({ content: step.text, status: PLAN_STATUS[step.status] })),
+        }),
+      );
     },
     step: async (chatThreadKey, step) => {
       await activity(chatThreadKey, {

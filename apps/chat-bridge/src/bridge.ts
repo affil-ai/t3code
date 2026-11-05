@@ -15,6 +15,7 @@ import {
   finalAnswers,
   numberedQuestion,
   openQuestion,
+  questionChoices,
   questionBlocks,
   questionText,
 } from "./questions.ts";
@@ -623,6 +624,17 @@ export class Bridge {
     return this.platform(chatThreadKey).post({ chatThreadKey, text, kind });
   }
 
+  /** Asks the open question as numbered text, with its options for platforms that offer them. */
+  private ask(chatThreadKey: string, asked: Asked): Promise<void> {
+    const choices = questionChoices(asked);
+    return this.platform(chatThreadKey).post({
+      chatThreadKey,
+      text: numberedQuestion(asked),
+      kind: "question",
+      ...(choices === undefined ? {} : { choices }),
+    });
+  }
+
   /** Files as T3 imports them, downloaded on demand. */
   private inboundFiles(
     platform: ChatPlatform,
@@ -1155,11 +1167,9 @@ export class Bridge {
     if (platform.postBlocks === undefined) {
       // Without buttons, each part of a question is asked on its own, as the last is answered.
       if (record.closed || closed !== undefined) return;
-      await this.post(record.chatThreadKey, numberedQuestion(record.asked), "question").catch(
-        (error: unknown) => {
-          this.log(`Asking the next question in ${record.chatThreadKey} failed: ${String(error)}`);
-        },
-      );
+      await this.ask(record.chatThreadKey, record.asked).catch((error: unknown) => {
+        this.log(`Asking the next question in ${record.chatThreadKey} failed: ${String(error)}`);
+      });
       return;
     }
     if (platform.updateBlocks === undefined || record.messageId === "") return;
@@ -1199,7 +1209,7 @@ export class Bridge {
       };
       if (!this.store.addQuestion(record)) continue;
       if (platform.postBlocks === undefined) {
-        await this.post(reply.chatThreadKey, numberedQuestion(record.asked), "question");
+        await this.ask(reply.chatThreadKey, record.asked);
         continue;
       }
       const messageId = await platform.postBlocks({
@@ -1245,6 +1255,11 @@ export class Bridge {
   }
 
   /** Someone pressed stop on the chat thread: interrupt its T3 thread's run. */
+  /** True while a run the conversation is owed an answer from is going. */
+  hasRunInFlight(chatThreadKey: string): boolean {
+    return this.running.has(chatThreadKey);
+  }
+
   async stopRequested(chatThreadKey: string, userId: string): Promise<boolean> {
     const binding = this.store.binding(chatThreadKey);
     if (binding === undefined) return false;
@@ -1351,6 +1366,7 @@ export class Bridge {
     if (note !== undefined && feed.lastPosition > note.at) this.notes.delete(key);
     this.showText(key, this.notes.get(key)?.text ?? feed.status);
     await this.listSteps(reply, feed);
+    await this.showPlan(reply, feed);
     if (feed.asking) {
       await this.relayQuestions(reply).catch((error: unknown) => {
         this.log(`Asking the question from ${reply.runId} failed: ${String(error)}`);
@@ -1376,6 +1392,16 @@ export class Bridge {
       });
     }
     this.stepsListed.set(reply.runId, listed);
+  }
+
+  /** Shows the run's to-do list where the platform has a place for it. A failure is only logged. */
+  private async showPlan(reply: OwedReply, feed: RunFeed): Promise<void> {
+    const plan = feed.takePlan();
+    const show = this.platform(reply.chatThreadKey).plan;
+    if (plan === undefined || show === undefined) return;
+    await show(reply.chatThreadKey, plan).catch((error: unknown) => {
+      this.log(`Showing the plan of ${reply.runId} failed: ${String(error)}`);
+    });
   }
 
   private async watchUntilAnswered(reply: OwedReply): Promise<void> {

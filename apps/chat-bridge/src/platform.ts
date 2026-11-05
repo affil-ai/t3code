@@ -3,7 +3,7 @@
  * how it reads to the agent, and optional extras. Chat thread keys start with
  * the platform id and a colon (`slack:…`, `imessage:42`).
  */
-import type { RunStep } from "./activity.ts";
+import type { PlanStep, RunStep } from "./activity.ts";
 import type { EarlierMessage, InboundEvent, SessionState } from "./bridge.ts";
 
 /** Where a new thread goes: a T3 project, and optionally a new worktree. */
@@ -48,6 +48,10 @@ export interface OutboundMessage {
   readonly files?: ReadonlyArray<OutboundFile> | undefined;
   /** Without it, an answer. */
   readonly kind?: OutboundKind | undefined;
+  /** A question's options, for platforms that offer them to pick; `text` has them numbered. */
+  readonly choices?:
+    | { readonly question: string; readonly options: ReadonlyArray<string> }
+    | undefined;
 }
 
 export interface Reaction {
@@ -106,6 +110,8 @@ export interface ChatPlatform {
   readonly setState?: (chatThreadKey: string, state: SessionState, text: string) => Promise<void>;
   /** Lists one finished step of the run, such as a command it ran; absent where steps show only as the state's text. */
   readonly step?: (chatThreadKey: string, step: RunStep) => Promise<void>;
+  /** Shows the run's to-do list, replaced whole on each change; absent where it isn't shown. */
+  readonly plan?: (chatThreadKey: string, steps: ReadonlyArray<PlanStep>) => Promise<void>;
   /** Sets the conversation's title to the T3 thread's. */
   readonly rename?: (chatThreadKey: string, title: string) => Promise<void>;
   /** Downloads a file on an inbound message. Without it, files are named but not imported. */

@@ -162,7 +162,7 @@ function work(item: ActivityItem): Work | undefined {
         "Edited files",
       ]);
     case "todo_list":
-      return { doing: "Planning", done: "Updated the plan", parameter: "" };
+      return { doing: "Planning", done: "", parameter: "" };
     case "dynamic_tool": {
       const parsed = json(item);
       // A long tool output is cut off, so the JSON doesn't parse; its name comes first.
@@ -225,7 +225,8 @@ const RESULTS: Readonly<Record<string, string>> = {
 export function finishedStep(item: ActivityItem): RunStep | undefined {
   if (isOpen(item.status)) return undefined;
   const step = work(item);
-  if (step === undefined) return undefined;
+  // A to-do list is the run's plan, not a step; see `planOf`.
+  if (step === undefined || item.type === "todo_list") return undefined;
   return {
     itemId: item.itemId,
     action: step.done,
@@ -259,3 +260,26 @@ export const isQuestion = (item: ActivityItem): boolean =>
 /** A permission request, which only T3 itself can grant. */
 export const isPermissionRequest = (item: ActivityItem): boolean =>
   item.type === "approval_request" && isOpen(item.status);
+
+/** One step of the run's to-do list. */
+export interface PlanStep {
+  readonly text: string;
+  readonly status: "pending" | "running" | "completed";
+}
+
+/** A to-do list item's steps, from T3's `[status] text` lines; nothing for other items or a cut-off one. */
+export function planOf(item: ActivityItem): ReadonlyArray<PlanStep> | undefined {
+  if (item.type !== "todo_list" || item.text === null || item.textTruncated === true) {
+    return undefined;
+  }
+  const steps: Array<PlanStep> = [];
+  for (const line of item.text.split("\n")) {
+    const match = /^\[(pending|running|completed)\] (.+)$/.exec(line.trim());
+    if (match === null) continue;
+    steps.push({
+      status: match[1] as PlanStep["status"],
+      text: oneLine(redactSecrets(match[2]!), STEP_PARAMETER_LIMIT),
+    });
+  }
+  return steps.length > 0 ? steps : undefined;
+}

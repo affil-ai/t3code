@@ -450,8 +450,15 @@ mode, on Linear's Agents API), so it shows natively:
 - **Files:** the agent sends files with `chat_post`. They are uploaded to
   Linear and linked in the response, and images show inline. `chat_react`
   reacts to comments.
-- **Questions:** Linear has no buttons, so questions are numbered text,
-  answered in the session.
+- **Questions:** a single-choice question shows Linear's own chooser (an
+  elicitation with the `select` signal); a pick comes back as a prompt with
+  the option's label. Multiple choice, or a chooser Linear refuses, is
+  numbered text. Either way a typed reply answers too.
+- **Plan:** the agent's to-do list shows as the session's plan, replaced whole
+  as steps start and finish.
+- **Stop:** the session menu's "Send stop request" interrupts the run. The
+  bridge checks Linear's signature before acting, and the stopped run's last
+  word is "The run was stopped." (or "Nothing was running.").
 - **Routing:** by the issue's team. `teams` lists a project, and optionally a
   new worktree and a note, per team key; every other team takes the default
   route.

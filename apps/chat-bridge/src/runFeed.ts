@@ -8,6 +8,8 @@ import {
   currentStatus,
   finishedStep,
   isOpen,
+  type PlanStep,
+  planOf,
   isPermissionRequest,
   isQuestion,
   type RunStep,
@@ -40,6 +42,10 @@ export class RunFeed {
   private readonly listed = new Set<string>();
   /** Steps that finished since `takeSteps` was last called. */
   private finished: Array<RunStep> = [];
+  /** The plan as last handed out, to hand out only changes. */
+  private planShown = "";
+  /** The run's newest to-do list, until `takePlan` hands it out. */
+  private plan: ReadonlyArray<PlanStep> | undefined;
 
   constructor(threads: T3Threads, threadId: string, runId: string) {
     this.threads = threads;
@@ -58,6 +64,8 @@ export class RunFeed {
     for (const item of read.items) {
       this.lastPosition = Math.max(this.lastPosition, item.position);
       if (item.runId === null || !this.runIds.has(item.runId)) continue;
+      const plan = planOf(item);
+      if (plan !== undefined && JSON.stringify(plan) !== this.planShown) this.plan = plan;
       if (isOpen(item.status)) {
         this.open.set(item.itemId, item);
         continue;
@@ -76,6 +84,14 @@ export class RunFeed {
     this.waiting = this.asking || this.askingPermission || read.pendingRequests > 0;
     const oldestOpen = open[0]?.position;
     this.cursor = oldestOpen === undefined ? read.lastPosition : oldestOpen - 1;
+  }
+
+  /** The run's to-do list if it changed since the last call. */
+  takePlan(): ReadonlyArray<PlanStep> | undefined {
+    const plan = this.plan;
+    this.plan = undefined;
+    if (plan !== undefined) this.planShown = JSON.stringify(plan);
+    return plan;
   }
 
   /** The steps that finished since the last call, oldest first. */

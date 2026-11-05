@@ -248,6 +248,26 @@ export function numberedQuestion(asked: Asked): string {
 }
 
 /**
+ * The open question and its option labels, for a platform that offers
+ * options natively. Nothing for a multiple-choice question or one without
+ * options; those stay numbered text. A pick comes back as the label, which
+ * `applyReply` takes.
+ */
+export function questionChoices(
+  asked: Asked,
+): { readonly question: string; readonly options: ReadonlyArray<string> } | undefined {
+  const question = openQuestion(asked);
+  if (question === undefined || question.multiSelect === true || question.options.length === 0) {
+    return undefined;
+  }
+  const title = [question.header, question.question].filter(Boolean);
+  return {
+    question: title.length === 2 && title[0] === "Question" ? title[1]! : title.join("\n"),
+    options: question.options.map((option) => option.label),
+  };
+}
+
+/**
  * Applies a typed reply to the open question: option numbers, an option's
  * label, or, where the question takes it, the text itself.
  */

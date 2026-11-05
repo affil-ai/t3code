@@ -9,6 +9,7 @@ import {
   numberedQuestion,
   type Question,
   questionBlocks,
+  questionChoices,
 } from "./questions.ts";
 
 const pick: Question = {
@@ -159,4 +160,20 @@ it("asks without buttons as numbered text, and takes a number, a label or own wo
   assert.deepStrictEqual(applyReply(asked, " red ")?.answers, { q: "Red" });
   assert.deepStrictEqual(applyReply(asked, "green")?.answers, { q: "green" });
   assert.deepStrictEqual(applyReply(asked, "1, 2")?.answers, { q: "1, 2" });
+});
+
+it("offers a single-choice question's labels to pick, and takes a picked label back as the answer", () => {
+  const state = asked([pick, many]);
+  // Linear sends a pick back as the option's label; Production's answer is its value.
+  assert.deepStrictEqual(questionChoices(state), {
+    question: "Deploy\nWhich environment?",
+    options: ["Staging", "Production"],
+  });
+  assert.deepStrictEqual(applyReply(state, "Production")?.answers, { env: "prod" });
+  // Multiple choice, and questions without options, stay numbered text.
+  const next = applyReply(state, "Staging")!;
+  assert.isUndefined(questionChoices(next));
+  assert.isUndefined(
+    questionChoices(asked([{ id: "free", header: "Question", question: "Why?", options: [] }])),
+  );
 });

@@ -20,6 +20,7 @@ import { login, savedToken } from "./login.ts";
 import { createImessageAdapter } from "./imessage/adapter.ts";
 import { type LinearApi, issueKeyOf, linearPlatform, sessionIdOf } from "./linear/platform.ts";
 import { authRetry, retryMethods, startInBackground } from "./linear/startup.ts";
+import { handlingStops } from "./linear/stop.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
 import { type ChatPlatform, platformFor } from "./platform.ts";
@@ -207,7 +208,13 @@ async function start(): Promise<void> {
           platforms.push(platform);
           // Chat starts adapters together; Linear's token fetch must not hold up or fail the others.
           const started = startInBackground(adapter, { log });
-          return { adapter, deliver, started };
+          return {
+            adapter,
+            deliver,
+            started,
+            platform,
+            webhookSecret: linearSecrets.webhookSecret,
+          };
         })()
       : undefined;
   if (config.linear && !linearSecrets) {
@@ -274,10 +281,32 @@ async function start(): Promise<void> {
           // The adapter checks Linear's signature and timestamp, and refuses anything else.
           // Until Linear is up, 503 asks Linear to deliver again later.
           handle: linear
-            ? async (request) =>
-                linear.started.ready()
-                  ? linear.adapter.handleWebhook(request)
-                  : new Response("Linear is still starting.", { status: 503 })
+            ? (() => {
+                // A signed "Send stop request" interrupts the issue's run; everything else is the adapter's.
+                const handle = handlingStops((request) => linear.adapter.handleWebhook(request), {
+                  secret: linear.webhookSecret,
+                  log,
+                  onStop: async (stop) => {
+                    const issueKey = `linear:${stop.issueId}`;
+                    // The final word goes to the session the stop came from.
+                    store.setMeta(`linear_session:${issueKey}`, `${issueKey}:s:${stop.sessionId}`);
+                    const wasRunning = core.hasRunInFlight(issueKey);
+                    await core.stopRequested(issueKey, stop.userId);
+                    // Linear wants a final activity after a stop; a stopped run posts its own.
+                    if (!wasRunning) {
+                      await linear.platform
+                        .post({ chatThreadKey: issueKey, text: "Nothing was running." })
+                        .catch((error: unknown) =>
+                          log(`Linear: answering a stop failed: ${String(error)}`),
+                        );
+                    }
+                  },
+                });
+                return async (request: Request) =>
+                  linear.started.ready()
+                    ? handle(request)
+                    : new Response("Linear is still starting.", { status: 503 });
+              })()
             : async () => new Response("Linear isn't set up on this bridge yet.", { status: 503 }),
         },
       ]

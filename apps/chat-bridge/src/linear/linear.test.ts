@@ -18,12 +18,14 @@ import {
 } from "./platform.ts";
 import { downloadUpload, takeUploads, uploadEventFiles } from "./files.ts";
 import { authRetry, isAuthError, retryMethods, startInBackground } from "./startup.ts";
+import { handlingStops, type LinearStop } from "./stop.ts";
 
 const THREAD = "linear:issue-1:s:session-1";
 
 /** A client whose session has no other prompts and takes every activity. */
 const noSession = {
   createAgentActivity: async () => ({}),
+  updateAgentSession: async () => ({}),
   agentSession: async () => ({ activities: async () => ({ nodes: [] }) }),
 };
 
@@ -635,4 +637,144 @@ it("makes an issue one conversation: every session feeds it, and replies go to t
   await platform.post({ chatThreadKey: first, text: "old binding" });
   assert.strictEqual(posts.at(-1), `${first} old binding`);
   assert.include(platform.firstTurnNote("key", events[0]!), "every agent session");
+});
+
+it("interrupts on a stop Linear signed, and never on one it didn't", async () => {
+  const secret = "webhook-secret";
+  const NOW = 1_800_000_000_000;
+  const stops: Array<LinearStop> = [];
+  const forwarded: Array<string> = [];
+  const handle = handlingStops(
+    async (request) => {
+      forwarded.push(await request.text());
+      return new Response("adapter");
+    },
+    { secret, now: () => NOW, log: () => {}, onStop: async (stop) => void stops.push(stop) },
+  );
+  const payload = (signal?: string, at = NOW) =>
+    JSON.stringify({
+      type: "AgentSessionEvent",
+      action: "prompted",
+      webhookTimestamp: at,
+      agentSession: { id: "session-1", issueId: "issue-1" },
+      agentActivity: {
+        ...(signal ? { signal } : {}),
+        user: { id: "user-1" },
+        content: { body: "Stop" },
+      },
+    });
+  const send = (body: string, signature: string) =>
+    handle(
+      new Request("http://127.0.0.1/linear/webhook", {
+        method: "POST",
+        body,
+        headers: { "linear-signature": signature },
+      }),
+    );
+  const sign = (body: string) => NodeCrypto.createHmac("sha256", secret).update(body).digest("hex");
+
+  const signed = payload("stop");
+  assert.strictEqual((await send(signed, sign(signed))).status, 200);
+  assert.deepStrictEqual(stops, [{ issueId: "issue-1", sessionId: "session-1", userId: "user-1" }]);
+  assert.deepStrictEqual(forwarded, []);
+
+  // Forged, or signed but stale: no interrupt, and the adapter (which refuses it) gets it as sent.
+  await send(signed, "0".repeat(64));
+  const stale = payload("stop", NOW - 5 * 60_000);
+  await send(stale, sign(stale));
+  assert.lengthOf(stops, 1);
+  assert.deepStrictEqual(forwarded, [signed, stale]);
+
+  // An ordinary prompt goes to the adapter with its body intact.
+  const prompt = payload();
+  assert.strictEqual(await (await send(prompt, sign(prompt))).text(), "adapter");
+  assert.strictEqual(forwarded.at(-1), prompt);
+  assert.lengthOf(stops, 1);
+});
+
+it("asks a question with options as Linear's chooser, and as numbered text if Linear refuses it", async () => {
+  const activities: Array<Record<string, unknown>> = [];
+  let refuseSelect = false;
+  const { platform } = linearPlatform({
+    chat: () => undefined,
+    adapter: () => ({
+      startTyping: async () => {},
+      addReaction: async () => {},
+      linearClient: {
+        ...noSession,
+        issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
+        fileUpload: async () => ({}),
+        createAgentActivity: async (input) => {
+          if (refuseSelect && input.signal === "select")
+            throw new Error("Argument Validation Error");
+          activities.push(input as never);
+        },
+      },
+    }),
+    access: { allowedUserIds: [], allowEveryone: true },
+    teams: [],
+    defaultRoute: { projectId: "p" },
+    onEvent: async () => ({ type: "pending" }),
+    log: () => {},
+  });
+  const question = {
+    chatThreadKey: THREAD,
+    text: "Deploy\nWhich environment?\n1. Staging\n2. Production\n\nReply with a number.",
+    kind: "question" as const,
+    choices: { question: "Deploy\nWhich environment?", options: ["Staging", "Production"] },
+  };
+  await platform.post(question);
+  refuseSelect = true;
+  await platform.post(question);
+  assert.deepStrictEqual(activities, [
+    {
+      agentSessionId: "session-1",
+      content: { type: "elicitation", body: "Deploy\nWhich environment?" },
+      signal: "select",
+      signalMetadata: {
+        options: [
+          { label: "Staging", value: "Staging" },
+          { label: "Production", value: "Production" },
+        ],
+      },
+    },
+    { agentSessionId: "session-1", content: { type: "elicitation", body: question.text } },
+  ]);
+});
+
+it("shows T3's to-do list as the session's plan, replaced whole and only when it changes", async () => {
+  const plans: Array<unknown> = [];
+  const { platform } = linearPlatform({
+    chat: () => undefined,
+    adapter: () => ({
+      startTyping: async () => {},
+      addReaction: async () => {},
+      linearClient: {
+        ...noSession,
+        issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
+        fileUpload: async () => ({}),
+        updateAgentSession: async (id, input) => void plans.push([id, input.plan]),
+      },
+    }),
+    access: { allowedUserIds: [], allowEveryone: true },
+    teams: [],
+    defaultRoute: { projectId: "p" },
+    onEvent: async () => ({ type: "pending" }),
+    log: () => {},
+  });
+  await platform.plan!(THREAD, [
+    { text: "check date", status: "completed" },
+    { text: "list files", status: "running" },
+    { text: "read README", status: "pending" },
+  ]);
+  assert.deepStrictEqual(plans, [
+    [
+      "session-1",
+      [
+        { content: "check date", status: "completed" },
+        { content: "list files", status: "inProgress" },
+        { content: "read README", status: "pending" },
+      ],
+    ],
+  ]);
 });

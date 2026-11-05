@@ -8,6 +8,7 @@ import {
   redactSecrets,
   STATUS_LIMIT,
   finishedStep,
+  planOf,
   statusLine,
   unwrapShell,
 } from "./activity.ts";
@@ -151,4 +152,20 @@ it("describes a finished step without its output, with secrets redacted, and not
     finishedStep(item({ type: "file_change", status: "failed", text: "src/a.ts\n+secret" })),
     { itemId: command.itemId, action: "Edited", parameter: "src/a.ts", result: "Failed" },
   );
+});
+
+it("reads a to-do list as the run's plan, not as a step", () => {
+  const todo = item({
+    type: "todo_list",
+    status: "completed",
+    text: "Checking the project\n[completed] check date\n[running] list files with token=abcdef123456\n[pending] read README",
+  });
+  assert.deepStrictEqual(planOf(todo), [
+    { status: "completed", text: "check date" },
+    { status: "running", text: "list files with token=<redacted>" },
+    { status: "pending", text: "read README" },
+  ]);
+  assert.isUndefined(finishedStep(todo));
+  assert.isUndefined(planOf({ ...todo, textTruncated: true }));
+  assert.isUndefined(planOf(item({ type: "reasoning", text: "[pending] x" })));
 });
