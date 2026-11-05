@@ -424,6 +424,8 @@ it("hands over prompts the session has but the bridge never got, oldest first, b
           activities: async () => ({
             nodes: [
               prompt("c-new", 3_000, "@office fix the flaky test"),
+              // Handled before a restart: the core's store knows it.
+              prompt("c-before-restart", 500, "old"),
               prompt("c-lost", 2_000, "what model are u?"),
               // The session's first prompt was handed over when it started.
               prompt("c-1", 1_000, "start"),
@@ -445,6 +447,7 @@ it("hands over prompts the session has but the bridge never got, oldest first, b
       return { type: "pending" };
     },
     log: (line) => void logs.push(line),
+    isHandled: (eventId) => eventId === "linear:c-before-restart",
   });
   const thread = { id: THREAD } as Thread;
   await deliver(thread, message("c-1"), undefined, "mention");

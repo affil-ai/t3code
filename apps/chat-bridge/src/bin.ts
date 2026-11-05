@@ -186,6 +186,7 @@ async function start(): Promise<void> {
             onEvent: receive,
             log,
             retry,
+            isHandled: (eventId) => store.isHandled(eventId),
           });
           platforms.push(platform);
           // Chat starts adapters together; Linear's token fetch must not hold up or fail the others.

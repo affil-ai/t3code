@@ -244,18 +244,21 @@ export class BridgeStore {
 
   /** The chat thread's oldest message still in the inbox. */
   inboxHead(chatThreadKey: string): InboxEntry | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM inbox WHERE chat_thread_key = ? ORDER BY rowid LIMIT 1")
-      .get(chatThreadKey);
-    return row === undefined
-      ? undefined
-      : {
-          eventId: String(row.event_id),
-          chatThreadKey: String(row.chat_thread_key),
-          event: String(row.event),
-          attempts: Number(row.attempts),
-          retryAt: Number(row.retry_at),
-        };
+    return this.inbox(chatThreadKey, 1)[0];
+  }
+
+  /** The chat thread's messages still in the inbox, oldest first. */
+  inbox(chatThreadKey: string, limit = 50): ReadonlyArray<InboxEntry> {
+    return this.db
+      .prepare("SELECT * FROM inbox WHERE chat_thread_key = ? ORDER BY rowid LIMIT ?")
+      .all(chatThreadKey, limit)
+      .map((row) => ({
+        eventId: String(row.event_id),
+        chatThreadKey: String(row.chat_thread_key),
+        event: String(row.event),
+        attempts: Number(row.attempts),
+        retryAt: Number(row.retry_at),
+      }));
   }
 
   /** Chat threads with messages in the inbox, in the order their oldest arrived. */

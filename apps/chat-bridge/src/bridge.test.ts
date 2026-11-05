@@ -150,8 +150,16 @@ function fakeT3() {
               }
               return { runId: args.runId, status: "completed", timedOut: false };
             }
-            waitCalled();
             const entry = run(String(args.runId));
+            // A zero timeout only reads the status; it isn't the watcher waiting.
+            if (args.timeoutMs === 0) {
+              return {
+                runId: args.runId,
+                status: entry.status,
+                timedOut: entry.status !== "completed",
+              };
+            }
+            waitCalled();
             return Promise.race([
               entry.done.then(() => ({ runId: args.runId, status: entry.status, timedOut: false })),
               ticked.then(() => ({ runId: args.runId, status: "running", timedOut: true })),
@@ -234,6 +242,10 @@ function fakeT3() {
     },
     fail: (tool: string, times: number) => failures.set(tool, times),
     hang: (tool: string) => hangs.add(tool),
+    /** Sets a run's status without ending it, such as "starting". */
+    setStatus: (runId: string, status: RunStatus) => {
+      run(runId).status = status;
+    },
     finish: (runId: string, status: RunStatus, answer?: string) => {
       if (answer !== undefined) answers.set(runId, answer);
       const entry = run(runId);
@@ -263,6 +275,7 @@ function harness(
     members?: ReadonlyArray<string>;
     /** The platform lists each finished step, as Linear does. */
     steps?: boolean;
+    sleep?: (ms: number) => Promise<void>;
   } = {},
 ) {
   const blockPosts: Array<BlockMessage & { messageId?: string }> = [];
@@ -331,7 +344,7 @@ function harness(
     ],
     // Tests run retries themselves, by moving the clock and calling `resume`.
     schedule: (ms) => void scheduled.push(ms),
-    sleep: async () => {},
+    sleep: options.sleep ?? (async () => {}),
     now: () => clock,
   });
   return {
@@ -795,6 +808,82 @@ it("steers a message that arrives during a run into that run, and answers once f
     { chatThreadKey: "slack:C1:100.1", text: "Fixed, and I'm Opus." },
   ]);
   assert.strictEqual(statuses.filter((line) => line.endsWith(" active")).length, 1);
+});
+
+it("waits for a starting run to take steers, then sends what arrived meanwhile as one message", async () => {
+  let wake = () => {};
+  let slept = 0;
+  let waiting = () => {};
+  const reachedWait = new Promise<void>((resolve) => (waiting = resolve));
+  const { t3, bridge, posted } = harness(undefined, {
+    // Only the first pause, the wait for the starting run, is held until the test lets it go.
+    sleep: () => {
+      slept += 1;
+      if (slept > 1) return Promise.resolve();
+      waiting();
+      return new Promise((resolve) => (wake = resolve));
+    },
+  });
+  await bridge.receive(event("100.1"));
+  t3.setStatus("run-1", "starting");
+  // Both arrive while the run starts: neither may become a run of its own.
+  const second = bridge.receive(event("100.2", { kind: "follow_up", text: "run the tests" }));
+  await reachedWait;
+  const third = bridge.receive(
+    event("100.3", {
+      kind: "follow_up",
+      text: "and say which model you are",
+      author: { userId: "U1", userName: "ada", fullName: "Ada" },
+    }),
+  );
+  assert.strictEqual(t3.calls.filter((call) => call.tool === "t3_thread_send").length, 0);
+  t3.setStatus("run-1", "running");
+  wake();
+  assert.deepStrictEqual(await second, {
+    type: "followed_up",
+    threadId: THREAD,
+    delivery: "steered",
+  });
+  await third;
+  const sends = t3.calls.filter((call) => call.tool === "t3_thread_send");
+  assert.strictEqual(sends.length, 1);
+  const sent = String(sends[0]!.args.message);
+  assert.include(sent, "run the tests");
+  assert.include(sent, "Slack message 100.3 from Ada (<@U1>):\n\nand say which model you are");
+  t3.finish("run-1", "completed", "Tests pass; I'm Opus.");
+  await bridge.idle();
+  assert.deepStrictEqual(posted, [
+    { chatThreadKey: "slack:C1:100.1", text: "Tests pass; I'm Opus." },
+  ]);
+});
+
+it("doesn't combine a command or an aside with the follow-ups around it", async () => {
+  const { t3, bridge, store } = harness();
+  await bridge.receive(event("100.1"));
+  for (const [ts, text] of [
+    ["100.2", "first"],
+    ["100.3", "aside: just for the record"],
+    ["100.4", "second"],
+  ] as const) {
+    store.enqueue({
+      eventId: `slack:C1:${ts}`,
+      chatThreadKey: "slack:C1:100.1",
+      event: JSON.stringify(event(ts, { kind: "follow_up", text })),
+    });
+  }
+  await bridge.receive(event("100.5", { kind: "follow_up", text: "third" }));
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+  const sent = t3.calls
+    .filter((call) => call.tool === "t3_thread_send")
+    .map((call) => String(call.args.message));
+  // The aside stays context, so "first" goes alone and "second" and "third" go together.
+  assert.strictEqual(sent.length, 2);
+  assert.include(sent[0], "first");
+  assert.notInclude(sent[0], "second");
+  assert.include(sent[1], "second");
+  assert.include(sent[1], "third");
+  assert.include(sent[1], "just for the record");
 });
 
 it("follows the new run T3 starts when the run ended just as the message arrived", async () => {

@@ -223,6 +223,13 @@ const PERMISSION_TEXT =
   "The agent asked for a permission I can't grant from chat, so I stopped the run. Ask again in a way that doesn't need it.";
 /** Posting an answer stops after this many failures in a row; a restart tries again. */
 const MAX_POST_ATTEMPTS = 5;
+/** A follow-up waits at most this long for a starting run to take steers. */
+const STEER_WAIT_MS = 30_000;
+const STEER_POLL_MS = 1_000;
+/** T3 queues a message sent while its run is in one of these, instead of steering it. */
+const NOT_YET_STEERABLE = new Set<RunStatus>(["idle", "preparing", "queued", "starting"]);
+/** Follow-ups combined into one message at most. */
+const MAX_COMBINED = 20;
 /** A run lists at most this many steps, so a long run doesn't flood the conversation. */
 const MAX_STEPS_PER_RUN = 40;
 /** A hand-off to T3 is tried this many times, waiting 15 s, 30 s, 1 min … up to 10 min between, about 36 minutes in all. */
@@ -478,12 +485,25 @@ export class Bridge {
         this.retryIn(chatThreadKey, wait);
         break;
       }
-      const event = JSON.parse(entry.event) as InboundEvent;
+      let event = JSON.parse(entry.event) as InboundEvent;
+      let together: ReadonlyArray<string> = [event.eventId];
       try {
+        if (await this.isPlainFollowUp(event)) {
+          // A run still starting can't take a steer yet; T3 would make the message its own run.
+          await this.untilSteerable(chatThreadKey);
+          // What arrived meanwhile, or alongside it, goes to the agent as one message.
+          const waiting = await this.waitingFollowUps(chatThreadKey);
+          if (waiting.length > 1) {
+            event = this.combine(waiting);
+            together = waiting.map((each) => each.eventId);
+          }
+        }
         const outcome = await this.handle(event);
-        this.store.finish(event.eventId);
-        outcomes.set(event.eventId, outcome);
-        this.log(`${event.eventId}: ${describeOutcome(outcome)}`);
+        for (const eventId of together) {
+          this.store.finish(eventId);
+          outcomes.set(eventId, outcome);
+        }
+        this.log(`${together.join(" + ")}: ${describeOutcome(outcome)}`);
       } catch (error) {
         const attempts = entry.attempts + 1;
         if (attempts >= MAX_HANDOFF_ATTEMPTS) {
@@ -502,6 +522,73 @@ export class Bridge {
       }
     }
     return outcomes;
+  }
+
+  /**
+   * A follow-up that only asks the agent something: not a command, an aside,
+   * a model switch or the answer to an open question, and from someone allowed.
+   * Only these steer as soon as the run can take them, and only these combine.
+   */
+  private async isPlainFollowUp(event: InboundEvent): Promise<boolean> {
+    const binding = this.store.binding(event.chatThreadKey);
+    if (binding === undefined || event.kind !== "follow_up" || !event.addressed) return false;
+    if (isAside(event.text) || event.forAnotherBot === true) return false;
+    if (controlCommand(event.text) !== undefined) return false;
+    if (parseModelCommand(event.text).command !== undefined) return false;
+    const asking = this.store.openQuestions(binding.chatThreadKey)[0];
+    if (asking !== undefined && openQuestion(asking.asked) !== undefined) return false;
+    return this.isAllowed(this.platform(event.chatThreadKey), event.author.userId);
+  }
+
+  /**
+   * Waits while the conversation's run is still preparing or starting, so the
+   * next message steers it instead of becoming a run of its own. Gives up after
+   * `STEER_WAIT_MS`, and returns at once when nothing runs or the run is past starting.
+   */
+  private async untilSteerable(chatThreadKey: string): Promise<void> {
+    const binding = this.store.binding(chatThreadKey);
+    let runId: string | undefined;
+    for (const [watched, key] of this.watchedRuns) if (key === chatThreadKey) runId = watched;
+    if (binding === undefined || runId === undefined) return;
+    for (let polls = 0; polls < STEER_WAIT_MS / STEER_POLL_MS && !this.stopped; polls += 1) {
+      // A zero timeout reads the run's status without waiting.
+      const run: { readonly runId: string; readonly status: RunStatus } | undefined =
+        await this.threads.waitForRun(binding.threadId, runId, 0).catch(() => undefined);
+      if (run === undefined || !NOT_YET_STEERABLE.has(run.status)) return;
+      runId = run.runId;
+      await this.sleep(STEER_POLL_MS);
+    }
+  }
+
+  /** The plain follow-ups at the front of the chat thread's inbox that are due now. */
+  private async waitingFollowUps(chatThreadKey: string): Promise<ReadonlyArray<InboundEvent>> {
+    const waiting: Array<InboundEvent> = [];
+    for (const entry of this.store.inbox(chatThreadKey, MAX_COMBINED)) {
+      if (entry.retryAt > this.now()) break;
+      const event = JSON.parse(entry.event) as InboundEvent;
+      if (!(await this.isPlainFollowUp(event))) break;
+      waiting.push(event);
+    }
+    return waiting;
+  }
+
+  /** Several follow-ups as one message: each keeps its author, and all their files come along. */
+  private combine(events: ReadonlyArray<InboundEvent>): InboundEvent {
+    const [first, ...rest] = events as [InboundEvent, ...Array<InboundEvent>];
+    const platform = this.platform(first.chatThreadKey);
+    const text = [
+      first.text,
+      ...rest.map(
+        (each) =>
+          `${platform.name} message ${each.messageId} from ${platform.person(each.author.userId, each.author.fullName || each.author.userName)}:\n\n${each.text}`,
+      ),
+    ].join("\n\n");
+    return {
+      ...first,
+      text,
+      files: events.flatMap((each) => each.files),
+      mentions: events.flatMap((each) => each.mentions),
+    };
   }
 
   /** Drains the chat thread again after `ms`, unless a retry no later than that is already due. */

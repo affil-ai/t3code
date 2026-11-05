@@ -201,6 +201,8 @@ export function linearPlatform(options: {
   readonly log: (line: string) => void;
   /** Gets a new token and retries once when Linear says the bridge isn't signed in. */
   readonly retry?: Retry;
+  /** Whether the core already handled an event, such as before a restart. */
+  readonly isHandled?: (eventId: string) => boolean;
 }): { readonly platform: ChatPlatform; readonly deliver: Deliver } {
   const retry = options.retry ?? noRetry;
   const client = () => options.adapter().linearClient;
@@ -229,8 +231,10 @@ export function linearPlatform(options: {
     teamOfIssue.set(issueId, key);
     return key;
   };
-  /** Event ids handed to the core by this process; the core's own store dedupes across restarts. */
+  /** Event ids handed to the core by this process, on top of what the core's store has handled. */
   const handedOver = new Set<string>();
+  const known = (eventId: string) =>
+    handedOver.has(eventId) || (options.isHandled?.(eventId) ?? false);
   /**
    * Prompts in the session older than `message` that never reached the
    * bridge, oldest first; a webhook can be lost, and nothing else would tell us.
@@ -252,7 +256,7 @@ export function linearPlatform(options: {
         activity.content.__typename === "AgentActivityPromptContent" ||
         activity.content.type === "prompt";
       const id = activity.sourceCommentId ?? activity.id;
-      if (!prompt || id === message.id || handedOver.has(`linear:${id}`)) continue;
+      if (!prompt || id === message.id || known(`linear:${id}`)) continue;
       if (activity.createdAt.getTime() >= message.metadata.dateSent.getTime()) continue;
       const user = await activity.user;
       missed.push(
