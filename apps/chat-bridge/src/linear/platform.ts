@@ -232,6 +232,13 @@ export function linearPlatform(options: {
   };
 }): { readonly platform: ChatPlatform; readonly deliver: Deliver } {
   const retry = options.retry ?? noRetry;
+  /** Links to files the agent sent mid-run, by conversation, until the run's reply carries them. */
+  const heldFiles = new Map<string, ReadonlyArray<string>>();
+  const takeHeld = (chatThreadKey: string): ReadonlyArray<string> => {
+    const held = heldFiles.get(chatThreadKey) ?? [];
+    heldFiles.delete(chatThreadKey);
+    return held;
+  };
   const latestSession = new Map<string, string>();
   const sessions = options.sessions ?? {
     get: (issueKey: string) => latestSession.get(issueKey),
@@ -396,14 +403,21 @@ export function linearPlatform(options: {
         "Your final message in each run is posted, in Markdown, as the response in the session the latest message came from. Linear shows your progress while you work.",
         "If a message needs no reply, end the run without a final message and nothing is posted.",
         "Files and images people attach in Linear arrive as files in your turn.",
-        `To attach files or images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace; images show inline.`,
+        `To attach files or images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace; they appear with your final message, and images show inline.`,
         `To react to a comment, call chat_react with chatKey "${chatKey}", the comment id and an emoji name such as thumbs_up, eyes or rocket.`,
       ].join(" "),
     refusal: () => "Sorry, you can't use this agent yet. Ask whoever runs it to allow you.",
     post: async ({ chatThreadKey, text, files, kind = "answer", choices }) => {
       const links: Array<string> = [];
       for (const file of files ?? []) links.push(await retry(() => uploadToLinear(client(), file)));
-      const markdown = [text, ...links].filter((part) => part.trim() !== "").join("\n\n");
+      if (kind === "update" && links.length > 0) {
+        // Files sent mid-run go with the run's reply, not under its collapsed work.
+        heldFiles.set(chatThreadKey, [...(heldFiles.get(chatThreadKey) ?? []), ...links]);
+        if (text.trim() !== "") await activity(chatThreadKey, { type: "thought", body: text });
+        return;
+      }
+      const held = kind === "answer" ? takeHeld(chatThreadKey) : [];
+      const markdown = [text, ...links, ...held].filter((part) => part.trim() !== "").join("\n\n");
       if (markdown === "") return;
       // Only the answer is a response, which ends the session's turn; a question waits for the person.
       if (
@@ -453,6 +467,14 @@ export function linearPlatform(options: {
       // A thought shows what the run is doing; the response ends the session's turn.
       if (state === "processing" && text !== "") {
         await options.adapter().startTyping(sessionThread(chatThreadKey), text);
+        return;
+      }
+      // The run ended without a reply to carry its files: they are the response.
+      const held = state === "active" ? takeHeld(chatThreadKey) : [];
+      if (held.length > 0) {
+        await chat()
+          .thread(sessionThread(chatThreadKey))
+          .post({ markdown: held.join("\n\n") });
       }
     },
     bound: async (chatThreadKey) => {

@@ -778,3 +778,68 @@ it("shows T3's to-do list as the session's plan, replaced whole and only when it
     ],
   ]);
 });
+
+it("holds files sent mid-run for the run's reply, so they aren't tucked under its work", async () => {
+  const activities: Array<Record<string, unknown>> = [];
+  const responses: Array<string> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(null, { status: 200 })) as typeof fetch;
+  try {
+    const { platform } = linearPlatform({
+      chat: () =>
+        ({
+          thread: () => ({
+            post: async (message: { markdown: string }) => void responses.push(message.markdown),
+          }),
+        }) as never,
+      adapter: () => ({
+        startTyping: async () => {},
+        addReaction: async () => {},
+        linearClient: {
+          ...noSession,
+          issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
+          fileUpload: async (_type, filename) => ({
+            uploadFile: {
+              uploadUrl: "https://upload",
+              assetUrl: `https://asset/${filename}`,
+              headers: [],
+            },
+          }),
+          createAgentActivity: async (input) => void activities.push(input as never),
+        },
+      }),
+      access: { allowedUserIds: [], allowEveryone: true },
+      teams: [],
+      defaultRoute: { projectId: "p" },
+      onEvent: async () => ({ type: "pending" }),
+      log: () => {},
+    });
+    const file = (filename: string) => ({ data: Buffer.from("x"), filename });
+    await platform.post({
+      chatThreadKey: THREAD,
+      text: "Here they are.",
+      files: [file("chart.png"), file("notes.txt")],
+      kind: "update",
+    });
+    // The note is a thought; the files wait for the reply.
+    assert.deepStrictEqual(activities, [
+      { agentSessionId: "session-1", content: { type: "thought", body: "Here they are." } },
+    ]);
+    await platform.post({ chatThreadKey: THREAD, text: "files sent" });
+    assert.deepStrictEqual(responses, [
+      "files sent\n\n![chart.png](https://asset/chart.png)\n\n[notes.txt](https://asset/notes.txt)",
+    ]);
+    // A run that ends without a reply still shows its files, as the response.
+    await platform.post({
+      chatThreadKey: THREAD,
+      text: "",
+      files: [file("late.pdf")],
+      kind: "update",
+    });
+    await platform.setState!(THREAD, "active", "");
+    await platform.setState!(THREAD, "active", "");
+    assert.deepStrictEqual(responses.slice(1), ["[late.pdf](https://asset/late.pdf)"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
