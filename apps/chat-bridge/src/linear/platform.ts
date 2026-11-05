@@ -10,7 +10,15 @@ import type { Chat, Message } from "chat";
 import type { PlanStep } from "../activity.ts";
 import type { InboundEvent, InboundOutcome } from "../bridge.ts";
 import type { Deliver } from "../chatHost.ts";
-import type { Access, ChannelRoute, ChatPlatform, OutboundFile, ThreadRoute } from "../platform.ts";
+import {
+  type Access,
+  type ChannelRoute,
+  type ChatPlatform,
+  type OutboundFile,
+  QUIET_REPLY,
+  QUIET_RULES,
+  type ThreadRoute,
+} from "../platform.ts";
 import { downloadUpload, takeUploads, uploadEventFiles, withoutUploadLinks } from "./files.ts";
 import { type Retry, noRetry } from "./startup.ts";
 import type { LinearComment } from "./stop.ts";
@@ -507,7 +515,7 @@ export function linearPlatform(options: {
     [
       "This thread is the Linear issue's conversation: every agent session and @mention of you on the issue continues it, so earlier sessions' messages are yours too.",
       "Your final message in each run is posted, in Markdown, as the response in the session the latest message came from. Linear shows your progress while you work.",
-      "If a message needs no reply, end the run without a final message and nothing is posted.",
+      QUIET_RULES,
       "Files and images people attach in Linear arrive as files in your turn.",
       `To attach files or images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace; they appear with your final message, and images show inline.`,
       "Linear doesn't show reactions on session messages, so acknowledge in words, or with a short chat_post update while you work.",
@@ -656,7 +664,7 @@ export function linearPlatform(options: {
     [
       `Your work is now Linear issue ${issue.identifier} (${issue.url}): its agent session shows your progress, and your final message is posted there.`,
       firstTurn(chatKey),
-      "If you had already finished when this arrived, end this run without a final message.",
+      `If you had already finished when this arrived, answer ${QUIET_REPLY}.`,
       `Chat key: ${chatKey}`,
     ].join("\n\n");
   return { platform, deliver, comment, findIssue, createIssue, openSession, workNote };

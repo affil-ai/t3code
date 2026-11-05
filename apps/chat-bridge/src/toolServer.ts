@@ -19,7 +19,7 @@ import {
 
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-import type { OutboundFile, OutboundMessage, Reaction } from "./platform.ts";
+import { type OutboundFile, type OutboundMessage, QUIET_RULES, type Reaction } from "./platform.ts";
 import type { Binding } from "./store.ts";
 
 const MAX_FILES = 10;
@@ -311,7 +311,8 @@ export async function callTool(
  */
 const INSTRUCTIONS = [
   "Some threads take their messages from a chat, such as a Slack thread, an iMessage conversation or a Linear agent session. Their turns start with the chat message and carry a chat key.",
-  "In those threads your final message in each run is posted to the chat. If a message needs no reply, end the run without a final message and nothing is posted.",
+  "In those threads your final message in each run is posted to the chat.",
+  QUIET_RULES,
   "The thread's first turn says how that chat works: how to mention people, and which of these tools it supports.",
   "Use chat_post to send files or an update before the run ends, chat_react to react to a message, and chat_status to set the status shown during a long run. All take the thread's chat key.",
 ].join(" ");

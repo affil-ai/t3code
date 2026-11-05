@@ -40,7 +40,12 @@ Socket Mode, so it needs no public URL.
   seconds.
 - **Answers are normal replies.** When a run ends, its final message is posted
   to the thread in parts of up to 12,000 characters, Slack's limit. A run that
-  ends without a final message posts nothing. A failed run posts a short
+  ends without a final message, or whose whole final message is `NO_REPLY`,
+  posts nothing. The marker exists because Claude Code asks a run that ends
+  with no text for a visible reply. Every chat's first turn, and the chat
+  tools' standing instructions, also tell the agent that a subagent or
+  background command can wake it more than once: a wake that only repeats a
+  result already posted, or only says the work is still going, gets `NO_REPLY`. A failed run posts a short
   notice.
 - **Questions come to Slack.** When the agent asks a question, the bridge posts
   it in the thread with a button for each option, and Submit for a multiple

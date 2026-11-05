@@ -1,12 +1,18 @@
 /** Slack as a `ChatPlatform`: what the core needs, on top of the Socket Mode host. */
-import type { Access, ChannelRoute, ChatPlatform, ThreadRoute } from "../platform.ts";
+import {
+  type Access,
+  type ChannelRoute,
+  type ChatPlatform,
+  QUIET_RULES,
+  type ThreadRoute,
+} from "../platform.ts";
 import type { SlackChatHost } from "./host.ts";
 
 /** Tells the agent how its answer reaches Slack, once per thread. */
 export function slackFirstTurnNote(chatKey: string): string {
   return [
     "Your final message in each run is posted to this Slack thread.",
-    "If a message needs no reply, end the run without a final message and nothing is posted.",
+    QUIET_RULES,
     "To mention someone there, write <@USERID>, such as <@U0123ABCD>.",
     `To send files, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace.`,
     `To react to a message, call the chat_react tool with chatKey "${chatKey}", the message id and an emoji name.`,

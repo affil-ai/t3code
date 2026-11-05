@@ -54,6 +54,25 @@ export interface OutboundMessage {
     | undefined;
 }
 
+/**
+ * A final message that is only this posts nothing. Claude Code answers a run
+ * that ends with no text by asking for a visible reply, so ending silently
+ * isn't enough to stay quiet.
+ */
+export const QUIET_REPLY = "NO_REPLY";
+
+/** True for a final message that asks to post nothing, allowing stray quotes, backticks or a full stop. */
+export const isQuietReply = (text: string): boolean =>
+  text.trim().replace(/^[`"']+|[`"'.]+$/g, "") === QUIET_REPLY;
+
+/** How the agent stays quiet, and how to treat wake-ups from its subagents and background work. */
+export const QUIET_RULES = [
+  `If a run needs no reply, make your whole final message exactly ${QUIET_REPLY} and nothing is posted.`,
+  "A subagent or background command can wake you more than once, and a wake can come before its work is done. Post each result once: when a wake only repeats what you already posted, or only says the work is still going, answer " +
+    QUIET_REPLY +
+    ".",
+].join(" ");
+
 export interface Reaction {
   readonly chatThreadKey: string;
   /** The message id the turn showed. */

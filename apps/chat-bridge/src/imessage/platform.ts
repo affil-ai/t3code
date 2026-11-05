@@ -7,7 +7,13 @@ import type { Chat, Message } from "chat";
 
 import type { EarlierMessage, InboundEvent, InboundOutcome } from "../bridge.ts";
 import type { Deliver } from "../chatHost.ts";
-import type { Access, ChatPlatform, ThreadRoute } from "../platform.ts";
+import {
+  type Access,
+  type ChatPlatform,
+  QUIET_REPLY,
+  QUIET_RULES,
+  type ThreadRoute,
+} from "../platform.ts";
 import type { ImessageAdapter } from "./adapter.ts";
 
 /** Earlier messages a first turn carries, for context in a conversation that started before the bot. */
@@ -74,11 +80,11 @@ export function imessagePlatform(options: {
     firstTurnNote: (chatKey, event) =>
       [
         "Your final message in each run is sent to this iMessage conversation as plain text: Markdown is removed, so write plainly and keep it short.",
-        "If a message needs no reply, end the run without a final message and nothing is sent.",
+        QUIET_RULES,
         ...(options.adapter.isDM(event.chatThreadKey)
           ? []
           : [
-              "This is a group conversation and every message in it reaches you. Answer only when someone is talking to you or you clearly have something to add; otherwise end the run without a final message.",
+              `This is a group conversation and every message in it reaches you. Answer only when someone is talking to you or you clearly have something to add; otherwise answer ${QUIET_REPLY}.`,
             ]),
         `To send files, such as images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace.`,
         options.adapter.canReact

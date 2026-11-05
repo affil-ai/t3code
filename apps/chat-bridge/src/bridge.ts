@@ -28,8 +28,10 @@ import {
 import {
   type ChannelRoute,
   type ChatPlatform,
+  isQuietReply,
   type OutboundKind,
   platformFor,
+  QUIET_REPLY,
   type ThreadRoute,
 } from "./platform.ts";
 import { RunFeed } from "./runFeed.ts";
@@ -1601,7 +1603,7 @@ export class Bridge {
     }
   }
 
-  /** Posts the run's answer once. A completed run with no final message chose to stay quiet. */
+  /** Posts the run's answer once. A completed run with no final message, or only `NO_REPLY`, chose to stay quiet. */
   private async answer(reply: OwedReply, finalRunId: string, status: RunStatus): Promise<void> {
     if (!this.store.claimReply(reply)) return;
     // A restart continues in a new run; claim it too, so a later message that joins it does not answer twice.
@@ -1612,7 +1614,13 @@ export class Bridge {
         status === "completed"
           ? await this.threads.finalAnswer(reply.threadId, finalRunId)
           : TERMINAL_TEXT[status];
-      if (text !== undefined) await this.post(reply.chatThreadKey, text);
+      if (text !== undefined && isQuietReply(text)) {
+        this.log(
+          `${finalRunId} answered ${QUIET_REPLY}; nothing posted to ${reply.chatThreadKey}.`,
+        );
+      } else if (text !== undefined) {
+        await this.post(reply.chatThreadKey, text);
+      }
     } catch (error) {
       this.store.releaseReply(reply.runId);
       if (finalRunId !== reply.runId) this.store.releaseReply(finalRunId);

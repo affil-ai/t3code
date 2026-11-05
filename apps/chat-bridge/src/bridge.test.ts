@@ -15,6 +15,7 @@ import {
   type Reply,
 } from "./bridge.ts";
 import type { PlanStep, RunStep } from "./activity.ts";
+import { isQuietReply, QUIET_REPLY } from "./platform.ts";
 import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
@@ -1795,4 +1796,18 @@ it("posts the answers of runs that end together in the order they were owed", as
     posted.map((reply) => reply.text),
     ["Started a subagent.", "subagent-result: still waiting", "subagent-result: done"],
   );
+});
+
+it("posts nothing for a run that answers NO_REPLY, and tells every chat how to", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", " `NO_REPLY`. ");
+  await bridge.idle();
+  assert.lengthOf(posted, 0);
+  // Only a final message that is the marker alone stays quiet.
+  assert.isTrue(isQuietReply("NO_REPLY"));
+  assert.isFalse(isQuietReply("NO_REPLY was wrong earlier; here are the logs."));
+  assert.isFalse(isQuietReply("No reply needed"));
+  assert.include(slackFirstTurnNote("key"), `exactly ${QUIET_REPLY}`);
+  assert.include(slackFirstTurnNote("key"), "wake you more than once");
 });
