@@ -437,6 +437,8 @@ it("hands over prompts the session has but the bridge never got, oldest first, b
               prompt("c-lost", 2_000, "what model are u?"),
               // The session's first prompt was handed over when it started.
               prompt("c-1", 1_000, "start"),
+              // A session the bridge opened starts with a prompt Linear writes as the app.
+              { ...prompt("a-opened", 100, "Work on AFF-9"), userId: "bot" },
               {
                 id: "a-response",
                 createdAt: new Date(2_500),

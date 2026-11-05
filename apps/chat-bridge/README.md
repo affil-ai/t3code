@@ -65,8 +65,10 @@ Socket Mode, so it needs no public URL.
   background work are still going, the bridge keeps following the thread
   (`t3_thread_wait` with `untilDelegatedWorkSettled`, for up to six hours).
   Each run T3 starts when that work reports back begins with a notification,
-  and its answer is posted like any other. A run started by a message typed
-  in T3 stays in T3.
+  and its answer is posted like any other, once. The follow is saved, so a
+  restart picks it up where it left off. If six hours pass with the work
+  still going, the bridge stops following and says so in the chat. A run
+  started by a message typed in T3 stays in T3.
 - **Status from the agent.** The `chat_status` tool sets the status text, such
   as "Running the tests", until the agent's next step.
 - **Titles follow T3.** A new T3 thread starts with a short title: the

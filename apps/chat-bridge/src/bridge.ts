@@ -33,7 +33,7 @@ import {
   type ThreadRoute,
 } from "./platform.ts";
 import { RunFeed } from "./runFeed.ts";
-import type { AskedRecord, Binding, BridgeStore, OwedReply } from "./store.ts";
+import type { AskedRecord, Binding, BridgeStore, DelegatedFollow, OwedReply } from "./store.ts";
 import {
   type Delivery,
   type ImportedFiles,
@@ -202,6 +202,9 @@ const DEFAULT_MODEL: ModelSelection = {
 /** How long one wait for a thread's delegated work lasts, and how long the bridge keeps following it. */
 const DELEGATED_CHECK_MS = 20_000;
 const DELEGATED_FOLLOW_MS = 6 * 60 * 60 * 1000;
+/** Posted when the bridge stops following work that is still running. */
+const CAP_NOTE =
+  "Still working, but I've stopped watching for updates here after six hours. Check the thread in T3 for the rest.";
 /** How long after T3 calls the work settled the bridge looks once more for a run reporting it. */
 const SETTLE_GRACE_MS = 5_000;
 /** How often, and how many times, to look for the run an answer starts. */
@@ -906,6 +909,8 @@ export class Bridge {
   /** Watches every reply still owed and works through the inbox, such as what a restart left. */
   async resume(): Promise<void> {
     for (const reply of this.store.pendingReplies()) this.watch(reply);
+    // Subagents and background work a run left going report back in runs the chat is owed.
+    for (const follow of this.store.follows()) this.followDelegatedWork(follow.reply, follow);
     await Promise.all(this.store.inboxThreads().map((chatThreadKey) => this.drain(chatThreadKey)));
   }
 
@@ -1085,18 +1090,28 @@ export class Bridge {
    * run with a notification, and the chat is owed that run's answer too. A
    * run started by a message typed in T3 stays in T3.
    */
-  private followDelegatedWork(reply: OwedReply): void {
+  private followDelegatedWork(reply: OwedReply, saved?: DelegatedFollow): void {
     const key = `delegated:${reply.threadId}`;
     if (this.watching.has(key)) return;
+    let ended = false;
     const follow = (async () => {
-      const first = await this.threads.activity(reply.threadId, undefined);
-      // Only what comes after this run; older notifications belong to older runs.
-      let cursor = Math.max(
-        -1,
-        ...first.items.filter((item) => item.runId === reply.runId).map((item) => item.position),
-      );
-      const until = this.now() + DELEGATED_FOLLOW_MS;
-      this.log(`Following ${reply.threadId} after ${reply.runId} from position ${cursor}.`);
+      let cursor: number;
+      let until: number;
+      if (saved !== undefined) {
+        ({ cursor, until } = saved);
+        this.log(`Following ${reply.threadId} again after a restart, from position ${cursor}.`);
+      } else {
+        const first = await this.threads.activity(reply.threadId, undefined);
+        // Only what comes after this run; older notifications belong to older runs.
+        cursor = Math.max(
+          -1,
+          ...first.items.filter((item) => item.runId === reply.runId).map((item) => item.position),
+        );
+        until = this.now() + DELEGATED_FOLLOW_MS;
+        // Saved, so a restart before the work reports back still owes the chat its answer.
+        this.store.saveFollow({ reply, cursor, until });
+        this.log(`Following ${reply.threadId} after ${reply.runId} from position ${cursor}.`);
+      }
       /** Owes each run a notification started since the cursor; true when there was one. */
       const scan = async () => {
         const read = await this.threads.activity(reply.threadId, cursor);
@@ -1111,6 +1126,7 @@ export class Bridge {
           found = true;
         }
         cursor = Math.max(cursor, read.lastPosition);
+        this.store.moveFollowCursor(reply.threadId, cursor);
         return found;
       };
       while (!this.stopped) {
@@ -1119,17 +1135,31 @@ export class Bridge {
           reply.runId,
           DELEGATED_CHECK_MS,
         );
+        // Shutting down: the saved follow picks up from here after the restart.
+        if (this.stopped) return;
         if (await scan()) continue;
         // T3 can call the work settled a moment before it records the run that
         // reports it, so look once more before stopping.
         if (!waited.timedOut) {
           await this.sleep(SETTLE_GRACE_MS);
           if (await scan()) continue;
-        }
-        if (!waited.timedOut || this.now() > until) {
+          ended = true;
           this.log(
-            `Stopped following ${reply.threadId}: ${waited.timedOut ? "six hours passed" : "its delegated work settled"} (read to ${cursor}).`,
+            `Stopped following ${reply.threadId}: its delegated work settled (read to ${cursor}).`,
           );
+          return;
+        }
+        if (this.now() > until) {
+          ended = true;
+          // Never a silent drop: say the work goes on where it can still be seen.
+          this.log(
+            `Stopped following ${reply.threadId} after six hours with its delegated work still running (read to ${cursor}).`,
+          );
+          await this.post(reply.chatThreadKey, CAP_NOTE).catch((error: unknown) => {
+            this.log(
+              `Posting the six-hour note to ${reply.chatThreadKey} failed: ${String(error)}`,
+            );
+          });
           return;
         }
       }
@@ -1137,7 +1167,10 @@ export class Bridge {
       .catch((error: unknown) => {
         this.log(`Following ${reply.threadId}'s delegated work failed: ${String(error)}`);
       })
-      .finally(() => this.watching.delete(key));
+      .finally(() => {
+        if (ended) this.store.endFollow(reply.threadId);
+        this.watching.delete(key);
+      });
     this.watching.set(key, follow);
   }
 

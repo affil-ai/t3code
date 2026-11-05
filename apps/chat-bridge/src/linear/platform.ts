@@ -416,6 +416,9 @@ export function linearPlatform(options: {
       const id = activity.sourceCommentId ?? activity.id;
       if (!prompt || id === message.id || known(`linear:${id}`)) continue;
       if (activity.createdAt.getTime() >= message.metadata.dateSent.getTime()) continue;
+      // Linear writes the first prompt of a session the bridge opened as the app itself.
+      const author = activity.userId ?? "";
+      if (author === "" || author === options.adapter().botUserId) continue;
       const user = await activity.user;
       missed.push(
         missedPromptEvent(

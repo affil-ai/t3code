@@ -55,6 +55,8 @@ function fakeT3() {
     wakeAfterSettled?: boolean;
     /** The run ended as the message arrived, so T3 starts a new one instead of steering. */
     sendStartsRun?: boolean;
+    /** Subagents or background work still running: each wait for them times out at the next tick. */
+    delegatedPending?: boolean;
     /** The runs a thread read lists, as for a subagent the bridge didn't start. */
     recentRuns?: ReadonlyArray<{ runId: string; ordinal: number; status: RunStatus }>;
   } = {
@@ -124,6 +126,14 @@ function fakeT3() {
             return { runId: `run-${runs}`, delivery: "steered" };
           case "t3_thread_wait": {
             if (args.untilDelegatedWorkSettled === true) {
+              if (options.delegatedPending === true) {
+                waitCalled();
+                return ticked.then(() => ({
+                  runId: args.runId,
+                  status: "running",
+                  timedOut: true,
+                }));
+              }
               if (options.wakeAfterSettled === true && options.delegatedWakes !== undefined) {
                 // The next activity read still misses it; the one after sees it.
                 const wake = options.delegatedWakes;
@@ -281,12 +291,15 @@ function harness(
     /** The platform has no buttons, as Linear and iMessage don't. */
     noButtons?: boolean;
     sleep?: (ms: number) => Promise<void>;
+    /** The same T3 as another harness's, such as across a restart. */
+    t3?: ReturnType<typeof fakeT3>;
+    now?: () => number;
   } = {},
 ) {
   const blockPosts: Array<BlockMessage & { messageId?: string }> = [];
   const renamed: Array<string> = [];
   let renameFailures = options.renameFailures ?? 0;
-  const t3 = fakeT3();
+  const t3 = options.t3 ?? fakeT3();
   const posted: Array<Reply & { readonly kind?: string }> = [];
   const statuses: Array<string> = [];
   const steps: Array<string> = [];
@@ -357,7 +370,7 @@ function harness(
     // Tests run retries themselves, by moving the clock and calling `resume`.
     schedule: (ms) => void scheduled.push(ms),
     sleep: options.sleep ?? (async () => {}),
-    now: () => clock,
+    now: options.now ?? (() => clock),
   });
   return {
     t3,
@@ -1706,4 +1719,59 @@ it("attaches only a subagent, and moves a bound conversation only when asked", a
   assert.include(await refusal("slack:C1:900.1"), "already answers slack:C1:100.1");
   Object.assign(t3.thread, { relationshipToParent: "fork" });
   assert.include(await refusal(undefined), "isn't a subagent");
+});
+
+it("keeps following background work across a restart, and posts the run it starts once", async () => {
+  const db = freshDatabase();
+  const before = harness(db);
+  const { t3 } = before;
+  await before.bridge.receive(event("100.1"));
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", "Started the tests; they're still running.");
+  // The answer posts, then the bridge waits on the background work, with the follow saved.
+  await t3.tick();
+  assert.deepStrictEqual(
+    before.posted.map((reply) => reply.text),
+    ["Started the tests; they're still running."],
+  );
+  assert.lengthOf(before.store.follows(), 1);
+  before.bridge.stop();
+
+  const after = harness(db, { t3 });
+  await after.bridge.resume();
+  // The background work reports back in a run T3 starts with a notification.
+  t3.activity.push({ itemId: "wake", type: "notification", runId: "run-7", status: "completed" });
+  t3.finish("run-7", "completed", "The tests passed.");
+  t3.options.delegatedPending = false;
+  await t3.tick();
+  await after.bridge.idle();
+  assert.deepStrictEqual(
+    after.posted.map((reply) => reply.text),
+    ["The tests passed."],
+  );
+  // The stopped bridge posted nothing more, and the follow is over.
+  assert.lengthOf(before.posted, 1);
+  assert.lengthOf(after.store.follows(), 0);
+  // Another restart owes nothing again.
+  const again = harness(db, { t3 });
+  await again.bridge.resume();
+  await again.bridge.idle();
+  assert.lengthOf(again.posted, 0);
+});
+
+it("says so in the chat when six hours pass with background work still running", async () => {
+  let clock = 0;
+  const { t3, bridge, posted, store } = harness(freshDatabase(), { now: () => clock });
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", "Started a long job.");
+  await t3.tick();
+  clock = 7 * 60 * 60 * 1000;
+  // A subagent's run would be watched with this tick too; here only the follow waits.
+  void t3.tick();
+  await bridge.idle();
+  assert.deepStrictEqual(posted.map((reply) => reply.text).slice(0, 1), ["Started a long job."]);
+  assert.include(posted.at(-1)!.text, "six hours");
+  assert.lengthOf(posted, 2);
+  assert.lengthOf(store.follows(), 0);
 });

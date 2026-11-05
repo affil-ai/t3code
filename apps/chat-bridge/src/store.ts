@@ -28,6 +28,14 @@ export interface ContextMessage {
   readonly line: string;
 }
 
+/** A thread the bridge keeps following after its run, until its delegated work settles or `until`. */
+export interface DelegatedFollow {
+  readonly reply: OwedReply;
+  /** Notifications at or before this position were looked at already. */
+  readonly cursor: number;
+  readonly until: number;
+}
+
 export interface OwedReply {
   readonly runId: string;
   readonly threadId: string;
@@ -89,6 +97,16 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       thread_id TEXT NOT NULL,
       chat_thread_key TEXT NOT NULL,
       posted_at INTEGER
+    );
+    -- A thread whose run has ended while its subagents or background work go on,
+    -- so a restart keeps owing the chat the runs they start when they report back.
+    CREATE TABLE IF NOT EXISTS delegated_follow (
+      thread_id TEXT PRIMARY KEY,
+      chat_thread_key TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      requested_by TEXT,
+      cursor INTEGER NOT NULL,
+      until_ms INTEGER NOT NULL
     );
     -- Slack messages saved on arrival and removed once handled; the bridge works from this table.
     CREATE TABLE IF NOT EXISTS inbox (
@@ -453,6 +471,51 @@ export class BridgeStore {
       )
       .all(this.now(), reply.runId);
     return claimed.length > 0;
+  }
+
+  saveFollow(follow: DelegatedFollow): void {
+    this.db
+      .prepare(
+        `INSERT INTO delegated_follow (thread_id, chat_thread_key, run_id, requested_by, cursor, until_ms)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT (thread_id) DO UPDATE SET chat_thread_key = excluded.chat_thread_key,
+            run_id = excluded.run_id, requested_by = excluded.requested_by,
+            cursor = excluded.cursor, until_ms = excluded.until_ms`,
+      )
+      .run(
+        follow.reply.threadId,
+        follow.reply.chatThreadKey,
+        follow.reply.runId,
+        follow.reply.requestedBy ?? null,
+        follow.cursor,
+        follow.until,
+      );
+  }
+
+  moveFollowCursor(threadId: string, cursor: number): void {
+    this.db
+      .prepare("UPDATE delegated_follow SET cursor = ? WHERE thread_id = ?")
+      .run(cursor, threadId);
+  }
+
+  endFollow(threadId: string): void {
+    this.db.prepare("DELETE FROM delegated_follow WHERE thread_id = ?").run(threadId);
+  }
+
+  follows(): Array<DelegatedFollow> {
+    return this.db
+      .prepare("SELECT * FROM delegated_follow ORDER BY rowid")
+      .all()
+      .map((row) => ({
+        reply: {
+          runId: String(row.run_id),
+          threadId: String(row.thread_id),
+          chatThreadKey: String(row.chat_thread_key),
+          ...(row.requested_by === null ? {} : { requestedBy: String(row.requested_by) }),
+        },
+        cursor: Number(row.cursor),
+        until: Number(row.until_ms),
+      }));
   }
 
   releaseReply(runId: string): void {
