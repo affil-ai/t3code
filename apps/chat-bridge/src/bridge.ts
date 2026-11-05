@@ -95,6 +95,11 @@ export interface InboundEvent {
   readonly direct: boolean;
   /** Mentions another bot and not this one, so it is meant for someone else. */
   readonly forAnotherBot?: boolean | undefined;
+  /**
+   * Only context, such as a plain Linear comment on the issue: a bound
+   * conversation keeps it for its next turn, and it never starts or steers a run.
+   */
+  readonly contextOnly?: boolean | undefined;
   readonly author: ChatAuthor;
   readonly text: string;
   readonly files: ReadonlyArray<EventFile>;
@@ -533,7 +538,7 @@ export class Bridge {
   private async isPlainFollowUp(event: InboundEvent): Promise<boolean> {
     const binding = this.store.binding(event.chatThreadKey);
     // In a bound conversation a mention is a follow-up too, such as a new Linear session on the issue.
-    if (binding === undefined || !event.addressed) return false;
+    if (binding === undefined || !event.addressed || event.contextOnly === true) return false;
     if (isAside(event.text) || event.forAnotherBot === true) return false;
     if (controlCommand(event.text) !== undefined) return false;
     if (parseModelCommand(event.text).command !== undefined) return false;
@@ -655,6 +660,12 @@ export class Bridge {
     if (this.store.isHandled(event.eventId)) return { type: "ignored", reason: "duplicate" };
     const binding = this.store.binding(event.chatThreadKey);
     const platform = this.platform(event.chatThreadKey);
+
+    if (event.contextOnly === true) {
+      if (binding === undefined) return { type: "ignored", reason: "unbound_thread" };
+      this.keep(binding, event);
+      return { type: "noted", threadId: binding.threadId };
+    }
 
     if (!(await this.isAllowed(platform, event.author.userId))) {
       // What other people say in a bound thread is still context for the agent.

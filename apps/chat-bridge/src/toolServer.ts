@@ -35,7 +35,8 @@ export interface ToolDeps {
   /** Folders the thread may share files from. */
   readonly workspaceRoots: (threadId: string) => Promise<ReadonlyArray<string>>;
   readonly post: (message: OutboundMessage) => Promise<void>;
-  readonly react: (reaction: Reaction) => Promise<void>;
+  /** Reacts, or says why it didn't: a note for the agent in place of "Reacted". */
+  readonly react: (reaction: Reaction) => Promise<string | undefined>;
   /** Sets the status of the thread's runs in flight; false when there is none. */
   readonly setStatus: (chatThreadKey: string, status: string) => boolean;
 }
@@ -195,8 +196,12 @@ export async function callTool(
       if (!EMOJI.test(emoji) || emoji.length > 100)
         return text("emoji must be an emoji name.", true);
       const bare = emoji.replace(/^:|:$/g, "");
-      await deps.react({ chatThreadKey: binding.chatThreadKey, messageId, emoji: bare });
-      return text(`Reacted with :${bare}:.`);
+      const instead = await deps.react({
+        chatThreadKey: binding.chatThreadKey,
+        messageId,
+        emoji: bare,
+      });
+      return text(instead ?? `Reacted with :${bare}:.`);
     }
     if (name === "chat_status") {
       const status = stringArg(args, "status")?.trim() ?? "";

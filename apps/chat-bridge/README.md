@@ -432,7 +432,11 @@ mode, on Linear's Agents API), so it shows natively:
 
 - **What starts a run:** an agent session. Mentioning the app in a comment
   (`@office …`) starts one, and so does delegating or assigning an issue to
-  it. Plain comments that don't mention the app start nothing.
+  it. Plain comments that don't mention the app start nothing; on an issue
+  the agent already works on, they are kept as context for its next run and
+  never answered. That needs the app's Comments webhook event. A comment
+  waits 15 s first, so a session prompt made from the same comment counts
+  instead.
 - **One T3 thread per issue.** Every session on an issue continues the
   issue's thread, so a new `@office` mention picks up where the last session
   left off. Prompts in any of its sessions follow up there and steer a run in
@@ -445,11 +449,12 @@ mode, on Linear's Agents API), so it shows natively:
 - **What the agent gets:** the prompt, plus Linear's context for a new
   session (the issue, its description and comments). Images and files in a
   prompt are downloaded with the bridge's token and arrive as files, HEIC as
-  JPEG; their signed links never reach the agent. A prompt whose webhook was
+  JPEG (named `.jpg` in the prompt too); their signed links never reach the agent. A prompt whose webhook was
   lost is handed over with the next one.
 - **Files:** the agent sends files with `chat_post`. They are uploaded to
-  Linear and linked in the response, and images show inline. `chat_react`
-  reacts to comments.
+  Linear and linked in the response, and images show inline. Linear shows no
+  reactions on session messages, so `chat_react` adds none and tells the
+  agent to acknowledge in words instead.
 - **Questions:** a single-choice question shows Linear's own chooser (an
   elicitation with the `select` signal); a pick comes back as a prompt with
   the option's label. Multiple choice, or a chooser Linear refuses, is

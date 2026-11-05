@@ -100,6 +100,11 @@ export interface ChatPlatform {
   /** Reacts to a message; absent when the platform can't. */
   readonly react?: (reaction: Reaction) => Promise<void>;
   /**
+   * Where reactions exist but nobody sees them, what `chat_react` tells the
+   * agent instead of reacting, such as how else to acknowledge.
+   */
+  readonly reactionsUnseen?: string;
+  /**
    * Posts a question with buttons and returns its message id. Without it,
    * questions are posted as text and answered by replying.
    */

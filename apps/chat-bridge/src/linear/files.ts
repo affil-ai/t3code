@@ -20,6 +20,8 @@ const UPLOAD_LINK = /(!?)\[([^\]\n]*)\]\((https:\/\/uploads\.linear\.app\/[^\s)]
 const IMAGE_TAG = /<linear-image>([\s\S]*?)<\/linear-image>/g;
 /** An upload URL on its own. */
 const UPLOAD_URL = /https:\/\/uploads\.linear\.app\/[^\s)>\]"']+/g;
+const HEIC = /\.(heic|heif)$/i;
+const HEIC_TYPES = new Set(["image/heic", "image/heif"]);
 
 export interface LinearUpload {
   readonly url: string;
@@ -67,6 +69,8 @@ export function takeUploads(markdown: string): {
     const name = known?.name ?? uploadName(label, url);
     const isImage = image || known?.image === true;
     uploads.set(url, { url, name, ...(isImage ? { image: true } : {}) });
+    // A HEIC reaches the agent as the JPEG it is converted to.
+    if (HEIC.test(name)) return `[image: ${name.replace(HEIC, ".jpg")}]`;
     return `[${isImage ? "image" : "file"}: ${name}]`;
   };
   const text = markdown
@@ -88,9 +92,6 @@ export function takeUploads(markdown: string): {
 
 /** Removes upload links from text that is only shown, such as Linear's context, without collecting them. */
 export const withoutUploadLinks = (markdown: string): string => takeUploads(markdown).text;
-
-const HEIC = /\.(heic|heif)$/i;
-const HEIC_TYPES = new Set(["image/heic", "image/heif"]);
 
 /** HEIC to JPEG with ffmpeg, as the Mac does with sips for iMessage; models don't read HEIC. */
 export async function heicToJpeg(bytes: Uint8Array): Promise<Uint8Array> {

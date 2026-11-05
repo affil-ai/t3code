@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- A plain Node app; it does not use Effect.
 /**
- * Linear's "Send stop request" arrives as a prompt carrying the `stop` signal,
- * which the adapter would hand over as an ordinary message. This catches a
- * signed stop first and interrupts the issue's run instead; anything else,
- * including a stop that isn't signed, goes to the adapter unchanged.
+ * Signed Linear webhooks the adapter can't use: "Send stop request" (a prompt
+ * with the `stop` signal) interrupts the run instead of becoming a message, and
+ * a new comment, which agent-sessions mode ignores, goes to `onComment`.
+ * Anything else, and anything unsigned, goes to the adapter unchanged.
  */
 import * as NodeCrypto from "node:crypto";
 
@@ -14,6 +14,17 @@ export interface LinearStop {
   readonly issueId: string;
   readonly sessionId: string;
   readonly userId: string;
+}
+
+/** A new comment on an issue by a person, as Linear's Comment webhook gives it. */
+export interface LinearComment {
+  readonly id: string;
+  readonly issueId: string;
+  readonly userId: string;
+  readonly name: string;
+  readonly body: string;
+  /** The comment it replies to, if any. */
+  readonly parentId?: string | undefined;
 }
 
 /** True when Linear signed this body with the secret, within the timestamp window. */
@@ -69,12 +80,52 @@ export function stopOf(body: string): LinearStop | undefined {
   return { issueId, sessionId: session.id, userId };
 }
 
-/** Wraps the adapter's webhook handler so a signed stop interrupts the run instead of becoming a prompt. */
-export function handlingStops(
+/** The new comment a body carries, if it is one by a person on an issue. Says nothing about the signature. */
+export function commentOf(body: string): LinearComment | undefined {
+  let payload: {
+    readonly type?: string;
+    readonly action?: string;
+    readonly data?: {
+      readonly id?: string;
+      readonly issueId?: string | null;
+      readonly userId?: string | null;
+      readonly botActor?: unknown;
+      readonly body?: string;
+      readonly parentId?: string | null;
+      readonly user?: { readonly name?: string } | null;
+    };
+  };
+  try {
+    payload = JSON.parse(body) as typeof payload;
+  } catch {
+    return undefined;
+  }
+  if (payload.type !== "Comment" || payload.action !== "create") return undefined;
+  const data = payload.data;
+  // Apps and integrations comment as bot actors; only people's comments are context.
+  if (data?.botActor !== undefined && data.botActor !== null) return undefined;
+  if (!data?.id || !data.issueId || !data.userId || typeof data.body !== "string") return undefined;
+  return {
+    id: data.id,
+    issueId: data.issueId,
+    userId: data.userId,
+    name: data.user?.name ?? "",
+    body: data.body,
+    parentId: data.parentId ?? undefined,
+  };
+}
+
+/**
+ * Wraps the adapter's webhook handler: a signed stop interrupts the run
+ * instead of becoming a prompt, and a signed new comment goes to `onComment`.
+ */
+export function handlingLinearEvents(
   handle: (request: Request) => Promise<Response>,
   options: {
     readonly secret: string;
     readonly onStop: (stop: LinearStop) => Promise<void>;
+    /** Started, not awaited: Linear wants its answer within seconds. */
+    readonly onComment?: (comment: LinearComment) => Promise<void>;
     readonly log: (line: string) => void;
     readonly now?: () => number;
   },
@@ -83,9 +134,19 @@ export function handlingStops(
   return async (request) => {
     const body = await request.text();
     const stop = stopOf(body);
-    if (stop !== undefined && isSignedByLinear(body, request.headers, options.secret, now())) {
+    const comment = stop === undefined ? commentOf(body) : undefined;
+    const signed = () => isSignedByLinear(body, request.headers, options.secret, now());
+    if (stop !== undefined && signed()) {
       options.log(`Linear: stop requested in session ${stop.sessionId} by ${stop.userId}.`);
       await options.onStop(stop);
+      return new Response("OK");
+    }
+    if (comment !== undefined && options.onComment !== undefined && signed()) {
+      void options
+        .onComment(comment)
+        .catch((error: unknown) =>
+          options.log(`Linear: keeping comment ${comment.id} failed: ${String(error)}`),
+        );
       return new Response("OK");
     }
     // The body was read; the adapter gets the same request again and checks its signature itself.

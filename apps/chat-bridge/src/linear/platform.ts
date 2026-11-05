@@ -1,9 +1,8 @@
-// @effect-diagnostics globalFetch:off -- A plain Node app; it does not use Effect.
+// @effect-diagnostics globalFetch:off globalTimers:off -- A plain Node app; it does not use Effect.
 /**
  * Linear for the bridge core, in agent-sessions mode. An issue is one T3
- * thread: every session on it (each @mention or delegation) continues that
- * thread, and replies go to the session the latest prompt came from. A run
- * shows as thoughts for status, an action per step and a response for the answer.
+ * thread: every session on it continues that thread, and replies go to the
+ * session the latest prompt came from. Plain comments are context only.
  */
 import type { LinearAdapter } from "@chat-adapter/linear";
 import type { Chat, Message } from "chat";
@@ -14,6 +13,14 @@ import type { Deliver } from "../chatHost.ts";
 import type { Access, ChannelRoute, ChatPlatform, OutboundFile, ThreadRoute } from "../platform.ts";
 import { downloadUpload, takeUploads, uploadEventFiles, withoutUploadLinks } from "./files.ts";
 import { type Retry, noRetry } from "./startup.ts";
+import type { LinearComment } from "./stop.ts";
+
+/**
+ * A comment that starts or continues a session reaches the bridge twice: as
+ * the session's prompt and as a plain comment, in either order. A plain
+ * comment waits this long, so the prompt can claim it first.
+ */
+const COMMENT_GRACE_MS = 15_000;
 
 /** Linear's context for a session (issue, description, comments) goes into the first turn, cut to this. */
 const CONTEXT_CHARS = 20_000;
@@ -98,6 +105,30 @@ export const sessionIdOf = (threadId: string): string | undefined => {
   const at = parts.indexOf("s");
   return at > 0 ? parts[at + 1] : undefined;
 };
+
+/** A plain comment on the issue, kept as context and never answered. */
+export function commentEvent(comment: LinearComment): InboundEvent {
+  const { text, uploads } = takeUploads(comment.body);
+  return {
+    // The id a session prompt from the same comment would have, so only one of them counts.
+    eventId: `linear:${comment.id}`,
+    chatThreadKey: `linear:${comment.issueId}`,
+    channelId: "",
+    messageId: comment.id,
+    kind: "follow_up",
+    addressed: false,
+    direct: false,
+    contextOnly: true,
+    author: { userId: comment.userId, userName: comment.name, fullName: comment.name },
+    text,
+    files: uploadEventFiles(uploads),
+    mentions: [],
+  };
+}
+
+/** What chat_react answers on Linear. */
+export const REACTIONS_UNSEEN =
+  "Not reacted: Linear doesn't show reactions on session messages. Acknowledge in words instead, in your reply or with a short chat_post update while you work.";
 
 export function linearEvent(
   threadId: string,
@@ -213,7 +244,8 @@ export interface LinearTeamRoute extends ThreadRoute {
 
 export function linearPlatform(options: {
   readonly chat: () => Chat | undefined;
-  readonly adapter: () => Pick<LinearAdapter, "startTyping" | "addReaction"> & {
+  readonly adapter: () => Pick<LinearAdapter, "startTyping"> & {
+    readonly botUserId?: string | undefined;
     readonly linearClient: LinearApi;
   };
   readonly access: Access;
@@ -223,6 +255,10 @@ export function linearPlatform(options: {
   readonly log: (line: string) => void;
   /** Gets a new token and retries once when Linear says the bridge isn't signed in. */
   readonly retry?: Retry;
+  /** How the bot is @mentioned, such as "office"; a comment mentioning it is a session's. */
+  readonly botName?: string;
+  /** Waits before a plain comment counts; tests pass a shorter wait. */
+  readonly commentGrace?: () => Promise<void>;
   /** Whether the core already handled an event, such as before a restart. */
   readonly isHandled?: (eventId: string) => boolean;
   /** Each issue's latest session thread, kept across restarts so owed replies still find it. */
@@ -230,7 +266,12 @@ export function linearPlatform(options: {
     readonly get: (issueKey: string) => string | undefined;
     readonly set: (issueKey: string, sessionThreadId: string) => void;
   };
-}): { readonly platform: ChatPlatform; readonly deliver: Deliver } {
+}): {
+  readonly platform: ChatPlatform;
+  readonly deliver: Deliver;
+  /** Keeps a plain comment as context for its issue's conversation, unless a session took it. */
+  readonly comment: (comment: LinearComment) => Promise<void>;
+} {
   const retry = options.retry ?? noRetry;
   /** Links to files the agent sent mid-run, by conversation, until the run's reply carries them. */
   const heldFiles = new Map<string, ReadonlyArray<string>>();
@@ -385,6 +426,23 @@ export function linearPlatform(options: {
       await options.onEvent(event);
     }
   };
+  const grace =
+    options.commentGrace ??
+    (() => new Promise<void>((resolve) => setTimeout(resolve, COMMENT_GRACE_MS).unref()));
+  const mention =
+    options.botName === undefined
+      ? undefined
+      : new RegExp(`@${options.botName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+  const comment = async (each: LinearComment): Promise<void> => {
+    if (each.userId === options.adapter().botUserId) return;
+    // An @mention, or a reply under a session's comment, is that session's prompt.
+    if (mention?.test(each.body)) return;
+    await grace();
+    if (known(`linear:${each.id}`)) return;
+    // A reply under a comment that opened a session goes to that session, even if late.
+    if (each.parentId !== undefined && handedOver.has(`linear:${each.parentId}`)) return;
+    await options.onEvent(commentEvent(each));
+  };
   const channelRoutes: ReadonlyArray<ChannelRoute> = options.teams.map(({ team, ...route }) => ({
     ...route,
     channelId: team.toUpperCase(),
@@ -404,7 +462,7 @@ export function linearPlatform(options: {
         "If a message needs no reply, end the run without a final message and nothing is posted.",
         "Files and images people attach in Linear arrive as files in your turn.",
         `To attach files or images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace; they appear with your final message, and images show inline.`,
-        `To react to a comment, call chat_react with chatKey "${chatKey}", the comment id and an emoji name such as thumbs_up, eyes or rocket.`,
+        "Linear doesn't show reactions on session messages, so acknowledge in words, or with a short chat_post update while you work.",
       ].join(" "),
     refusal: () => "Sorry, you can't use this agent yet. Ask whoever runs it to allow you.",
     post: async ({ chatThreadKey, text, files, kind = "answer", choices }) => {
@@ -461,8 +519,8 @@ export function linearPlatform(options: {
           authorization: () => client().options?.headers?.Authorization ?? "",
         }),
       ),
-    react: ({ chatThreadKey, messageId, emoji }) =>
-      options.adapter().addReaction(sessionThread(chatThreadKey), messageId, emoji),
+    // Linear accepts a reaction on a session prompt but shows it nowhere.
+    reactionsUnseen: REACTIONS_UNSEEN,
     setState: async (chatThreadKey, state, text) => {
       // A thought shows what the run is doing; the response ends the session's turn.
       if (state === "processing" && text !== "") {
@@ -481,5 +539,5 @@ export function linearPlatform(options: {
       await chat().thread(sessionThread(chatThreadKey)).subscribe();
     },
   };
-  return { platform, deliver };
+  return { platform, deliver, comment };
 }

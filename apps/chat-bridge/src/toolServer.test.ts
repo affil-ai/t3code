@@ -30,7 +30,12 @@ function harness() {
         : undefined,
     workspaceRoots: async () => [workspace],
     post: async (message) => void posts.push(message),
-    react: async (reaction) => void reactions.push(reaction),
+    react: async (reaction) => {
+      reactions.push(reaction);
+      return reaction.chatThreadKey.startsWith("linear:")
+        ? "Reactions don't show here."
+        : undefined;
+    },
     setStatus: (_chatThreadKey, status) => status !== "idle thread",
   };
   return { deps, posts, reactions, root };
@@ -92,6 +97,24 @@ it("reacts with a bare emoji name and checks the message id", async () => {
     emoji: "eyes",
   });
   assert.isTrue(bad.isError);
+});
+
+it("passes on what the platform says instead of reacting, such as on Linear", async () => {
+  const { deps } = harness();
+  const linear = {
+    ...deps,
+    bindingByChatKey: (chatKey: string) => {
+      const binding = deps.bindingByChatKey(chatKey);
+      return binding && { ...binding, chatThreadKey: "linear:issue-1" };
+    },
+  };
+  const result = await callTool(linear, "chat_react", {
+    chatKey: "key-1",
+    messageId: "c-1",
+    emoji: "eyes",
+  });
+  assert.isUndefined(result.isError);
+  assert.strictEqual(textOf(result), "Reactions don't show here.");
 });
 
 it("sets a status only while the thread has a run in flight", async () => {

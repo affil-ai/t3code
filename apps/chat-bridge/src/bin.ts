@@ -20,7 +20,7 @@ import { login, savedToken } from "./login.ts";
 import { createImessageAdapter } from "./imessage/adapter.ts";
 import { type LinearApi, issueKeyOf, linearPlatform, sessionIdOf } from "./linear/platform.ts";
 import { authRetry, retryMethods, startInBackground } from "./linear/startup.ts";
-import { handlingStops } from "./linear/stop.ts";
+import { handlingLinearEvents } from "./linear/stop.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
 import { type ChatPlatform, platformFor } from "./platform.ts";
@@ -184,10 +184,11 @@ async function start(): Promise<void> {
               log(`Linear: ${key} is now the conversation for ${issueKey}.`);
             }
           }
-          const { platform, deliver } = linearPlatform({
+          const { platform, deliver, comment } = linearPlatform({
             chat: () => chat,
             adapter: () =>
-              adapter as unknown as Pick<LinearAdapter, "startTyping" | "addReaction"> & {
+              adapter as unknown as Pick<LinearAdapter, "startTyping"> & {
+                readonly botUserId?: string | undefined;
                 readonly linearClient: LinearApi;
               },
             access: {
@@ -200,6 +201,7 @@ async function start(): Promise<void> {
             log,
             retry,
             isHandled: (eventId) => store.isHandled(eventId),
+            botName: settings.botName,
             sessions: {
               get: (issueKey) => store.meta(`linear_session:${issueKey}`),
               set: (issueKey, threadId) => store.setMeta(`linear_session:${issueKey}`, threadId),
@@ -211,6 +213,7 @@ async function start(): Promise<void> {
           return {
             adapter,
             deliver,
+            comment,
             started,
             platform,
             webhookSecret: linearSecrets.webhookSecret,
@@ -265,8 +268,10 @@ async function start(): Promise<void> {
       post: (message) => platformFor(platforms, message.chatThreadKey).post(message),
       react: async (reaction) => {
         const platform = platformFor(platforms, reaction.chatThreadKey);
+        if (platform.reactionsUnseen !== undefined) return platform.reactionsUnseen;
         if (platform.react === undefined) throw new Error(`${platform.name} has no reactions.`);
         await platform.react(reaction);
+        return undefined;
       },
       setStatus: (chatThreadKey, status) => core.setStatus(chatThreadKey, status),
     },
@@ -282,26 +287,34 @@ async function start(): Promise<void> {
           // Until Linear is up, 503 asks Linear to deliver again later.
           handle: linear
             ? (() => {
-                // A signed "Send stop request" interrupts the issue's run; everything else is the adapter's.
-                const handle = handlingStops((request) => linear.adapter.handleWebhook(request), {
-                  secret: linear.webhookSecret,
-                  log,
-                  onStop: async (stop) => {
-                    const issueKey = `linear:${stop.issueId}`;
-                    // The final word goes to the session the stop came from.
-                    store.setMeta(`linear_session:${issueKey}`, `${issueKey}:s:${stop.sessionId}`);
-                    const wasRunning = core.hasRunInFlight(issueKey);
-                    await core.stopRequested(issueKey, stop.userId);
-                    // Linear wants a final activity after a stop; a stopped run posts its own.
-                    if (!wasRunning) {
-                      await linear.platform
-                        .post({ chatThreadKey: issueKey, text: "Nothing was running." })
-                        .catch((error: unknown) =>
-                          log(`Linear: answering a stop failed: ${String(error)}`),
-                        );
-                    }
+                // A signed "Send stop request" interrupts the issue's run and a signed new comment is
+                // kept as context; everything else is the adapter's.
+                const handle = handlingLinearEvents(
+                  (request) => linear.adapter.handleWebhook(request),
+                  {
+                    secret: linear.webhookSecret,
+                    log,
+                    onComment: (comment) => linear.comment(comment),
+                    onStop: async (stop) => {
+                      const issueKey = `linear:${stop.issueId}`;
+                      // The final word goes to the session the stop came from.
+                      store.setMeta(
+                        `linear_session:${issueKey}`,
+                        `${issueKey}:s:${stop.sessionId}`,
+                      );
+                      const wasRunning = core.hasRunInFlight(issueKey);
+                      await core.stopRequested(issueKey, stop.userId);
+                      // Linear wants a final activity after a stop; a stopped run posts its own.
+                      if (!wasRunning) {
+                        await linear.platform
+                          .post({ chatThreadKey: issueKey, text: "Nothing was running." })
+                          .catch((error: unknown) =>
+                            log(`Linear: answering a stop failed: ${String(error)}`),
+                          );
+                      }
+                    },
                   },
-                });
+                );
                 return async (request: Request) =>
                   linear.started.ready()
                     ? handle(request)

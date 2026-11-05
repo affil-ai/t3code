@@ -9,8 +9,10 @@ import type { InboundEvent } from "../bridge.ts";
 import { parseConfig } from "../config.ts";
 import { startWebhookServer } from "../webhookServer.ts";
 import {
+  commentEvent,
   type LinearApi,
   linearEvent,
+  REACTIONS_UNSEEN,
   sessionIdOf,
   linearPlatform,
   mimeTypeOf,
@@ -18,7 +20,7 @@ import {
 } from "./platform.ts";
 import { downloadUpload, takeUploads, uploadEventFiles } from "./files.ts";
 import { authRetry, isAuthError, retryMethods, startInBackground } from "./startup.ts";
-import { handlingStops, type LinearStop } from "./stop.ts";
+import { commentOf, handlingLinearEvents, type LinearComment, type LinearStop } from "./stop.ts";
 
 const THREAD = "linear:issue-1:s:session-1";
 
@@ -117,7 +119,7 @@ it("sends a thought before handing a session to the core, and reads each issue's
     chat: () => undefined,
     adapter: () => ({
       startTyping: async (_thread: string, status?: string) => void order.push(`thought ${status}`),
-      addReaction: async () => {},
+      botUserId: "bot",
       linearClient: {
         ...noSession,
         issue: async () => {
@@ -281,7 +283,7 @@ it("takes Linear uploads out of a prompt as files, leaving a note where each lin
   const { text, uploads } = takeUploads(body);
   assert.strictEqual(
     text,
-    "look [image: shot.png] and [file: report.pdf]\nraw [file: IMG_1.HEIC] and https://example.com/x.png",
+    "look [image: shot.png] and [file: report.pdf]\nraw [image: IMG_1.jpg] and https://example.com/x.png",
   );
   assert.notInclude(text, "uploads.linear.app");
   assert.deepStrictEqual(uploadEventFiles(uploads), [
@@ -364,7 +366,7 @@ it("posts only the answer as a response: a question asks, an update is a thought
       }) as never,
     adapter: () => ({
       startTyping: async () => {},
-      addReaction: async () => {},
+      botUserId: "bot",
       linearClient: {
         ...noSession,
         issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
@@ -421,7 +423,7 @@ it("hands over prompts the session has but the bridge never got, oldest first, b
     chat: () => undefined,
     adapter: () => ({
       startTyping: async () => {},
-      addReaction: async () => {},
+      botUserId: "bot",
       linearClient: {
         ...noSession,
         issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
@@ -600,7 +602,7 @@ it("makes an issue one conversation: every session feeds it, and replies go to t
     adapter: () => ({
       startTyping: async (thread: string, status?: string) =>
         void thoughts.push(`${thread} ${status}`),
-      addReaction: async () => {},
+      botUserId: "bot",
       linearClient: {
         ...noSession,
         issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
@@ -644,7 +646,7 @@ it("interrupts on a stop Linear signed, and never on one it didn't", async () =>
   const NOW = 1_800_000_000_000;
   const stops: Array<LinearStop> = [];
   const forwarded: Array<string> = [];
-  const handle = handlingStops(
+  const handle = handlingLinearEvents(
     async (request) => {
       forwarded.push(await request.text());
       return new Response("adapter");
@@ -699,7 +701,7 @@ it("asks a question with options as Linear's chooser, and as numbered text if Li
     chat: () => undefined,
     adapter: () => ({
       startTyping: async () => {},
-      addReaction: async () => {},
+      botUserId: "bot",
       linearClient: {
         ...noSession,
         issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
@@ -748,7 +750,7 @@ it("shows T3's to-do list as the session's plan, replaced whole and only when it
     chat: () => undefined,
     adapter: () => ({
       startTyping: async () => {},
-      addReaction: async () => {},
+      botUserId: "bot",
       linearClient: {
         ...noSession,
         issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
@@ -794,7 +796,7 @@ it("holds files sent mid-run for the run's reply, so they aren't tucked under it
         }) as never,
       adapter: () => ({
         startTyping: async () => {},
-        addReaction: async () => {},
+        botUserId: "bot",
         linearClient: {
           ...noSession,
           issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
@@ -842,4 +844,170 @@ it("holds files sent mid-run for the run's reply, so they aren't tucked under it
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+it("names a HEIC upload as the JPEG image the agent gets", () => {
+  // A photo attached to a comment arrives as a plain file link.
+  const { text, uploads } = takeUploads(
+    "@office what's in this photo?\n\n[linear-bridge-test.heic](https://uploads.linear.app/o/f/linear-bridge-test.heic)",
+  );
+  assert.strictEqual(text, "@office what's in this photo?\n\n[image: linear-bridge-test.jpg]");
+  assert.deepStrictEqual(
+    uploadEventFiles(uploads).map((file) => [file.name, file.mimeType]),
+    [["linear-bridge-test.jpg", "image/jpeg"]],
+  );
+});
+
+it("tells the agent reactions don't show on Linear instead of adding one", () => {
+  const { platform } = linearPlatform({
+    chat: () => undefined,
+    adapter: () => ({
+      startTyping: async () => {},
+      botUserId: "bot",
+      linearClient: {
+        ...noSession,
+        issue: async () => ({}),
+        fileUpload: async () => ({}),
+      } as never,
+    }),
+    access: { allowedUserIds: [], allowEveryone: true },
+    teams: [],
+    defaultRoute: { projectId: "p" },
+    onEvent: async () => ({ type: "pending" }),
+    log: () => {},
+  });
+  assert.isUndefined(platform.react);
+  assert.strictEqual(platform.reactionsUnseen, REACTIONS_UNSEEN);
+  assert.include(platform.reactionsUnseen, "Acknowledge in words");
+  assert.notInclude(platform.firstTurnNote("key", {} as InboundEvent), "chat_react");
+});
+
+const commentPayload = (data: Record<string, unknown>, action = "create") =>
+  JSON.stringify({ type: "Comment", action, webhookTimestamp: 1_800_000_000_000, data });
+
+it("reads a person's new comment from Linear's webhook, and nothing else", () => {
+  const data = {
+    id: "c-9",
+    issueId: "issue-1",
+    userId: "user-1",
+    user: { name: "Ada" },
+    body: "for the record: staging is down",
+  };
+  assert.deepStrictEqual(commentOf(commentPayload({ ...data, parentId: null })), {
+    id: "c-9",
+    issueId: "issue-1",
+    userId: "user-1",
+    name: "Ada",
+    body: "for the record: staging is down",
+    parentId: undefined,
+  });
+  assert.isUndefined(commentOf(commentPayload(data, "update")));
+  assert.isUndefined(commentOf(commentPayload({ ...data, botActor: { name: "GitHub" } })));
+  assert.isUndefined(commentOf(commentPayload({ ...data, issueId: null })));
+  assert.isUndefined(commentOf("not json"));
+  const event = commentEvent(commentOf(commentPayload(data))!);
+  assert.include(event, {
+    eventId: "linear:c-9",
+    chatThreadKey: "linear:issue-1",
+    addressed: false,
+    contextOnly: true,
+  });
+});
+
+it("hands a signed new comment over without waiting, and an unsigned one to the adapter", async () => {
+  const secret = "webhook-secret";
+  const NOW = 1_800_000_000_000;
+  const comments: Array<LinearComment> = [];
+  const forwarded: Array<string> = [];
+  let release!: () => void;
+  const handle = handlingLinearEvents(
+    async (request) => {
+      forwarded.push(await request.text());
+      return new Response("adapter");
+    },
+    {
+      secret,
+      now: () => NOW,
+      log: () => {},
+      onStop: async () => {},
+      // Still waiting out its grace when the webhook answers.
+      onComment: (comment) =>
+        new Promise<void>((resolve) => {
+          comments.push(comment);
+          release = resolve;
+        }),
+    },
+  );
+  const body = commentPayload({ id: "c-9", issueId: "issue-1", userId: "user-1", body: "fyi" });
+  const send = (signature: string) =>
+    handle(
+      new Request("http://127.0.0.1/linear/webhook", {
+        method: "POST",
+        body,
+        headers: { "linear-signature": signature },
+      }),
+    );
+  const response = await send(NodeCrypto.createHmac("sha256", secret).update(body).digest("hex"));
+  assert.strictEqual(await response.text(), "OK");
+  assert.deepStrictEqual(
+    comments.map((comment) => comment.id),
+    ["c-9"],
+  );
+  release();
+  await send("0".repeat(64));
+  assert.lengthOf(comments, 1);
+  assert.deepStrictEqual(forwarded, [body]);
+});
+
+it("keeps a plain comment as context once a session hasn't claimed it, and never a session's own", async () => {
+  const events: Array<InboundEvent> = [];
+  const handled = new Set<string>();
+  const { deliver, comment } = linearPlatform({
+    chat: () => ({ thread: () => ({ subscribe: async () => {} }) }) as never,
+    adapter: () => ({
+      startTyping: async () => {},
+      botUserId: "bot",
+      linearClient: {
+        ...noSession,
+        issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
+        fileUpload: async () => ({}),
+      } as never,
+    }),
+    access: { allowedUserIds: [], allowEveryone: true },
+    teams: [],
+    defaultRoute: { projectId: "p" },
+    botName: "office",
+    commentGrace: async () => {},
+    isHandled: (eventId) => handled.has(eventId),
+    onEvent: async (event) => {
+      events.push(event);
+      return { type: "pending" };
+    },
+    log: () => {},
+  });
+  const plain = (id: string, body: string, extra: Partial<LinearComment> = {}): LinearComment => ({
+    id,
+    issueId: "issue-1",
+    userId: "user-1",
+    name: "Ada",
+    body,
+    ...extra,
+  });
+  // Session 1 opened from comment c-1.
+  await deliver({ id: THREAD } as Thread, message("c-1"), undefined, "mention");
+  events.length = 0;
+  await comment(plain("c-1", "@office fix the flaky test"));
+  await comment(plain("c-2", "Hey @Office, look"));
+  await comment(plain("c-3", "under the session", { parentId: "c-1" }));
+  handled.add("linear:c-4");
+  await comment(plain("c-4", "a prompt the session already took"));
+  await comment(plain("c-5", "mine", { userId: "bot" }));
+  assert.deepStrictEqual(events, []);
+
+  await comment(
+    plain("c-6", "fyi: staging is down ![shot](https://uploads.linear.app/a/shot.png)"),
+  );
+  assert.lengthOf(events, 1);
+  assert.include(events[0], { eventId: "linear:c-6", contextOnly: true, addressed: false });
+  assert.strictEqual(events[0]!.text, "fyi: staging is down [image: shot]");
 });

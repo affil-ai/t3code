@@ -709,6 +709,37 @@ it("keeps reactions from allowed people in a bound thread as context, and never 
   assert.notInclude(sent, "Eve");
 });
 
+it("keeps a context-only message for a bound thread's next turn, and never answers or starts one", async () => {
+  const { t3, bridge } = harness();
+  const plain = { kind: "follow_up" as const, addressed: false, contextOnly: true };
+  // Nothing to keep it for yet.
+  assert.deepStrictEqual(await bridge.receive(event("100.0", { ...plain, text: "early" })), {
+    type: "ignored",
+    reason: "unbound_thread",
+  });
+  await bridge.receive(event("100.1"));
+  const sends = () => t3.calls.filter((call) => call.tool === "t3_thread_send");
+  assert.strictEqual(
+    (await bridge.receive(event("100.2", { ...plain, text: "fyi: staging is down" }))).type,
+    "noted",
+  );
+  // Even from someone who couldn't ask the agent anything.
+  await bridge.receive(
+    event("100.3", {
+      ...plain,
+      text: "me too",
+      author: { userId: "U9", userName: "grace", fullName: "Grace" },
+    }),
+  );
+  assert.lengthOf(sends(), 0);
+  await bridge.receive(event("100.4", { kind: "follow_up", text: "go" }));
+  assert.lengthOf(sends(), 1);
+  const sent = String(sends()[0]!.args.message);
+  assert.include(sent, "fyi: staging is down");
+  assert.include(sent, "Grace (<@U9>): me too");
+  assert.notInclude(sent, "early");
+});
+
 it("starts direct messages in the direct-message project, when there is one", async () => {
   const dm = event("300.1", { channelId: "D1", chatThreadKey: "slack:D1:300.1", direct: true });
   assert.deepStrictEqual(await harness().bridge.receive(dm), {
