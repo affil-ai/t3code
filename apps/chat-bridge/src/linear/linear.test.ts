@@ -15,6 +15,7 @@ import {
   mimeTypeOf,
   uploadToLinear,
 } from "./platform.ts";
+import { startInBackground } from "./startup.ts";
 
 const THREAD = "linear:issue-1:s:session-1";
 
@@ -223,4 +224,41 @@ it("reads the linear block: the default route, team routes, and everyone allowed
     },
   );
   assert.throws(() => parseConfig({ ...base, linear: { teams: [] } }), /projectId/);
+});
+
+it("starts Linear in the background, retrying until it has a token and its own user", async () => {
+  const delays: Array<number> = [];
+  const retries: Array<() => void> = [];
+  const logs: Array<string> = [];
+  let calls = 0;
+  const adapter = {
+    botUserId: undefined as string | undefined,
+    initialize: async (_chat: unknown) => {
+      calls += 1;
+      if (calls === 1) throw new Error("token fetch failed");
+      // The adapter only warns when it can't look itself up; that is a failure too.
+      if (calls === 3) adapter.botUserId = "app-user";
+    },
+  };
+  const started = startInBackground(adapter, {
+    log: (line) => void logs.push(line),
+    schedule: (ms, run) => {
+      delays.push(ms);
+      retries.push(run);
+    },
+  });
+  // Chat's start returns at once, so Slack and iMessage don't wait on Linear.
+  await adapter.initialize({} as never);
+  await started.latest();
+  assert.isFalse(started.ready());
+  retries.shift()!();
+  await started.latest();
+  assert.isFalse(started.ready());
+  retries.shift()!();
+  await started.latest();
+  assert.isTrue(started.ready());
+  assert.deepStrictEqual(delays, [15_000, 30_000]);
+  assert.include(logs[0], "token fetch failed");
+  assert.include(logs[1], "didn't say which user");
+  assert.strictEqual(logs[2], "Linear: connected after 3 tries.");
 });

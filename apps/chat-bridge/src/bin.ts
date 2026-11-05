@@ -19,6 +19,7 @@ import { dataDir, loadConfig } from "./config.ts";
 import { login, savedToken } from "./login.ts";
 import { createImessageAdapter } from "./imessage/adapter.ts";
 import { type LinearApi, linearPlatform } from "./linear/platform.ts";
+import { startInBackground } from "./linear/startup.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
 import { type ChatPlatform, platformFor } from "./platform.ts";
@@ -163,7 +164,9 @@ async function start(): Promise<void> {
             log,
           });
           platforms.push(platform);
-          return { adapter, deliver };
+          // Chat starts adapters together; Linear's token fetch must not hold up or fail the others.
+          const started = startInBackground(adapter, { log });
+          return { adapter, deliver, started };
         })()
       : undefined;
   if (config.linear && !linearSecrets) {
@@ -226,8 +229,12 @@ async function start(): Promise<void> {
         {
           path: config.linear.webhookPath,
           // The adapter checks Linear's signature and timestamp, and refuses anything else.
+          // Until Linear is up, 503 asks Linear to deliver again later.
           handle: linear
-            ? (request) => linear.adapter.handleWebhook(request)
+            ? async (request) =>
+                linear.started.ready()
+                  ? linear.adapter.handleWebhook(request)
+                  : new Response("Linear is still starting.", { status: 503 })
             : async () => new Response("Linear isn't set up on this bridge yet.", { status: 503 }),
         },
       ]
@@ -240,7 +247,7 @@ async function start(): Promise<void> {
   await core.resume();
   await core.catchUp("slack", (request) => slack.missedEvents(request));
   log(
-    `Connected to Slack${imessage ? ", iMessage (connects by itself)" : ""}${linear ? ", Linear" : ""} and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
+    `Connected to Slack${imessage ? ", iMessage (connects by itself)" : ""}${linear ? ", Linear (starts by itself)" : ""} and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
   );
   if (webhooks && config.linear) {
     log(`Linear webhook on http://127.0.0.1:${webhooks.port}${config.linear.webhookPath}.`);
@@ -261,6 +268,7 @@ async function start(): Promise<void> {
     core.stop();
     tools.close();
     webhooks?.close();
+    linear?.started.stop();
     await running.shutdown().catch(() => {});
     await t3.close();
     db.close();
