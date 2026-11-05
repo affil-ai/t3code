@@ -1334,19 +1334,17 @@ export class Bridge {
   }
 
   /**
-   * Why `threadId` can't take over `chatThreadKey`, or nothing when it can. Only
-   * a subagent `delegate_task` made qualifies, so its parent hears back natively.
-   * Pass no key for a conversation that doesn't exist yet, such as a new issue.
+   * Why `threadId` can't take over `chatThreadKey`, or nothing when it can: a
+   * thread answers one conversation, and a bound conversation moves only when
+   * asked. Pass no key for one that doesn't exist yet, such as a new issue.
    */
   async attachRefusal(input: {
     readonly threadId: string;
     readonly chatThreadKey?: string | undefined;
     readonly replace: boolean;
   }): Promise<string | undefined> {
-    const shape = await this.threads.shape(input.threadId);
-    if (shape.relationshipToParent !== "subagent") {
-      return `${input.threadId} isn't a subagent. Start it with delegate_task and pass its childThreadId.`;
-    }
+    // Reading it checks the thread exists.
+    await this.threads.shape(input.threadId);
     const own = this.store.bindingByThreadId(input.threadId);
     if (own !== undefined && own.chatThreadKey !== input.chatThreadKey) {
       return `${input.threadId} already answers ${own.chatThreadKey}.`;

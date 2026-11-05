@@ -98,6 +98,12 @@ export interface SlackChatHost {
   readonly history: (chatThreadKey: string, messageId: string) => Promise<Array<EarlierMessage>>;
   /** Downloads a Slack file with the bot's token. */
   readonly download: (url: string) => Promise<Uint8Array>;
+  /**
+   * Posts a new top-level message in a channel the bot is in, or in its DM
+   * with a person when `channel` is their user id, and returns the chat thread
+   * key of the Slack thread it starts.
+   */
+  readonly startThread: (channel: string, text: string) => Promise<string>;
   /** Follows a channel thread, so its replies arrive without a mention. */
   readonly follow: (chatThreadKey: string) => Promise<void>;
   /**
@@ -737,6 +743,16 @@ export function createSlackHost(options: SlackChatHostOptions): {
       },
       history,
       download,
+      startThread: async (channel, text) => {
+        // A user id posts in the bot's DM with them, which needs only chat:write.
+        // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Slack's Web API, not window.postMessage.
+        const posted = await slack.webClient.chat.postMessage({
+          channel,
+          text: mrkdwn.toResponseUrlText({ markdown: text }),
+        });
+        if (!posted.channel || !posted.ts) throw new Error("Slack didn't say where it posted.");
+        return slack.encodeThreadId({ channel: posted.channel, threadTs: posted.ts });
+      },
       follow: async (chatThreadKey) => {
         // Direct messages all reach the bot anyway; a channel thread needs following.
         if (slack.decodeThreadId(chatThreadKey).channel.startsWith("D")) return;

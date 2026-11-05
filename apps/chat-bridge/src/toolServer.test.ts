@@ -117,7 +117,7 @@ it("passes on what the platform says instead of reacting, such as on Linear", as
   assert.strictEqual(textOf(result), "Reactions don't show here.");
 });
 
-it("starts Linear work for a subagent only with a valid child and one issue", async () => {
+it("connects a thread to Linear only with a valid thread id and one issue", async () => {
   const { deps } = harness();
   const requests: Array<unknown> = [];
   const linear = {
@@ -129,18 +129,21 @@ it("starts Linear work for a subagent only with a valid child and one issue", as
   };
   // No chat key: an orchestrator isn't a chat's thread.
   const started = await callTool(linear, "linear_start", {
-    childThreadId: "mcp:launch:abc",
+    threadId: "mcp:launch:abc",
     newIssue: { team: "AFF", title: "Fix it" },
   });
+  // Earlier callers name it childThreadId.
+  await callTool(linear, "linear_start", { childThreadId: "mcp:launch:def", issue: "AFF-1" });
   assert.isUndefined(started.isError);
   assert.strictEqual(textOf(started), "AFF-9 now shows the work.");
   assert.deepStrictEqual(requests, [
     {
-      childThreadId: "mcp:launch:abc",
+      threadId: "mcp:launch:abc",
       issue: undefined,
       newIssue: { team: "AFF", title: "Fix it", description: undefined },
       replace: false,
     },
+    { threadId: "mcp:launch:def", issue: "AFF-1", newIssue: undefined, replace: false },
   ]);
   for (const bad of [
     { childThreadId: "mcp:launch:abc" },
@@ -151,10 +154,45 @@ it("starts Linear work for a subagent only with a valid child and one issue", as
   ]) {
     assert.isTrue((await callTool(linear, "linear_start", bad)).isError, JSON.stringify(bad));
   }
-  assert.lengthOf(requests, 1);
+  assert.lengthOf(requests, 2);
   // Without Linear the tool refuses.
   const off = await callTool(deps, "linear_start", { childThreadId: "t", issue: "AFF-1" });
   assert.isTrue(off.isError);
+});
+
+it("starts a Slack thread in a channel or a DM only with valid ids and an opening message", async () => {
+  const { deps } = harness();
+  const requests: Array<unknown> = [];
+  const slack = {
+    ...deps,
+    startSlack: async (request: unknown) => {
+      requests.push(request);
+      return "Started a Slack thread.";
+    },
+  };
+  for (const channel of ["C0AJ5HR70PR", "U0123ABCD", "D0123ABCD"]) {
+    const started = await callTool(slack, "slack_start", {
+      threadId: "mcp:launch:abc",
+      channel,
+      text: " Picking this up here. ",
+    });
+    assert.isUndefined(started.isError, channel);
+  }
+  assert.deepStrictEqual(requests[1], {
+    threadId: "mcp:launch:abc",
+    channel: "U0123ABCD",
+    text: "Picking this up here.",
+  });
+  for (const bad of [
+    { threadId: "mcp:launch:abc", channel: "#general", text: "hi" },
+    { threadId: "mcp:launch:abc", channel: "C0AJ5HR70PR", text: "  " },
+    { threadId: "mcp:launch:abc", channel: "C0AJ5HR70PR", text: "x".repeat(4_001) },
+    { threadId: "../x y", channel: "C0AJ5HR70PR", text: "hi" },
+  ]) {
+    assert.isTrue((await callTool(slack, "slack_start", bad)).isError, JSON.stringify(bad));
+  }
+  assert.lengthOf(requests, 3);
+  assert.isTrue((await callTool(deps, "slack_start", requests[0] as never)).isError);
 });
 
 it("sets a status only while the thread has a run in flight", async () => {

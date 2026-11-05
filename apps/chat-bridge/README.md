@@ -126,6 +126,23 @@ stopping a run. Anyone not allowed who mentions or messages the bot gets a
 short reply, at most once an hour, with their member id to add. Messages from
 bots, including itself, are ignored.
 
+## Threads that start their own conversation
+
+A T3 thread can start a conversation itself instead of waiting for one:
+
+- `slack_start` posts an opening message as a new top-level message in any
+  channel the bot is in, or as a DM when `channel` is a person's member id
+  (`chat.postMessage` takes a user id, so this needs only `chat:write`). The
+  Slack thread under that message is bound to the T3 thread: replies there
+  continue it, and its final message in each run posts there. In a DM, reply
+  in the thread under the bot's message.
+- `linear_start` does the same with a Linear issue (see Linear below).
+
+Both take the thread's own id or a subagent's `childThreadId`, and need no
+chat key. Stock T3 never tells the bridge which thread is calling, so the
+bridge can't prove the caller is that thread; the tools are served on
+loopback only, to agents on this host, as the other chat tools are.
+
 ## How the agent posts files and reactions
 
 Stock T3 doesn't tell an MCP server which thread is calling it, so the bridge
@@ -471,17 +488,17 @@ mode, on Linear's Agents API), so it shows natively:
 - **Stop:** the session menu's "Send stop request" interrupts the run. The
   bridge checks Linear's signature before acting, and the stopped run's last
   word is "The run was stopped." (or "Nothing was running.").
-- **Work an orchestrator starts:** an ordinary T3 thread can hand work to
-  Linear. It starts a subagent with stock `delegate_task`, then calls
-  `linear_start` with the `childThreadId` and an issue (`AFF-123`) or a new
-  one (`newIssue: {team, title, description}`). The bridge opens an agent
-  session on the issue and binds the issue to the child, so the child stays
-  under its orchestrator in T3's sidebar and its progress and final message
-  show in Linear. The answer of the child's run in flight posts once, whether
-  it ends before or after the call. Later prompts on the issue continue the
-  child. Only a `subagent` thread qualifies; an issue that already goes to
-  another thread needs `replace: true`. The orchestrator hears back through
-  `delegate_task`'s own completion wake.
+- **Work a T3 thread starts:** any T3 thread can take its work to Linear
+  with `linear_start`: its own thread id (stock `orchestrator_capabilities`
+  returns it as `parentThreadId`), or a subagent's `childThreadId` from
+  `delegate_task`, plus an issue (`AFF-123`) or a new one (`newIssue: {team,
+  title, description}`). The bridge opens an agent session on the issue and
+  binds the issue to that thread, so its progress and final message show in
+  Linear and later prompts on the issue continue it. The answer of the run in
+  flight posts once, whether it ends before or after the call. A thread
+  answers one conversation, and an issue that already goes to another thread
+  needs `replace: true`. A subagent stays under its orchestrator in T3, and
+  its completion still wakes the orchestrator; later Linear prompts don't.
 - **Routing:** by the issue's team. `teams` lists a project, and optionally a
   new worktree and a note, per team key; every other team takes the default
   route.

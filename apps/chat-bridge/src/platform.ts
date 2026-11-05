@@ -145,6 +145,11 @@ export interface ChatPlatform {
     chatThreadKey: string,
     messageId: string,
   ) => Promise<ReadonlyArray<EarlierMessage>>;
+  /**
+   * Starts a new conversation for a thread that asks for one, such as a Slack
+   * thread under an opening message, and returns its chat thread key.
+   */
+  readonly startConversation?: (where: string, text: string) => Promise<string>;
   /** Called once a conversation is bound, so the platform can follow it. */
   readonly bound?: (chatThreadKey: string) => Promise<void>;
 }

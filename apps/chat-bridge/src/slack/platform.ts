@@ -3,6 +3,7 @@ import {
   type Access,
   type ChannelRoute,
   type ChatPlatform,
+  QUIET_REPLY,
   QUIET_RULES,
   type ThreadRoute,
 } from "../platform.ts";
@@ -17,6 +18,16 @@ export function slackFirstTurnNote(chatKey: string): string {
     `To send files, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace.`,
     `To react to a message, call the chat_react tool with chatKey "${chatKey}", the message id and an emoji name.`,
   ].join(" ");
+}
+
+/** What a thread that started its own Slack thread is told, with the key for the chat tools. */
+export function slackWorkNote(chatThreadKey: string, chatKey: string): string {
+  return [
+    `You started a Slack thread (${chatThreadKey}). Replies there continue this thread, and from now on your final message in each run is posted there.`,
+    slackFirstTurnNote(chatKey),
+    `If you had already finished when this arrived, answer ${QUIET_REPLY}.`,
+    `Chat key: ${chatKey}`,
+  ].join("\n\n");
 }
 
 /**
@@ -57,5 +68,6 @@ export function slackPlatform(options: {
     download: (url) => connected().download(url),
     history: (chatThreadKey, messageId) => connected().history(chatThreadKey, messageId),
     bound: (chatThreadKey) => connected().follow(chatThreadKey),
+    startConversation: (channel, text) => connected().startThread(channel, text),
   };
 }

@@ -39,12 +39,14 @@ export interface ToolDeps {
   readonly react: (reaction: Reaction) => Promise<string | undefined>;
   /** Sets the status of the thread's runs in flight; false when there is none. */
   readonly setStatus: (chatThreadKey: string, status: string) => boolean;
-  /** Makes a subagent's work a Linear issue's; absent without Linear. Returns what to tell the caller. */
+  /** Connects a thread to a Linear issue; absent without Linear. Returns what to tell the caller. */
   readonly startLinear?: ((request: LinearStartRequest) => Promise<string>) | undefined;
+  /** Starts a Slack thread for a thread; absent without Slack. Returns what to tell the caller. */
+  readonly startSlack?: ((request: SlackStartRequest) => Promise<string>) | undefined;
 }
 
 export interface LinearStartRequest {
-  readonly childThreadId: string;
+  readonly threadId: string;
   /** An existing issue, such as AFF-123. */
   readonly issue?: string | undefined;
   readonly newIssue?:
@@ -54,17 +56,32 @@ export interface LinearStartRequest {
   readonly replace: boolean;
 }
 
+export interface SlackStartRequest {
+  readonly threadId: string;
+  /** A channel id the bot is in (C…, G…, D…), or a person's user id (U…, W…) for a DM. */
+  readonly channel: string;
+  readonly text: string;
+}
+
 const ISSUE_ID = /^[A-Za-z][A-Za-z0-9]{0,9}-\d{1,7}$/;
 const THREAD_ID = /^[\w.:%-]{1,300}$/;
+const SLACK_ID = /^[CGDUW][A-Z0-9]{2,20}$/;
+const MAX_OPENING = 4_000;
+
+const THREAD_ID_PROPERTY = {
+  type: "string",
+  description:
+    "The T3 thread to connect: your own (orchestrator_capabilities returns it as parentThreadId) or a subagent's childThreadId from delegate_task.",
+};
 
 const LINEAR_START_TOOL = {
   name: "linear_start",
   description:
-    "Make a subagent's work a Linear issue's: its progress and final message show in the issue's agent session, and later prompts there continue it. First start the subagent with delegate_task, then call this with its childThreadId and either issue (an existing one, such as AFF-123) or newIssue. Its completion still wakes you as delegate_task's do. No chat key needed.",
+    "Connect a T3 thread to a Linear issue: its progress and final message show in the issue's agent session, and later prompts there continue the thread. Pass your own thread id to take your work to Linear, or a subagent's childThreadId (its completion still wakes you). Give either issue (an existing one, such as AFF-123) or newIssue. No chat key needed.",
   inputSchema: {
     type: "object" as const,
     properties: {
-      childThreadId: { type: "string", description: "The childThreadId delegate_task returned." },
+      threadId: THREAD_ID_PROPERTY,
       issue: { type: "string", description: "An existing issue's identifier, such as AFF-123." },
       newIssue: {
         type: "object",
@@ -81,7 +98,30 @@ const LINEAR_START_TOOL = {
         description: "Move an issue that already goes to another thread to this one.",
       },
     },
-    required: ["childThreadId"],
+    required: ["threadId"],
+  },
+};
+
+const SLACK_START_TOOL = {
+  name: "slack_start",
+  description:
+    "Start a Slack thread for a T3 thread: posts text as a new message in a channel the bot is in, or as a DM to a person, and replies in that Slack thread continue the T3 thread. The thread's final message in each run is posted there from then on. Pass your own thread id, or a subagent's childThreadId. No chat key needed.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      threadId: THREAD_ID_PROPERTY,
+      channel: {
+        type: "string",
+        description:
+          "A Slack channel id the bot is in (C…, G…), or a person's member id (U…) for a DM.",
+      },
+      text: {
+        type: "string",
+        maxLength: MAX_OPENING,
+        description: "The opening message, in Markdown.",
+      },
+    },
+    required: ["threadId", "channel", "text"],
   },
 };
 
@@ -189,11 +229,32 @@ async function readWorkspaceFile(
   };
 }
 
-function linearStartRequest(args: Record<string, unknown>): LinearStartRequest {
-  const childThreadId = stringArg(args, "childThreadId")?.trim() ?? "";
-  if (!THREAD_ID.test(childThreadId)) {
-    throw new ToolInputError("childThreadId must be the id delegate_task returned.");
+function threadIdArg(args: Record<string, unknown>): string {
+  // Earlier versions called it childThreadId.
+  const threadId = (stringArg(args, "threadId") ?? stringArg(args, "childThreadId"))?.trim() ?? "";
+  if (!THREAD_ID.test(threadId)) {
+    throw new ToolInputError(
+      "threadId must be a T3 thread id, such as your own or a childThreadId.",
+    );
   }
+  return threadId;
+}
+
+function slackStartRequest(args: Record<string, unknown>): SlackStartRequest {
+  const threadId = threadIdArg(args);
+  const channel = stringArg(args, "channel")?.trim() ?? "";
+  if (!SLACK_ID.test(channel)) {
+    throw new ToolInputError("channel must be a Slack channel id (C…, G…, D…) or member id (U…).");
+  }
+  const text = stringArg(args, "text")?.trim() ?? "";
+  if (text === "" || text.length > MAX_OPENING) {
+    throw new ToolInputError(`text must be 1 to ${MAX_OPENING} characters.`);
+  }
+  return { threadId, channel, text };
+}
+
+function linearStartRequest(args: Record<string, unknown>): LinearStartRequest {
+  const threadId = threadIdArg(args);
   const issue = stringArg(args, "issue")?.trim();
   const raw = args.newIssue;
   if ((issue === undefined) === (raw === undefined)) {
@@ -222,7 +283,7 @@ function linearStartRequest(args: Record<string, unknown>): LinearStartRequest {
   if (args.replace !== undefined && typeof args.replace !== "boolean") {
     throw new ToolInputError("replace must be true or false.");
   }
-  return { childThreadId, issue, newIssue, replace: args.replace === true };
+  return { threadId, issue, newIssue, replace: args.replace === true };
 }
 
 export async function callTool(
@@ -234,6 +295,10 @@ export async function callTool(
     if (name === "linear_start") {
       if (deps.startLinear === undefined) return text("Linear isn't set up on this bridge.", true);
       return text(await deps.startLinear(linearStartRequest(args)));
+    }
+    if (name === "slack_start") {
+      if (deps.startSlack === undefined) return text("Slack isn't set up on this bridge.", true);
+      return text(await deps.startSlack(slackStartRequest(args)));
     }
     const chatKey = stringArg(args, "chatKey") ?? "";
     const binding = deps.bindingByChatKey(chatKey);
@@ -323,7 +388,11 @@ function mcpServer(deps: ToolDeps): Server {
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: deps.startLinear === undefined ? TOOLS : [...TOOLS, LINEAR_START_TOOL],
+    tools: [
+      ...TOOLS,
+      ...(deps.startLinear === undefined ? [] : [LINEAR_START_TOOL]),
+      ...(deps.startSlack === undefined ? [] : [SLACK_START_TOOL]),
+    ],
   }));
   server.setRequestHandler(CallToolRequestSchema, (request) =>
     callTool(deps, request.params.name, request.params.arguments ?? {}),

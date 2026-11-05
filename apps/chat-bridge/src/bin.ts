@@ -25,7 +25,7 @@ import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
 import { type ChatPlatform, platformFor } from "./platform.ts";
 import { createSlackHost, redactSlackSecrets, type SlackChatHost } from "./slack/host.ts";
-import { slackPlatform } from "./slack/platform.ts";
+import { slackPlatform, slackWorkNote } from "./slack/platform.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
@@ -280,6 +280,23 @@ async function start(): Promise<void> {
         return undefined;
       },
       setStatus: (chatThreadKey, status) => core.setStatus(chatThreadKey, status),
+      startSlack: async (request) => {
+        const slackPlatform = platforms.find((each) => each.id === "slack");
+        if (slackPlatform?.startConversation === undefined)
+          throw new Error("Slack isn't connected.");
+        const refusal = await core.attachRefusal({ threadId: request.threadId, replace: false });
+        if (refusal !== undefined) throw new Error(refusal);
+        const chatThreadKey = await slackPlatform.startConversation(request.channel, request.text);
+        const channelId = chatThreadKey.split(":")[1] ?? request.channel;
+        await core.attach({
+          chatThreadKey,
+          channelId,
+          threadId: request.threadId,
+          createdByUserId: "",
+          note: (chatKey) => slackWorkNote(chatThreadKey, chatKey),
+        });
+        return `Started a Slack thread (${chatThreadKey}) for thread ${request.threadId}: replies there continue it, and its final message in each run posts there.`;
+      },
       startLinear:
         linear === undefined
           ? undefined
@@ -289,7 +306,7 @@ async function start(): Promise<void> {
               // Check everything before anything changes in Linear.
               const found = request.issue ? await linear.parts.findIssue(request.issue) : undefined;
               const refusal = await core.attachRefusal({
-                threadId: request.childThreadId,
+                threadId: request.threadId,
                 chatThreadKey: found ? `linear:${found.issueId}` : undefined,
                 replace: request.replace,
               });
@@ -299,11 +316,11 @@ async function start(): Promise<void> {
               await core.attach({
                 chatThreadKey: `linear:${issue.issueId}`,
                 channelId: issue.teamKey,
-                threadId: request.childThreadId,
+                threadId: request.threadId,
                 createdByUserId: "",
                 note: (chatKey) => linear.parts.workNote(issue, chatKey),
               });
-              return `${issue.identifier} (${issue.url}) now shows thread ${request.childThreadId}'s work in a Linear agent session, and its final message posts there. Its completion still wakes you as usual.`;
+              return `${issue.identifier} (${issue.url}) now shows thread ${request.threadId}'s work in a Linear agent session, and its final message in each run posts there.`;
             },
     },
     config.toolsPort,

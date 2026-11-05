@@ -1699,7 +1699,7 @@ it("posts the answer of a subagent's run that ended before its work was attached
   ]);
 });
 
-it("attaches only a subagent, and moves a bound conversation only when asked", async () => {
+it("attaches any thread to one conversation, and moves a bound conversation only when asked", async () => {
   const { t3, bridge, store } = subagentHarness("completed");
   const refusal = (chatThreadKey: string | undefined, replace = false) =>
     bridge.attachRefusal({ threadId: "child-thread", chatThreadKey, replace });
@@ -1718,8 +1718,10 @@ it("attaches only a subagent, and moves a bound conversation only when asked", a
   assert.strictEqual(store.binding("slack:C1:100.1")?.threadId, "child-thread");
   // The child answers that conversation now, and no other.
   assert.include(await refusal("slack:C1:900.1"), "already answers slack:C1:100.1");
-  Object.assign(t3.thread, { relationshipToParent: "fork" });
-  assert.include(await refusal(undefined), "isn't a subagent");
+  // Any thread may take a conversation, such as one connecting itself, not only a subagent.
+  store.replaceBinding({ ...store.binding("slack:C1:100.1")!, threadId: "other-thread" });
+  Object.assign(t3.thread, { parentThreadId: null, relationshipToParent: null });
+  assert.isUndefined(await refusal(undefined));
 });
 
 it("keeps following background work across a restart, and posts the run it starts once", async () => {
