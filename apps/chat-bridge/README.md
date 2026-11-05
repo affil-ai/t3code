@@ -1,6 +1,6 @@
 # T3 chat bridge
 
-Talk to T3 Code agents from Slack and iMessage, and later Linear. Mention the bot in a mapped channel and it
+Talk to T3 Code agents from Slack, iMessage and Linear. Mention the bot in a mapped channel and it
 starts a T3 thread in that channel's project. Replies in the Slack thread go to
 the same T3 thread. Each run shows in Slack as it works, with Slack's own agent
 features, and ends with the agent's final message.
@@ -428,6 +428,77 @@ To undo: run `imsg launch --uninstall-agent`, set `outboundReactions: false`,
 then in Recovery run `csrutil enable` and restart. SIP off lowers the
 security of the whole Mac, not only Messages.
 
+## Linear
+
+The agent works in Linear as an app (`@chat-adapter/linear` in agent-sessions
+mode, on Linear's Agents API), so it shows natively:
+
+- **What starts a run:** an agent session. Mentioning the app in a comment
+  (`@office …`) starts one, and so does delegating or assigning an issue to
+  it. Each session is one T3 thread. Replies in the session follow up in the
+  same thread. Plain comments that don't mention the app start nothing.
+- **What shows in Linear:** a "thought" as soon as the session starts (Linear
+  marks a session unresponsive after a few seconds without one), the run's
+  status as thoughts while it works, and the final message as the session's
+  response, in Markdown.
+- **What the agent gets:** the comment, plus Linear's context for the session
+  (the issue, its description and comments) on the first turn.
+- **Files:** the agent sends files with `chat_post`. They are uploaded to
+  Linear and linked in the response, and images show inline. `chat_react`
+  reacts to comments.
+- **Questions:** Linear has no buttons, so questions are numbered text,
+  answered in the session.
+- **Routing:** by the issue's team. `teams` lists a project, and optionally a
+  new worktree and a note, per team key; every other team takes the default
+  route.
+- **Access:** everyone in the workspace who can mention the app, unless
+  `allowEveryone` is false; then only `allowedUserIds` (Linear user ids).
+
+```json
+"linear": {
+  "botName": "office",
+  "webhookPort": 3930,
+  "webhookPath": "/linear/webhook",
+  "projectId": "<default T3 project id>",
+  "worktreeFrom": "dev",
+  "teams": [{ "team": "ENG", "projectId": "<T3 project id>", "worktreeFrom": "dev" }]
+}
+```
+
+Secrets come from the environment, never the config: `LINEAR_CLIENT_ID`,
+`LINEAR_CLIENT_SECRET` and `LINEAR_WEBHOOK_SECRET`. The bridge reads them and
+removes them from its environment, so the adapter's own auto-detection can't
+pick them up. Without all three, Linear stays off and its webhook answers 503. The app authenticates with client credentials as itself, with scopes
+`read`, `write`, `comments:create`, `issues:create`, `app:mentionable` and
+`app:assignable`, so there is no OAuth callback to host.
+
+### Webhook ingress
+
+The bridge serves webhooks on loopback only
+(`127.0.0.1:<webhookPort><webhookPath>`). It answers POST at exactly that
+path and 404 everywhere else, and the adapter checks Linear's signature and
+timestamp on every request. Public HTTPS is a separate, swappable piece that
+forwards only that path:
+
+- **Tailscale Funnel** (in use). Funnel opens a whole port, and port 443 on
+  this host already serves tailnet-only paths, so Linear gets 8443. This
+  host's Serve config has path and socket handlers, so any change needs root.
+  Once, as root:
+
+  ```sh
+  sudo tailscale funnel --bg --https=8443 --set-path=/linear/webhook \
+    http://127.0.0.1:3930/linear/webhook
+  ```
+
+  `--bg` keeps it across reboots and restarts of `tailscaled`. Check it with
+  `tailscale funnel status`; only `:8443` should say "Funnel on". The URL
+  Linear calls is `https://<host>.<tailnet>.ts.net:8443/linear/webhook`.
+  To undo: `sudo tailscale funnel --https=8443 --set-path=/linear/webhook off`.
+
+- **Cloudflare tunnel** (alternative). Add one ingress rule with
+  `path: ^/linear/webhook$` and service `http://127.0.0.1:3930`, followed by
+  the catch-all `http_status:404`.
+
 ## Limits
 
 - The bridge, T3 and the agents must share a machine. `chat_post` reads files
@@ -448,21 +519,23 @@ pnpm --filter @t3tools/chat-bridge typecheck
 pnpm --filter @t3tools/chat-bridge test
 ```
 
-| File                | What it does                                                                                                           |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `src/bin.ts`        | The `start`, `login` and `manifest` commands.                                                                          |
-| `src/bridge.ts`     | The core: chat messages into T3 turns, each run watched, answers back.                                                 |
-| `src/platform.ts`   | `ChatPlatform`: what the core needs from a platform beyond the SDK.                                                    |
-| `src/chatHost.ts`   | The one Chat SDK `Chat`, with an adapter per platform.                                                                 |
-| `src/slack/`        | Slack: the adapter's messages and Slack-only calls (`host.ts`), its `ChatPlatform`, text helpers and the app manifest. |
-| `src/imessage/`     | iMessage: the Chat SDK adapter, its RPC client and its `ChatPlatform`.                                                 |
-| `mac/`              | The Mac service and its LaunchAgent.                                                                                   |
-| `src/runFeed.ts`    | What a run is doing now, from T3's activity view.                                                                      |
-| `src/activity.ts`   | T3 activity items as status lines; redaction.                                                                          |
-| `src/questions.ts`  | Agents' questions as buttons or numbered text, and their answers.                                                      |
-| `src/threads.ts`    | The T3 MCP calls: launch, send, wait, read, configure.                                                                 |
-| `src/t3Client.ts`   | The MCP client for T3.                                                                                                 |
-| `src/toolServer.ts` | The `chat_post` / `chat_react` MCP server.                                                                             |
-| `src/store.ts`      | Inbox, bindings, handled messages and owed replies.                                                                    |
-| `src/chatState.ts`  | The Chat SDK's state on the same SQLite file.                                                                          |
-| `src/login.ts`      | T3's MCP OAuth sign-in.                                                                                                |
+| File                   | What it does                                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `src/bin.ts`           | The `start`, `login` and `manifest` commands.                                                                          |
+| `src/bridge.ts`        | The core: chat messages into T3 turns, each run watched, answers back.                                                 |
+| `src/platform.ts`      | `ChatPlatform`: what the core needs from a platform beyond the SDK.                                                    |
+| `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                                                                 |
+| `src/slack/`           | Slack: the adapter's messages and Slack-only calls (`host.ts`), its `ChatPlatform`, text helpers and the app manifest. |
+| `src/linear/`          | Linear: agent sessions as `InboundEvent`s, file uploads, and its `ChatPlatform`.                                       |
+| `src/webhookServer.ts` | Loopback webhooks for platforms that need them, at exact paths only.                                                   |
+| `src/imessage/`        | iMessage: the Chat SDK adapter, its RPC client and its `ChatPlatform`.                                                 |
+| `mac/`                 | The Mac service and its LaunchAgent.                                                                                   |
+| `src/runFeed.ts`       | What a run is doing now, from T3's activity view.                                                                      |
+| `src/activity.ts`      | T3 activity items as status lines; redaction.                                                                          |
+| `src/questions.ts`     | Agents' questions as buttons or numbered text, and their answers.                                                      |
+| `src/threads.ts`       | The T3 MCP calls: launch, send, wait, read, configure.                                                                 |
+| `src/t3Client.ts`      | The MCP client for T3.                                                                                                 |
+| `src/toolServer.ts`    | The `chat_post` / `chat_react` MCP server.                                                                             |
+| `src/store.ts`         | Inbox, bindings, handled messages and owed replies.                                                                    |
+| `src/chatState.ts`     | The Chat SDK's state on the same SQLite file.                                                                          |
+| `src/login.ts`         | T3's MCP OAuth sign-in.                                                                                                |

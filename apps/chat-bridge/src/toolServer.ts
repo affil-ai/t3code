@@ -26,7 +26,7 @@ const MAX_FILES = 10;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT = 12_000;
 const MAX_STATUS = 100;
-/** Slack's `ts`, or iMessage's row id. */
+/** A platform's message id, such as Slack's `ts` or an iMessage or Linear id. */
 const MESSAGE_ID = /^[\w.:-]{1,100}$/;
 const EMOJI = /^:?[a-z0-9_+'-]+:?$/;
 
@@ -46,7 +46,7 @@ const TOOLS = [
   {
     name: "chat_post",
     description:
-      "Post a message, files, or both to the chat thread (Slack, iMessage) with this chat key. Your final message is posted there anyway, so use this for files and for updates before the run ends. Files must be inside your workspace, up to 10 per call and 50 MB each. In Slack, write <@USERID> to mention someone.",
+      "Post a message, files, or both to the chat thread with this chat key. Your final message is posted there anyway, so use this for files and for updates before the run ends. Files must be inside your workspace, up to 10 per call and 50 MB each. The thread's first turn says how to mention people there.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -74,13 +74,13 @@ const TOOLS = [
   {
     name: "chat_react",
     description:
-      "React with an emoji to a message in the Slack thread with this chat key. Pass the message id shown in the turn and a Slack emoji name such as eyes, white_check_mark or thumbsup. Not available in iMessage.",
+      "React with an emoji to a message in the chat thread with this chat key. Pass the message id shown in the turn and an emoji name such as eyes, white_check_mark or thumbsup. The thread's first turn says whether reactions work there and which ones.",
     inputSchema: {
       type: "object" as const,
       properties: {
         chatKey: { type: "string", description: "The chat key from the chat message." },
         messageId: { type: "string", description: "Such as 1700000000.000100." },
-        emoji: { type: "string", description: "A Slack emoji name, with or without colons." },
+        emoji: { type: "string", description: "An emoji name, with or without colons." },
       },
       required: ["chatKey", "messageId", "emoji"],
     },
@@ -187,7 +187,7 @@ export async function callTool(
       if (!MESSAGE_ID.test(messageId))
         return text("messageId must look like 1700000000.000100.", true);
       if (!EMOJI.test(emoji) || emoji.length > 100)
-        return text("emoji must be a Slack emoji name.", true);
+        return text("emoji must be an emoji name.", true);
       const bare = emoji.replace(/^:|:$/g, "");
       await deps.react({ chatThreadKey: binding.chatThreadKey, messageId, emoji: bare });
       return text(`Reacted with :${bare}:.`);
@@ -215,10 +215,10 @@ export async function callTool(
  * even after its first turn has been compacted away.
  */
 const INSTRUCTIONS = [
-  "Some threads take their messages from a chat: a Slack thread or an iMessage conversation. Their turns start with the chat message and carry a chat key.",
+  "Some threads take their messages from a chat, such as a Slack thread, an iMessage conversation or a Linear agent session. Their turns start with the chat message and carry a chat key.",
   "In those threads your final message in each run is posted to the chat. If a message needs no reply, end the run without a final message and nothing is posted.",
-  "To mention someone in Slack, write <@USERID>; the turn shows each person's id.",
-  "Use chat_post to send files or an update before the run ends, chat_react to react to a Slack message, and chat_status to set the status Slack shows during a long run. All take the thread's chat key.",
+  "The thread's first turn says how that chat works: how to mention people, and which of these tools it supports.",
+  "Use chat_post to send files or an update before the run ends, chat_react to react to a message, and chat_status to set the status shown during a long run. All take the thread's chat key.",
 ].join(" ");
 
 function mcpServer(deps: ToolDeps): Server {

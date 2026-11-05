@@ -418,6 +418,9 @@ importers:
 
   apps/chat-bridge:
     dependencies:
+      '@chat-adapter/linear':
+        specifier: 4.43.0
+        version: 4.43.0(graphql@16.14.1)(supports-color@8.1.1)(zod@4.6.5)
       '@chat-adapter/shared':
         specifier: 4.43.0
         version: 4.43.0(supports-color@8.1.1)(zod@4.6.5)
@@ -3265,6 +3268,10 @@ packages:
     resolution: {integrity: sha512-JRH40HwYIXdIiwSc/gNw65q5T/gaf691n4//2YOhjRE4YO9KzSFJ/N+RrTD3M8iGz2jI4Jg92wb6OAqfYsAkTQ==}
     engines: {node: '>=20'}
 
+  '@chat-adapter/linear@4.43.0':
+    resolution: {integrity: sha512-tOzwf3QP/C2M76d47BS5cmjnWhva1Oo0lXCoGOAan40PIpvshFZyoH+u7RHtSSF9LA6WDcjs6bT99Ah5rktslQ==}
+    engines: {node: '>=20'}
+
   '@chat-adapter/shared@4.43.0':
     resolution: {integrity: sha512-uclU9sQLQa5f9pN9xpCHkMC7eypnIvXnZRnpgdAzltL2d0PhrsJlSPkijmc4Q4FzSfof4kh+gE6yAMFp/tNsQQ==}
     engines: {node: '>=20'}
@@ -4474,6 +4481,11 @@ packages:
   '@formkit/auto-animate@0.9.0':
     resolution: {integrity: sha512-VhP4zEAacXS3dfTpJpJ88QdLqMTcabMg0jwpOSxZ/VzfQVfl3GkZSCZThhGC5uhq/TxPHPzW0dzr4H9Bb1OgKA==}
 
+  '@graphql-typed-document-node/core@3.2.0':
+    resolution: {integrity: sha512-mB9oAsNCm9aM3/SOv4YtBMqZbYj10R7dkq8byBqxGY/ncFwhf2oQzMV+LCRlWoDSEBJ3COiR1yeDvMtsoOsuFQ==}
+    peerDependencies:
+      graphql: ^0.8.0 || ^0.9.0 || ^0.10.0 || ^0.11.0 || ^0.12.0 || ^0.13.0 || ^14.0.0 || ^15.0.0 || ^16.0.0 || ^17.0.0
+
   '@hono/node-server@1.19.17':
     resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
     engines: {node: '>=18.14.1'}
@@ -4913,6 +4925,10 @@ packages:
     resolution: {integrity: sha512-4/0CvEdhi6+KjMxMaVbFM2n2Z44escBRoEYpR+gZg64DdetzGnYm8mcNLcoySaDJZNaBd6wz5DNdgRmcI4hXcg==}
     cpu: [x64]
     os: [win32]
+
+  '@linear/sdk@76.0.0':
+    resolution: {integrity: sha512-Xt0x5Kl6qBoWhGFypb8ykyP+c5kT7scmRPs1uJidSPOaRgkMJ/4y41QpmZCWCBUMmZtf/O0VktgQio6rLXT94w==}
+    engines: {node: '>=18.x'}
 
   '@malept/cross-spawn-promise@2.0.0':
     resolution: {integrity: sha512-1DpKU0Z5ThltBwjNySMC14g0CkbyhCaz9FkhxqNsZI6uAPJXFS8cMXlBKo26FJ8ZuW6S9GCMcR9IO5k2X5/9Fg==}
@@ -13417,6 +13433,18 @@ snapshots:
 
   '@chat-adapter/catalog@4.43.0': {}
 
+  '@chat-adapter/linear@4.43.0(graphql@16.14.1)(supports-color@8.1.1)(zod@4.6.5)':
+    dependencies:
+      '@chat-adapter/shared': 4.43.0(supports-color@8.1.1)(zod@4.6.5)
+      '@linear/sdk': 76.0.0(graphql@16.14.1)
+      chat: 4.43.0(supports-color@8.1.1)(zod@4.6.5)
+    transitivePeerDependencies:
+      - ai
+      - graphql
+      - supports-color
+      - workflow
+      - zod
+
   '@chat-adapter/shared@4.43.0(supports-color@8.1.1)(zod@4.6.5)':
     dependencies:
       chat: 4.43.0(supports-color@8.1.1)(zod@4.6.5)
@@ -14727,6 +14755,10 @@ snapshots:
 
   '@formkit/auto-animate@0.9.0': {}
 
+  '@graphql-typed-document-node/core@3.2.0(graphql@16.14.1)':
+    dependencies:
+      graphql: 16.14.1
+
   '@hono/node-server@1.19.17(hono@4.13.7)':
     dependencies:
       hono: 4.13.7
@@ -15062,6 +15094,12 @@ snapshots:
 
   '@libsql/win32-x64-msvc@0.5.29':
     optional: true
+
+  '@linear/sdk@76.0.0(graphql@16.14.1)':
+    dependencies:
+      '@graphql-typed-document-node/core': 3.2.0(graphql@16.14.1)
+    transitivePeerDependencies:
+      - graphql
 
   '@malept/cross-spawn-promise@2.0.0':
     dependencies:

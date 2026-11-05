@@ -39,6 +39,24 @@ export interface BridgeConfig {
   readonly modelSelection?: ModelSelection | undefined;
   /** iMessage through `affil-imessage` on a Mac. Omit to run without iMessage. */
   readonly imessage?: ImessageConfig | undefined;
+  /** Linear agent sessions. Omit to run without Linear. Its secrets come from the environment. */
+  readonly linear?: LinearConfig | undefined;
+}
+
+export interface LinearConfig {
+  /** The app's name in Linear, as people @mention it, such as "office". */
+  readonly botName: string;
+  /** The loopback port of the webhook server; public ingress forwards `webhookPath` to it. */
+  readonly webhookPort: number;
+  readonly webhookPath: string;
+  /** Where a session on an issue of a team without its own route starts its thread. */
+  readonly defaultRoute: ThreadRoute;
+  /** Per-team routes, by team key (the "ENG" in ENG-123). */
+  readonly teams: ReadonlyArray<ThreadRoute & { readonly team: string }>;
+  /** Linear user ids that may use the agent; with `allowEveryone`, anyone in the workspace. */
+  readonly allowedUserIds: ReadonlyArray<string>;
+  /** On by default: anyone in the Linear workspace who can mention the app may use it. */
+  readonly allowEveryone: boolean;
 }
 
 export interface ImessageConfig {
@@ -154,6 +172,52 @@ function parseImessage(raw: unknown): ImessageConfig | undefined {
   };
 }
 
+function parseThreadRoute(raw: Record<string, unknown>, field: string): ThreadRoute {
+  if (typeof raw.projectId !== "string" || raw.projectId === "")
+    fail(`${field}.projectId is required.`);
+  const worktreeFrom = optionalText(raw, "worktreeFrom");
+  const note = optionalText(raw, "note");
+  return {
+    projectId: raw.projectId as string,
+    ...(worktreeFrom === undefined ? {} : { worktreeFrom }),
+    ...(note === undefined ? {} : { note }),
+  };
+}
+
+function parseLinear(raw: unknown): LinearConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) return fail("linear must be an object.");
+  const port = raw.webhookPort ?? 3930;
+  if (typeof port !== "number" || !Number.isInteger(port) || port <= 0) {
+    fail("linear.webhookPort must be a port number.");
+  }
+  const path = raw.webhookPath ?? "/linear/webhook";
+  if (typeof path !== "string" || !path.startsWith("/"))
+    fail("linear.webhookPath must start with /.");
+  if (raw.allowEveryone !== undefined && typeof raw.allowEveryone !== "boolean") {
+    fail("linear.allowEveryone must be true or false.");
+  }
+  const teams = raw.teams ?? [];
+  if (!Array.isArray(teams)) fail("linear.teams must be a list.");
+  return {
+    botName: typeof raw.botName === "string" && raw.botName !== "" ? raw.botName : "office",
+    webhookPort: port as number,
+    webhookPath: path as string,
+    defaultRoute: parseThreadRoute(raw, "linear"),
+    teams: (teams as Array<unknown>).map((entry) => {
+      if (!isRecord(entry) || typeof entry.team !== "string" || entry.team === "") {
+        return fail("Each linear.teams entry needs a team key.");
+      }
+      return { team: entry.team, ...parseThreadRoute(entry, `linear.teams ${entry.team}`) };
+    }),
+    allowedUserIds:
+      raw.allowedUserIds === undefined
+        ? []
+        : stringList(raw.allowedUserIds, "linear.allowedUserIds"),
+    allowEveryone: raw.allowEveryone !== false,
+  };
+}
+
 export function parseConfig(raw: unknown): BridgeConfig {
   if (!isRecord(raw)) return fail("The config must be a JSON object.");
   const t3Url = typeof raw.t3Url === "string" ? raw.t3Url : fail("t3Url is required.");
@@ -201,6 +265,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
     runtimeMode: raw.runtimeMode as string | undefined,
     modelSelection: raw.modelSelection as ModelSelection | undefined,
     imessage: parseImessage(raw.imessage),
+    linear: parseLinear(raw.linear),
   };
 }
 

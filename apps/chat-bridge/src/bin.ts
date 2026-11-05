@@ -9,6 +9,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 
+import { createLinearAdapter, type LinearAdapter } from "@chat-adapter/linear";
 import type { Chat } from "chat";
 
 import { Bridge, type InboundEvent } from "./bridge.ts";
@@ -17,6 +18,7 @@ import { createChatState } from "./chatState.ts";
 import { dataDir, loadConfig } from "./config.ts";
 import { login, savedToken } from "./login.ts";
 import { createImessageAdapter } from "./imessage/adapter.ts";
+import { type LinearApi, linearPlatform } from "./linear/platform.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
 import { type ChatPlatform, platformFor } from "./platform.ts";
@@ -26,6 +28,7 @@ import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
 import { startToolServer } from "./toolServer.ts";
+import { startWebhookServer, type WebhookRoute } from "./webhookServer.ts";
 
 const log = (line: string) =>
   process.stderr.write(`${new Date().toISOString()} ${redactSlackSecrets(line)}\n`);
@@ -73,6 +76,11 @@ async function start(): Promise<void> {
   if (config.dmProjectId) await t3.call("t3_project_read", { projectId: config.dmProjectId });
   if (config.imessage)
     await t3.call("t3_project_read", { projectId: config.imessage.route.projectId });
+  for (const { projectId } of config.linear
+    ? [config.linear.defaultRoute, ...config.linear.teams]
+    : []) {
+    await t3.call("t3_project_read", { projectId });
+  }
 
   // One core and one Chat SDK `Chat`; each platform is an adapter on it.
   let chat: Chat | undefined;
@@ -115,6 +123,54 @@ async function start(): Promise<void> {
         return { adapter, deliver };
       })()
     : undefined;
+  // Linear's secrets come from the environment; without them its webhook answers 503.
+  const linearSecrets = config.linear ? takeLinearSecrets() : undefined;
+  const linear =
+    config.linear && linearSecrets
+      ? (() => {
+          const settings = config.linear;
+          const adapter: LinearAdapter = createLinearAdapter({
+            clientCredentials: {
+              clientId: linearSecrets.clientId,
+              clientSecret: linearSecrets.clientSecret,
+              scopes: [
+                "read",
+                "write",
+                "comments:create",
+                "issues:create",
+                "app:mentionable",
+                "app:assignable",
+              ],
+            },
+            webhookSecret: linearSecrets.webhookSecret,
+            mode: "agent-sessions",
+            userName: settings.botName,
+            logger: linearLogger(log),
+          });
+          const { platform, deliver } = linearPlatform({
+            chat: () => chat,
+            adapter: () =>
+              adapter as unknown as Pick<LinearAdapter, "startTyping" | "addReaction"> & {
+                readonly linearClient: LinearApi;
+              },
+            access: {
+              allowedUserIds: settings.allowedUserIds,
+              allowEveryone: settings.allowEveryone,
+            },
+            teams: settings.teams,
+            defaultRoute: settings.defaultRoute,
+            onEvent: receive,
+            log,
+          });
+          platforms.push(platform);
+          return { adapter, deliver };
+        })()
+      : undefined;
+  if (config.linear && !linearSecrets) {
+    log(
+      `Linear is configured but ${LINEAR_SECRET_NAMES.join(", ")} aren't all set; its webhook answers 503 until they are.`,
+    );
+  }
   bridge = new Bridge({
     store,
     threads,
@@ -134,10 +190,12 @@ async function start(): Promise<void> {
     adapters: {
       slack: slackParts.adapter,
       ...(imessage ? { imessage: imessage.adapter } : {}),
+      ...(linear ? { linear: linear.adapter } : {}),
     },
     deliver: {
       slack: slackParts.deliver,
       ...(imessage ? { imessage: imessage.deliver } : {}),
+      ...(linear ? { linear: linear.deliver } : {}),
     },
     state: createChatState(db),
     onError: (error) => log(`Chat message failed: ${String(error)}`),
@@ -163,12 +221,30 @@ async function start(): Promise<void> {
     },
     config.toolsPort,
   );
+  const webhookRoutes: Array<WebhookRoute> = config.linear
+    ? [
+        {
+          path: config.linear.webhookPath,
+          // The adapter checks Linear's signature and timestamp, and refuses anything else.
+          handle: linear
+            ? (request) => linear.adapter.handleWebhook(request)
+            : async () => new Response("Linear isn't set up on this bridge yet.", { status: 503 }),
+        },
+      ]
+    : [];
+  const webhooks =
+    config.linear === undefined
+      ? undefined
+      : await startWebhookServer(config.linear.webhookPort, webhookRoutes, log);
   // What a restart left in the inbox first, then what Slack sent while the bridge was down.
   await core.resume();
   await core.catchUp("slack", (request) => slack.missedEvents(request));
   log(
-    `Connected to Slack${imessage ? ", iMessage (connects by itself)" : ""} and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
+    `Connected to Slack${imessage ? ", iMessage (connects by itself)" : ""}${linear ? ", Linear" : ""} and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
   );
+  if (webhooks && config.linear) {
+    log(`Linear webhook on http://127.0.0.1:${webhooks.port}${config.linear.webhookPath}.`);
+  }
   if (config.imessage?.allowEveryone) {
     log(
       "WARNING: imessage.allowEveryone is on. Anyone who sends this Apple account an iMessage can start runs, with this bridge's T3 access.",
@@ -184,6 +260,7 @@ async function start(): Promise<void> {
     log("Shutting down.");
     core.stop();
     tools.close();
+    webhooks?.close();
     await running.shutdown().catch(() => {});
     await t3.close();
     db.close();
@@ -191,6 +268,43 @@ async function start(): Promise<void> {
   };
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());
+}
+
+const LINEAR_SECRET_NAMES = ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET", "LINEAR_WEBHOOK_SECRET"];
+
+/**
+ * Reads Linear's secrets and removes them from the environment, so nothing
+ * else (the adapter's own auto-detection included) picks them up.
+ */
+function takeLinearSecrets():
+  | { readonly clientId: string; readonly clientSecret: string; readonly webhookSecret: string }
+  | undefined {
+  const [clientId, clientSecret, webhookSecret] = LINEAR_SECRET_NAMES.map((name) => {
+    const value = process.env[name];
+    delete process.env[name];
+    return value;
+  });
+  return clientId && clientSecret && webhookSecret
+    ? { clientId, clientSecret, webhookSecret }
+    : undefined;
+}
+
+/** The adapter's warnings and errors, without its debug lines, which carry payloads. */
+function linearLogger(log: (line: string) => void) {
+  const line =
+    (level: string) =>
+    (message: string, ...args: Array<unknown>) =>
+      log(
+        `linear ${level}: ${[message, ...args.map((arg) => (arg instanceof Error ? arg.message : JSON.stringify(arg)))].join(" ").slice(0, 500)}`,
+      );
+  const logger = {
+    debug: () => {},
+    info: line("info"),
+    warn: line("warn"),
+    error: line("error"),
+    child: () => logger,
+  };
+  return logger;
 }
 
 async function main(): Promise<void> {
