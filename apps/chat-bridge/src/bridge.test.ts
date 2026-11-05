@@ -14,6 +14,7 @@ import {
   type BlockMessage,
   type Reply,
 } from "./bridge.ts";
+import type { RunStep } from "./activity.ts";
 import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
@@ -52,6 +53,8 @@ function fakeT3() {
     delegatedWakes?: string | undefined;
     /** T3 calls the work settled before it records the waking run. */
     wakeAfterSettled?: boolean;
+    /** The run ended as the message arrived, so T3 starts a new one instead of steering. */
+    sendStartsRun?: boolean;
   } = {
     splitPendingTools: false,
   };
@@ -112,11 +115,11 @@ function fakeT3() {
           case "t3_attachment_prepare_upload":
             return { attachmentId: `attachment-${calls.length}`, relativeUrl: "/upload" };
           case "t3_thread_send":
-            if (args.mode === "steer") throw new Error("steer fails when no run is in flight");
-            return {
-              runId: args.mode === "queue" ? `run-${++runs}` : `run-${runs}`,
-              delivery: "steered",
-            };
+            if (args.mode !== "auto") throw new Error("the bridge always sends with auto");
+            // T3 steers the run in flight, or starts one if it has just ended.
+            if (options.sendStartsRun === true)
+              return { runId: `run-${++runs}`, delivery: "started" };
+            return { runId: `run-${runs}`, delivery: "steered" };
           case "t3_thread_wait": {
             if (args.untilDelegatedWorkSettled === true) {
               if (options.wakeAfterSettled === true && options.delegatedWakes !== undefined) {
@@ -258,14 +261,17 @@ function harness(
     allowEveryone?: boolean;
     /** Full workspace members, for `allowEveryone`. */
     members?: ReadonlyArray<string>;
+    /** The platform lists each finished step, as Linear does. */
+    steps?: boolean;
   } = {},
 ) {
   const blockPosts: Array<BlockMessage & { messageId?: string }> = [];
   const renamed: Array<string> = [];
   let renameFailures = options.renameFailures ?? 0;
   const t3 = fakeT3();
-  const posted: Array<Reply> = [];
+  const posted: Array<Reply & { readonly kind?: string }> = [];
   const statuses: Array<string> = [];
+  const steps: Array<string> = [];
   const store = new BridgeStore(db);
   let clock = 0;
   const scheduled: Array<number> = [];
@@ -273,7 +279,7 @@ function harness(
   const bridge = new Bridge({
     store,
     threads: new T3Threads(t3.tools),
-    settings: { followUpMode: "steer" },
+    settings: {},
     platforms: [
       {
         id: "slack",
@@ -288,9 +294,22 @@ function harness(
         firstTurnNote: slackFirstTurnNote,
         refusal: (userId) =>
           `Sorry, you can't use this bot yet. Ask whoever runs it to add your Slack member ID (${userId}) to its allowed users.`,
-        post: options.post ?? (async (reply) => void posted.push(reply)),
+        // An answer is recorded as before; anything else names its kind.
+        post:
+          options.post ??
+          (async ({ kind, ...reply }) =>
+            void posted.push(kind === undefined || kind === "answer" ? reply : { ...reply, kind })),
         setState: async (chatThreadKey, state, text) =>
           void statuses.push(`${chatThreadKey} ${state}${text ? ` ${text}` : ""}`),
+        ...(options.steps === true
+          ? {
+              step: async (_chatThreadKey: string, step: RunStep) => {
+                steps.push(`${step.action}|${step.parameter}|${step.result}`);
+                // Steps come before the answer.
+                if (posted.length > 0) steps.push("after the answer");
+              },
+            }
+          : {}),
         postBlocks: async (message) => {
           blockPosts.push(message);
           return `900.${blockPosts.length}`;
@@ -321,6 +340,7 @@ function harness(
     store,
     posted,
     statuses,
+    steps,
     blockPosts,
     renamed,
     scheduled,
@@ -754,6 +774,76 @@ it("shows what the run is doing as the status, and the agent's own words until i
   ]);
   // The answer is one normal reply.
   assert.deepStrictEqual(posted, [{ chatThreadKey: "slack:C1:100.1", text: "Fixed." }]);
+});
+
+it("steers a message that arrives during a run into that run, and answers once from it", async () => {
+  const { t3, bridge, posted, statuses } = harness();
+  await bridge.receive(event("100.1"));
+  await t3.tick();
+  // The run is still going: the follow-up goes to T3 at once, not after the run.
+  const steered = await bridge.receive(
+    event("100.2", { kind: "follow_up", text: "what model are you?" }),
+  );
+  assert.deepStrictEqual(steered, { type: "followed_up", threadId: THREAD, delivery: "steered" });
+  const sends = t3.calls.filter((call) => call.tool === "t3_thread_send");
+  assert.strictEqual(sends.length, 1);
+  assert.include(String(sends[0]!.args.message), "what model are you?");
+  t3.finish("run-1", "completed", "Fixed, and I'm Opus.");
+  await bridge.idle();
+  // One run, one status cycle, one answer.
+  assert.deepStrictEqual(posted, [
+    { chatThreadKey: "slack:C1:100.1", text: "Fixed, and I'm Opus." },
+  ]);
+  assert.strictEqual(statuses.filter((line) => line.endsWith(" active")).length, 1);
+});
+
+it("follows the new run T3 starts when the run ended just as the message arrived", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Fixed.");
+  // T3 decides when it dispatches: the run was over, so it starts run-2 rather than failing.
+  t3.options.sendStartsRun = true;
+  const late = await bridge.receive(event("100.2", { kind: "follow_up", text: "and lint" }));
+  assert.deepStrictEqual(late, { type: "followed_up", threadId: THREAD, delivery: "started" });
+  t3.finish("run-2", "completed", "Linted.");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Fixed.", "Linted."],
+  );
+});
+
+it("lists each finished step once, before the answer, where the platform shows steps", async () => {
+  const { t3, bridge, steps, posted } = harness(undefined, { steps: true });
+  await bridge.receive(event("100.1"));
+  t3.activity.push({
+    itemId: "cmd",
+    type: "command_execution",
+    runId: "run-1",
+    status: "running",
+    text: "$ /bin/bash -lc 'pnpm test'",
+  });
+  await t3.tick();
+  t3.activity[0]!.status = "completed";
+  t3.activity.push({
+    itemId: "search",
+    type: "web_search",
+    runId: "run-1",
+    status: "failed",
+    text: JSON.stringify({ patterns: ["linear agent sessions"] }),
+  });
+  // Thinking is a status, not a step; another run's work isn't this run's.
+  t3.activity.push({ itemId: "think", type: "reasoning", runId: "run-1", status: "completed" });
+  t3.activity.push({ itemId: "other", type: "file_change", runId: "run-9", status: "completed" });
+  await t3.tick();
+  await t3.tick();
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  assert.deepStrictEqual(steps, [
+    "Ran|pnpm test|Done",
+    "Searched the web for|linear agent sessions|Failed",
+  ]);
+  assert.strictEqual(posted.length, 1);
 });
 
 it("asks the agent's question with buttons and hands a click back to T3", async () => {

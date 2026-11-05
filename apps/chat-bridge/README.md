@@ -20,9 +20,8 @@ Socket Mode, so it needs no public URL.
   characters (the newest are kept). Each message shows its author and Slack id,
   so the agent can tag them. Their files are imported with the mention's own.
   Messages from people outside `allowedUserIds` are included as context too.
-- **Replies continue it.** A reply in the Slack thread steers the run in flight,
-  or starts a new run if the thread is idle. Set `followUpMode` to `queue` to
-  run replies after the current run instead.
+- **Replies continue it.** A reply steers the run in flight, on every platform,
+  or starts a new run if the thread is idle. Nothing waits for the run to end.
 - **Some replies are only context.** A reply that starts with "aside", one that
   mentions another bot, and one from someone outside `allowedUserIds` start no
   run. The agent sees them, up to the newest 50, with the next message it gets.
@@ -184,7 +183,6 @@ when that is set. Create `config.json` there:
   "channelProjects": [{ "channelId": "C0123ABCD", "projectId": "your-t3-project-id" }],
   "dmProjectId": "your-t3-project-id",
   "allowedUserIds": ["U0123ABCD"],
-  "followUpMode": "steer",
   "toolsPort": 3920,
   "runtimeMode": "full-access",
   "modelSelection": { "instanceId": "claudeAgent", "model": "claude-opus-5-5" }
@@ -208,7 +206,6 @@ when that is set. Create `config.json` there:
   empty when `allowEveryone` is on.
 - `allowEveryone`: optional, `false` by default. `true` also lets every full
   member of the workspace use the bot (see above).
-- `followUpMode`: `steer` (default) or `queue`.
 - `toolsPort`: the port for the `chat_post` / `chat_react` server. Default 3920.
 - `runtimeMode` and `modelSelection`: optional, for new threads. Without them
   T3 uses the project's defaults. T3 caps the runtime mode at the access you

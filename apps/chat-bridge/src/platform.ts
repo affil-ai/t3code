@@ -3,6 +3,7 @@
  * how it reads to the agent, and optional extras. Chat thread keys start with
  * the platform id and a colon (`slack:…`, `imessage:42`).
  */
+import type { RunStep } from "./activity.ts";
 import type { EarlierMessage, InboundEvent, SessionState } from "./bridge.ts";
 
 /** Where a new thread goes: a T3 project, and optionally a new worktree. */
@@ -34,10 +35,19 @@ export interface OutboundFile {
   readonly filename: string;
 }
 
+/**
+ * What a message is for: the run's final `answer` (or a notice ending the
+ * exchange), a `question` that waits for the person, or an `update` mid-run.
+ * Linear ends a session's turn only on an answer; others post all alike.
+ */
+export type OutboundKind = "answer" | "question" | "update";
+
 export interface OutboundMessage {
   readonly chatThreadKey: string;
   readonly text: string;
   readonly files?: ReadonlyArray<OutboundFile> | undefined;
+  /** Without it, an answer. */
+  readonly kind?: OutboundKind | undefined;
 }
 
 export interface Reaction {
@@ -94,6 +104,8 @@ export interface ChatPlatform {
   readonly updateBlocks?: (message: BlockMessage & { readonly messageId: string }) => Promise<void>;
   /** Shows the conversation's agent state, and what it is doing while it processes. */
   readonly setState?: (chatThreadKey: string, state: SessionState, text: string) => Promise<void>;
+  /** Lists one finished step of the run, such as a command it ran; absent where steps show only as the state's text. */
+  readonly step?: (chatThreadKey: string, step: RunStep) => Promise<void>;
   /** Sets the conversation's title to the T3 thread's. */
   readonly rename?: (chatThreadKey: string, title: string) => Promise<void>;
   /** Downloads a file on an inbound message. Without it, files are named but not imported. */

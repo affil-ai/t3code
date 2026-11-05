@@ -80,9 +80,10 @@ export async function startChatHost(options: ChatHostOptions): Promise<Chat> {
     userName: "t3",
     adapters: { ...options.adapters },
     state: options.state,
-    // A handler only hands a message to T3, so queueing behind the thread lock
-    // costs little and keeps a quick follow-up from racing the first message's binding.
-    concurrency: "queue",
+    // Every message reaches the core at once, so one that arrives during a run
+    // steers it. The core keeps each conversation's messages in order itself; a
+    // thread lock here would hold them back, and its queue drops what waits too long.
+    concurrency: "concurrent",
     logger: "warn",
   });
 
@@ -96,7 +97,12 @@ export async function startChatHost(options: ChatHostOptions): Promise<Chat> {
         options.onError(error);
       }
     };
-  chat.onNewMention(guarded("mention"));
+  // Subscribe as the mention arrives: a quick second message then reaches the core
+  // as a follow-up, which the core handles after the mention's binding.
+  chat.onNewMention(async (thread, message, context) => {
+    await thread.subscribe().catch((error: unknown) => options.onError(error));
+    await guarded("mention")(thread, message, context);
+  });
   chat.onSubscribedMessage(guarded("subscribed"));
   chat.onDirectMessage((thread, message, _channel, context) =>
     guarded("direct")(thread, message, context),

@@ -8,7 +8,6 @@ it("fills defaults and rejects a bad config", () => {
     channelProjects: [{ channelId: "C1", projectId: "p" }],
     allowedUserIds: ["U1"],
   });
-  assert.strictEqual(config.followUpMode, "steer");
   assert.strictEqual(config.toolsPort, DEFAULT_TOOLS_PORT);
   assert.isFalse(config.allowEveryone, "the allowlist is the default");
   assert.throws(
@@ -28,7 +27,7 @@ it("fills defaults and rejects a bad config", () => {
         t3Url: "http://x",
         channelProjects: [],
         allowedUserIds: [],
-        followUpMode: "x",
+        followUpMode: "queue",
       }),
     /followUpMode/,
   );

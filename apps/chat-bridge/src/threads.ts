@@ -6,7 +6,6 @@ import type { ActivityItem } from "./activity.ts";
 import type { Answer, Question } from "./questions.ts";
 import type { T3Tools } from "./t3Client.ts";
 
-export type FollowUpMode = "steer" | "queue";
 export type Delivery = "started" | "queued" | "steered" | "restarted" | "sent";
 
 /** A pending T3 attachment, as `t3_thread_launch` and `t3_thread_send_attachments` take it. */
@@ -184,15 +183,15 @@ export class T3Threads {
     readonly threadId: string;
     readonly text: string;
     readonly attachments: ReadonlyArray<T3Attachment>;
-    readonly mode: FollowUpMode;
     readonly requestId: string;
   }): Promise<{ readonly runId: string; readonly delivery: Delivery }> {
     if (input.attachments.length === 0) {
       return this.t3.call("t3_thread_send", {
         threadId: input.threadId,
         message: input.text,
-        // T3's `steer` fails when no run is in flight; `auto` steers one or starts one.
-        mode: input.mode === "steer" ? "auto" : "queue",
+        // `auto` steers the run in flight, or starts one when the thread is idle. T3
+        // decides when it dispatches, so a run that ends at that moment can't refuse it.
+        mode: "auto",
         clientRequestId: input.requestId,
       });
     }

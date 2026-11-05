@@ -19,7 +19,7 @@ import { dataDir, loadConfig } from "./config.ts";
 import { login, savedToken } from "./login.ts";
 import { createImessageAdapter } from "./imessage/adapter.ts";
 import { type LinearApi, linearPlatform } from "./linear/platform.ts";
-import { startInBackground } from "./linear/startup.ts";
+import { authRetry, retryMethods, startInBackground } from "./linear/startup.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
 import { type ChatPlatform, platformFor } from "./platform.ts";
@@ -148,6 +148,29 @@ async function start(): Promise<void> {
             userName: settings.botName,
             logger: linearLogger(log),
           });
+          // Linear expects a new token after a 401; Chat SDK's calls and the platform's both get one retry.
+          const retry = authRetry(
+            () =>
+              (
+                adapter as unknown as { refreshClientCredentialsToken: () => Promise<void> }
+              ).refreshClientCredentialsToken(),
+            log,
+          );
+          retryMethods(
+            adapter,
+            [
+              "postMessage",
+              "editMessage",
+              "deleteMessage",
+              "startTyping",
+              "addReaction",
+              "removeReaction",
+              "fetchMessages",
+              "fetchMessage",
+              "fetchThread",
+            ],
+            retry,
+          );
           const { platform, deliver } = linearPlatform({
             chat: () => chat,
             adapter: () =>
@@ -162,6 +185,7 @@ async function start(): Promise<void> {
             defaultRoute: settings.defaultRoute,
             onEvent: receive,
             log,
+            retry,
           });
           platforms.push(platform);
           // Chat starts adapters together; Linear's token fetch must not hold up or fail the others.
@@ -177,7 +201,7 @@ async function start(): Promise<void> {
   bridge = new Bridge({
     store,
     threads,
-    settings: { followUpMode: config.followUpMode, modelSelection: config.modelSelection },
+    settings: { modelSelection: config.modelSelection },
     platforms,
     log,
   });
@@ -228,6 +252,8 @@ async function start(): Promise<void> {
     ? [
         {
           path: config.linear.webhookPath,
+          // Linear names each delivery's type in a header, such as AgentSessionEvent.
+          kind: (headers) => headers.get("linear-event") ?? undefined,
           // The adapter checks Linear's signature and timestamp, and refuses anything else.
           // Until Linear is up, 503 asks Linear to deliver again later.
           handle: linear

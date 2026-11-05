@@ -9,7 +9,6 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import type { ChannelRoute, ThreadRoute } from "./platform.ts";
-import type { FollowUpMode } from "./threads.ts";
 
 export interface BridgeConfig {
   /** The T3 server's origin, such as `http://127.0.0.1:3773`. */
@@ -27,7 +26,6 @@ export interface BridgeConfig {
   /** Also allow every full member of the workspace. Off unless set to true. */
   readonly allowEveryone: boolean;
   /** `steer` joins a reply to the run in flight; `queue` runs it after. */
-  readonly followUpMode: FollowUpMode;
   /** The port of the `chat_post` / `chat_react` MCP server on 127.0.0.1. */
   readonly toolsPort: number;
   /** For new threads; T3 caps it at what the login was granted. Omit for T3's default. */
@@ -225,9 +223,9 @@ export function parseConfig(raw: unknown): BridgeConfig {
   const channelProjects = Array.isArray(raw.channelProjects)
     ? raw.channelProjects.map(parseRoute)
     : fail("channelProjects must be a list.");
-  const followUpMode = raw.followUpMode ?? "steer";
-  if (followUpMode !== "steer" && followUpMode !== "queue") {
-    fail('followUpMode must be "steer" or "queue".');
+  // Follow-ups always steer the run in flight; the old setting is accepted only as "steer".
+  if (raw.followUpMode !== undefined && raw.followUpMode !== "steer") {
+    fail("followUpMode was removed: replies always steer the run in flight. Remove the setting.");
   }
   const toolsPort = raw.toolsPort ?? DEFAULT_TOOLS_PORT;
   if (typeof toolsPort !== "number" || !Number.isInteger(toolsPort) || toolsPort <= 0) {
@@ -260,7 +258,6 @@ export function parseConfig(raw: unknown): BridgeConfig {
     dmProjectId: raw.dmProjectId as string | undefined,
     allowedUserIds: stringList(raw.allowedUserIds, "allowedUserIds"),
     allowEveryone: raw.allowEveryone === true,
-    followUpMode: followUpMode as FollowUpMode,
     toolsPort: toolsPort as number,
     runtimeMode: raw.runtimeMode as string | undefined,
     modelSelection: raw.modelSelection as ModelSelection | undefined,

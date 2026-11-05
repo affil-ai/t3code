@@ -24,12 +24,17 @@ import {
   parseModelCommand,
   resolveModelCommand,
 } from "./modelCommand.ts";
-import { type ChannelRoute, type ChatPlatform, platformFor, type ThreadRoute } from "./platform.ts";
+import {
+  type ChannelRoute,
+  type ChatPlatform,
+  type OutboundKind,
+  platformFor,
+  type ThreadRoute,
+} from "./platform.ts";
 import { RunFeed } from "./runFeed.ts";
 import type { AskedRecord, Binding, BridgeStore, OwedReply } from "./store.ts";
 import {
   type Delivery,
-  type FollowUpMode,
   type ImportedFiles,
   type InboundFile,
   type RunStatus,
@@ -148,7 +153,6 @@ export function routeFor(
 }
 
 export interface BridgeSettings {
-  readonly followUpMode: FollowUpMode;
   /** The model new threads start with; a `!model` switch starts from it. */
   readonly modelSelection?: ModelSelection | undefined;
 }
@@ -219,6 +223,8 @@ const PERMISSION_TEXT =
   "The agent asked for a permission I can't grant from chat, so I stopped the run. Ask again in a way that doesn't need it.";
 /** Posting an answer stops after this many failures in a row; a restart tries again. */
 const MAX_POST_ATTEMPTS = 5;
+/** A run lists at most this many steps, so a long run doesn't flood the conversation. */
+const MAX_STEPS_PER_RUN = 40;
 /** A hand-off to T3 is tried this many times, waiting 15 s, 30 s, 1 min … up to 10 min between, about 36 minutes in all. */
 const MAX_HANDOFF_ATTEMPTS = 9;
 const MAX_HANDOFF_DELAY_MS = 10 * 60_000;
@@ -369,6 +375,8 @@ export class Bridge {
   private readonly watching = new Map<string, Promise<void>>();
   /** The chat thread of each run being watched. */
   private readonly watchedRuns = new Map<string, string>();
+  /** Steps listed per run, for `MAX_STEPS_PER_RUN`. */
+  private readonly stepsListed = new Map<string, number>();
   /** Each chat thread with runs being watched: which runs wait on a person, the state and status text last sent. */
   private readonly running = new Map<
     string,
@@ -523,8 +531,8 @@ export class Bridge {
   }
 
   /** Posts to the chat thread on its platform. */
-  private post(chatThreadKey: string, text: string): Promise<void> {
-    return this.platform(chatThreadKey).post({ chatThreadKey, text });
+  private post(chatThreadKey: string, text: string, kind: OutboundKind = "answer"): Promise<void> {
+    return this.platform(chatThreadKey).post({ chatThreadKey, text, kind });
   }
 
   /** Files as T3 imports them, downloaded on demand. */
@@ -599,7 +607,6 @@ export class Bridge {
         threadId: binding.threadId,
         text: turnText(platform, event, imported.skipped, binding.chatKey, false, context),
         attachments: imported.attachments,
-        mode: this.settings.followUpMode,
         requestId: requestId(event.eventId),
       });
       this.store.dropContext(kept.map((message) => message.eventId));
@@ -1060,7 +1067,7 @@ export class Bridge {
     if (platform.postBlocks === undefined) {
       // Without buttons, each part of a question is asked on its own, as the last is answered.
       if (record.closed || closed !== undefined) return;
-      await this.post(record.chatThreadKey, numberedQuestion(record.asked)).catch(
+      await this.post(record.chatThreadKey, numberedQuestion(record.asked), "question").catch(
         (error: unknown) => {
           this.log(`Asking the next question in ${record.chatThreadKey} failed: ${String(error)}`);
         },
@@ -1104,7 +1111,7 @@ export class Bridge {
       };
       if (!this.store.addQuestion(record)) continue;
       if (platform.postBlocks === undefined) {
-        await this.post(reply.chatThreadKey, numberedQuestion(record.asked));
+        await this.post(reply.chatThreadKey, numberedQuestion(record.asked), "question");
         continue;
       }
       const messageId = await platform.postBlocks({
@@ -1120,7 +1127,7 @@ export class Bridge {
   private async refusePermission(reply: OwedReply): Promise<void> {
     if (this.permissionStopped.has(reply.runId)) return;
     this.permissionStopped.add(reply.runId);
-    await this.post(reply.chatThreadKey, PERMISSION_TEXT).catch((error: unknown) =>
+    await this.post(reply.chatThreadKey, PERMISSION_TEXT, "update").catch((error: unknown) =>
       this.log(`Posting the permission notice failed: ${String(error)}`),
     );
     await this.threads
@@ -1200,6 +1207,7 @@ export class Bridge {
 
   private runEnded(chatThreadKey: string, runId: string): void {
     this.watchedRuns.delete(runId);
+    this.stepsListed.delete(runId);
     this.watching.delete(runId);
     const entry = this.running.get(chatThreadKey);
     if (entry === undefined) return;
@@ -1254,12 +1262,32 @@ export class Bridge {
     const note = this.notes.get(key);
     if (note !== undefined && feed.lastPosition > note.at) this.notes.delete(key);
     this.showText(key, this.notes.get(key)?.text ?? feed.status);
+    await this.listSteps(reply, feed);
     if (feed.asking) {
       await this.relayQuestions(reply).catch((error: unknown) => {
         this.log(`Asking the question from ${reply.runId} failed: ${String(error)}`);
       });
     }
     if (feed.askingPermission) await this.refusePermission(reply);
+  }
+
+  /**
+   * Lists the run's finished steps where the platform shows each one, in
+   * order and before the answer. A step that fails to post is only logged.
+   */
+  private async listSteps(reply: OwedReply, feed: RunFeed): Promise<void> {
+    const steps = feed.takeSteps();
+    const step = this.platform(reply.chatThreadKey).step;
+    if (step === undefined || steps.length === 0) return;
+    let listed = this.stepsListed.get(reply.runId) ?? 0;
+    for (const each of steps) {
+      if (listed >= MAX_STEPS_PER_RUN) break;
+      listed += 1;
+      await step(reply.chatThreadKey, each).catch((error: unknown) => {
+        this.log(`Listing a step of ${reply.runId} failed: ${String(error)}`);
+      });
+    }
+    this.stepsListed.set(reply.runId, listed);
   }
 
   private async watchUntilAnswered(reply: OwedReply): Promise<void> {

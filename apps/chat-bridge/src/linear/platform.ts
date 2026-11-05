@@ -1,8 +1,8 @@
 // @effect-diagnostics globalFetch:off -- A plain Node app; it does not use Effect.
 /**
- * Linear for the bridge core, on `@chat-adapter/linear` in agent-sessions
- * mode: a session (an @mention, or an issue delegated to the app) is one T3
- * thread, and its follow-up prompts are follow-ups. Runs show as Linear thoughts.
+ * Linear for the bridge core, in agent-sessions mode: a session is one T3
+ * thread and its prompts are follow-ups. A run shows as thoughts for status,
+ * an action per finished step, and a response for the answer alone.
  */
 import type { LinearAdapter } from "@chat-adapter/linear";
 import type { Chat, Message } from "chat";
@@ -10,6 +10,8 @@ import type { Chat, Message } from "chat";
 import type { InboundEvent, InboundOutcome } from "../bridge.ts";
 import type { Deliver } from "../chatHost.ts";
 import type { Access, ChannelRoute, ChatPlatform, OutboundFile, ThreadRoute } from "../platform.ts";
+import { downloadUpload, takeUploads, uploadEventFiles, withoutUploadLinks } from "./files.ts";
+import { type Retry, noRetry } from "./startup.ts";
 
 /** Linear's context for a session (issue, description, comments) goes into the first turn, cut to this. */
 const CONTEXT_CHARS = 20_000;
@@ -32,10 +34,48 @@ export interface LinearApi {
         }
       | undefined;
   }>;
+  readonly createAgentActivity: (input: {
+    readonly agentSessionId: string;
+    readonly content: Readonly<Record<string, string>>;
+    readonly ephemeral?: boolean;
+  }) => Promise<unknown>;
+  readonly agentSession: (id: string) => Promise<{
+    readonly activities: (variables: { readonly last: number }) => Promise<{
+      readonly nodes: ReadonlyArray<SessionActivity>;
+    }>;
+  }>;
+  /** The SDK client's options, which hold the current `Authorization` header. */
+  readonly options?: { readonly headers?: Readonly<Record<string, string>> } | undefined;
 }
+
+/** The parts of a session activity the bridge reads to find prompts it never got. */
+export interface SessionActivity {
+  readonly id: string;
+  readonly createdAt: Date;
+  readonly content: {
+    readonly __typename?: string;
+    readonly type?: string;
+    readonly body?: string;
+  };
+  readonly sourceCommentId?: string | undefined;
+  readonly userId?: string | undefined;
+  readonly user?:
+    | PromiseLike<{ readonly name?: string; readonly displayName?: string } | undefined>
+    | undefined;
+}
+
+/** Prompts read back from a session per delivery; a burst bigger than this is rare. */
+const RECONCILE_LAST = 20;
 
 /** The issue a Linear thread id (`linear:{issueId}[:c:{commentId}][:s:{sessionId}]`) is on. */
 export const issueIdOf = (threadId: string) => threadId.split(":")[1] ?? "";
+
+/** The agent session a Linear thread id is in, if any. */
+export const sessionIdOf = (threadId: string): string | undefined => {
+  const parts = threadId.split(":");
+  const at = parts.indexOf("s");
+  return at > 0 ? parts[at + 1] : undefined;
+};
 
 export function linearEvent(
   threadId: string,
@@ -44,8 +84,17 @@ export function linearEvent(
   teamKey: string,
   routedTeams: ReadonlySet<string>,
 ): InboundEvent {
-  const raw = message.raw as { readonly agentSessionPromptContext?: string } | undefined;
-  const context = kind === "mention" ? (raw?.agentSessionPromptContext ?? "").trim() : "";
+  const raw = message.raw as
+    | {
+        readonly agentSessionPromptContext?: string;
+        readonly comment?: { readonly body?: string };
+      }
+    | undefined;
+  // Files come from the prompt's Markdown; the agent gets them as files, never their signed links.
+  const { uploads } = takeUploads(raw?.comment?.body ?? "");
+  const context =
+    kind === "mention" ? withoutUploadLinks((raw?.agentSessionPromptContext ?? "").trim()) : "";
+  const text = takeUploads(message.text).text;
   return {
     eventId: `linear:${message.id}`,
     chatThreadKey: threadId,
@@ -61,9 +110,40 @@ export function linearEvent(
       fullName: message.author.fullName,
     },
     text: context
-      ? `${message.text}\n\nLinear's context for this session:\n${context.slice(0, CONTEXT_CHARS)}`
-      : message.text,
-    files: [],
+      ? `${text}\n\nLinear's context for this session:\n${context.slice(0, CONTEXT_CHARS)}`
+      : text,
+    files: uploadEventFiles(uploads),
+    mentions: [],
+  };
+}
+
+/**
+ * A prompt Linear shows in the session that never reached the bridge, such as
+ * when its webhook was lost, as a follow-up.
+ */
+export function missedPromptEvent(
+  threadId: string,
+  prompt: {
+    readonly id: string;
+    readonly body: string;
+    readonly userId: string;
+    readonly name: string;
+  },
+  teamKey: string,
+  routedTeams: ReadonlySet<string>,
+): InboundEvent {
+  const { text, uploads } = takeUploads(prompt.body);
+  return {
+    eventId: `linear:${prompt.id}`,
+    chatThreadKey: threadId,
+    channelId: teamKey,
+    messageId: prompt.id,
+    kind: "follow_up",
+    addressed: true,
+    direct: !routedTeams.has(teamKey),
+    author: { userId: prompt.userId, userName: prompt.name, fullName: prompt.name },
+    text,
+    files: uploadEventFiles(uploads),
     mentions: [],
   };
 }
@@ -119,7 +199,21 @@ export function linearPlatform(options: {
   readonly defaultRoute: ThreadRoute;
   readonly onEvent: (event: InboundEvent) => Promise<InboundOutcome>;
   readonly log: (line: string) => void;
+  /** Gets a new token and retries once when Linear says the bridge isn't signed in. */
+  readonly retry?: Retry;
 }): { readonly platform: ChatPlatform; readonly deliver: Deliver } {
+  const retry = options.retry ?? noRetry;
+  const client = () => options.adapter().linearClient;
+  /** An activity in the thread's session; false outside a session. */
+  const activity = async (
+    chatThreadKey: string,
+    content: Readonly<Record<string, string>>,
+  ): Promise<boolean> => {
+    const agentSessionId = sessionIdOf(chatThreadKey);
+    if (agentSessionId === undefined) return false;
+    await retry(() => client().createAgentActivity({ agentSessionId, content }));
+    return true;
+  };
   const chat = () => {
     const running = options.chat();
     if (running === undefined) throw new Error("Chat is not running yet.");
@@ -130,15 +224,58 @@ export function linearPlatform(options: {
   const teamKey = async (issueId: string) => {
     const known = teamOfIssue.get(issueId);
     if (known !== undefined) return known;
-    const issue = await options.adapter().linearClient.issue(issueId);
+    const issue = await retry(() => client().issue(issueId));
     const key = ((await issue.team)?.key ?? "").toUpperCase();
     teamOfIssue.set(issueId, key);
     return key;
   };
+  /** Event ids handed to the core by this process; the core's own store dedupes across restarts. */
+  const handedOver = new Set<string>();
+  /**
+   * Prompts in the session older than `message` that never reached the
+   * bridge, oldest first; a webhook can be lost, and nothing else would tell us.
+   */
+  const missedPrompts = async (
+    threadId: string,
+    message: Message,
+    team: string,
+  ): Promise<ReadonlyArray<InboundEvent>> => {
+    const sessionId = sessionIdOf(threadId);
+    if (sessionId === undefined) return [];
+    const session = await retry(() => client().agentSession(sessionId));
+    const { nodes } = await retry(() => session.activities({ last: RECONCILE_LAST }));
+    const missed: Array<InboundEvent> = [];
+    for (const activity of [...nodes].toSorted(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+    )) {
+      const prompt =
+        activity.content.__typename === "AgentActivityPromptContent" ||
+        activity.content.type === "prompt";
+      const id = activity.sourceCommentId ?? activity.id;
+      if (!prompt || id === message.id || handedOver.has(`linear:${id}`)) continue;
+      if (activity.createdAt.getTime() >= message.metadata.dateSent.getTime()) continue;
+      const user = await activity.user;
+      missed.push(
+        missedPromptEvent(
+          threadId,
+          {
+            id,
+            body: activity.content.body ?? "",
+            userId: activity.userId ?? "",
+            name: user?.name ?? user?.displayName ?? "",
+          },
+          team,
+          routedTeams,
+        ),
+      );
+    }
+    return missed;
+  };
   const deliver: Deliver = async (thread, message, context, route) => {
     const kind = route === "subscribed" ? "follow_up" : "mention";
-    // Linear marks a session unresponsive without an activity within seconds; say something first.
-    await options
+    // Linear marks a session unresponsive without an activity within seconds; say something
+    // first, without holding up the hand-off.
+    void options
       .adapter()
       .startTyping(thread.id, "Reading the issue")
       .catch((error: unknown) => options.log(`Linear: the first thought failed: ${String(error)}`));
@@ -146,9 +283,27 @@ export function linearPlatform(options: {
       options.log(`Linear: reading the issue's team failed: ${String(error)}`);
       return "";
     });
-    for (const each of [...(context?.skipped ?? []), message]) {
-      if (each.author.isMe || each.author.isBot === true) continue;
-      await options.onEvent(linearEvent(thread.id, each, kind, team, routedTeams));
+    const missed =
+      kind === "follow_up"
+        ? await missedPrompts(thread.id, message, team).catch((error: unknown) => {
+            options.log(`Linear: reading the session's prompts failed: ${String(error)}`);
+            return [];
+          })
+        : [];
+    const events = [
+      ...missed,
+      ...[...(context?.skipped ?? []), message]
+        .filter((each) => !each.author.isMe && each.author.isBot !== true)
+        .map((each) => linearEvent(thread.id, each, kind, team, routedTeams)),
+    ];
+    for (const event of events) {
+      if (missed.includes(event)) {
+        options.log(
+          `Linear: ${event.eventId} is in the session but hadn't reached the bridge; handing it over.`,
+        );
+      }
+      handedOver.add(event.eventId);
+      await options.onEvent(event);
     }
   };
   const channelRoutes: ReadonlyArray<ChannelRoute> = options.teams.map(({ team, ...route }) => ({
@@ -167,17 +322,40 @@ export function linearPlatform(options: {
       [
         "Your final message in each run is posted to this Linear agent session as its response, in Markdown. Linear shows your progress while you work.",
         "If a message needs no reply, end the run without a final message and nothing is posted.",
+        "Files and images people attach in Linear arrive as files in your turn.",
         `To attach files or images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace; images show inline.`,
         `To react to a comment, call chat_react with chatKey "${chatKey}", the comment id and an emoji name such as thumbs_up, eyes or rocket.`,
       ].join(" "),
     refusal: () => "Sorry, you can't use this agent yet. Ask whoever runs it to allow you.",
-    post: async ({ chatThreadKey, text, files }) => {
+    post: async ({ chatThreadKey, text, files, kind = "answer" }) => {
       const links: Array<string> = [];
-      for (const file of files ?? [])
-        links.push(await uploadToLinear(options.adapter().linearClient, file));
+      for (const file of files ?? []) links.push(await retry(() => uploadToLinear(client(), file)));
       const markdown = [text, ...links].filter((part) => part.trim() !== "").join("\n\n");
-      if (markdown !== "") await chat().thread(chatThreadKey).post({ markdown });
+      if (markdown === "") return;
+      // Only the answer is a response, which ends the session's turn; a question waits for the person.
+      if (
+        kind === "question" &&
+        (await activity(chatThreadKey, { type: "elicitation", body: markdown }))
+      )
+        return;
+      if (kind === "update" && (await activity(chatThreadKey, { type: "thought", body: markdown })))
+        return;
+      await chat().thread(chatThreadKey).post({ markdown });
     },
+    step: async (chatThreadKey, step) => {
+      await activity(chatThreadKey, {
+        type: "action",
+        action: step.action,
+        parameter: step.parameter,
+        result: step.result,
+      });
+    },
+    download: (url) =>
+      retry(() =>
+        downloadUpload(url, {
+          authorization: () => client().options?.headers?.Authorization ?? "",
+        }),
+      ),
     react: ({ chatThreadKey, messageId, emoji }) =>
       options.adapter().addReaction(chatThreadKey, messageId, emoji),
     setState: async (chatThreadKey, state, text) => {

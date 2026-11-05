@@ -7,6 +7,7 @@ import {
   isQuestion,
   redactSecrets,
   STATUS_LIMIT,
+  finishedStep,
   statusLine,
   unwrapShell,
 } from "./activity.ts";
@@ -131,4 +132,23 @@ it("redacts what looks like a secret and keeps what doesn't", () => {
   }
   assert.include(redacted, "6af69f6ceb72b459dc04594e04fe762dc251e383");
   assert.include(redacted, "export OPENAI_API_KEY=<redacted>");
+});
+
+it("describes a finished step without its output, with secrets redacted, and nothing while it runs", () => {
+  const command = item({
+    type: "command_execution",
+    status: "completed",
+    text: "$ /bin/bash -lc 'curl -H \"Authorization: Bearer abcdefghijklmnop1234\" https://x'\nsecret file contents",
+  });
+  const step = finishedStep(command)!;
+  assert.strictEqual(step.action, "Ran");
+  assert.notInclude(step.parameter, "abcdefghijklmnop1234");
+  assert.notInclude(JSON.stringify(step), "secret file contents");
+  assert.strictEqual(step.result, "Done");
+  assert.isUndefined(finishedStep({ ...command, status: "running" }));
+  assert.isUndefined(finishedStep(item({ type: "reasoning", status: "completed" })));
+  assert.deepStrictEqual(
+    finishedStep(item({ type: "file_change", status: "failed", text: "src/a.ts\n+secret" })),
+    { itemId: command.itemId, action: "Edited", parameter: "src/a.ts", result: "Failed" },
+  );
 });

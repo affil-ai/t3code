@@ -12,6 +12,8 @@ export interface WebhookRoute {
   /** The exact path, such as `/linear/webhook`. Anything else gets 404. */
   readonly path: string;
   readonly handle: (request: Request) => Promise<Response>;
+  /** A word for the log about what arrived, from its headers alone, such as Linear's event type. */
+  readonly kind?: (headers: Headers) => string | undefined;
 }
 
 export interface WebhookServer {
@@ -50,6 +52,9 @@ async function toRequest(
   };
 }
 
+/** Header values are anyone's to set; keep the log line to one short word. */
+const oneWord = (value: string) => value.replace(/[^\w.-]/g, "").slice(0, 40);
+
 export function startWebhookServer(
   port: number,
   routes: ReadonlyArray<WebhookRoute>,
@@ -58,16 +63,24 @@ export function startWebhookServer(
   const server = NodeHttp.createServer((incoming, outgoing) => {
     void (async () => {
       let response: Response;
+      let parsed: Awaited<ReturnType<typeof toRequest>> | undefined;
+      const path = new URL(incoming.url ?? "/", "http://127.0.0.1").pathname.slice(0, 200);
       try {
-        const parsed = await toRequest(incoming, routes);
+        parsed = await toRequest(incoming, routes);
         response =
           typeof parsed === "number"
             ? new Response(null, { status: parsed })
             : await parsed.route.handle(parsed.request);
       } catch (error) {
-        log(`Webhook ${incoming.url ?? ""} failed: ${String(error)}`);
+        log(`Webhook ${path} failed: ${String(error)}`);
         response = new Response(null, { status: 500 });
       }
+      // Method, path, status and kind only; never bodies or other headers.
+      const kind =
+        typeof parsed === "object" ? parsed.route.kind?.(parsed.request.headers) : undefined;
+      log(
+        `Webhook ${incoming.method ?? "?"} ${path} ${response.status}${kind ? ` (${oneWord(kind)})` : ""}`,
+      );
       outgoing.writeHead(response.status, { "content-type": "text/plain" });
       outgoing.end(Buffer.from(await response.arrayBuffer()));
     })();

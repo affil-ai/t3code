@@ -78,3 +78,67 @@ export function startInBackground(
     },
   };
 }
+
+/** Runs a Linear call, getting a new token and trying once more if Linear says the bridge isn't signed in. */
+export type Retry = <T>(run: () => Promise<T>) => Promise<T>;
+
+export const noRetry: Retry = (run) => run();
+
+/**
+ * Linear's sign-in errors: the SDK's AuthenticationLinearError, a 401, or the
+ * bridge's own download of an upload answered 401.
+ */
+export function isAuthError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { type, status, message } = error as {
+    readonly type?: unknown;
+    readonly status?: unknown;
+    readonly message?: unknown;
+  };
+  return (
+    type === "AuthenticationError" ||
+    status === 401 ||
+    (typeof message === "string" &&
+      /authentication required|not authenticated|answered 401/i.test(message))
+  );
+}
+
+/**
+ * Linear issues no refresh token and expects a new client-credentials token
+ * after a 401; a token can also be revoked early, such as when one is
+ * requested with other scopes. Concurrent failures share one refresh.
+ */
+export function authRetry(refresh: () => Promise<void>, log: (line: string) => void): Retry {
+  let refreshing: Promise<void> | undefined;
+  const renew = () => {
+    refreshing ??= (async () => {
+      log("Linear: the token was refused; getting a new one.");
+      try {
+        await refresh();
+      } finally {
+        refreshing = undefined;
+      }
+    })();
+    return refreshing;
+  };
+  return async (run) => {
+    try {
+      return await run();
+    } catch (error) {
+      if (!isAuthError(error)) throw error;
+      await renew();
+      return run();
+    }
+  };
+}
+
+/** Wraps the named adapter methods, such as the ones Chat SDK calls to post, with `retry`. */
+export function retryMethods(target: object, names: ReadonlyArray<string>, retry: Retry): void {
+  const methods = target as Record<string, unknown>;
+  for (const name of names) {
+    const original = methods[name];
+    if (typeof original !== "function") continue;
+    const bound = (original as (...args: Array<unknown>) => Promise<unknown>).bind(target);
+    methods[name] = (...args: Array<unknown>) => retry(() => bound(...args));
+  }
+}

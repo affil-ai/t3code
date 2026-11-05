@@ -176,7 +176,13 @@ export async function callTool(
           );
         }
       }
-      await deps.post({ chatThreadKey: binding.chatThreadKey, text: message, files });
+      // Mid-run: the run's own final message is the answer.
+      await deps.post({
+        chatThreadKey: binding.chatThreadKey,
+        text: message,
+        files,
+        kind: "update",
+      });
       return text(
         files.length === 0 ? "Posted." : `Posted ${files.map((file) => file.filename).join(", ")}.`,
       );

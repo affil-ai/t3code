@@ -106,60 +106,132 @@ const isSetupStep = (item: ActivityItem) =>
   item.type === "command_execution" &&
   (item.title === "Workspace ready" || (item.text ?? "").startsWith("$ Preparing workspace"));
 
-/** What the item is doing, as a line for the status; nothing for items that aren't work. */
-function describe(item: ActivityItem): string | undefined {
+/**
+ * One step of the agent's work, such as running a command: the verb while it
+ * runs and once it's done, and what it acts on. Reasoning isn't a step.
+ */
+interface Work {
+  readonly doing: string;
+  readonly done: string;
+  /** What the step acts on, such as a command or a search; empty when unknown. */
+  readonly parameter: string;
+  /** Shown as code in a status line. */
+  readonly code?: boolean;
+}
+
+function work(item: ActivityItem): Work | undefined {
   const text = item.text ?? "";
-  const with_ = (prefix: string, value: string | undefined | null, fallback: string) => {
-    const trimmed = (value ?? "").trim();
-    return trimmed === "" ? fallback : `${prefix}${trimmed}`;
+  // Without a parameter the verb stands alone, such as "Running a command".
+  const step = (
+    [doing, done]: readonly [string, string],
+    value: string | undefined | null,
+    [alone, aloneDone]: readonly [string, string],
+    code = false,
+  ): Work => {
+    const parameter = (value ?? "").trim();
+    return parameter === ""
+      ? { doing: alone, done: aloneDone, parameter }
+      : { doing, done, parameter, code };
   };
   switch (item.type) {
-    case "reasoning":
-      return reasoningLine(item);
     case "command_execution": {
       if (isSetupStep(item)) return undefined;
       // T3 titles its own steps; an agent's command has no title.
-      if (item.title) return item.title;
+      if (item.title) return { doing: item.title, done: item.title, parameter: "" };
       const first = text.split("\n", 1)[0] ?? "";
       const command = unwrapShell(first.startsWith("$ ") ? first.slice(2) : first);
-      return with_("Running ", command && `\`${command}\``, "Running a command");
+      return step(["Running", "Ran"], command, ["Running a command", "Ran a command"], true);
     }
     case "web_search":
-      return with_(
-        "Searching the web for ",
+      return step(
+        ["Searching the web for", "Searched the web for"],
         firstString(json(item)?.patterns) ?? item.title,
-        "Searching the web",
+        ["Searching the web", "Searched the web"],
       );
     case "file_search": {
       const pattern = json(item)?.pattern;
-      return with_(
-        "Searching files for ",
+      return step(
+        ["Searching files for", "Searched files for"],
         typeof pattern === "string" ? pattern : item.title,
-        "Searching files",
+        ["Searching files", "Searched files"],
       );
     }
     case "file_change":
-      return with_("Editing ", text.split("\n", 1)[0] || item.title, "Editing files");
+      return step(["Editing", "Edited"], text.split("\n", 1)[0] || item.title, [
+        "Editing files",
+        "Edited files",
+      ]);
     case "todo_list":
-      return "Planning";
+      return { doing: "Planning", done: "Updated the plan", parameter: "" };
     case "dynamic_tool": {
       const parsed = json(item);
       // A long tool output is cut off, so the JSON doesn't parse; its name comes first.
       const named = /"toolName":\s*"([^"]+)"/.exec(text)?.[1];
       const tool = typeof parsed?.toolName === "string" ? parsed.toolName : named;
-      return with_("Using ", tool?.split(".").at(-1)?.replaceAll("_", " "), "Using a tool");
+      return step(["Using", "Used"], tool?.split(".").at(-1)?.replaceAll("_", " "), [
+        "Using a tool",
+        "Used a tool",
+      ]);
     }
     case "subagent":
-      return with_("Delegating: ", item.title, "Delegating to a subagent");
+      return step(["Delegating:", "Delegated:"], item.title, [
+        "Delegating to a subagent",
+        "Delegated to a subagent",
+      ]);
     default:
       return undefined;
   }
+}
+
+/** What the item is doing, as a line for the status; nothing for items that aren't work. */
+function describe(item: ActivityItem): string | undefined {
+  if (item.type === "reasoning") return reasoningLine(item);
+  const step = work(item);
+  if (step === undefined) return undefined;
+  if (step.parameter === "") return step.doing;
+  return `${step.doing} ${step.code === true ? `\`${step.parameter}\`` : step.parameter}`;
 }
 
 /** The line for one item, redacted and short; nothing for items that aren't work. */
 export function statusLine(item: ActivityItem): string | undefined {
   const line = describe(item);
   return line === undefined ? undefined : oneLine(redactSecrets(line));
+}
+
+/** A finished step, for platforms that list each one, such as Linear's actions. */
+export interface RunStep {
+  readonly itemId: string;
+  /** What was done, such as "Ran" or "Searched the web for". */
+  readonly action: string;
+  /** What it acted on, redacted and short; empty when the action says it all. */
+  readonly parameter: string;
+  /** How it ended, such as "Done" or "Failed". Never the step's output, which may hold file contents. */
+  readonly result: string;
+}
+
+/** Steps show this much of their parameter. */
+export const STEP_PARAMETER_LIMIT = 120;
+
+const RESULTS: Readonly<Record<string, string>> = {
+  completed: "Done",
+  failed: "Failed",
+  declined: "Declined",
+  interrupted: "Stopped",
+  cancelled: "Stopped",
+  canceled: "Stopped",
+};
+
+/** The item as a finished step; nothing while it runs, or for items that aren't work. */
+export function finishedStep(item: ActivityItem): RunStep | undefined {
+  if (isOpen(item.status)) return undefined;
+  const step = work(item);
+  if (step === undefined) return undefined;
+  return {
+    itemId: item.itemId,
+    action: step.done,
+    parameter: oneLine(redactSecrets(step.parameter), STEP_PARAMETER_LIMIT),
+    result: RESULTS[item.status] ?? oneLine(item.status),
+  };
 }
 
 /**
