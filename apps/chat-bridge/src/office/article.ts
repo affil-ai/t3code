@@ -149,7 +149,7 @@ export class ArticleFiles {
     return [
       article.instructions,
       `Office article workspace for this request: ${quote(workspace)}. Use absolute paths.`,
-      `Command: sh ${quote(launcher)}. It supplies the private connection file ${quote(connection)} for remote commands. Never print or copy that file or its token into messages, logs, or Git.`,
+      `Command: sh ${quote(launcher)}. It connects to Office by itself. Don't read, print or copy the other files next to it: one holds this run's access token.`,
       article.snapshot === undefined
         ? "No snapshot was preloaded. Read the pinned target, or search the corpus before editing."
         : `Current snapshot: ${quote(snapshot)}. Start with sh ${quote(launcher)} inspect ${quote(snapshot)}; no initial remote read is needed.`,

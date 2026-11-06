@@ -450,10 +450,10 @@ it("stages private article credentials outside prompts and SQLite, and removes t
   assert.notInclude(h.store.inboxHead("office:chat-1")!.event, token);
   assert.notInclude(JSON.stringify(h.t3.calls), token);
   assert.notInclude(h.logs.join("\n"), token);
-  assert.include(
-    String(h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message),
-    connection,
-  );
+  // The agent gets the launcher, never the path of the file that holds the token.
+  const prompt = String(h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
+  assert.include(prompt, NodePath.join(h.home, "office-article/chat-1/article-1.sh"));
+  assert.notInclude(prompt, connection);
   h.t3.failures.clear();
   h.store.retryLater("office:event-1", 1, 0, "");
   await h.bridge.resume();
