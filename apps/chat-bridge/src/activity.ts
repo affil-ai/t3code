@@ -65,7 +65,7 @@ export function oneLine(text: string, limit = STATUS_LIMIT): string {
 }
 
 /** The item's text as JSON, when it is whole and parses. */
-function json(item: ActivityItem): Record<string, unknown> | undefined {
+export function json(item: ActivityItem): Record<string, unknown> | undefined {
   if (item.text === null || item.textTruncated === true) return undefined;
   try {
     const value = JSON.parse(item.text) as unknown;
@@ -110,7 +110,7 @@ const isSetupStep = (item: ActivityItem) =>
  * One step of the agent's work, such as running a command: the verb while it
  * runs and once it's done, and what it acts on. Reasoning isn't a step.
  */
-interface Work {
+export interface Work {
   readonly doing: string;
   readonly done: string;
   /** What the step acts on, such as a command or a search; empty when unknown. */
@@ -119,7 +119,7 @@ interface Work {
   readonly code?: boolean;
 }
 
-function work(item: ActivityItem): Work | undefined {
+export function work(item: ActivityItem): Work | undefined {
   const text = item.text ?? "";
   // Without a parameter the verb stands alone, such as "Running a command".
   const step = (

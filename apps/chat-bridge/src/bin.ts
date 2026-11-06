@@ -29,6 +29,8 @@ import { slackPlatform, slackWorkNote } from "./slack/platform.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
+import { OfficeConvex } from "./office/convex.ts";
+import { OfficeRuntime } from "./office/runtime.ts";
 import { startToolServer } from "./toolServer.ts";
 import { startWebhookServer, type WebhookRoute } from "./webhookServer.ts";
 
@@ -59,6 +61,7 @@ async function start(): Promise<void> {
   const token = process.env.T3_TOKEN || savedToken(dir, config.t3Url);
   if (!token)
     throw new Error(`Not signed in to ${config.t3Url}. Run \`t3-chat-bridge login\` first.`);
+  const office = takeOfficeSettings();
   const botToken = requireEnv("SLACK_BOT_TOKEN");
   const appToken = requireEnv("SLACK_APP_TOKEN");
 
@@ -390,6 +393,23 @@ async function start(): Promise<void> {
       "WARNING: imessage.allowEveryone is on. Anyone who sends this Apple account an iMessage can start runs, with this bridge's T3 access.",
     );
   }
+  const officeStop = new AbortController();
+  if (office !== undefined) {
+    await t3.call("t3_project_read", { projectId: office.projectId });
+    const runtime = new OfficeRuntime({
+      office: new OfficeConvex(office.convexUrl, office.serviceToken),
+      threads,
+      projectId: office.projectId,
+      environmentId: office.environmentId,
+      worktreeFrom: office.worktreeFrom,
+      defaultModel: { instanceId: "claudeAgent" },
+      log,
+    });
+    void runtime.run(officeStop.signal);
+    log(
+      `Office runtime on ${office.convexUrl} as ${office.environmentId}, project ${office.projectId}.`,
+    );
+  }
   if (config.allowEveryone) {
     log(
       "WARNING: allowEveryone is on. Every full member of this Slack workspace can start runs, and each run has this bridge's T3 access (often full access on this machine, as the user T3 runs as).",
@@ -398,6 +418,7 @@ async function start(): Promise<void> {
 
   const shutdown = async () => {
     log("Shutting down.");
+    officeStop.abort();
     core.stop();
     tools.close();
     webhooks?.close();
@@ -409,6 +430,33 @@ async function start(): Promise<void> {
   };
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());
+}
+
+/**
+ * Office's runtime settings, when it is on. The service token is removed from
+ * the environment, like Linear's secrets.
+ */
+function takeOfficeSettings():
+  | {
+      readonly convexUrl: string;
+      readonly serviceToken: string;
+      readonly projectId: string;
+      readonly environmentId: string;
+      readonly worktreeFrom: string | undefined;
+    }
+  | undefined {
+  const serviceToken = process.env.OFFICE_AGENT_SERVICE_TOKEN;
+  delete process.env.OFFICE_AGENT_SERVICE_TOKEN;
+  const convexUrl = process.env.OFFICE_CONVEX_URL;
+  const projectId = process.env.OFFICE_T3_PROJECT_ID;
+  if (!serviceToken || !convexUrl || !projectId) return undefined;
+  return {
+    convexUrl,
+    serviceToken,
+    projectId,
+    environmentId: process.env.OFFICE_ENVIRONMENT_ID || "chat-bridge",
+    worktreeFrom: process.env.OFFICE_WORKTREE_FROM || undefined,
+  };
 }
 
 const LINEAR_SECRET_NAMES = ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET", "LINEAR_WEBHOOK_SECRET"];
