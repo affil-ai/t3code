@@ -74,6 +74,7 @@ it("leaves out conversation, bookkeeping and T3's own setup", () => {
   assert.isUndefined(statusLine(setup));
   assert.strictEqual(unwrapShell(`zsh -c "ls -la"`), "ls -la");
   assert.strictEqual(unwrapShell("bash scripts/run.sh"), "bash scripts/run.sh");
+  assert.strictEqual(unwrapShell("/bin/bash -lc ls"), "ls");
 });
 
 it("shows the newest step still going, and thinking between steps", () => {

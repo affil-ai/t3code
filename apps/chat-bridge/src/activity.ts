@@ -95,7 +95,10 @@ function reasoningLine(item: ActivityItem): string {
 export function unwrapShell(command: string): string {
   const trimmed = command.trim();
   const match = /^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)$/.exec(trimmed);
-  if (match === null) return trimmed;
+  if (match === null) {
+    // Codex passes a one-word command unquoted, such as `/bin/bash -lc ls`.
+    return /^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(\S+)$/.exec(trimmed)?.[1] ?? trimmed;
+  }
   const [, quote = "", body = ""] = match;
   // The first line of a multi-line script has no closing quote; mark that more follows.
   return body.endsWith(quote) ? body.slice(0, -1).trim() : `${body.trim()} …`;
