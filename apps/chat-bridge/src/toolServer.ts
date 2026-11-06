@@ -6,6 +6,7 @@
  * bridge wrote into the thread's first turn. The key is the permission.
  */
 import * as NodeFSP from "node:fs/promises";
+import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
 import * as NodePath from "node:path";
 
@@ -290,6 +291,7 @@ export async function callTool(
   deps: ToolDeps,
   name: string,
   args: Record<string, unknown>,
+  invocationId: string = NodeCrypto.randomUUID(),
 ): Promise<CallToolResult> {
   try {
     if (name === "linear_start") {
@@ -328,6 +330,7 @@ export async function callTool(
       }
       // Mid-run: the run's own final message is the answer.
       await deps.post({
+        eventId: `tool:${binding.threadId}:${invocationId}`,
         chatThreadKey: binding.chatThreadKey,
         text: message,
         files,

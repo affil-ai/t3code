@@ -10,6 +10,8 @@ import type { Chat, Message } from "chat";
 import type { PlanStep } from "../activity.ts";
 import type { InboundEvent, InboundOutcome } from "../bridge.ts";
 import type { Deliver } from "../chatHost.ts";
+import { mimeTypeOf } from "../fileMimeType.ts";
+export { mimeTypeOf } from "../fileMimeType.ts";
 import {
   type Access,
   type ChannelRoute,
@@ -245,24 +247,6 @@ export async function uploadToLinear(api: LinearApi, file: OutboundFile): Promis
     ? `![${label}](${upload.assetUrl})`
     : `[${label}](${upload.assetUrl})`;
 }
-
-const MIME: Readonly<Record<string, string>> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  svg: "image/svg+xml",
-  pdf: "application/pdf",
-  txt: "text/plain",
-  md: "text/markdown",
-  csv: "text/csv",
-  json: "application/json",
-  zip: "application/zip",
-};
-
-export const mimeTypeOf = (filename: string) =>
-  MIME[filename.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream";
 
 /** An issue an orchestrator's subagent works on. */
 export interface LinearIssueRef {

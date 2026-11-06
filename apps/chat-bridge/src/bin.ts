@@ -29,8 +29,8 @@ import { slackPlatform, slackWorkNote } from "./slack/platform.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
-import { OfficeConvex } from "./office/convex.ts";
-import { OfficeRuntime } from "./office/runtime.ts";
+import { OfficeClient } from "./office/client.ts";
+import { createOfficeChannel } from "./office/platform.ts";
 import { startToolServer } from "./toolServer.ts";
 import { startWebhookServer, type WebhookRoute } from "./webhookServer.ts";
 
@@ -62,8 +62,12 @@ async function start(): Promise<void> {
   if (!token)
     throw new Error(`Not signed in to ${config.t3Url}. Run \`t3-chat-bridge login\` first.`);
   const office = takeOfficeSettings();
-  const botToken = requireEnv("SLACK_BOT_TOKEN");
-  const appToken = requireEnv("SLACK_APP_TOKEN");
+  const botToken = process.env.SLACK_BOT_TOKEN;
+  const appToken = process.env.SLACK_APP_TOKEN;
+  if (botToken || appToken) {
+    requireEnv("SLACK_BOT_TOKEN");
+    requireEnv("SLACK_APP_TOKEN");
+  }
 
   NodeFS.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const db = openDatabase(NodePath.join(dir, "bridge.db"));
@@ -95,14 +99,17 @@ async function start(): Promise<void> {
     if (bridge === undefined) throw new Error("The bridge is not running yet.");
     return bridge.receive(event);
   };
-  const platforms: Array<ChatPlatform> = [
-    slackPlatform({
-      host: () => slackHost,
-      access: { allowedUserIds: config.allowedUserIds, allowEveryone: config.allowEveryone },
-      channelRoutes: config.channelProjects,
-      directRoute: config.dmProjectId ? { projectId: config.dmProjectId } : undefined,
-    }),
-  ];
+  const platforms: Array<ChatPlatform> =
+    botToken && appToken
+      ? [
+          slackPlatform({
+            host: () => slackHost,
+            access: { allowedUserIds: config.allowedUserIds, allowEveryone: config.allowEveryone },
+            channelRoutes: config.channelProjects,
+            directRoute: config.dmProjectId ? { projectId: config.dmProjectId } : undefined,
+          }),
+        ]
+      : [];
   const imessage = config.imessage
     ? (() => {
         const settings = config.imessage;
@@ -234,6 +241,25 @@ async function start(): Promise<void> {
       `Linear is configured but ${LINEAR_SECRET_NAMES.join(", ")} aren't all set; its webhook answers 503 until they are.`,
     );
   }
+  const officeChannel =
+    office === undefined
+      ? undefined
+      : await (async () => {
+          const project = await t3.call<{ workspaceRoot: string }>("t3_project_read", {
+            projectId: office.projectId,
+          });
+          const channel = createOfficeChannel({
+            api: new OfficeClient(office.convexUrl, office.serviceToken),
+            store,
+            route: { projectId: office.projectId, worktreeFrom: office.worktreeFrom },
+            home: dir,
+            repositoryPath: project.workspaceRoot,
+            slack: platforms.find((platform) => platform.id === "slack"),
+            log,
+          });
+          platforms.push(channel.platform);
+          return channel;
+        })();
   bridge = new Bridge({
     store,
     threads,
@@ -242,39 +268,46 @@ async function start(): Promise<void> {
     log,
   });
   const core = bridge;
-  const slackParts = createSlackHost({
-    botToken,
-    appToken,
-    // The bridge logs each outcome as it handles the event.
-    onEvent: receive,
-    log: (level, line) => log(`slack ${level}: ${line}`),
-  });
-  chat = await startChatHost({
-    adapters: {
-      slack: slackParts.adapter,
-      ...(imessage ? { imessage: imessage.adapter } : {}),
-      ...(linear ? { linear: linear.adapter } : {}),
-    },
-    deliver: {
-      slack: slackParts.deliver,
-      ...(imessage ? { imessage: imessage.deliver } : {}),
-      ...(linear ? { linear: linear.deliver } : {}),
-    },
-    state: createChatState(db),
-    onError: (error) => log(`Chat message failed: ${String(error)}`),
-    onStop: (chatThreadKey, userId) => core.stopRequested(chatThreadKey, userId),
-    onAnswer: (chatThreadKey, userId, value) => core.questionClicked(chatThreadKey, userId, value),
-    onReaction: (reaction) => core.reacted(reaction),
-    log,
-  });
+  const slackParts =
+    botToken && appToken
+      ? createSlackHost({
+          botToken,
+          appToken,
+          // The bridge logs each outcome as it handles the event.
+          onEvent: receive,
+          log: (level, line) => log(`slack ${level}: ${line}`),
+        })
+      : undefined;
+  chat =
+    slackParts || imessage || linear
+      ? await startChatHost({
+          adapters: {
+            ...(slackParts ? { slack: slackParts.adapter } : {}),
+            ...(imessage ? { imessage: imessage.adapter } : {}),
+            ...(linear ? { linear: linear.adapter } : {}),
+          },
+          deliver: {
+            ...(slackParts ? { slack: slackParts.deliver } : {}),
+            ...(imessage ? { imessage: imessage.deliver } : {}),
+            ...(linear ? { linear: linear.deliver } : {}),
+          },
+          state: createChatState(db),
+          onError: (error) => log(`Chat message failed: ${String(error)}`),
+          onStop: (chatThreadKey, userId) => core.stopRequested(chatThreadKey, userId),
+          onAnswer: (chatThreadKey, userId, value) =>
+            core.questionClicked(chatThreadKey, userId, value),
+          onReaction: (reaction) => core.reacted(reaction),
+          log,
+        })
+      : undefined;
   const running = chat;
-  const slack = slackParts.connect(running);
+  const slack = running && slackParts?.connect(running);
   slackHost = slack;
   const tools = await startToolServer(
     {
       bindingByChatKey: (chatKey) => store.bindingByChatKey(chatKey),
       workspaceRoots: (threadId) => threads.workspaceRoots(threadId),
-      post: (message) => platformFor(platforms, message.chatThreadKey).post(message),
+      post: (message) => core.postFromAgent(message),
       react: async (reaction) => {
         const platform = platformFor(platforms, reaction.chatThreadKey);
         if (platform.reactionsUnseen !== undefined) return platform.reactionsUnseen;
@@ -380,10 +413,11 @@ async function start(): Promise<void> {
       ? undefined
       : await startWebhookServer(config.linear.webhookPort, webhookRoutes, log);
   // What a restart left in the inbox first, then what Slack sent while the bridge was down.
+  await officeChannel?.start(core);
   await core.resume();
-  await core.catchUp("slack", (request) => slack.missedEvents(request));
+  if (slack) await core.catchUp("slack", (request) => slack.missedEvents(request));
   log(
-    `Connected to Slack${imessage ? ", iMessage (connects by itself)" : ""}${linear ? ", Linear (starts by itself)" : ""} and ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
+    `Connected channels: ${platforms.map((platform) => platform.name).join(", ")}. T3: ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
   );
   if (webhooks && config.linear) {
     log(`Linear webhook on http://127.0.0.1:${webhooks.port}${config.linear.webhookPath}.`);
@@ -393,24 +427,8 @@ async function start(): Promise<void> {
       "WARNING: imessage.allowEveryone is on. Anyone who sends this Apple account an iMessage can start runs, with this bridge's T3 access.",
     );
   }
-  const officeStop = new AbortController();
-  if (office !== undefined) {
-    await t3.call("t3_project_read", { projectId: office.projectId });
-    const runtime = new OfficeRuntime({
-      office: new OfficeConvex(office.convexUrl, office.serviceToken),
-      threads,
-      projectId: office.projectId,
-      environmentId: office.environmentId,
-      worktreeFrom: office.worktreeFrom,
-      defaultModel: { instanceId: "claudeAgent" },
-      log,
-    });
-    void runtime.run(officeStop.signal);
-    log(
-      `Office runtime on ${office.convexUrl} as ${office.environmentId}, project ${office.projectId}.`,
-    );
-  }
-  if (config.allowEveryone) {
+  if (officeChannel) log("Office channel subscribed.");
+  if (slack && config.allowEveryone) {
     log(
       "WARNING: allowEveryone is on. Every full member of this Slack workspace can start runs, and each run has this bridge's T3 access (often full access on this machine, as the user T3 runs as).",
     );
@@ -418,12 +436,12 @@ async function start(): Promise<void> {
 
   const shutdown = async () => {
     log("Shutting down.");
-    officeStop.abort();
     core.stop();
+    await officeChannel?.close();
     tools.close();
     webhooks?.close();
     linear?.started.stop();
-    await running.shutdown().catch(() => {});
+    await running?.shutdown().catch(() => {});
     await t3.close();
     db.close();
     process.exit(0);
@@ -433,7 +451,7 @@ async function start(): Promise<void> {
 }
 
 /**
- * Office's runtime settings, when it is on. The service token is removed from
+ * Office's channel settings, when it is on. The service token is removed from
  * the environment, like Linear's secrets.
  */
 function takeOfficeSettings():
@@ -441,20 +459,23 @@ function takeOfficeSettings():
       readonly convexUrl: string;
       readonly serviceToken: string;
       readonly projectId: string;
-      readonly environmentId: string;
       readonly worktreeFrom: string | undefined;
     }
   | undefined {
-  const serviceToken = process.env.OFFICE_AGENT_SERVICE_TOKEN;
-  delete process.env.OFFICE_AGENT_SERVICE_TOKEN;
+  const serviceToken = process.env.OFFICE_CHAT_BRIDGE_TOKEN;
+  delete process.env.OFFICE_CHAT_BRIDGE_TOKEN;
   const convexUrl = process.env.OFFICE_CONVEX_URL;
   const projectId = process.env.OFFICE_T3_PROJECT_ID;
-  if (!serviceToken || !convexUrl || !projectId) return undefined;
+  if (!serviceToken && !convexUrl) return undefined;
+  if (!serviceToken || !convexUrl || !projectId) {
+    throw new Error(
+      "Office requires OFFICE_CONVEX_URL, OFFICE_CHAT_BRIDGE_TOKEN, and OFFICE_T3_PROJECT_ID.",
+    );
+  }
   return {
     convexUrl,
     serviceToken,
     projectId,
-    environmentId: process.env.OFFICE_ENVIRONMENT_ID || "chat-bridge",
     worktreeFrom: process.env.OFFICE_WORKTREE_FROM || undefined,
   };
 }

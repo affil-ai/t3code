@@ -1,6 +1,6 @@
 # T3 chat bridge
 
-Talk to T3 Code agents from Slack, iMessage and Linear. Mention the bot in a mapped channel and it
+Talk to T3 Code agents from Slack, iMessage, Linear, and Office. Mention the bot in a mapped channel and it
 starts a T3 thread in that channel's project. Replies in the Slack thread go to
 the same T3 thread. Each run shows in Slack as it works, with Slack's own agent
 features, and ends with the agent's final message.
@@ -307,10 +307,9 @@ Slack's events between them.
 
 ## How platforms plug in
 
-All platforms run on one Chat SDK `Chat` (`src/chatHost.ts`), one adapter
-each: the official `@chat-adapter/slack`, and `src/imessage/adapter.ts`, a Chat
-SDK adapter over `imsg`. The SDK does dedupe, thread locks, queueing,
-subscriptions, Markdown and card fallback for all of them.
+Slack, iMessage, and Linear share one Chat SDK `Chat` (`src/chatHost.ts`).
+Office subscribes directly to its Convex inbox. Both paths feed the same
+`Bridge.receive`, which saves messages to SQLite before handing them to T3.
 
 The bridge core (`src/bridge.ts`) does everything about T3: bindings, the
 inbox, runs, questions, model switches and access. It reaches a platform only
@@ -325,9 +324,57 @@ model:
   questions. A platform without buttons gets questions as numbered text, and
   people answer by replying with a number, an option or their own words.
 
-A new platform is a Chat SDK adapter (an official one where it exists, such as
-`@chat-adapter/linear`), a `Deliver` that turns its SDK messages into
-`InboundEvent`s, and a `ChatPlatform`.
+A platform uses a Chat SDK adapter where one fits, or its own subscription,
+to turn incoming messages into `InboundEvent`s. Its `ChatPlatform` sends
+the core's replies and status back.
+
+## Office
+
+Set `OFFICE_CONVEX_URL`, `OFFICE_CHAT_BRIDGE_TOKEN`, and `OFFICE_T3_PROJECT_ID`
+in the bridge's environment. The project must point to a nextcard checkout
+with Office's dependencies installed if article chats are enabled.
+`OFFICE_WORKTREE_FROM` optionally starts new threads in worktrees from that
+branch. The bridge removes the service token from its environment after
+reading it. The old `OFFICE_AGENT_SERVICE_TOKEN` is no longer used.
+
+Office's `chatBridge:prepare` checks access before delivery. One Office chat
+maps to one T3 thread. New threads get Office's mode instructions and the
+requester's commit trailer. Known Office model names map to T3 models;
+unknown names use the configured default. An existing, readable legacy
+thread is reused without posting its old answer.
+
+The channel subscribes to `chatBridge:inbox` with the Convex client; it does
+not poll. Once the core accepts an event into SQLite, the channel acknowledges
+it in Office. Redelivery after a lost acknowledgement does not start another
+turn. The core follows runs and posts answers, questions, uploaded files,
+finished steps, plans, state, and titles. `NO_REPLY` clears the working state
+without posting a message. A stop interrupts the chat's current run.
+
+Article credentials live in mode-0600 connection files under
+`$T3_CHAT_BRIDGE_HOME/office-article`, never in the prompt or SQLite inbox.
+The agent gets a launcher for nextcard's `apps/office/scripts/article-workspace.cts`
+and a local snapshot when Office supplies one. Connection files are removed
+when their run ends or their token expires. A bridge restart preserves
+connections for running agents and restores expiry timers before resuming runs.
+Snapshots and edit files remain for inspection.
+
+Support cases have an Office chat and a Slack thread, bound to one T3 thread
+with `sync: true`. The channel opens and links the Slack thread when needed,
+then receives the request on the Office key. A staff reply in Slack appears
+in Office with its author; agent replies, questions, steps, plans, and state
+appear in both. Slack staff messages still use the Slack allowlist. Without
+Slack, the request is rejected with a visible error in Office.
+
+Binding groups default to `sync: false`. In an unsynced group, replies go to
+the conversation that sent the request; delegated-work wakes go to the
+conversation used last. Existing bindings migrate into one-conversation,
+unsynced groups. Linking is host-controlled, with no user-facing linking tool.
+
+This v1 keeps the core's existing delivery guarantees and forty-step limit.
+It does not add a durable output outbox, execution-specific stop fences,
+history import, or production cutover. Posts have stable reply identities
+for Office's deduplication. An upload retried before the post succeeds can
+leave an unused storage object.
 
 ## iMessage
 
@@ -579,6 +626,7 @@ pnpm --filter @t3tools/chat-bridge test
 | `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                                                                 |
 | `src/slack/`           | Slack: the adapter's messages and Slack-only calls (`host.ts`), its `ChatPlatform`, text helpers and the app manifest. |
 | `src/linear/`          | Linear: agent sessions as `InboundEvent`s, file uploads, and its `ChatPlatform`.                                       |
+| `src/office/`          | Office: Convex inbox, presentation API, requester context, and expiring article connections.                           |
 | `src/webhookServer.ts` | Loopback webhooks for platforms that need them, at exact paths only.                                                   |
 | `src/imessage/`        | iMessage: the Chat SDK adapter, its RPC client and its `ChatPlatform`.                                                 |
 | `mac/`                 | The Mac service and its LaunchAgent.                                                                                   |

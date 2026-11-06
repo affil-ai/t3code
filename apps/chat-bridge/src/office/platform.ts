@@ -1,0 +1,280 @@
+// @effect-diagnostics globalFetch:off globalTimers:off -- A plain Node channel; Convex owns its subscription.
+import { type Bridge, type InboundEvent } from "../bridge.ts";
+import { mimeTypeOf } from "../fileMimeType.ts";
+import { type ChatPlatform, QUIET_RULES, type ThreadRoute } from "../platform.ts";
+import type { BridgeStore } from "../store.ts";
+import { ArticleFiles } from "./article.ts";
+import type { InboxEvent, OfficeApi, PreparedRequest } from "./client.ts";
+import { officeModel, requestNote, threadStartConventions } from "./message.ts";
+
+const chatIdOf = (key: string) => key.slice("office:".length);
+
+function inbound(request: PreparedRequest): InboundEvent {
+  return {
+    eventId: `office:${request.eventId}`,
+    chatThreadKey: `office:${request.chatId}`,
+    channelId: request.chatId,
+    messageId: request.messageId,
+    kind: "mention",
+    direct: true,
+    addressed: true,
+    author: {
+      userId: request.author.memberId,
+      userName: request.author.name,
+      fullName: request.author.name,
+    },
+    text: request.text,
+    files: [],
+    mentions: [],
+  };
+}
+
+export function createOfficeChannel(options: {
+  api: OfficeApi;
+  store: BridgeStore;
+  route: ThreadRoute;
+  home: string;
+  repositoryPath: string;
+  log: (line: string) => void;
+  fetch?: typeof fetch;
+  now?: () => number;
+  slack?: ChatPlatform | undefined;
+}) {
+  const { api, store, log } = options;
+  const fetchFile = options.fetch ?? fetch;
+  const articles = new ArticleFiles(options.home, options.repositoryPath, log, options.now);
+  const prepared = new Map<string, PreparedRequest>();
+  const pending = new Map<string, Promise<void>>();
+  const chats = new Map<string, Promise<void>>();
+  const retries = new Map<string, NodeJS.Timeout>();
+  let unsubscribe: (() => void) | undefined;
+  let closed = false;
+  let core: Bridge;
+
+  const state: NonNullable<ChatPlatform["setState"]> = async (key, value, text) => {
+    await api.mutate("state", { chatId: chatIdOf(key), state: value, text });
+  };
+  const platform: ChatPlatform = {
+    id: "office",
+    name: "Office",
+    place: "Office chat",
+    access: { allowEveryone: true, allowedUserIds: [] },
+    directRoute: options.route,
+    person: (_id, name) => name,
+    refusal: () => "You no longer have access to this Office chat.",
+    firstTurnNote: (chatKey) =>
+      [
+        "Your final message is posted to this Office chat. Use chat_post for files or updates, and chat_status for short progress text. Reactions are unavailable.",
+        QUIET_RULES,
+        threadStartConventions(),
+        `Chat key: ${chatKey}`,
+      ].join("\n\n"),
+    prepare: async (event) => {
+      let request = prepared.get(event.eventId);
+      prepared.delete(event.eventId);
+      if (request === undefined) {
+        const result = await api.mutate("prepare", {
+          eventId: event.eventId.slice("office:".length),
+        });
+        if (result.kind === "skip") return undefined;
+        request = result.request;
+      }
+      // Only the safe inbound event reaches SQLite; this context lives for this handoff.
+      const articleNote =
+        request.article === undefined
+          ? ""
+          : await articles.stage(request.chatId, event.eventId, request.article);
+      return {
+        ...inbound(request),
+        requestNote: [requestNote(request), articleNote].filter(Boolean).join("\n\n"),
+        instructions: request.instructions,
+        modelSelection: officeModel(request.model),
+        legacyThreadId: request.legacyThreadId,
+        files: request.files.map((file) => ({
+          name: file.filename,
+          mimeType: file.mimeType,
+          sizeBytes: file.byteSize,
+          url: file.url,
+        })),
+      };
+    },
+    dispatched: (event, runId) => articles.dispatched(event.eventId, runId),
+    runEnded: (key, runId) => articles.complete(chatIdOf(key), runId),
+    post: async (message) => {
+      if (!message.eventId) throw new Error("Office posts require a delivery identity.");
+      const chatId = chatIdOf(message.chatThreadKey);
+      const files: Array<{ storageId: string; filename: string; mimeType: string }> = [];
+      for (const file of message.files ?? []) {
+        const mimeType = mimeTypeOf(file.filename);
+        const { url } = await api.mutate("uploadUrl", { chatId });
+        const response = await fetchFile(url, {
+          method: "POST",
+          headers: { "content-type": mimeType },
+          body: new Uint8Array(file.data),
+        }).catch(() => {
+          throw new Error("Office file upload failed.");
+        });
+        if (!response.ok) throw new Error(`Office file upload failed: HTTP ${response.status}.`);
+        const uploaded = (await response.json()) as { storageId?: string };
+        if (typeof uploaded.storageId !== "string")
+          throw new Error("Office upload returned no storage id.");
+        files.push({ storageId: uploaded.storageId, filename: file.filename, mimeType });
+      }
+      await api.mutate("post", {
+        chatId,
+        eventId: message.eventId,
+        kind: message.kind ?? "answer",
+        text: message.text,
+        ...(files.length === 0 ? {} : { files }),
+      });
+    },
+    setState: state,
+    quiet: (key) => state(key, "active", ""),
+    step: async (key, step) => {
+      await api.mutate("step", {
+        chatId: chatIdOf(key),
+        itemId: step.itemId,
+        action: step.action.slice(0, 500),
+        parameter: step.parameter.slice(0, 500),
+        result: step.result.slice(0, 500),
+      });
+    },
+    plan: async (key, steps) => {
+      await api.mutate("plan", {
+        chatId: chatIdOf(key),
+        steps: steps.map((step) => ({
+          text: step.text,
+          status: step.status === "running" ? "inProgress" : step.status,
+        })),
+      });
+    },
+    rename: async (key, title) => {
+      await api.mutate("rename", { chatId: chatIdOf(key), title });
+    },
+    download: async (url) => {
+      const response = await fetchFile(url).catch(() => {
+        throw new Error("Office file download failed.");
+      });
+      if (!response.ok) throw new Error(`Office file download failed: HTTP ${response.status}.`);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+  };
+
+  async function deliver(event: InboxEvent): Promise<void> {
+    const eventId = `office:${event.id}`;
+    if (!store.isHandled(eventId)) {
+      if (event.kind === "stop") {
+        const chatThreadKey = `office:${event.chatId}`;
+        const stopped = await core.stopRequested(chatThreadKey, event.memberId);
+        if (!stopped && store.binding(chatThreadKey) !== undefined) {
+          throw new Error("Office stop could not reach T3.");
+        }
+        store.markHandled(eventId);
+        if (!core.hasRunInFlight(chatThreadKey)) await state(chatThreadKey, "active", "");
+      } else {
+        const result = await api.mutate("prepare", { eventId: event.id });
+        if (result.kind === "skip") {
+          await api.mutate("ack", {
+            eventId: event.id,
+            result: "rejected",
+            errorMessage: "This request is no longer available or authorized.",
+          });
+          return;
+        }
+        if (result.request.slack !== undefined && !(await linkSlack(event, result.request))) return;
+        prepared.set(eventId, result.request);
+        try {
+          await core.receive(inbound(result.request));
+        } finally {
+          prepared.delete(eventId);
+        }
+      }
+    }
+    await api.mutate("ack", { eventId: event.id, result: "stored" });
+  }
+
+  async function linkSlack(event: InboxEvent, request: PreparedRequest): Promise<boolean> {
+    const slack = options.slack;
+    if (slack?.startConversation === undefined || request.slack === undefined) {
+      await api.mutate("ack", {
+        eventId: event.id,
+        result: "rejected",
+        errorMessage:
+          "The Slack channel is not configured on this bridge. This support request was not sent.",
+      });
+      return false;
+    }
+    const target = request.slack;
+    const savedKey = store.meta(`office_slack:${event.id}`);
+    const chatThreadKey =
+      target.chatThreadKey ??
+      savedKey ??
+      (await slack.startConversation(target.channelId, target.rootText ?? request.text));
+    if (!target.chatThreadKey) {
+      store.setMeta(`office_slack:${event.id}`, chatThreadKey);
+      await api.mutate("linkSlack", { eventId: event.id, chatThreadKey });
+    }
+    await core.linkConversations(
+      [
+        {
+          chatThreadKey: `office:${request.chatId}`,
+          channelId: request.chatId,
+          createdByUserId: request.author.memberId,
+        },
+        { chatThreadKey, channelId: target.channelId, createdByUserId: request.author.memberId },
+      ],
+      request.sync ?? false,
+    );
+    return true;
+  }
+
+  function enqueue(event: InboxEvent): void {
+    if (closed || pending.has(event.id) || retries.has(event.id)) return;
+    const chatId = event.chatId;
+    const previous = chats.get(chatId) ?? Promise.resolve();
+    const task = previous
+      .then(() => deliver(event))
+      .catch(() => {
+        if (closed) return;
+        log(`Office: delivery ${event.id} failed; retrying in 15 s.`);
+        const timer = setTimeout(() => {
+          retries.delete(event.id);
+          enqueue(event);
+        }, 15_000);
+        timer.unref();
+        retries.set(event.id, timer);
+      })
+      .finally(() => {
+        pending.delete(event.id);
+        if (chats.get(chatId) === task) chats.delete(chatId);
+      });
+    pending.set(event.id, task);
+    chats.set(chatId, task);
+  }
+
+  const idle = async () => {
+    await Promise.all(pending.values());
+  };
+  return {
+    platform,
+    async start(bridge: Bridge): Promise<void> {
+      core = bridge;
+      await articles.restore();
+      unsubscribe = api.subscribe(
+        (events) => {
+          for (const event of events) enqueue(event);
+        },
+        () => log("Office: inbox subscription failed; waiting for Convex to reconnect."),
+      );
+    },
+    idle,
+    async close(): Promise<void> {
+      closed = true;
+      unsubscribe?.();
+      for (const timer of retries.values()) clearTimeout(timer);
+      await idle();
+      await articles.close();
+      await api.close();
+    },
+  };
+}

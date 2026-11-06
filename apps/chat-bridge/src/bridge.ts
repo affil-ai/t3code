@@ -30,6 +30,7 @@ import {
   type ChatPlatform,
   isQuietReply,
   type OutboundKind,
+  type OutboundMessage,
   platformFor,
   QUIET_REPLY,
   type ThreadRoute,
@@ -106,7 +107,26 @@ export interface InboundEvent {
   readonly text: string;
   readonly files: ReadonlyArray<EventFile>;
   readonly mentions: ReadonlyArray<MentionedUser>;
+  /** Platform context added in memory by `prepare`, never persisted by the core. */
+  readonly requestNote?: string | undefined;
+  readonly instructions?: string | undefined;
+  readonly modelSelection?: ModelSelection | undefined;
+  readonly legacyThreadId?: string | undefined;
 }
+
+export interface LinkedConversation {
+  readonly chatThreadKey: string;
+  readonly channelId: string;
+  readonly createdByUserId: string;
+}
+
+interface ConversationLinks {
+  readonly conversations: ReadonlyArray<LinkedConversation>;
+  readonly sync: boolean;
+}
+
+const replyKey = (reply: Pick<OwedReply, "runId" | "chatThreadKey">) =>
+  `${reply.runId}\n${reply.chatThreadKey}`;
 
 /** Someone added or removed a reaction (a Slack reaction, an iMessage tapback) on a message. */
 export interface InboundReaction {
@@ -346,6 +366,7 @@ function turnText(
     `${platform.name} message ${event.messageId} from ${platform.person(event.author.userId, event.author.fullName || event.author.userName)}:`,
     "",
     event.text,
+    ...(event.requestNote ? ["", event.requestNote] : []),
   ];
   if (event.mentions.length > 0) {
     const people = event.mentions.map((user) => platform.person(user.userId, user.name));
@@ -356,6 +377,7 @@ function turnText(
     lines.push("", `Attached in ${platform.name} but not imported: ${files.join(", ")}`);
   }
   if (first && note) lines.push("", note);
+  if (first && event.instructions) lines.push("", event.instructions);
   lines.push(
     "",
     first
@@ -403,6 +425,7 @@ export class Bridge {
   private readonly watchedRuns = new Map<string, string>();
   /** Steps listed per run, for `MAX_STEPS_PER_RUN`. */
   private readonly stepsListed = new Map<string, number>();
+  private readonly answeringQuestions = new Map<string, Promise<void>>();
   /** Each chat thread with runs being watched: which runs wait on a person, the state and status text last sent. */
   private readonly running = new Map<
     string,
@@ -481,11 +504,12 @@ export class Bridge {
 
   /** Works through the chat thread's inbox after any drain already running there. */
   private drain(chatThreadKey: string): Promise<Map<string, InboundOutcome>> {
-    const previous = this.draining.get(chatThreadKey) ?? Promise.resolve(new Map());
+    const groupKey = this.links(chatThreadKey)?.conversations[0]?.chatThreadKey ?? chatThreadKey;
+    const previous = this.draining.get(groupKey) ?? Promise.resolve(new Map());
     const next = previous.then(() => this.drainThread(chatThreadKey));
-    this.draining.set(chatThreadKey, next);
+    this.draining.set(groupKey, next);
     void next.then(() => {
-      if (this.draining.get(chatThreadKey) === next) this.draining.delete(chatThreadKey);
+      if (this.draining.get(groupKey) === next) this.draining.delete(groupKey);
     });
     return next;
   }
@@ -549,6 +573,8 @@ export class Bridge {
    * Only these steer as soon as the run can take them, and only these combine.
    */
   private async isPlainFollowUp(event: InboundEvent): Promise<boolean> {
+    // A prepared request can have its own credential scope and must not be combined.
+    if (this.platform(event.chatThreadKey).prepare !== undefined) return false;
     const binding = this.store.binding(event.chatThreadKey);
     // In a bound conversation a mention is a follow-up too, such as a new Linear session on the issue.
     if (binding === undefined || !event.addressed || event.contextOnly === true) return false;
@@ -568,7 +594,9 @@ export class Bridge {
   private async untilSteerable(chatThreadKey: string): Promise<void> {
     const binding = this.store.binding(chatThreadKey);
     let runId: string | undefined;
-    for (const [watched, key] of this.watchedRuns) if (key === chatThreadKey) runId = watched;
+    for (const [watched, key] of this.watchedRuns)
+      if (binding !== undefined && this.store.binding(key)?.threadId === binding.threadId)
+        runId = watched.split("\n")[0];
     if (binding === undefined || runId === undefined) return;
     for (let polls = 0; polls < STEER_WAIT_MS / STEER_POLL_MS && !this.stopped; polls += 1) {
       // A zero timeout reads the run's status without waiting.
@@ -637,15 +665,112 @@ export class Bridge {
     return platformFor(this.platforms, chatThreadKey);
   }
 
+  private links(chatThreadKey: string): ConversationLinks | undefined {
+    const saved = this.store.meta(`binding_links:${chatThreadKey}`);
+    return saved === undefined ? undefined : (JSON.parse(saved) as ConversationLinks);
+  }
+
+  /** Host-only linking, before the first request or for an already bound thread. */
+  async linkConversations(
+    conversations: ReadonlyArray<LinkedConversation>,
+    sync = false,
+  ): Promise<void> {
+    if (conversations.length === 0) return;
+    for (const each of conversations) this.platform(each.chatThreadKey);
+    const threads = new Set(
+      conversations.flatMap((each) => {
+        const binding = this.store.binding(each.chatThreadKey);
+        return binding === undefined ? [] : [binding.threadId];
+      }),
+    );
+    if (threads.size > 1)
+      throw new Error("Cannot link conversations that already have different T3 threads.");
+    const saved = JSON.stringify({ conversations, sync });
+    for (const each of conversations)
+      this.store.setMeta(`binding_links:${each.chatThreadKey}`, saved);
+    await this.bindLinked(conversations[0]!.chatThreadKey);
+  }
+
+  private async bindLinked(chatThreadKey: string): Promise<void> {
+    const links = this.links(chatThreadKey);
+    if (links === undefined) return;
+    const source = links.conversations
+      .map((each) => this.store.binding(each.chatThreadKey))
+      .find((each) => each !== undefined);
+    if (source === undefined) return;
+    for (const each of links.conversations) {
+      const existing = this.store.binding(each.chatThreadKey);
+      if (existing !== undefined && existing.threadId !== source.threadId) {
+        throw new Error("Linked conversations have different T3 threads.");
+      }
+      if (existing !== undefined) continue;
+      this.store.insertBinding({
+        ...source,
+        ...each,
+        chatKey: NodeCrypto.randomBytes(16).toString("hex"),
+      });
+      await this.platform(each.chatThreadKey).bound?.(each.chatThreadKey);
+    }
+    this.store.setSync(source.threadId, links.sync);
+  }
+
+  /** Agent tool posts use the same delivery destinations as answers. */
+  async postFromAgent(message: OutboundMessage): Promise<void> {
+    await Promise.all(
+      this.store
+        .recipients(message.chatThreadKey)
+        .map((chatThreadKey) => this.platform(chatThreadKey).post({ ...message, chatThreadKey })),
+    );
+  }
+
+  private async mirror(event: InboundEvent): Promise<void> {
+    this.store.usedConversation(event.chatThreadKey);
+    const source = this.platform(event.chatThreadKey);
+    for (const key of this.store.recipients(event.chatThreadKey)) {
+      if (key === event.chatThreadKey) continue;
+      const identity = `mirror:${event.eventId}:${key}`;
+      if (this.store.meta(identity) !== undefined) continue;
+      try {
+        const files = await Promise.all(
+          event.files.flatMap((file) =>
+            file.url && source.download
+              ? [
+                  source
+                    .download(file.url)
+                    .then((data) => ({ data: Buffer.from(data), filename: file.name })),
+                ]
+              : [],
+          ),
+        );
+        await this.platform(key).post({
+          eventId: identity,
+          chatThreadKey: key,
+          kind: "update",
+          text: `${event.author.fullName || event.author.userName} (in ${source.name}): ${event.text}`,
+          ...(files.length ? { files } : {}),
+        });
+        this.store.setMeta(identity, "1");
+      } catch {
+        this.log(`Mirroring ${event.eventId} to ${key} failed.`);
+      }
+    }
+  }
+
   /** Posts to the chat thread on its platform. */
-  private post(chatThreadKey: string, text: string, kind: OutboundKind = "answer"): Promise<void> {
-    return this.platform(chatThreadKey).post({ chatThreadKey, text, kind });
+  private post(
+    chatThreadKey: string,
+    text: string,
+    kind: OutboundKind = "answer",
+    eventId: string = NodeCrypto.randomUUID(),
+  ): Promise<void> {
+    return this.platform(chatThreadKey).post({ chatThreadKey, text, kind, eventId });
   }
 
   /** Asks the open question as numbered text, with its options for platforms that offer them. */
   private ask(chatThreadKey: string, asked: Asked): Promise<void> {
     const choices = questionChoices(asked);
     return this.platform(chatThreadKey).post({
+      eventId: `question:${asked.requestId}:${openQuestion(asked)?.id ?? "done"}`,
       chatThreadKey,
       text: numberedQuestion(asked),
       kind: "question",
@@ -671,11 +796,34 @@ export class Bridge {
   private async handle(received: InboundEvent): Promise<InboundOutcome> {
     let event = received;
     if (this.store.isHandled(event.eventId)) return { type: "ignored", reason: "duplicate" };
-    const binding = this.store.binding(event.chatThreadKey);
     const platform = this.platform(event.chatThreadKey);
+    if (platform.prepare !== undefined) {
+      const prepared = await platform.prepare(event);
+      if (prepared === undefined) return { type: "ignored", reason: "not_allowed" };
+      event = prepared;
+    }
+    let binding = this.store.binding(event.chatThreadKey);
+    let adopted = false;
+    if (binding === undefined && event.legacyThreadId !== undefined) {
+      const shape = await this.threads.shape(event.legacyThreadId).catch(() => undefined);
+      if (shape !== undefined) {
+        this.store.insertBinding({
+          chatThreadKey: event.chatThreadKey,
+          channelId: event.channelId,
+          projectId: shape.projectId,
+          threadId: event.legacyThreadId,
+          chatKey: NodeCrypto.randomBytes(16).toString("hex"),
+          createdByUserId: event.author.userId,
+        });
+        binding = this.store.binding(event.chatThreadKey);
+        adopted = true;
+        await this.bindLinked(event.chatThreadKey);
+      }
+    }
 
     if (event.contextOnly === true) {
       if (binding === undefined) return { type: "ignored", reason: "unbound_thread" };
+      if (await this.isAllowed(platform, event.author.userId)) await this.mirror(event);
       this.keep(binding, event);
       return { type: "noted", threadId: binding.threadId };
     }
@@ -686,6 +834,7 @@ export class Bridge {
       if (event.addressed) await this.refuse(event);
       return { type: "ignored", reason: "not_allowed" };
     }
+    if (binding !== undefined) await this.mirror(event);
 
     const command = event.addressed ? controlCommand(event.text) : undefined;
     if (command !== undefined) return this.control(event, binding, command);
@@ -729,9 +878,12 @@ export class Bridge {
       );
       const sent = await this.threads.send({
         threadId: binding.threadId,
-        text: turnText(platform, event, imported.skipped, binding.chatKey, false, context),
+        text: turnText(platform, event, imported.skipped, binding.chatKey, adopted, context),
         attachments: imported.attachments,
         requestId: requestId(event.eventId),
+      });
+      await platform.dispatched?.(event, sent.runId).catch(() => {
+        this.log(`Associating resources for ${sent.runId} failed.`);
       });
       this.store.dropContext(kept.map((message) => message.eventId));
       // A steered message can join a run someone started in T3; its answer is owed here too.
@@ -750,7 +902,7 @@ export class Bridge {
       : routeFor(platform.channelRoutes ?? [], event.channelId, event.text);
     if (route === undefined) return { type: "ignored", reason: "unmapped_channel" };
     const projectId = route.projectId;
-    let modelSelection: ModelSelection | undefined;
+    let modelSelection = event.modelSelection;
     if (switched.command !== undefined) {
       const resolved = resolveModelCommand(
         switched.command,
@@ -802,6 +954,8 @@ export class Bridge {
       chatKey,
       createdByUserId: event.author.userId,
     });
+    await this.bindLinked(event.chatThreadKey);
+    await this.mirror(event);
     // T3 can write a summary title; the request's first sentence stands until it does.
     await this.threads.regenerateTitle(started.threadId).catch((error: unknown) => {
       this.log(`Asking T3 for a title for ${started.threadId} failed: ${String(error)}`);
@@ -810,6 +964,9 @@ export class Bridge {
       this.log(`Following ${event.chatThreadKey} failed: ${String(error)}`);
     });
     if (started.runId !== null) {
+      await platform.dispatched?.(event, started.runId).catch(() => {
+        this.log(`Associating resources for ${started.runId} failed.`);
+      });
       this.owe({
         runId: started.runId,
         threadId: started.threadId,
@@ -910,7 +1067,12 @@ export class Bridge {
   /** A notice is a courtesy; failing to post one is only logged. */
   private async notify(event: InboundEvent, text: string): Promise<void> {
     try {
-      await this.post(event.chatThreadKey, text);
+      await this.postFromAgent({
+        chatThreadKey: event.chatThreadKey,
+        text,
+        kind: "answer",
+        eventId: `notice:${event.eventId}`,
+      });
     } catch (error) {
       this.log(`Posting a notice for ${event.eventId} failed: ${String(error)}`);
     }
@@ -985,25 +1147,29 @@ export class Bridge {
   }
 
   private owe(reply: OwedReply): void {
-    this.store.oweReply(reply);
-    this.watch(reply);
+    for (const chatThreadKey of this.store.recipients(reply.chatThreadKey)) {
+      const destination = { ...reply, chatThreadKey };
+      this.store.oweReply(destination);
+      this.watch(destination);
+    }
   }
 
   private watch(reply: OwedReply): void {
-    if (this.watching.has(reply.runId)) return;
+    const key = replyKey(reply);
+    if (this.watching.has(key)) return;
     this.runStarted(reply.chatThreadKey);
     const before = this.answerQueue.get(reply.chatThreadKey);
     let answered = () => {};
     const mine = new Promise<void>((resolve) => (answered = resolve));
     this.answerQueue.set(reply.chatThreadKey, mine);
     this.watching.set(
-      reply.runId,
+      key,
       this.watchUntilAnswered(reply, before).finally(() => {
         answered();
         if (this.answerQueue.get(reply.chatThreadKey) === mine) {
           this.answerQueue.delete(reply.chatThreadKey);
         }
-        this.runEnded(reply.chatThreadKey, reply.runId);
+        return this.runEnded(reply.chatThreadKey, reply.runId);
       }),
     );
   }
@@ -1026,6 +1192,13 @@ export class Bridge {
    * flight there.
    */
   setStatus(chatThreadKey: string, status: string): boolean {
+    return this.store
+      .recipients(chatThreadKey)
+      .map((key) => this.setOneStatus(key, status))
+      .some(Boolean);
+  }
+
+  private setOneStatus(chatThreadKey: string, status: string): boolean {
     const entry = this.running.get(chatThreadKey);
     if (entry === undefined) return false;
     const text = status.trim().slice(0, 50) || THINKING;
@@ -1074,7 +1247,7 @@ export class Bridge {
     } catch {
       return;
     }
-    const record = this.store.question(requestId);
+    const record = this.store.question(requestId, chatThreadKey);
     if (record === undefined || record.closed || record.chatThreadKey !== chatThreadKey) return;
     const asked = applyClick(record.asked, value);
     if (asked === record.asked) return;
@@ -1103,14 +1276,30 @@ export class Bridge {
   }
 
   /** Saves progress on a question, and hands the answers to T3 once every part has one. */
-  private async saveAnswer(record: AskedRecord, asked: Asked): Promise<void> {
+  private saveAnswer(record: AskedRecord, asked: Asked): Promise<void> {
+    const previous = this.answeringQuestions.get(asked.requestId) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(() => this.saveQuestionAnswer(record, asked));
+    this.answeringQuestions.set(asked.requestId, next);
+    return next.finally(() => {
+      if (this.answeringQuestions.get(asked.requestId) === next)
+        this.answeringQuestions.delete(asked.requestId);
+    });
+  }
+
+  private async saveQuestionAnswer(record: AskedRecord, asked: Asked): Promise<void> {
+    if (this.store.question(record.asked.requestId, record.chatThreadKey)?.closed) return;
     const answers = finalAnswers(asked);
     if (answers !== undefined) {
       await this.threads.answerQuestions(record.threadId, asked.requestId, answers);
     }
     const next = { ...record, asked, closed: answers !== undefined };
-    this.store.updateQuestion(next);
-    await this.showQuestion(next);
+    const copies = this.store.questionCopies(asked.requestId);
+    for (const copy of copies) {
+      const updated = { ...copy, asked, closed: next.closed };
+      this.store.updateQuestion(updated);
+      await this.showQuestion(updated);
+    }
+    this.store.usedConversation(record.chatThreadKey);
     if (answers !== undefined) this.followAnswer(next);
   }
 
@@ -1152,7 +1341,12 @@ export class Bridge {
           this.log(
             `${item.runId} started from a notification; its answer goes to ${reply.chatThreadKey}.`,
           );
-          this.owe({ ...reply, runId: item.runId });
+          this.owe({
+            ...reply,
+            runId: item.runId,
+            chatThreadKey:
+              this.store.bindingByThreadId(reply.threadId)?.chatThreadKey ?? reply.chatThreadKey,
+          });
           found = true;
         }
         cursor = Math.max(cursor, read.lastPosition);
@@ -1185,7 +1379,12 @@ export class Bridge {
           this.log(
             `Stopped following ${reply.threadId} after six hours with its delegated work still running (read to ${cursor}).`,
           );
-          await this.post(reply.chatThreadKey, CAP_NOTE).catch((error: unknown) => {
+          await this.postFromAgent({
+            chatThreadKey: reply.chatThreadKey,
+            text: CAP_NOTE,
+            kind: "answer",
+            eventId: `cap:${reply.threadId}:${reply.runId}`,
+          }).catch((error: unknown) => {
             this.log(
               `Posting the six-hour note to ${reply.chatThreadKey} failed: ${String(error)}`,
             );
@@ -1299,7 +1498,12 @@ export class Bridge {
   private async refusePermission(reply: OwedReply): Promise<void> {
     if (this.permissionStopped.has(reply.runId)) return;
     this.permissionStopped.add(reply.runId);
-    await this.post(reply.chatThreadKey, PERMISSION_TEXT, "update").catch((error: unknown) =>
+    await this.postFromAgent({
+      chatThreadKey: reply.chatThreadKey,
+      text: PERMISSION_TEXT,
+      kind: "update",
+      eventId: `permission:${reply.runId}`,
+    }).catch((error: unknown) =>
       this.log(`Posting the permission notice failed: ${String(error)}`),
     );
     await this.threads
@@ -1456,10 +1660,11 @@ export class Bridge {
     this.sendState(chatThreadKey);
   }
 
-  private runEnded(chatThreadKey: string, runId: string): void {
-    this.watchedRuns.delete(runId);
-    this.stepsListed.delete(runId);
-    this.watching.delete(runId);
+  private async runEnded(chatThreadKey: string, runId: string): Promise<void> {
+    const key = replyKey({ runId, chatThreadKey });
+    this.watchedRuns.delete(key);
+    this.stepsListed.delete(key);
+    this.watching.delete(key);
     const entry = this.running.get(chatThreadKey);
     if (entry === undefined) return;
     entry.runs -= 1;
@@ -1472,7 +1677,7 @@ export class Bridge {
     clearInterval(entry.timer);
     this.running.delete(chatThreadKey);
     this.notes.delete(chatThreadKey);
-    this.platform(chatThreadKey)
+    await this.platform(chatThreadKey)
       .setState?.(chatThreadKey, "active", "")
       .catch((error: unknown) => {
         this.log(`Setting the state in ${chatThreadKey} failed: ${String(error)}`);
@@ -1541,7 +1746,7 @@ export class Bridge {
     const steps = feed.takeSteps();
     const step = this.platform(reply.chatThreadKey).step;
     if (step === undefined || steps.length === 0) return;
-    let listed = this.stepsListed.get(reply.runId) ?? 0;
+    let listed = this.stepsListed.get(replyKey(reply)) ?? 0;
     for (const each of steps) {
       if (listed >= MAX_STEPS_PER_RUN) break;
       listed += 1;
@@ -1549,7 +1754,7 @@ export class Bridge {
         this.log(`Listing a step of ${reply.runId} failed: ${String(error)}`);
       });
     }
-    this.stepsListed.set(reply.runId, listed);
+    this.stepsListed.set(replyKey(reply), listed);
   }
 
   /** Shows the run's to-do list where the platform has a place for it. A failure is only logged. */
@@ -1563,7 +1768,7 @@ export class Bridge {
   }
 
   private async watchUntilAnswered(reply: OwedReply, before?: Promise<void>): Promise<void> {
-    this.watchedRuns.set(reply.runId, reply.chatThreadKey);
+    this.watchedRuns.set(replyKey(reply), reply.chatThreadKey);
     const feed = new RunFeed(this.threads, reply.threadId, reply.runId);
     let postFailures = 0;
     let runId = reply.runId;
@@ -1583,6 +1788,11 @@ export class Bridge {
       const ended = !waited.timedOut && TERMINAL_STATUSES.has(waited.status);
       await this.check(reply, feed, ended);
       if (!ended) continue;
+      await this.platform(reply.chatThreadKey)
+        .runEnded?.(reply.chatThreadKey, reply.runId)
+        .catch(() => {
+          this.log(`Releasing resources for ${reply.runId} failed.`);
+        });
       await this.afterEarlierAnswer(before);
       try {
         await this.answer(reply, waited.runId, waited.status);
@@ -1613,7 +1823,12 @@ export class Bridge {
           ? await this.threads.finalAnswer(reply.threadId, finalRunId)
           : TERMINAL_TEXT[status];
       if (text !== undefined && !isQuietReply(text)) {
-        await this.post(reply.chatThreadKey, text);
+        await this.post(
+          reply.chatThreadKey,
+          text,
+          "answer",
+          `answer:${reply.threadId}:${finalRunId}`,
+        );
       } else {
         this.log(
           `${finalRunId} answered ${text === undefined ? "nothing" : QUIET_REPLY}; nothing posted to ${reply.chatThreadKey}.`,
@@ -1630,8 +1845,8 @@ export class Bridge {
           });
       }
     } catch (error) {
-      this.store.releaseReply(reply.runId);
-      if (finalRunId !== reply.runId) this.store.releaseReply(finalRunId);
+      this.store.releaseReply(reply.runId, reply.chatThreadKey);
+      if (finalRunId !== reply.runId) this.store.releaseReply(finalRunId, reply.chatThreadKey);
       throw error;
     }
   }

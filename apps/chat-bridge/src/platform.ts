@@ -43,6 +43,8 @@ export interface OutboundFile {
 export type OutboundKind = "answer" | "question" | "update";
 
 export interface OutboundMessage {
+  /** Stable delivery identity, independent of the message text. */
+  readonly eventId?: string | undefined;
   readonly chatThreadKey: string;
   readonly text: string;
   readonly files?: ReadonlyArray<OutboundFile> | undefined;
@@ -113,6 +115,12 @@ export interface ChatPlatform {
   readonly firstTurnNote: (chatKey: string, event: InboundEvent) => string;
   /** Why someone can't use the bot, and what to ask for. */
   readonly refusal: (userId: string) => string;
+  /** Refreshes request context just before handoff, without saving it to the inbox. Undefined rejects it. */
+  readonly prepare?: (event: InboundEvent) => Promise<InboundEvent | undefined>;
+  /** Associates prepared resources with the accepted run, including steers. */
+  readonly dispatched?: (event: InboundEvent, runId: string) => Promise<void>;
+  /** Releases resources for this run without touching a concurrent run's resources. */
+  readonly runEnded?: (chatThreadKey: string, runId: string) => Promise<void>;
 
   /** Posts an answer or a notice. */
   readonly post: (message: OutboundMessage) => Promise<void>;

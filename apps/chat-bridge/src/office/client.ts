@@ -1,0 +1,131 @@
+import { ConvexClient } from "convex/browser";
+import { makeFunctionReference } from "convex/server";
+
+export type InboxEvent =
+  | { id: string; kind: "message"; chatId: string; messageId: string; createdAt: number }
+  | { id: string; kind: "stop"; chatId: string; memberId: string; createdAt: number };
+
+export interface PreparedRequest {
+  eventId: string;
+  chatId: string;
+  chatUrl: string;
+  messageId: string;
+  author: { memberId: string; name: string; email: string };
+  text: string;
+  files: Array<{
+    attachmentId: string;
+    filename: string;
+    mimeType: string;
+    byteSize: number;
+    url: string;
+  }>;
+  modeKey: string;
+  model?: string;
+  instructions: string;
+  firstTurn: boolean;
+  legacyThreadId?: string;
+  slack?: { channelId: string; chatThreadKey?: string; rootText?: string };
+  sync?: boolean;
+  article?: {
+    convexUrl: string;
+    token: string;
+    runId: string;
+    expiresAt: number;
+    targetId?: string;
+    snapshot?: unknown;
+    instructions: string;
+  };
+}
+
+export type Prepared =
+  | { kind: "ready"; request: PreparedRequest }
+  | { kind: "skip"; reason: string };
+
+export interface OfficeMutations {
+  prepare: { args: { eventId: string }; result: Prepared };
+  ack: {
+    args: { eventId: string; result: "stored" | "rejected"; errorMessage?: string };
+    result: unknown;
+  };
+  post: {
+    args: {
+      chatId: string;
+      eventId: string;
+      kind: "answer" | "question" | "update";
+      text: string;
+      files?: Array<{ storageId: string; filename: string; mimeType: string }>;
+    };
+    result: unknown;
+  };
+  uploadUrl: { args: { chatId: string }; result: { url: string } };
+  step: {
+    args: { chatId: string; itemId: string; action: string; parameter: string; result: string };
+    result: unknown;
+  };
+  plan: {
+    args: {
+      chatId: string;
+      steps: Array<{ text: string; status: "pending" | "inProgress" | "completed" }>;
+    };
+    result: unknown;
+  };
+  state: {
+    args: { chatId: string; state: "processing" | "suspended" | "active"; text: string };
+    result: unknown;
+  };
+  rename: { args: { chatId: string; title: string }; result: unknown };
+  linkSlack: { args: { eventId: string; chatThreadKey: string }; result: unknown };
+}
+
+export interface OfficeApi {
+  subscribe(onInbox: (events: InboxEvent[]) => void, onError: () => void): () => void;
+  mutate<K extends keyof OfficeMutations>(
+    name: K,
+    args: OfficeMutations[K]["args"],
+  ): Promise<OfficeMutations[K]["result"]>;
+  close(): Promise<void>;
+}
+
+/** Convex owns subscription reconnects. Neither its logger nor thrown errors may expose arguments. */
+export class OfficeClient implements OfficeApi {
+  private readonly client: ConvexClient;
+  private readonly token: string;
+
+  constructor(url: string, token: string) {
+    this.token = token;
+    this.client = new ConvexClient(url, { logger: false });
+  }
+
+  subscribe(onInbox: (events: InboxEvent[]) => void, onError: () => void): () => void {
+    return this.client.onUpdate(
+      makeFunctionReference<"query", { serviceToken: string }, { events: InboxEvent[] }>(
+        "chatBridge:inbox",
+      ),
+      { serviceToken: this.token },
+      (result) => onInbox(result.events),
+      () => onError(),
+    );
+  }
+
+  async mutate<K extends keyof OfficeMutations>(
+    name: K,
+    args: OfficeMutations[K]["args"],
+  ): Promise<OfficeMutations[K]["result"]> {
+    try {
+      return await this.client.mutation(
+        makeFunctionReference<
+          "mutation",
+          Record<string, import("convex/values").Value>,
+          OfficeMutations[K]["result"]
+        >(`chatBridge:${name}`),
+        { ...args, serviceToken: this.token },
+      );
+    } catch {
+      throw new Error(`Office ${name} failed.`);
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.client.close();
+  }
+}

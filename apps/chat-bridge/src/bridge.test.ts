@@ -331,7 +331,7 @@ function harness(
         // An answer is recorded as before; anything else names its kind.
         post:
           options.post ??
-          (async ({ kind, ...reply }) =>
+          (async ({ kind, eventId: _eventId, ...reply }) =>
             void posted.push(kind === undefined || kind === "answer" ? reply : { ...reply, kind })),
         setState: async (chatThreadKey, state, text) =>
           void statuses.push(`${chatThreadKey} ${state}${text ? ` ${text}` : ""}`),

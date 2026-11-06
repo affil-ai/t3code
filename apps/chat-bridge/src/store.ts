@@ -143,8 +143,62 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
   // Databases made before threads could be muted, or replies knew who asked.
   addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "owed_reply", "requested_by", "TEXT");
+  migrateBindingGroups(db);
   // Feedback buttons were tried and removed (2026-11-04).
   db.exec("DROP TABLE IF EXISTS feedback");
+}
+
+function migrateBindingGroups(db: NodeSqlite.DatabaseSync): void {
+  if (db.prepare("SELECT 1 FROM bridge_meta WHERE key = 'binding_groups_v1'").get()) return;
+  db.exec("BEGIN");
+  try {
+    db.exec(`
+      CREATE TABLE binding_group (
+        thread_id TEXT PRIMARY KEY,
+        sync INTEGER NOT NULL DEFAULT 0,
+        last_chat_thread_key TEXT NOT NULL
+      );
+      INSERT INTO binding_group (thread_id, last_chat_thread_key)
+        SELECT thread_id, chat_thread_key FROM binding;
+      CREATE TABLE binding_group_member (
+        chat_thread_key TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        chat_key TEXT NOT NULL UNIQUE,
+        created_by_user_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        muted INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO binding_group_member SELECT
+        chat_thread_key, channel_id, project_id, thread_id, chat_key,
+        created_by_user_id, created_at, muted FROM binding;
+      DROP TABLE binding;
+      ALTER TABLE binding_group_member RENAME TO binding;
+      CREATE INDEX binding_thread ON binding (thread_id);
+      CREATE TABLE owed_reply_group (
+        run_id TEXT NOT NULL, thread_id TEXT NOT NULL, chat_thread_key TEXT NOT NULL,
+        posted_at INTEGER, requested_by TEXT, PRIMARY KEY (run_id, chat_thread_key)
+      );
+      INSERT INTO owed_reply_group SELECT run_id, thread_id, chat_thread_key, posted_at, requested_by FROM owed_reply;
+      DROP TABLE owed_reply;
+      ALTER TABLE owed_reply_group RENAME TO owed_reply;
+      CREATE TABLE question_group (
+        request_id TEXT NOT NULL, chat_thread_key TEXT NOT NULL, thread_id TEXT NOT NULL,
+        asked TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '', closed INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (request_id, chat_thread_key)
+      );
+      INSERT INTO question_group SELECT request_id, chat_thread_key, thread_id, asked, message_id, closed FROM question;
+      DROP TABLE question;
+      ALTER TABLE question_group RENAME TO question;
+      CREATE INDEX question_thread ON question (chat_thread_key);
+      INSERT INTO bridge_meta (key, value) VALUES ('binding_groups_v1', '1');
+    `);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function addColumn(db: NodeSqlite.DatabaseSync, table: string, column: string, type: string): void {
@@ -194,8 +248,46 @@ export class BridgeStore {
   }
 
   bindingByThreadId(threadId: string): Binding | undefined {
-    const row = this.db.prepare("SELECT * FROM binding WHERE thread_id = ?").get(threadId);
+    const row = this.db
+      .prepare(`SELECT b.* FROM binding b
+      LEFT JOIN binding_group g ON g.thread_id = b.thread_id
+      WHERE b.thread_id = ? ORDER BY b.chat_thread_key = g.last_chat_thread_key DESC, b.rowid LIMIT 1`)
+      .get(threadId);
     return row === undefined ? undefined : fromRow(row);
+  }
+
+  bindingsForThread(threadId: string): Array<Binding> {
+    return this.db
+      .prepare("SELECT * FROM binding WHERE thread_id = ? ORDER BY rowid")
+      .all(threadId)
+      .map(fromRow);
+  }
+
+  synced(threadId: string): boolean {
+    return (
+      this.db.prepare("SELECT sync FROM binding_group WHERE thread_id = ?").get(threadId)?.sync ===
+      1
+    );
+  }
+
+  setSync(threadId: string, sync: boolean): void {
+    this.db
+      .prepare("UPDATE binding_group SET sync = ? WHERE thread_id = ?")
+      .run(sync ? 1 : 0, threadId);
+  }
+
+  usedConversation(chatThreadKey: string): void {
+    this.db
+      .prepare(`UPDATE binding_group SET last_chat_thread_key = ?
+      WHERE thread_id = (SELECT thread_id FROM binding WHERE chat_thread_key = ?)`)
+      .run(chatThreadKey, chatThreadKey);
+  }
+
+  recipients(chatThreadKey: string): Array<string> {
+    const binding = this.binding(chatThreadKey);
+    return binding !== undefined && this.synced(binding.threadId)
+      ? this.bindingsForThread(binding.threadId).map((each) => each.chatThreadKey)
+      : [chatThreadKey];
   }
 
   /** Binds the conversation to another thread, replacing its binding if it has one. */
@@ -212,6 +304,11 @@ export class BridgeStore {
   }
 
   insertBinding(binding: Binding): void {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO binding_group (thread_id, last_chat_thread_key) VALUES (?, ?)`,
+      )
+      .run(binding.threadId, binding.chatThreadKey);
     this.db
       .prepare(
         `INSERT INTO binding
@@ -279,6 +376,12 @@ export class BridgeStore {
           .prepare(`UPDATE ${table} SET chat_thread_key = ? WHERE chat_thread_key = ?`)
           .run(to, from);
       }
+      this.db
+        .prepare("UPDATE binding_group SET last_chat_thread_key = ? WHERE last_chat_thread_key = ?")
+        .run(to, from);
+      this.db
+        .prepare("UPDATE delegated_follow SET chat_thread_key = ? WHERE chat_thread_key = ?")
+        .run(to, from);
       this.db.exec("COMMIT");
       return true;
     } catch (error) {
@@ -409,7 +512,7 @@ export class BridgeStore {
     const inserted = this.db
       .prepare(
         `INSERT INTO question (request_id, chat_thread_key, thread_id, asked, message_id, closed)
-          VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO NOTHING RETURNING request_id`,
+          VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (request_id, chat_thread_key) DO NOTHING RETURNING request_id`,
       )
       .all(
         record.asked.requestId,
@@ -424,18 +527,33 @@ export class BridgeStore {
 
   updateQuestion(record: AskedRecord): void {
     this.db
-      .prepare("UPDATE question SET asked = ?, message_id = ?, closed = ? WHERE request_id = ?")
+      .prepare(
+        "UPDATE question SET asked = ?, message_id = ?, closed = ? WHERE request_id = ? AND chat_thread_key = ?",
+      )
       .run(
         JSON.stringify(record.asked),
         record.messageId,
         record.closed ? 1 : 0,
         record.asked.requestId,
+        record.chatThreadKey,
       );
   }
 
-  question(requestId: string): AskedRecord | undefined {
-    const row = this.db.prepare("SELECT * FROM question WHERE request_id = ?").get(requestId);
+  question(requestId: string, chatThreadKey?: string): AskedRecord | undefined {
+    const row =
+      chatThreadKey === undefined
+        ? this.db.prepare("SELECT * FROM question WHERE request_id = ?").get(requestId)
+        : this.db
+            .prepare("SELECT * FROM question WHERE request_id = ? AND chat_thread_key = ?")
+            .get(requestId, chatThreadKey);
     return row === undefined ? undefined : questionFromRow(row);
+  }
+
+  questionCopies(requestId: string): Array<AskedRecord> {
+    return this.db
+      .prepare("SELECT * FROM question WHERE request_id = ?")
+      .all(requestId)
+      .map(questionFromRow);
   }
 
   /** The chat thread's questions still waiting, oldest first. */
@@ -467,9 +585,9 @@ export class BridgeStore {
     this.oweReply(reply);
     const claimed = this.db
       .prepare(
-        "UPDATE owed_reply SET posted_at = ? WHERE run_id = ? AND posted_at IS NULL RETURNING run_id",
+        "UPDATE owed_reply SET posted_at = ? WHERE run_id = ? AND chat_thread_key = ? AND posted_at IS NULL RETURNING run_id",
       )
-      .all(this.now(), reply.runId);
+      .all(this.now(), reply.runId, reply.chatThreadKey);
     return claimed.length > 0;
   }
 
@@ -518,7 +636,12 @@ export class BridgeStore {
       }));
   }
 
-  releaseReply(runId: string): void {
-    this.db.prepare("UPDATE owed_reply SET posted_at = NULL WHERE run_id = ?").run(runId);
+  releaseReply(runId: string, chatThreadKey?: string): void {
+    if (chatThreadKey === undefined)
+      this.db.prepare("UPDATE owed_reply SET posted_at = NULL WHERE run_id = ?").run(runId);
+    else
+      this.db
+        .prepare("UPDATE owed_reply SET posted_at = NULL WHERE run_id = ? AND chat_thread_key = ?")
+        .run(runId, chatThreadKey);
   }
 }
