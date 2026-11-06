@@ -1612,12 +1612,22 @@ export class Bridge {
         status === "completed"
           ? await this.threads.finalAnswer(reply.threadId, finalRunId)
           : TERMINAL_TEXT[status];
-      if (text !== undefined && isQuietReply(text)) {
-        this.log(
-          `${finalRunId} answered ${QUIET_REPLY}; nothing posted to ${reply.chatThreadKey}.`,
-        );
-      } else if (text !== undefined) {
+      if (text !== undefined && !isQuietReply(text)) {
         await this.post(reply.chatThreadKey, text);
+      } else {
+        this.log(
+          `${finalRunId} answered ${text === undefined ? "nothing" : QUIET_REPLY}; nothing posted to ${reply.chatThreadKey}.`,
+        );
+        // An answer still owed here ends the conversation's turn itself.
+        const later = this.store
+          .pendingReplies()
+          .some((each) => each.chatThreadKey === reply.chatThreadKey);
+        if (later) return;
+        await this.platform(reply.chatThreadKey)
+          .quiet?.(reply.chatThreadKey)
+          .catch((error: unknown) => {
+            this.log(`Ending the quiet run in ${reply.chatThreadKey} failed: ${String(error)}`);
+          });
       }
     } catch (error) {
       this.store.releaseReply(reply.runId);

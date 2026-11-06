@@ -13,6 +13,7 @@ import {
   type LinearApi,
   linearEvent,
   REACTIONS_UNSEEN,
+  QUIET_DONE,
   sessionIdOf,
   linearPlatform,
   mimeTypeOf,
@@ -406,6 +407,42 @@ it("posts only the answer as a response: a question asks, an update is a thought
     },
   ]);
   assert.deepStrictEqual(responses, ["All done."]);
+});
+
+it("ends a session still showing work when its run stays quiet, and leaves an ended one alone", async () => {
+  const responses: Array<string> = [];
+  const logs: Array<string> = [];
+  let status = "active";
+  const { platform } = linearPlatform({
+    chat: () =>
+      ({
+        thread: () => ({
+          post: async (message: { markdown: string }) => void responses.push(message.markdown),
+        }),
+      }) as never,
+    adapter: () => ({
+      startTyping: async () => {},
+      botUserId: "bot",
+      linearClient: {
+        ...noSession,
+        issue: async () => ({ team: Promise.resolve({ key: "ENG" }) }),
+        fileUpload: async () => ({}),
+        agentSession: async () => ({ status, activities: async () => ({ nodes: [] }) }),
+      },
+    }),
+    access: { allowedUserIds: [], allowEveryone: true },
+    teams: [],
+    defaultRoute: { projectId: "p" },
+    onEvent: async () => ({ type: "pending" }),
+    log: (line) => void logs.push(line),
+  });
+  await platform.quiet!(THREAD);
+  assert.deepStrictEqual(responses, [QUIET_DONE]);
+  assert.include(logs.join("\n"), "session session-1 was active after a quiet run");
+  // A second quiet wake after the answer, as a subagent's double wake gives, posts nothing.
+  status = "complete";
+  await platform.quiet!(THREAD);
+  assert.deepStrictEqual(responses, [QUIET_DONE]);
 });
 
 it("hands over prompts the session has but the bridge never got, oldest first, before the new one", async () => {

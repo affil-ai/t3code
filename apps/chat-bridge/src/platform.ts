@@ -150,6 +150,12 @@ export interface ChatPlatform {
    * thread under an opening message, and returns its chat thread key.
    */
   readonly startConversation?: (where: string, text: string) => Promise<string>;
+  /**
+   * A run ended without an answer: `NO_REPLY` or no final message. Ends
+   * anything still waiting on one, such as a Linear session showing the
+   * agent at work.
+   */
+  readonly quiet?: (chatThreadKey: string) => Promise<void>;
   /** Called once a conversation is bound, so the platform can follow it. */
   readonly bound?: (chatThreadKey: string) => Promise<void>;
 }

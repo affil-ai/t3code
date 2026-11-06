@@ -309,6 +309,7 @@ function harness(
   let clock = 0;
   const scheduled: Array<number> = [];
   const downloads: Array<string> = [];
+  const quieted: Array<string> = [];
   const bridge = new Bridge({
     store,
     threads: new T3Threads(t3.tools),
@@ -366,6 +367,7 @@ function harness(
           return new Uint8Array([1, 2, 3]);
         },
         ...(options.history ? { history: options.history } : {}),
+        quiet: async (chatThreadKey) => void quieted.push(chatThreadKey),
       },
     ],
     // Tests run retries themselves, by moving the clock and calling `resume`.
@@ -385,6 +387,7 @@ function harness(
     renamed,
     scheduled,
     downloads,
+    quieted,
     db,
     advance: (ms: number) => (clock += ms),
     setClock: (ms: number) => (clock = ms),
@@ -1779,6 +1782,29 @@ it("says so in the chat when six hours pass with background work still running",
   assert.lengthOf(store.follows(), 0);
 });
 
+it("leaves ending the turn to a later owed answer when a subagent's first wake is quiet", async () => {
+  const { t3, bridge, posted, quieted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", "Started a subagent.");
+  await t3.tick();
+  t3.activity.push({ itemId: "wake-5", type: "notification", runId: "run-5", status: "running" });
+  t3.activity.push({ itemId: "wake-6", type: "notification", runId: "run-6", status: "running" });
+  t3.options.delegatedPending = false;
+  await t3.tick();
+  t3.finish("run-5", "completed", "NO_REPLY");
+  await t3.tick();
+  // run-6 is still owed, so its answer ends the turn, not a quiet note.
+  assert.lengthOf(quieted, 0);
+  t3.finish("run-6", "completed", "subagent-result: done");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Started a subagent.", "subagent-result: done"],
+  );
+  assert.lengthOf(quieted, 0);
+});
+
 it("posts the answers of runs that end together in the order they were owed", async () => {
   const { t3, bridge, posted } = harness();
   await bridge.receive(event("100.1"));
@@ -1801,11 +1827,13 @@ it("posts the answers of runs that end together in the order they were owed", as
 });
 
 it("posts nothing for a run that answers NO_REPLY, and tells every chat how to", async () => {
-  const { t3, bridge, posted } = harness();
+  const { t3, bridge, posted, quieted } = harness();
   await bridge.receive(event("100.1"));
   t3.finish("run-1", "completed", " `NO_REPLY`. ");
   await bridge.idle();
   assert.lengthOf(posted, 0);
+  // The platform still hears the run ended, so a Linear session can stop showing work.
+  assert.deepStrictEqual(quieted, ["slack:C1:100.1"]);
   // Only a final message that is the marker alone stays quiet.
   assert.isTrue(isQuietReply("NO_REPLY"));
   assert.isFalse(isQuietReply("NO_REPLY was wrong earlier; here are the logs."));

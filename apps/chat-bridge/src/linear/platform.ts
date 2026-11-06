@@ -80,6 +80,8 @@ export interface LinearApi {
     },
   ) => Promise<unknown>;
   readonly agentSession: (id: string) => Promise<{
+    /** Such as "active" while the agent works, or "complete" after a response. */
+    readonly status?: string;
     readonly activities: (variables: { readonly last: number }) => Promise<{
       readonly nodes: ReadonlyArray<SessionActivity>;
     }>;
@@ -115,6 +117,8 @@ const PLAN_STATUS: Readonly<Record<PlanStep["status"], LinearPlanStatus>> = {
 
 /** Prompts read back from a session per delivery; a burst bigger than this is rare. */
 const RECONCILE_LAST = 20;
+/** The response that ends a session whose run chose not to answer. */
+export const QUIET_DONE = "Done, nothing to add.";
 
 /** The issue a Linear thread id (`linear:{issueId}[:c:{commentId}][:s:{sessionId}]`) is on. */
 export const issueIdOf = (threadId: string) => threadId.split(":")[1] ?? "";
@@ -599,6 +603,19 @@ export function linearPlatform(options: {
           .thread(sessionThread(chatThreadKey))
           .post({ markdown: held.join("\n\n") });
       }
+    },
+    // A session stays active, showing the agent at work, until a response ends it.
+    quiet: async (chatThreadKey) => {
+      const thread = sessionThread(chatThreadKey);
+      const agentSessionId = sessionIdOf(thread);
+      if (agentSessionId === undefined) return;
+      const { status } = await retry(() => client().agentSession(agentSessionId));
+      if (status !== "active" && status !== "pending") return;
+      const held = takeHeld(chatThreadKey);
+      await chat()
+        .thread(thread)
+        .post({ markdown: held.length > 0 ? held.join("\n\n") : QUIET_DONE });
+      options.log(`Linear: session ${agentSessionId} was ${status} after a quiet run; ended it.`);
     },
     bound: async (chatThreadKey) => {
       await chat().thread(sessionThread(chatThreadKey)).subscribe();
