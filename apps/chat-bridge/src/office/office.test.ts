@@ -231,6 +231,8 @@ async function harness(
     JSON.stringify({ name: "tsx", exports: { "./cli": "./cli.mjs" } }),
   );
   await NodeFSP.writeFile(NodePath.join(fixture, "cli.mjs"), "");
+  await NodeFSP.mkdir(NodePath.join(home, "apps/office/scripts"), { recursive: true });
+  await NodeFSP.writeFile(NodePath.join(home, "apps/office/scripts/article-workspace.cts"), "");
   const db = options.db ?? new NodeSqlite.DatabaseSync(":memory:");
   ensureSchema(db);
   const store = new BridgeStore(db);

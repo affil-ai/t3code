@@ -253,7 +253,7 @@ async function start(): Promise<void> {
             store,
             route: { projectId: office.projectId, worktreeFrom: office.worktreeFrom },
             home: dir,
-            repositoryPath: project.workspaceRoot,
+            repositoryPath: office.repositoryPath ?? project.workspaceRoot,
             slack: platforms.find((platform) => platform.id === "slack"),
             log,
           });
@@ -460,6 +460,8 @@ function takeOfficeSettings():
       readonly serviceToken: string;
       readonly projectId: string;
       readonly worktreeFrom: string | undefined;
+      /** A nextcard checkout with its packages installed, for the article workspace tool. */
+      readonly repositoryPath: string | undefined;
     }
   | undefined {
   const serviceToken = process.env.OFFICE_CHAT_BRIDGE_TOKEN;
@@ -477,6 +479,7 @@ function takeOfficeSettings():
     serviceToken,
     projectId,
     worktreeFrom: process.env.OFFICE_WORKTREE_FROM || undefined,
+    repositoryPath: process.env.OFFICE_REPOSITORY_PATH || undefined,
   };
 }
 

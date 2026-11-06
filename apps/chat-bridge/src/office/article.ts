@@ -107,7 +107,15 @@ export class ArticleFiles {
     await NodeFSP.chmod(workspace, 0o700);
 
     const app = NodePath.resolve(this.repositoryPath, "apps/office");
-    const tsx = NodeModule.createRequire(NodePath.join(app, "package.json")).resolve("tsx/cli");
+    let tsx: string;
+    try {
+      tsx = NodeModule.createRequire(NodePath.join(app, "package.json")).resolve("tsx/cli");
+      await NodeFSP.access(NodePath.join(app, "scripts/article-workspace.cts"));
+    } catch {
+      throw new Error(
+        `Office's article tool isn't installed in ${this.repositoryPath}. Set OFFICE_REPOSITORY_PATH to a nextcard checkout with its packages installed.`,
+      );
+    }
     const command = [
       process.execPath,
       tsx,

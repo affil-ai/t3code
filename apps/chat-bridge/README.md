@@ -331,8 +331,10 @@ the core's replies and status back.
 ## Office
 
 Set `OFFICE_CONVEX_URL`, `OFFICE_CHAT_BRIDGE_TOKEN`, and `OFFICE_T3_PROJECT_ID`
-in the bridge's environment. The project must point to a nextcard checkout
-with Office's dependencies installed if article chats are enabled.
+in the bridge's environment. Article chats run Office's article tool
+(`apps/office/scripts/article-workspace.cts`) from a nextcard checkout with its
+packages installed: `OFFICE_REPOSITORY_PATH`, or the project's checkout when
+it isn't set.
 `OFFICE_WORKTREE_FROM` optionally starts new threads in worktrees from that
 branch. The bridge removes the service token from its environment after
 reading it. The old `OFFICE_AGENT_SERVICE_TOKEN` is no longer used.
