@@ -101,7 +101,34 @@ export function unwrapShell(command: string): string {
   }
   const [, quote = "", body = ""] = match;
   // The first line of a multi-line script has no closing quote; mark that more follows.
-  return body.endsWith(quote) ? body.slice(0, -1).trim() : `${body.trim()} …`;
+  const unwrapped = body.endsWith(quote) ? body.slice(0, -1).trim() : `${body.trim()} …`;
+  // Only double-quoted shell arguments interpret these escapes; single quotes keep them literal.
+  return quote === '"' ? unwrapped.replace(/\\(["\\$`])/g, "$1") : unwrapped;
+}
+
+function shortPathParameter(value: string, command: boolean): string {
+  const redacted = redactSecrets(value);
+  if (!/(?:^|[\s='"(])\/[^\s'";)]{40,}/.test(redacted)) return redacted;
+  const words = redacted.match(/(?:[^\s;'"]+|"[^"]*"|'[^']*')+|;/g) ?? [];
+  const unquote = (word: string) => word.replace(/^(['"])(.*)\1$/, "$2");
+  if (!command)
+    return (
+      unquote(words[0] ?? "")
+        .split("/")
+        .at(-1) ?? ""
+    );
+  let assignment: string | undefined;
+  for (const word of words) {
+    if (word === ";" || word === "export") continue;
+    const named = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(word);
+    if (named) {
+      const value = unquote(word.slice(named[0].length));
+      if (value.startsWith("/")) assignment ??= value.split("/").filter(Boolean).at(-1);
+      continue;
+    }
+    return unquote(word).split("/").at(-1) ?? "";
+  }
+  return assignment || "<path>";
 }
 
 /** T3's own setup steps, such as preparing the workspace; not the agent's work. */
@@ -143,7 +170,12 @@ export function work(item: ActivityItem): Work | undefined {
       if (item.title) return { doing: item.title, done: item.title, parameter: "" };
       const first = text.split("\n", 1)[0] ?? "";
       const command = unwrapShell(first.startsWith("$ ") ? first.slice(2) : first);
-      return step(["Running", "Ran"], command, ["Running a command", "Ran a command"], true);
+      return step(
+        ["Running", "Ran"],
+        shortPathParameter(command, true),
+        ["Running a command", "Ran a command"],
+        true,
+      );
     }
     case "web_search":
       return step(
@@ -160,10 +192,11 @@ export function work(item: ActivityItem): Work | undefined {
       );
     }
     case "file_change":
-      return step(["Editing", "Edited"], text.split("\n", 1)[0] || item.title, [
-        "Editing files",
-        "Edited files",
-      ]);
+      return step(
+        ["Editing", "Edited"],
+        shortPathParameter(text.split("\n", 1)[0] || item.title || "", false),
+        ["Editing files", "Edited files"],
+      );
     case "todo_list":
       return { doing: "Planning", done: "", parameter: "" };
     case "dynamic_tool": {

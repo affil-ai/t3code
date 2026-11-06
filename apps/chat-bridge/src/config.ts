@@ -13,6 +13,8 @@ import type { ChannelRoute, ThreadRoute } from "./platform.ts";
 export interface BridgeConfig {
   /** The T3 server's origin, such as `http://127.0.0.1:3773`. */
   readonly t3Url: string;
+  /** Pins thread and project calls to this environment on the configured server. */
+  readonly t3EnvironmentId?: string | undefined;
   /**
    * Which T3 project a mention in each Slack channel starts its thread in. A
    * channel may have several entries; the first whose `match` the message
@@ -254,6 +256,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
   }
   return {
     t3Url,
+    t3EnvironmentId: optionalText(raw, "t3EnvironmentId"),
     channelProjects,
     dmProjectId: raw.dmProjectId as string | undefined,
     allowedUserIds: stringList(raw.allowedUserIds, "allowedUserIds"),

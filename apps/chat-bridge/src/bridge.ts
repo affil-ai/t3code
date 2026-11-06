@@ -807,15 +807,13 @@ export class Bridge {
     if (binding === undefined && event.legacyThreadId !== undefined) {
       const shape = await this.threads.shape(event.legacyThreadId).catch(() => undefined);
       if (shape !== undefined) {
-        this.store.insertBinding({
+        binding = this.store.adoptBinding({
           chatThreadKey: event.chatThreadKey,
           channelId: event.channelId,
           projectId: shape.projectId,
           threadId: event.legacyThreadId,
-          chatKey: NodeCrypto.randomBytes(16).toString("hex"),
           createdByUserId: event.author.userId,
         });
-        binding = this.store.binding(event.chatThreadKey);
         adopted = true;
         await this.bindLinked(event.chatThreadKey);
       }

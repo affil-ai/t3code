@@ -75,6 +75,58 @@ it("leaves out conversation, bookkeeping and T3's own setup", () => {
   assert.strictEqual(unwrapShell(`zsh -c "ls -la"`), "ls -la");
   assert.strictEqual(unwrapShell("bash scripts/run.sh"), "bash scripts/run.sh");
   assert.strictEqual(unwrapShell("/bin/bash -lc ls"), "ls");
+  assert.strictEqual(
+    unwrapShell(String.raw`/bin/bash -lc "python3 -c \"import time; time.sleep(1)\""`),
+    'python3 -c "import time; time.sleep(1)"',
+  );
+  assert.strictEqual(
+    finishedStep(
+      item({
+        type: "command_execution",
+        status: "completed",
+        text: String.raw`$ /bin/bash -lc "python3 -c \"import time\""`,
+      }),
+    )?.parameter,
+    'python3 -c "import time"',
+  );
+  assert.strictEqual(
+    unwrapShell(String.raw`bash -c 'echo \"literal\"'`),
+    String.raw`echo \"literal\"`,
+  );
+});
+
+it("shortens host paths and leading path assignments without exposing secrets", () => {
+  const home =
+    "/home/vivek-affil/.t3/worktrees/t3work/feat-chat-bridge-slack/.scratch/bridge-home-native";
+  for (const [type, text, expected] of [
+    ["file_change", `${home}/office-article/chat/request/edit.json\nprivate content`, "edit.json"],
+    [
+      "command_execution",
+      `$ ${home}/office-article/chat/request/article-tool snapshot`,
+      "article-tool",
+    ],
+    [
+      "command_execution",
+      `$ D='${home}/office-article/chat/request'; python3 -c 'print(1)'`,
+      "python3",
+    ],
+    ["command_execution", `$ D='${home}/office-article/chat/request'`, "request"],
+    [
+      "command_execution",
+      `$ bash '${home}/office-article/chat/request/article-tool' snapshot`,
+      "bash",
+    ],
+    [
+      "command_execution",
+      `$ D='${home}/office-article/chat/request'; TOKEN=ghp_abcdefghijklmnopqrstuvwxyz node tool`,
+      "node",
+    ],
+    ["file_change", `${home}/sk-proj-abcdefghijklmnopqrstuv`, "<redacted>"],
+  ]) {
+    const step = item({ type: type!, status: "completed", text: text! });
+    assert.strictEqual(finishedStep(step)?.parameter, expected);
+    assert.notInclude(statusLine(step) ?? "", "/home/");
+  }
 });
 
 it("shows the newest step still going, and thinking between steps", () => {

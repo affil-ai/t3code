@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off -- A plain Node app; it does not use Effect.
 /**
- * t3-chat-bridge `login | start | manifest`; see README.md. Settings are in
+ * t3-chat-bridge `login | start | manifest | import-office`; see README.md. Settings are in
  * `<data dir>/config.json` (or `--config FILE`); the data dir is
  * `~/.t3-chat-bridge` unless T3_CHAT_BRIDGE_HOME says otherwise.
  */
@@ -31,6 +31,8 @@ import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
 import { OfficeClient } from "./office/client.ts";
 import { createOfficeChannel } from "./office/platform.ts";
+import { OfficeExportClient } from "./office/legacy.ts";
+import { importOffice } from "./office/import.ts";
 import { startToolServer } from "./toolServer.ts";
 import { startWebhookServer, type WebhookRoute } from "./webhookServer.ts";
 
@@ -45,6 +47,7 @@ const { positionals, values } = NodeUtil.parseArgs({
     "t3-url": { type: "string" },
     "callback-port": { type: "string", default: "3921" },
     name: { type: "string", default: "T3 Code" },
+    "dry-run": { type: "boolean", default: false },
   },
 });
 const dir = dataDir();
@@ -72,7 +75,8 @@ async function start(): Promise<void> {
   NodeFS.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const db = openDatabase(NodePath.join(dir, "bridge.db"));
   const store = new BridgeStore(db);
-  const t3 = new T3Client(new URL(config.t3Url), token);
+  const t3 = new T3Client(new URL(config.t3Url), token, config.t3EnvironmentId);
+  if (config.t3EnvironmentId) await t3.verifyEnvironment();
   const threads = new T3Threads(
     t3,
     { runtimeMode: config.runtimeMode, modelSelection: config.modelSelection },
@@ -454,6 +458,18 @@ async function start(): Promise<void> {
  * Office's channel settings, when it is on. The service token is removed from
  * the environment, like Linear's secrets.
  */
+function takeOfficeConnection():
+  | { readonly convexUrl: string; readonly serviceToken: string }
+  | undefined {
+  const serviceToken = process.env.OFFICE_CHAT_BRIDGE_TOKEN;
+  delete process.env.OFFICE_CHAT_BRIDGE_TOKEN;
+  const convexUrl = process.env.OFFICE_CONVEX_URL;
+  if (!serviceToken && !convexUrl) return undefined;
+  if (!serviceToken || !convexUrl)
+    throw new Error("Office requires OFFICE_CONVEX_URL and OFFICE_CHAT_BRIDGE_TOKEN.");
+  return { convexUrl, serviceToken };
+}
+
 function takeOfficeSettings():
   | {
       readonly convexUrl: string;
@@ -464,19 +480,16 @@ function takeOfficeSettings():
       readonly repositoryPath: string | undefined;
     }
   | undefined {
-  const serviceToken = process.env.OFFICE_CHAT_BRIDGE_TOKEN;
-  delete process.env.OFFICE_CHAT_BRIDGE_TOKEN;
-  const convexUrl = process.env.OFFICE_CONVEX_URL;
+  const connection = takeOfficeConnection();
+  if (!connection) return undefined;
   const projectId = process.env.OFFICE_T3_PROJECT_ID;
-  if (!serviceToken && !convexUrl) return undefined;
-  if (!serviceToken || !convexUrl || !projectId) {
+  if (!projectId) {
     throw new Error(
       "Office requires OFFICE_CONVEX_URL, OFFICE_CHAT_BRIDGE_TOKEN, and OFFICE_T3_PROJECT_ID.",
     );
   }
   return {
-    convexUrl,
-    serviceToken,
+    ...connection,
     projectId,
     worktreeFrom: process.env.OFFICE_WORKTREE_FROM || undefined,
     repositoryPath: process.env.OFFICE_REPOSITORY_PATH || undefined,
@@ -523,6 +536,36 @@ function linearLogger(log: (line: string) => void) {
 async function main(): Promise<void> {
   const [command] = positionals;
   if (command === "start") return start();
+  if (command === "import-office") {
+    const config = loadConfig(configFile);
+    const office = takeOfficeConnection();
+    if (!office) throw new Error("Set OFFICE_CONVEX_URL and OFFICE_CHAT_BRIDGE_TOKEN.");
+    const token = process.env.T3_TOKEN || savedToken(dir, config.t3Url);
+    if (!token)
+      throw new Error(`Not signed in to ${config.t3Url}. Run \`t3-chat-bridge login\` first.`);
+    const t3 = new T3Client(new URL(config.t3Url), token, config.t3EnvironmentId);
+    try {
+      const environmentId = await t3.verifyEnvironment();
+      print(
+        JSON.stringify({
+          dryRun: values["dry-run"],
+          t3Url: config.t3Url,
+          environmentId,
+        }),
+      );
+      const counts = await importOffice({
+        home: dir,
+        dryRun: values["dry-run"],
+        office: new OfficeExportClient(office.convexUrl, office.serviceToken),
+        threads: new T3Threads(t3),
+        report: (row) => print(JSON.stringify(row)),
+      });
+      print(JSON.stringify({ dryRun: values["dry-run"], ...counts }));
+    } finally {
+      await t3.close();
+    }
+    return;
+  }
   if (command === "login") {
     const t3Url = values["t3-url"] ?? loadConfig(configFile).t3Url;
     return login({ t3Url, dataDir: dir, callbackPort: Number(values["callback-port"]), print });
@@ -531,7 +574,9 @@ async function main(): Promise<void> {
     print(slackAppManifest(values.name));
     return;
   }
-  print("Usage: t3-chat-bridge <start | login | manifest>. See apps/chat-bridge/README.md.");
+  print(
+    "Usage: t3-chat-bridge <start | login | manifest | import-office [--dry-run]>. See apps/chat-bridge/README.md.",
+  );
   process.exitCode = command === undefined ? 0 : 1;
 }
 

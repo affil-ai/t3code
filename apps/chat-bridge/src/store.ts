@@ -6,6 +6,7 @@
  * (see `chatState.ts`).
  */
 import * as NodeSqlite from "node:sqlite";
+import * as NodeCrypto from "node:crypto";
 
 import type { Asked } from "./questions.ts";
 
@@ -325,6 +326,17 @@ export class BridgeStore {
         binding.createdByUserId,
         this.now(),
       );
+  }
+
+  /** Adopts history without owing any earlier run's answer or replacing a binding. */
+  adoptBinding(input: Omit<Binding, "chatKey">): Binding {
+    const existing = this.binding(input.chatThreadKey);
+    if (existing !== undefined && existing.threadId !== input.threadId) {
+      throw new Error("Cannot adopt a conversation bound to another T3 thread.");
+    }
+    if (existing !== undefined) return existing;
+    this.insertBinding({ ...input, chatKey: NodeCrypto.randomBytes(16).toString("hex") });
+    return this.binding(input.chatThreadKey)!;
   }
 
   setMuted(chatThreadKey: string, muted: boolean): void {

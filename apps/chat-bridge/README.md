@@ -215,6 +215,12 @@ when that is set. Create `config.json` there:
 ```
 
 - `t3Url`: your T3 server's address.
+- `t3EnvironmentId`: optional. Checks that `t3Url` serves this environment,
+  then pins thread, project, and pending-request calls to it. Without it,
+  T3 uses the connected server's local environment. Use the ID from
+  `t3_environment_read`, not an Office worker registration name. All channels
+  on one bridge use this target. Linked remote environments are not supported;
+  attachment tools operate on the connected server.
 - `channelProjects`: which T3 project a mention in each channel starts its
   thread in. A channel id is in the channel's **About** panel. A project id is
   in T3, or from the `t3_project_list` MCP tool. A channel can have several
@@ -374,9 +380,167 @@ unsynced groups. Linking is host-controlled, with no user-facing linking tool.
 
 This v1 keeps the core's existing delivery guarantees and forty-step limit.
 It does not add a durable output outbox, execution-specific stop fences,
-history import, or production cutover. Posts have stable reply identities
+history import. Posts have stable reply identities
 for Office's deduplication. An upload retried before the post succeeds can
 leave an unused storage object.
+
+## Cutover from office-t3-worker
+
+`import-office` reads every page of `chatBridge:legacyBindings` with the
+Office service token. It checks each T3 thread before importing it. It never
+sends a T3 message, subscribes to Office's inbox, connects to Slack, or owes
+an answer from an earlier run.
+
+The import adopts these destinations:
+
+- `slack`: the Slack key only. The Office chat remains history.
+- `support`: the Office key and Slack key, with group sync enabled.
+- `office`: the Office key. A later `prepare` can also adopt it lazily.
+
+Slack subscriptions are local Chat SDK state in the same database. They let
+staff replies in the old Slack threads reach the bridge after it starts.
+Importing does not post anything to those threads.
+
+### Target the shared T3 server
+
+The bridge connects to `<t3Url>/mcp` with an MCP bearer token. It does not
+start a T3 server. On the cutover host, these values were verified read-only
+on November 6, 2026:
+
+```json
+{
+  "t3Url": "http://127.0.0.1:3778",
+  "t3EnvironmentId": "ca333224-0a70-495a-b0e1-419928d47e9c",
+  "channelProjects": [],
+  "allowedUserIds": [],
+  "runtimeMode": "full-access"
+}
+```
+
+The old worker uses that server through native RPC, with a different
+credential type. Do not copy its `T3_BEARER_TOKEN` into `T3_TOKEN`. Use
+`login --t3-url http://127.0.0.1:3778` to approve an MCP login at the access
+level the bridge needs. The login is bound to the server's origin. A login
+for the rehearsal server on port 3911 cannot authenticate to port 3778.
+An existing MCP credential may instead come from `T3_TOKEN`.
+
+Office needs these non-secret settings in the bridge's environment:
+
+```sh
+export OFFICE_T3_PROJECT_ID=1bac8beb-ae3c-4fb4-ad4e-24bd3186525f
+export OFFICE_REPOSITORY_PATH=/home/vivek-affil/nextcard
+export OFFICE_WORKTREE_FROM=dev
+```
+
+That project is the worker's registered `/home/vivek-affil/office` project,
+not the primary nextcard checkout's project. Keep using it for Office
+threads. `OFFICE_REPOSITORY_PATH` points to an installed nextcard checkout
+containing the cutover version of `apps/office/scripts/article-workspace.cts`;
+update that checkout before enabling article chats. It does not change the
+T3 project's workspace. `OFFICE_WORKTREE_FROM=dev` preserves the worker's
+default of creating worktrees for new conversations.
+
+Set `OFFICE_CONVEX_URL` to the intended Office deployment and supply
+`OFFICE_CHAT_BRIDGE_TOKEN` through the owning environment's secret manager.
+The importer needs only these two Office settings; it reads each imported
+thread's project from T3. Exported `environmentId` values are historical
+metadata, not routing instructions. In particular, the worker registered
+as `dev-affil-server-t3`; that is not the shared server's MCP environment ID.
+Thread existence on the configured T3 target is authoritative.
+
+The minimal config above enables no Slack access by itself. Before starting
+the bridge, restore the intended Slack allowlist and channel routes using
+project IDs on the shared server, and supply the production Slack app
+credentials. Check every other enabled channel's routes too. Do not reuse
+the scratch server's project IDs, MCP login, or binding database.
+
+### Import with the bridge stopped
+
+Run these commands from `apps/chat-bridge`. The cutover owner first drains
+the legacy worker and stops it as part of the production cutover. Then stop
+the bridge with `systemctl --user stop t3-chat-bridge.service` and keep it
+stopped through import and verification. Concurrent import and bridge
+execution against the same home are not supported. A rehearsal in a fresh
+scratch home does not require stopping either live service.
+Do not change the shared T3 service or its configuration.
+
+1. Choose the production bridge home and write its `config.json`. For a
+   rehearsal, use a fresh `mktemp -d` directory. Never use the running
+   `.scratch/bridge-home-native` home for a rehearsal.
+
+   ```sh
+   export T3_CHAT_BRIDGE_HOME=/path/to/cutover-bridge-home
+   node src/bin.ts login --t3-url http://127.0.0.1:3778
+   ```
+
+2. If this home already has a database, checkpoint it after stopping the
+   bridge. A dry-run refuses a nonempty WAL because an immutable read would
+   miss its uncheckpointed changes.
+
+   ```sh
+   sqlite3 "$T3_CHAT_BRIDGE_HOME/bridge.db" 'PRAGMA wal_checkpoint(TRUNCATE);'
+   ```
+
+3. Preview the import with the Office credentials injected through
+   Infisical. This command does not create a bridge home or write database
+   files. `imported` counts rows that would change, not writes performed.
+
+   ```sh
+   agent-env office prod -- node src/bin.ts import-office --dry-run
+   ```
+
+4. Resolve unexpected `thread_not_found` skips or conflicts before proceeding.
+   A scratch-server URL is a common cause of missing legacy threads. Then
+   import and rerun:
+
+   ```sh
+   agent-env office prod -- node src/bin.ts import-office
+   agent-env office prod -- node src/bin.ts import-office
+   ```
+
+Each command prints one JSON result per exported row and a final summary
+with `imported`, `unchanged`, `skipped` by reason, and `conflicts`.
+Counts are per export row, so a support pair counts once. The summary also
+includes Office's per-page skip counts, including empty pages. A rerun
+reports zero imports once all bindings, sync flags, and subscriptions exist.
+A repair of a missing subscription or support sync flag counts as imported.
+
+A key bound to another T3 thread is a conflict. The importer leaves the
+whole row alone, including both destinations of a support case. It never
+replaces a key, disables an existing sync flag, or changes a chat key.
+Auth, network, and other T3 failures abort the command instead of becoming
+missing-thread skips. Each row commits atomically, so a failed command can
+be rerun after fixing its cause.
+
+### Verify the store before starting the bridge
+
+Read bindings and subscriptions without selecting the private `chat_key`.
+For strict no-file-write reads, use the same immutable mode after checkpointing:
+
+```sh
+sqlite3 -readonly "file:$T3_CHAT_BRIDGE_HOME/bridge.db?immutable=1" '
+  SELECT b.chat_thread_key, b.thread_id, b.project_id, g.sync,
+         CASE WHEN s.thread_id IS NULL THEN 0 ELSE 1 END AS subscribed
+  FROM binding b
+  JOIN binding_group g ON g.thread_id = b.thread_id
+  LEFT JOIN state_subscription s ON s.thread_id = b.chat_thread_key
+  ORDER BY b.thread_id, b.chat_thread_key;
+  SELECT COUNT(*) AS owed FROM owed_reply;
+  SELECT COUNT(*) AS following FROM delegated_follow;
+  SELECT COUNT(*) AS inbox FROM inbox;
+'
+```
+
+Each imported Slack key has `subscribed=1`. Each support pair shares a
+thread and has `sync=1`. Ordinary Slack rows have no new Office key. The
+import adds nothing to `owed_reply`, `delegated_follow`, or `inbox`, even
+when a legacy thread has a completed or running answer.
+
+Start the bridge only after the cutover owner has switched Office's producers
+and confirmed that the legacy worker is stopped. A subsequent authorized
+staff reply in an imported Slack thread must continue the existing T3
+thread. For support, confirm that the new exchange appears in both places.
+This live check is separate from the read-only import rehearsal.
 
 ## iMessage
 
@@ -622,7 +786,7 @@ pnpm --filter @t3tools/chat-bridge test
 
 | File                   | What it does                                                                                                           |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `src/bin.ts`           | The `start`, `login` and `manifest` commands.                                                                          |
+| `src/bin.ts`           | The `start`, `login`, `manifest`, and `import-office` commands.                                                        |
 | `src/bridge.ts`        | The core: chat messages into T3 turns, each run watched, answers back.                                                 |
 | `src/platform.ts`      | `ChatPlatform`: what the core needs from a platform beyond the SDK.                                                    |
 | `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                                                                 |
