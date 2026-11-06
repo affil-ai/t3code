@@ -45,8 +45,9 @@ Socket Mode, so it needs no public URL.
   with no text for a visible reply. Every chat's first turn, and the chat
   tools' standing instructions, also tell the agent that a subagent or
   background command can wake it more than once: a wake that only repeats a
-  result already posted, or only says the work is still going, gets `NO_REPLY`. A failed run posts a short
-  notice.
+  result already posted, or only says the work is still going, gets `NO_REPLY`. On Linear, a quiet run
+  whose session still shows the agent at work ends it with a short "Done, nothing to add." response,
+  unless another answer is still owed there. A failed run posts a short notice.
 - **Questions come to Slack.** When the agent asks a question, the bridge posts
   it in the thread with a button for each option, and Submit for a multiple
   choice. Where the question takes free text, a reply in the thread answers it
