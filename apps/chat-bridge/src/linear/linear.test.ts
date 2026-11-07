@@ -73,6 +73,20 @@ it("makes a session's first message an event with Linear's context, routed by te
   );
   assert.strictEqual(later.text, "@office fix the flaky test");
   assert.isTrue(later.direct);
+  assert.isUndefined(later.title);
+});
+
+it("names a session's thread after its issue, not Linear's delegation notice", () => {
+  const context =
+    '<issue identifier="AFF-1878">\n<title>Build a spend-based card\n recommendation quiz</title>\n<description>…</description>\n</issue>';
+  assert.strictEqual(
+    linearEvent(THREAD, message("c-3", context), "mention", "AFF", new Set()).title,
+    "AFF-1878 Build a spend-based card recommendation quiz",
+  );
+  assert.isUndefined(
+    linearEvent(THREAD, message("c-4", "<issue>no title</issue>"), "mention", "AFF", new Set())
+      .title,
+  );
 });
 
 it("uploads a file to Linear and links it, inline for images", async () => {

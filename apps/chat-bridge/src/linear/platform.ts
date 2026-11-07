@@ -159,6 +159,19 @@ export function commentEvent(comment: LinearComment): InboundEvent {
 export const REACTIONS_UNSEEN =
   "Not reacted: Linear doesn't show reactions on session messages. Acknowledge in words instead, in your reply or with a short chat_post update while you work.";
 
+/**
+ * "AFF-123 Issue title" from Linear's session context, which starts with
+ * `<issue identifier="AFF-123">` and a `<title>`. A delegated issue's prompt is
+ * only Linear's "This thread is for an agent session with …", so the thread is
+ * named after the issue instead.
+ */
+export function issueTitle(context: string): string | undefined {
+  const identifier = /<issue\b[^>]*\bidentifier="([^"]+)"/.exec(context)?.[1];
+  const title = /<title>([\s\S]*?)<\/title>/.exec(context)?.[1]?.replace(/\s+/g, " ").trim();
+  if (!identifier && !title) return undefined;
+  return [identifier, title].filter(Boolean).join(" ");
+}
+
 export function linearEvent(
   threadId: string,
   message: Message,
@@ -177,7 +190,9 @@ export function linearEvent(
   const context =
     kind === "mention" ? withoutUploadLinks((raw?.agentSessionPromptContext ?? "").trim()) : "";
   const text = takeUploads(message.text).text;
+  const title = kind === "mention" ? issueTitle(raw?.agentSessionPromptContext ?? "") : undefined;
   return {
+    ...(title === undefined ? {} : { title }),
     eventId: `linear:${message.id}`,
     chatThreadKey: issueKeyOf(threadId),
     // The team routes the thread; a team without a route takes the default one.

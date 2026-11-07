@@ -107,6 +107,8 @@ export interface InboundEvent {
   readonly text: string;
   readonly files: ReadonlyArray<EventFile>;
   readonly mentions: ReadonlyArray<MentionedUser>;
+  /** A new thread's name when the message makes a poor one, such as a Linear issue's title. */
+  readonly title?: string | undefined;
   /** Platform context added in memory by `prepare`, never persisted by the core. */
   readonly requestNote?: string | undefined;
   readonly instructions?: string | undefined;
@@ -929,7 +931,7 @@ export class Bridge {
     // The retry key makes a relaunch after a crash return the same thread.
     const started = await this.threads.start({
       projectId,
-      title: threadTitle(event.text, `${platform.name} request`),
+      title: threadTitle(event.title ?? event.text, `${platform.name} request`),
       text: turnText(
         platform,
         event,
