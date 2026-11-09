@@ -392,6 +392,12 @@ const isAside = (text: string) => /^\s*aside\b/i.test(text);
 const isControl = (event: InboundEvent) =>
   event.addressed && controlCommand(event.text) !== undefined;
 
+/** "Slack message 100.1 from Ada:", with no doubled word for a platform already named iMessage. */
+function messageHeading(platform: ChatPlatform, event: InboundEvent): string {
+  const kind = /message$/i.test(platform.name) ? platform.name : `${platform.name} message`;
+  return `${kind} ${event.messageId} from ${platform.person(event.author.userId, event.author.fullName || event.author.userName)}:`;
+}
+
 function turnText(
   platform: ChatPlatform,
   event: InboundEvent,
@@ -404,7 +410,7 @@ function turnText(
   const lines = [
     ...(context ? [context, ""] : []),
     ...(first && event.historyNote ? [event.historyNote, ""] : []),
-    `${platform.name} message ${event.messageId} from ${platform.person(event.author.userId, event.author.fullName || event.author.userName)}:`,
+    messageHeading(platform, event),
     "",
     event.text,
     ...(event.requestNote ? ["", event.requestNote] : []),
@@ -819,10 +825,7 @@ export class Bridge {
     const platform = this.platform(first.chatThreadKey);
     const text = [
       first.text,
-      ...rest.map(
-        (each) =>
-          `${platform.name} message ${each.messageId} from ${platform.person(each.author.userId, each.author.fullName || each.author.userName)}:\n\n${each.text}`,
-      ),
+      ...rest.map((each) => `${messageHeading(platform, each)}\n\n${each.text}`),
     ].join("\n\n");
     return {
       ...first,
