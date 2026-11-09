@@ -1,6 +1,7 @@
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 
+import type { ModelSelection } from "../modelCommand.ts";
 import type { SlackInboxRow, SlackRelaySource } from "../slack/relay.ts";
 
 export type InboxEvent =
@@ -121,6 +122,11 @@ export interface OfficeMutations {
 
 export interface OfficeApi {
   history(chatId: string): Promise<HistoryResult>;
+  /**
+   * The model a chat runs: the one chosen in Office, else the one its old T3 thread
+   * ran. Null when it has neither.
+   */
+  chatModel(chatId: string): Promise<ModelSelection | null>;
   subscribe(onInbox: (events: InboxEvent[]) => void, onError: () => void): () => void;
   mutate<K extends keyof OfficeMutations>(
     name: K,
@@ -190,6 +196,21 @@ export class OfficeClient implements OfficeApi, SlackRelaySource {
       );
     } catch {
       throw new Error("Office history failed.");
+    }
+  }
+
+  async chatModel(chatId: string): Promise<ModelSelection | null> {
+    try {
+      return await this.client.query(
+        makeFunctionReference<
+          "query",
+          { serviceToken: string; chatId: string },
+          ModelSelection | null
+        >("chatBridge:chatModel"),
+        { serviceToken: this.token, chatId },
+      );
+    } catch {
+      throw new Error("Office chatModel failed.");
     }
   }
 

@@ -303,7 +303,9 @@ async function start(): Promise<void> {
     threads,
     settings: { modelSelection: config.modelSelection },
     platforms,
-    ...(officeChannel ? { seedHistory: officeChannel.seedHistory } : {}),
+    ...(officeChannel
+      ? { seedHistory: officeChannel.seedHistory, chatModel: officeChannel.chatModel }
+      : {}),
     log,
   });
   const core = bridge;

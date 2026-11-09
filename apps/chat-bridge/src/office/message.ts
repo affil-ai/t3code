@@ -100,13 +100,41 @@ export function requestNote(request: PreparedRequest): string {
   ].join("\n\n");
 }
 
-/** Only model names the bridge knows are mapped; unknown account or model names use the host default. */
+/** Retired model names, with the model each chat moved to. */
+const RETIRED_MODELS: Readonly<Record<string, string>> = {
+  "claude-opus-5.5": "claude-opus-5-5",
+  "claude-fable-5.1": "claude-fable-5-1",
+  "claude-opus-5": "claude-opus-5-5",
+  "claude-fable-5": "claude-fable-5-1",
+  "gpt-6-sol": "gpt-6.1-sol",
+  "gpt-5.6-sol": "gpt-6.1-sol",
+  "gpt-5.6-luna": "gpt-6-luna",
+  "z-ai/glm-5.3-flash": "z-ai/glm-5.3",
+  "zai-org/GLM-5.3": "z-ai/glm-5.3",
+};
+
+/** Stock models outside the `!model` names, with the effort Office starts them at. */
+const OTHER_MODELS: Readonly<Record<string, ModelSelection>> = {
+  "gpt-6-luna": {
+    instanceId: "codex",
+    model: "gpt-6-luna",
+    options: [{ id: "reasoningEffort", value: "high" }],
+  },
+};
+
+/**
+ * Office's model key on the stock server: GPT on `codex`, Claude and GLM on `claudeAgent`.
+ * Retired instance, account and provider prefixes (`claude_gpt/`, `vivek/`, `anthropic/`)
+ * map to the model they named; a name with no stock model is undefined.
+ */
 export function officeModel(model: string | undefined): ModelSelection | undefined {
   if (model === undefined) return undefined;
-  const normalized = model
-    .replace(/^(anthropic|openai|codex|claudeAgent)\//, "")
-    .replace("claude-opus-5.5", "claude-opus-5-5")
-    .replace("claude-fable-5.1", "claude-fable-5-1");
+  const bare = model
+    .replace(/^(codex|codex_proxy|claudeAgent|claude_gpt|claude_proxy|openai|anthropic)\//, "")
+    .replace(/^(vivek|admin|admin2|jenny)\//, "");
+  const normalized = RETIRED_MODELS[bare] ?? bare;
+  const other = OTHER_MODELS[normalized];
+  if (other !== undefined) return other;
   const entry = Object.entries(MODELS).find(
     ([key, value]) => key === normalized || value.model === normalized,
   );

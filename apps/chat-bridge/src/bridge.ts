@@ -505,6 +505,7 @@ export class Bridge {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private readonly seedHistory: ((seed: ConversationSeed) => Promise<string>) | undefined;
+  private readonly chatModel: ((chatId: string) => Promise<ModelSelection | undefined>) | undefined;
 
   constructor(options: {
     readonly store: BridgeStore;
@@ -519,6 +520,11 @@ export class Bridge {
     readonly sleep?: (ms: number) => Promise<void>;
     readonly now?: () => number;
     readonly seedHistory?: (seed: ConversationSeed) => Promise<string>;
+    /**
+     * The model of the Office chat a conversation imported from the old server
+     * continues, for platforms whose events carry no model of their own (Slack).
+     */
+    readonly chatModel?: (chatId: string) => Promise<ModelSelection | undefined>;
   }) {
     this.store = options.store;
     this.threads = options.threads;
@@ -529,6 +535,69 @@ export class Bridge {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? Date.now;
     this.seedHistory = options.seedHistory;
+    this.chatModel = options.chatModel;
+  }
+
+  /**
+   * Gives an event without a model the model of the Office chat its conversation
+   * continues, when the conversation was imported from the old server: on the turn
+   * that starts its thread, and on later turns until the thread has followed it once.
+   */
+  private async withChatModel(
+    event: InboundEvent,
+    binding: Binding | undefined,
+    seed: ConversationSeed | undefined,
+  ): Promise<InboundEvent> {
+    if (event.modelSelection !== undefined || this.chatModel === undefined) return event;
+    const chatId =
+      seed?.chatId ??
+      (binding !== undefined && this.store.followedModel(binding.chatThreadKey) === undefined
+        ? this.store.seedReceipt(binding.chatThreadKey)?.chatId
+        : undefined);
+    if (chatId === undefined) return event;
+    let modelSelection: ModelSelection | undefined;
+    try {
+      modelSelection = await this.chatModel(chatId);
+    } catch {
+      this.log(
+        `Office chat ${chatId}'s model couldn't be read; this turn keeps the thread's model.`,
+      );
+      return event;
+    }
+    if (modelSelection === undefined) {
+      this.log(`Office chat ${chatId} has no recorded model; it runs on the default.`);
+      return event;
+    }
+    return { ...event, modelSelection, followModel: true };
+  }
+
+  /**
+   * Switches a bound thread to its chat's model when the chat's model changed since
+   * the thread last followed it, such as in Office's model picker, so a `!model`
+   * switch since then stands.
+   */
+  private async followChatModel(binding: Binding, chat: ModelSelection): Promise<void> {
+    const recorded = this.store.followedModel(binding.chatThreadKey);
+    if (recorded !== undefined) {
+      if (sameModel(recorded, chat)) return;
+      await this.threads.setModel(binding.threadId, chat);
+      this.store.setFollowedModel(binding.chatThreadKey, chat);
+      return;
+    }
+    // Nothing recorded: a thread from before the bridge followed its chat's model. One
+    // still on the bridge's default never got the chat's model, so it switches now; one
+    // on another model was switched on purpose and keeps it.
+    const current = await this.threads.modelSelection(binding.threadId);
+    if (
+      !sameModel(current, chat) &&
+      sameModel(current, this.settings.modelSelection ?? DEFAULT_MODEL)
+    ) {
+      await this.threads.setModel(binding.threadId, chat);
+      this.log(
+        `Switched thread ${binding.threadId} from the default to its chat's model, ${describeModel(chat)}.`,
+      );
+    }
+    this.store.setFollowedModel(binding.chatThreadKey, chat);
   }
 
   /**
@@ -896,6 +965,7 @@ export class Bridge {
       if (event.addressed) await this.refuse(event);
       return { type: "ignored", reason: "not_allowed" };
     }
+    event = await this.withChatModel(event, binding, seed);
     if (!binding && !seed && platform.feedbackTarget) {
       const target = await platform.feedbackTarget(event);
       if (target) {
@@ -961,14 +1031,7 @@ export class Bridge {
           return { type: "noted", threadId: binding.threadId };
         }
       } else if (event.followModel === true && event.modelSelection !== undefined) {
-        // The chat's model changed since the thread last followed it, such as in Office's
-        // model picker. Bindings from before this was recorded compare with the thread's model.
-        const recorded = this.store.followedModel(binding.chatThreadKey);
-        const followed = recorded ?? (await this.threads.modelSelection(binding.threadId));
-        const changed = !sameModel(followed, event.modelSelection);
-        if (changed) await this.threads.setModel(binding.threadId, event.modelSelection);
-        if (changed || recorded === undefined)
-          this.store.setFollowedModel(binding.chatThreadKey, event.modelSelection);
+        await this.followChatModel(binding, event.modelSelection);
       }
       const kept = this.store.context(binding.chatThreadKey);
       const imported = await this.threads.importFiles(this.inboundFiles(platform, event.files));

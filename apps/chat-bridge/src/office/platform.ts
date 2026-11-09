@@ -1,6 +1,7 @@
 // @effect-diagnostics globalFetch:off globalTimers:off -- A plain Node channel; Convex owns its subscription.
 import { type Bridge, type InboundEvent } from "../bridge.ts";
 import { mimeTypeOf } from "../fileMimeType.ts";
+import type { ModelSelection } from "../modelCommand.ts";
 import { type ChatPlatform, QUIET_RULES, RetryAfter, type ThreadRoute } from "../platform.ts";
 import type { BridgeStore, ConversationSeed } from "../store.ts";
 import { ArticleFiles } from "./article.ts";
@@ -48,6 +49,25 @@ export function createOfficeChannel(options: {
   slack?: ChatPlatform | undefined;
 }) {
   const { api, store, log } = options;
+  /**
+   * The chat's model. Office's selection is followed: a later change switches the
+   * thread. A model key without one only picks the model a new thread starts on.
+   * With neither, the thread runs on the bridge's default.
+   */
+  const chatModel = (request: PreparedRequest) => {
+    if (request.modelSelection !== undefined)
+      return { modelSelection: request.modelSelection, followModel: true };
+    const modelSelection = officeModel(request.model);
+    if (modelSelection === undefined) {
+      log(
+        request.model === undefined
+          ? `Office: chat ${request.chatId} has no recorded model; it runs on the default.`
+          : `Office: chat ${request.chatId} has model ${JSON.stringify(request.model)}, which has no stock T3 model; it runs on the default.`,
+      );
+      return {};
+    }
+    return { modelSelection };
+  };
   const fetchFile = options.fetch ?? fetch;
   const articles = new ArticleFiles(options.home, options.repositoryPath, log, options.now);
   const pending = new Map<string, Promise<void>>();
@@ -109,8 +129,7 @@ export function createOfficeChannel(options: {
         ...inbound(request),
         requestNote: [requestNote(request), articleNote].filter(Boolean).join("\n\n"),
         instructions: request.instructions,
-        modelSelection: request.modelSelection ?? officeModel(request.model),
-        ...(request.modelSelection === undefined ? {} : { followModel: true }),
+        ...chatModel(request),
         historyNote:
           request.history || seed
             ? historyNote(
@@ -312,6 +331,10 @@ export function createOfficeChannel(options: {
     platform,
     /** Shared with Slack turns that get Office article access, so one place owns these files. */
     articles,
+    /** The model of an Office chat a Slack conversation continues; undefined when it has none. */
+    async chatModel(chatId: string): Promise<ModelSelection | undefined> {
+      return (await api.chatModel(chatId)) ?? undefined;
+    },
     async seedHistory(seed: ConversationSeed): Promise<string> {
       const result = await api.history(seed.chatId);
       if (result.kind === "later") {

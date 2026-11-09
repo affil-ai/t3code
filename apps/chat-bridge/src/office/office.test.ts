@@ -22,6 +22,7 @@ import type {
   PreparedRequest,
 } from "./client.ts";
 import { slackFirstTurnNote } from "../slack/platform.ts";
+import type { ModelSelection } from "../modelCommand.ts";
 import { officeModel } from "./message.ts";
 import { createOfficeChannel } from "./platform.ts";
 
@@ -47,10 +48,12 @@ function fakeOffice() {
   const fail = new Set<string>();
   const later = new Map<string, number>();
   const histories = new Map<string, HistoryResult>();
+  const chatModels = new Map<string, ModelSelection>();
   let listener = (_events: InboxEvent[]) => {};
   let posted = (_post: OfficeMutations["post"]["args"]) => {};
   const api: OfficeApi = {
     history: async (chatId) => histories.get(chatId) ?? { kind: "ready", history: { recent: [] } },
+    chatModel: async (chatId) => chatModels.get(chatId) ?? null,
     subscribe: (next) => {
       listener = next;
       return () => {
@@ -92,6 +95,7 @@ function fakeOffice() {
     fail,
     later,
     histories,
+    chatModels,
     onPost: (next: typeof posted) => {
       posted = next;
     },
@@ -251,6 +255,8 @@ async function harness(
     home?: string;
     slack?: ChatPlatform;
     now?: () => number;
+    /** As the bridge's config gives it: the model new threads start on. */
+    defaultModel?: ModelSelection;
   } = {},
 ) {
   const home =
@@ -293,11 +299,12 @@ async function harness(
   const bridge = new Bridge({
     store,
     threads: new T3Threads(t3.tools, {
-      modelSelection: { instanceId: "codex", model: "default-model" },
+      modelSelection: options.defaultModel ?? { instanceId: "codex", model: "default-model" },
     }),
-    settings: {},
+    settings: options.defaultModel ? { modelSelection: options.defaultModel } : {},
     platforms: [channel.platform, ...(options.slack ? [options.slack] : [])],
     seedHistory: channel.seedHistory,
+    chatModel: channel.chatModel,
     now: options.now ?? (() => 0),
     log: (line) => {
       logs.push(line);
@@ -1573,4 +1580,231 @@ it("tells a new thread for a seeded Slack conversation where its Slack thread an
   // A Slack follow-up doesn't repeat it.
   const send = String(h.t3.calls.find((call) => call.tool === "t3_thread_send")!.args.message);
   assert.notInclude(send, DELIVER);
+});
+
+const withoutModel = () => {
+  const { model: _model, ...rest } = request();
+  return rest;
+};
+
+const ASTRA = {
+  instanceId: "codex",
+  model: "gpt-6-astra",
+  options: [{ id: "reasoningEffort", value: "medium" }],
+};
+const OPUS = {
+  instanceId: "claudeAgent",
+  model: "claude-opus-5-5",
+  options: [{ id: "effort", value: "medium" }],
+};
+const SOL = {
+  instanceId: "codex",
+  model: "gpt-6.1-sol",
+  options: [{ id: "reasoningEffort", value: "high" }],
+};
+
+it.each([
+  ["claude_gpt/claude-opus-5-5", OPUS],
+  ["claudeAgent/claude-opus-5-5", OPUS],
+  ["anthropic/claude-opus-5.5", OPUS],
+  ["anthropic/claude-opus-5", OPUS],
+  ["opus", OPUS],
+  [
+    "anthropic/claude-fable-5.1",
+    {
+      instanceId: "claudeAgent",
+      model: "claude-fable-5-1",
+      options: [{ id: "effort", value: "medium" }],
+    },
+  ],
+  ["claude_gpt/gpt-6-astra", ASTRA],
+  ["claudeAgent/gpt-6-astra", ASTRA],
+  ["codex/gpt-6-astra", ASTRA],
+  ["vivek/gpt-6-astra", ASTRA],
+  ["admin/gpt-6-astra", ASTRA],
+  ["jenny/gpt-6-astra", ASTRA],
+  ["astra", ASTRA],
+  ["claude_gpt/gpt-6.1-sol", SOL],
+  ["codex_proxy/gpt-6.1-sol", SOL],
+  ["admin2/gpt-6.1-sol", SOL],
+  ["vivek/gpt-6-sol", SOL],
+  ["vivek/gpt-5.6-sol", SOL],
+  ["sol", SOL],
+  [
+    "vivek/gpt-6-luna",
+    {
+      instanceId: "codex",
+      model: "gpt-6-luna",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    },
+  ],
+  [
+    "vivek/gpt-5.6-luna",
+    {
+      instanceId: "codex",
+      model: "gpt-6-luna",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    },
+  ],
+  ["claude_gpt/z-ai/glm-5.3-flash", { instanceId: "claudeAgent", model: "z-ai/glm-5.3" }],
+  ["zai-org/GLM-5.3", { instanceId: "claudeAgent", model: "z-ai/glm-5.3" }],
+])("maps the Office model key %s onto a stock instance", (key, expected) => {
+  assert.deepEqual(officeModel(key), expected);
+});
+
+it("starts a chat with only a legacy model key on that model", async () => {
+  await using h = await harness({ defaultModel: ASTRA });
+  await h.send(request({ model: "claude_gpt/claude-opus-5-5" }));
+  assert.deepEqual(
+    h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.modelSelection,
+    OPUS,
+  );
+});
+
+it("runs a chat with no recorded model on the default, and logs it", async () => {
+  await using h = await harness({ defaultModel: ASTRA });
+  await h.send(withoutModel());
+  assert.deepEqual(
+    h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.modelSelection,
+    ASTRA,
+  );
+  assert.include(h.logs, "Office: chat chat-1 has no recorded model; it runs on the default.");
+});
+
+const slackPlatformForSeeds = (): ChatPlatform => ({
+  id: "slack",
+  name: "Slack",
+  place: "Slack thread",
+  access: { allowedUserIds: ["staff"] },
+  channelRoutes: [{ channelId: "C1", projectId: "project-1" }],
+  person: (_id, name) => name,
+  firstTurnNote: slackFirstTurnNote,
+  refusal: () => "",
+  post: async () => {},
+});
+
+const slackTurn = (ts: string, text: string): InboundEvent => ({
+  eventId: `slack:C1:${ts}`,
+  chatThreadKey: "slack:C1:1.1",
+  channelId: "C1",
+  messageId: ts,
+  kind: "follow_up",
+  addressed: false,
+  direct: false,
+  author: { userId: "staff", userName: "Ada", fullName: "Ada" },
+  text,
+  files: [],
+  mentions: [],
+});
+
+async function seededSlack(chatModel: ModelSelection | undefined) {
+  const h = await harness({ slack: slackPlatformForSeeds(), defaultModel: ASTRA });
+  h.store.insertSeed({
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    chatId: "chat-9",
+    oldThreadId: "old",
+    sync: false,
+  });
+  if (chatModel) h.office.chatModels.set("chat-9", chatModel);
+  return h;
+}
+
+const modelSets = (h: { t3: { calls: Array<{ tool: string; args: Record<string, unknown> }> } }) =>
+  h.t3.calls
+    .filter((call) => call.tool === "t3_thread_configure" && call.args.modelSelection !== undefined)
+    .map((call) => call.args.modelSelection);
+
+it("continues an imported Slack conversation on its Office chat's model", async () => {
+  await using h = await seededSlack(OPUS);
+  await h.bridge.receive(slackTurn("2.1", "Continue"));
+  assert.deepEqual(
+    h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.modelSelection,
+    OPUS,
+  );
+  assert.deepEqual(h.store.followedModel("slack:C1:1.1"), OPUS);
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  // Once followed, a later Slack turn neither asks Office again nor switches.
+  h.office.chatModels.set("chat-9", SOL);
+  await h.bridge.receive(slackTurn("3.1", "And the docs"));
+  assert.deepEqual(modelSets(h), []);
+});
+
+it("switches an imported thread left on the default to its chat's model on the next turn", async () => {
+  // Before the fix: the conversation started on the default, with nothing followed.
+  await using h = await seededSlack(undefined);
+  await h.bridge.receive(slackTurn("2.1", "Continue"));
+  assert.deepEqual(
+    h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.modelSelection,
+    ASTRA,
+  );
+  assert.include(h.logs, "Office chat chat-9 has no recorded model; it runs on the default.");
+  assert.isUndefined(h.store.followedModel("slack:C1:1.1"));
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+
+  h.office.chatModels.set("chat-9", OPUS);
+  await h.bridge.receive(slackTurn("3.1", "And the docs"));
+  assert.deepEqual(modelSets(h), [OPUS]);
+  assert.deepEqual(h.store.followedModel("slack:C1:1.1"), OPUS);
+  // The switch lands before the message, so the message runs on it.
+  const order = h.t3.calls.map((call) => call.tool);
+  assert.isBelow(order.lastIndexOf("t3_thread_configure"), order.lastIndexOf("t3_thread_send"));
+});
+
+it("keeps a !model switch made in an imported thread before the fix", async () => {
+  await using h = await seededSlack(undefined);
+  await h.bridge.receive(slackTurn("2.1", "Continue"));
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  // Someone switched the thread on purpose while nothing was followed.
+  await h.t3.tools.call("t3_thread_configure", { threadId: "thread-1", modelSelection: SOL });
+
+  h.office.chatModels.set("chat-9", OPUS);
+  await h.bridge.receive(slackTurn("3.1", "And the docs"));
+  assert.deepEqual(modelSets(h), [SOL]);
+  assert.deepEqual(h.store.followedModel("slack:C1:1.1"), OPUS);
+});
+
+it("keeps a !model switch made in an imported thread after it follows its chat", async () => {
+  await using h = await seededSlack(OPUS);
+  await h.bridge.receive(slackTurn("2.1", "Continue"));
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  await h.bridge.receive(slackTurn("3.1", "!sol take another look"));
+  h.t3.finish("run-2", "Done.");
+  await h.bridge.idle();
+  await h.bridge.receive(slackTurn("4.1", "and the tests"));
+  assert.deepEqual(modelSets(h), [SOL]);
+});
+
+it("switches an Office chat's thread left on the default once Office sends its recorded model", async () => {
+  await using h = await harness({ defaultModel: ASTRA });
+  // Started before Office sent the model its old thread ran: on the default, nothing followed.
+  await h.send(withoutModel());
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  assert.isUndefined(h.store.followedModel("office:chat-1"));
+  await h.send(
+    request({ eventId: "event-2", messageId: "message-2", firstTurn: false, modelSelection: OPUS }),
+  );
+  assert.deepEqual(modelSets(h), [OPUS]);
+  assert.deepEqual(h.store.followedModel("office:chat-1"), OPUS);
+});
+
+it("runs a Slack turn on the thread's model when Office can't say the chat's", async () => {
+  await using h = await seededSlack(undefined);
+  h.office.api.chatModel = async () => {
+    throw new Error("Office chatModel failed.");
+  };
+  await h.bridge.receive(slackTurn("2.1", "Continue"));
+  assert.deepEqual(
+    h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.modelSelection,
+    ASTRA,
+  );
+  assert.include(
+    h.logs,
+    "Office chat chat-9's model couldn't be read; this turn keeps the thread's model.",
+  );
 });
