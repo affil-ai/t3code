@@ -644,6 +644,25 @@ it("tells Office a request reached its run before a restart reports the run's en
   assert.isEmpty(h.store.owedDispatches());
 });
 
+it("doesn't end an Office turn when the bridge stops mid-run, and reports it after the restart", async () => {
+  await using h = await harness();
+  await h.send();
+  const active = () =>
+    h.office.calls.filter((call) => call.name === "state" && call.args.state === "active");
+  h.bridge.stop();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.isEmpty(active(), "the run is still going in T3");
+  h.t3.finish("run-1", "Done.");
+  await using restarted = await harness({ office: h.office, t3: h.t3, db: h.db, home: h.home });
+  await restarted.bridge.resume();
+  await restarted.bridge.idle();
+  assert.deepEqual(
+    active().map((call) => call.args.outcome),
+    ["completed"],
+  );
+  assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Done.");
+});
+
 it("keeps an Office request's answer waiting until a failed ack goes through", async () => {
   await using h = await harness();
   const mutate = h.office.api.mutate;

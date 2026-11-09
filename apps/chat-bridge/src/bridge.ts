@@ -1861,6 +1861,8 @@ export class Bridge {
     clearInterval(entry.timer);
     this.running.delete(chatThreadKey);
     this.notes.delete(chatThreadKey);
+    // A watcher ending because the bridge is stopping hasn't seen the turn end; the next start reports it.
+    if (this.stopped) return;
     const outcome: TurnOutcome = entry.failed
       ? "failed"
       : entry.canceled
