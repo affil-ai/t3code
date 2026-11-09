@@ -8,6 +8,7 @@
 import * as NodeSqlite from "node:sqlite";
 import * as NodeCrypto from "node:crypto";
 
+import type { ModelSelection } from "./modelCommand.ts";
 import type { Asked } from "./questions.ts";
 
 export interface Binding {
@@ -109,6 +110,13 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       event_id TEXT PRIMARY KEY,
       handled_at INTEGER NOT NULL
     );
+    -- Messages handed to a T3 thread, by launching it or sending into it. Unlike
+    -- handled_message, a resend keeps these, so it never hands a message to T3 twice.
+    CREATE TABLE IF NOT EXISTS delivered_message (
+      event_id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      delivered_at INTEGER NOT NULL
+    );
     -- Runs whose answer goes to Slack. posted_at is set once the reply is delivered.
     CREATE TABLE IF NOT EXISTS owed_reply (
       run_id TEXT PRIMARY KEY,
@@ -191,6 +199,9 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
   addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "owed_reply", "requested_by", "TEXT");
   migrateBindingGroups(db);
+  // After the migration above, which rebuilds binding: the chat's model the thread last
+  // followed, as JSON; see `followedModel`.
+  addColumn(db, "binding", "followed_model", "TEXT");
   // A claimed reply is being answered; posted_at waits for delivery, so a crash in between resumes it.
   addColumn(db, "owed_reply", "claimed", "INTEGER NOT NULL DEFAULT 0");
   // Questions saved before this column were posted when saved.
@@ -378,6 +389,25 @@ export class BridgeStore {
       this.setSync(binding.threadId, source.sync);
       this.db.prepare("DELETE FROM conversation_seed WHERE chat_id = ?").run(source.chatId);
     });
+  }
+
+  /**
+   * The chat's own model selection the bound thread last followed, such as
+   * Office's picker. A follow-up switches the thread only when the chat's
+   * selection changes from this, so a `!model` switch since then stands.
+   */
+  followedModel(chatThreadKey: string): ModelSelection | undefined {
+    const row = this.db
+      .prepare("SELECT followed_model FROM binding WHERE chat_thread_key = ?")
+      .get(chatThreadKey);
+    const value = row?.followed_model;
+    return typeof value === "string" ? (JSON.parse(value) as ModelSelection) : undefined;
+  }
+
+  setFollowedModel(chatThreadKey: string, selection: ModelSelection): void {
+    this.db
+      .prepare("UPDATE binding SET followed_model = ? WHERE chat_thread_key = ?")
+      .run(JSON.stringify(selection), chatThreadKey);
   }
 
   binding(chatThreadKey: string): Binding | undefined {
@@ -700,6 +730,30 @@ export class BridgeStore {
       this.db.prepare("DELETE FROM inbox WHERE event_id = ?").run(eventId);
       this.db.prepare("DELETE FROM thread_context WHERE event_id = ?").run(eventId);
     });
+  }
+
+  /** Records that the message reached this T3 thread. */
+  markDelivered(eventId: string, threadId: string): void {
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO delivered_message (event_id, thread_id, delivered_at) VALUES (?, ?, ?)",
+      )
+      .run(eventId, threadId, this.now());
+  }
+
+  /**
+   * The T3 thread the message reached, if any. Messages handled before this was
+   * recorded count when they launched their chat's bound thread: the launch's
+   * chat key is the binding's.
+   */
+  deliveredTo(eventId: string, chatThreadKey: string): string | undefined {
+    const row = this.db
+      .prepare("SELECT thread_id FROM delivered_message WHERE event_id = ?")
+      .get(eventId);
+    if (row !== undefined) return String(row.thread_id);
+    const binding = this.binding(chatThreadKey);
+    const launched = this.meta(`launch_chat_key:${eventId}`);
+    return binding !== undefined && launched === binding.chatKey ? binding.threadId : undefined;
   }
 
   markHandled(eventId: string): void {

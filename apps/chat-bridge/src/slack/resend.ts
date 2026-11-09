@@ -3,6 +3,7 @@
  * `resend-slack <channel> <ts>`: hands one Slack message to the bridge again,
  * for a message its dedupe dropped, such as a relayed row Office recorded again
  * under a new event id. Runs with the bridge stopped; its next start handles it.
+ * It refuses a message that already reached a T3 thread.
  */
 import type * as NodeSqlite from "node:sqlite";
 
@@ -35,8 +36,8 @@ function processAlive(pid: number): boolean {
 /**
  * Reads the message from Slack, clears the bridge's and the Chat SDK's records
  * of it, and saves it to the bridge's inbox, in one step. The next start hands
- * it to T3 as a normal message, once; T3's retry key still returns an earlier
- * hand-off of it rather than sending it twice.
+ * it to T3 as a normal message, once. Throws for a message that already reached
+ * a T3 thread.
  */
 export async function resendSlackMessage(options: {
   readonly db: NodeSqlite.DatabaseSync;
@@ -49,6 +50,13 @@ export async function resendSlackMessage(options: {
   if (event === undefined)
     throw new Error(
       `Slack has no message ${options.ts} in ${options.channel} the bridge would handle (it may be a bot's).`,
+    );
+  // T3 dedupes a launch and a send separately, so a message that launched its
+  // thread would come back as a follow-up and run again.
+  const threadId = options.store.deliveredTo(event.eventId, event.chatThreadKey);
+  if (threadId !== undefined)
+    throw new Error(
+      `${event.eventId} already reached T3 thread ${threadId}; resending it would run it again. Send it there in T3 instead.`,
     );
   options.store.transaction(() => {
     options.store.forgetMessage(event.eventId);

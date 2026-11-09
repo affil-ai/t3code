@@ -20,7 +20,7 @@ import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
 import type { Chat } from "chat";
-import { createSlackHost } from "./slack/host.ts";
+import { createSlackHost, type SlackTransport } from "./slack/host.ts";
 import { fakeSlackApi } from "./slack/fakeSlackApi.ts";
 import { resendSlackMessage, RUNNING_PID_KEY, runningBridge } from "./slack/resend.ts";
 import {
@@ -2437,4 +2437,143 @@ it("resends a relayed message its dedupe dropped, so the next start hands it on 
   second.t3.finish("run-1", "completed", "Fixed.");
   await second.bridge.idle();
   assert.deepStrictEqual(second.posted, [{ chatThreadKey: "slack:C1:100.1", text: "Fixed." }]);
+});
+
+it("refuses to resend a message that already reached T3, so a restart never runs it twice", async () => {
+  const db = freshDatabase();
+  const first = harness(db);
+  const handOffs = (t3: ReturnType<typeof fakeT3>) =>
+    t3.calls.filter((call) => call.tool === "t3_thread_launch" || call.tool === "t3_thread_send")
+      .length;
+  // The opening message launches the thread; a reply in it is sent into the thread.
+  assert.deepStrictEqual(await first.bridge.receive(event("100.1")), {
+    type: "started",
+    threadId: THREAD,
+  });
+  first.t3.finish("run-1", "completed", "Fixed.");
+  await first.bridge.idle();
+  await first.bridge.receive(
+    event("100.2", { kind: "follow_up", addressed: false, text: "and the tests" }),
+  );
+  assert.strictEqual(handOffs(first.t3), 2);
+  first.t3.finish("run-1", "completed", "Done.");
+  await first.bridge.idle();
+  first.bridge.stop();
+  // Bridges from before this was recorded still know which message launched the thread.
+  db.prepare("DELETE FROM delivered_message WHERE event_id = ?").run("slack:C1:100.1");
+
+  const api = await fakeSlackApi({
+    "users.info": (args) => ({ ok: true, user: { id: args.user, name: "ada", real_name: "Ada" } }),
+    "conversations.replies": (args) => ({
+      ok: true,
+      messages: [
+        { ts: "100.1", user: "U1", text: "<@UBOT> fix the build" },
+        { ts: "100.2", user: "U1", text: "and the tests", thread_ts: "100.1" },
+      ].filter((message) => message.ts === args.ts),
+    }),
+  });
+  try {
+    const host = createSlackHost({
+      botToken: "xoxb-test",
+      transport: { kind: "office-relay" },
+      botUserId: "UBOT",
+      apiUrl: api.apiUrl,
+      onEvent: async () => ({ type: "pending" }),
+    }).connect({} as Chat);
+    // The Chat SDK's state lives in the same database, as in production.
+    createChatState(db);
+    const store = new BridgeStore(db);
+    for (const ts of ["100.1", "100.2"]) {
+      let refused: unknown;
+      try {
+        await resendSlackMessage({ db, store, channel: "C1", ts, messageEvent: host.messageEvent });
+      } catch (error) {
+        refused = error;
+      }
+      assert.instanceOf(refused, Error);
+      assert.include(
+        (refused as Error).message,
+        `slack:C1:${ts} already reached T3 thread ${THREAD}`,
+      );
+      assert.isTrue(store.isHandled(`slack:C1:${ts}`));
+    }
+  } finally {
+    await api.close();
+  }
+
+  const second = harness(db);
+  await second.bridge.resume();
+  assert.strictEqual(handOffs(second.t3), 0);
+  await second.bridge.idle();
+  assert.deepStrictEqual(second.posted, []);
+});
+
+it("reads nothing back from Slack on a start with Office's relay, and still drains saved events", async () => {
+  /** A restart after a bound Slack thread got a reply the bridge saved and didn't hand on. */
+  const restart = async (transport: SlackTransport) => {
+    const db = freshDatabase();
+    const first = harness(db);
+    first.setClock(1_762_682_400_000);
+    // A first start only sets the read-up-to mark.
+    await first.bridge.catchUp("slack", undefined);
+    await first.bridge.receive(event("100.1"));
+    first.t3.finish("run-1", "completed", "Fixed.");
+    await first.bridge.idle();
+    const saved = event("100.2", { kind: "follow_up", addressed: false, text: "and the tests" });
+    first.store.enqueue({
+      eventId: saved.eventId,
+      chatThreadKey: saved.chatThreadKey,
+      event: JSON.stringify(saved),
+    });
+    first.bridge.stop();
+
+    const api = await fakeSlackApi({
+      "users.info": (args) => ({
+        ok: true,
+        user: { id: args.user, name: "ada", real_name: "Ada" },
+      }),
+      "conversations.replies": () => ({
+        ok: true,
+        messages: [{ ts: "100.1", user: "U1", text: "<@UBOT> fix the build" }],
+      }),
+      "conversations.history": () => ({ ok: true, messages: [] }),
+    });
+    const second = harness(db);
+    second.setClock(1_762_682_460_000);
+    try {
+      const host = createSlackHost({
+        botToken: "xoxb-test",
+        transport,
+        botUserId: "UBOT",
+        apiUrl: api.apiUrl,
+        onEvent: (inbound) => second.bridge.receive(inbound),
+      }).connect({} as Chat);
+      // The order `start` runs them in: the inbox, then Slack's catch-up.
+      await second.bridge.resume();
+      await second.bridge.catchUp("slack", host.missedEvents);
+      const sent = second.t3.calls.filter((call) => call.tool === "t3_thread_send");
+      second.t3.finish("run-0", "completed", "Done.");
+      await second.bridge.idle();
+      second.bridge.stop();
+      return {
+        reads: api.calls
+          .map((call) => call.method)
+          .filter((method) => method.startsWith("conversations.")),
+        sent: sent.map((call) => String(call.args.message)),
+        inbox: second.store.inboxThreads(),
+      };
+    } finally {
+      await api.close();
+    }
+  };
+
+  const relayed = await restart({ kind: "office-relay" });
+  assert.deepStrictEqual(relayed.reads, []);
+  assert.lengthOf(relayed.sent, 1);
+  assert.include(relayed.sent[0], "and the tests");
+  assert.deepStrictEqual(relayed.inbox, []);
+  // Socket Mode, which has no relay, reads the bound thread back on the same start.
+  const socket = await restart({ kind: "socket", appToken: "xapp-test" });
+  assert.include(socket.reads, "conversations.replies");
+  assert.lengthOf(socket.sent, 1);
 });

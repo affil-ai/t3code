@@ -1381,10 +1381,70 @@ it("starts a thread on the chat's own model, and switches the thread to it when 
 
   // Without the field, a follow-up leaves the thread's model alone.
   await h.send(request({ eventId: "event-4", messageId: "message-4", firstTurn: false }));
+  assert.lengthOf(sets(), 1);
+  // Nor did following need to read the thread's model back from T3.
   assert.lengthOf(
     h.t3.calls.filter((call) => call.tool === "t3_thread_configure"),
-    3,
+    1,
   );
+});
+
+it("keeps a !model switch in an Office chat until its picker changes", async () => {
+  await using h = await harness();
+  const astra = {
+    instanceId: "codex",
+    model: "gpt-6-astra",
+    options: [{ id: "reasoningEffort", value: "medium" }],
+  };
+  const followUp = (n: number, text: string, modelSelection: typeof astra) =>
+    request({
+      eventId: `event-${n}`,
+      messageId: `message-${n}`,
+      firstTurn: false,
+      text,
+      modelSelection,
+    });
+  const sets = () =>
+    h.t3.calls
+      .filter(
+        (call) => call.tool === "t3_thread_configure" && call.args.modelSelection !== undefined,
+      )
+      .map((call) => call.args.modelSelection);
+  await h.send(request({ modelSelection: astra }));
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+
+  // The composer still sends its picker's Astra with the switch, which keeps the effort.
+  await h.send(followUp(2, "!opus look again", astra));
+  assert.deepEqual(sets(), [
+    {
+      instanceId: "claudeAgent",
+      model: "claude-opus-5-5",
+      options: [{ id: "effort", value: "medium" }],
+    },
+  ]);
+  h.t3.finish("run-2", "Done.");
+  await h.bridge.idle();
+
+  // The next message, on the same picker choice, stays on Opus.
+  await h.send(followUp(3, "continue", astra));
+  assert.lengthOf(sets(), 1);
+  h.t3.finish("run-3", "Done.");
+  await h.bridge.idle();
+
+  // A new picker choice is followed, once.
+  const terra = {
+    instanceId: "codex",
+    model: "gpt-6.1-terra",
+    options: [{ id: "reasoningEffort", value: "high" }],
+  };
+  await h.send(followUp(4, "now the docs", terra));
+  h.t3.finish("run-4", "Done.");
+  await h.bridge.idle();
+  await h.send(followUp(5, "and the tests", terra));
+  assert.deepEqual(sets().slice(1), [terra]);
+  h.t3.finish("run-5", "Done.");
+  await h.bridge.idle();
 });
 
 const SLACK_CATCH_UP = "Before you act, read the original Slack thread in full";

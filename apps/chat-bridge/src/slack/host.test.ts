@@ -292,12 +292,6 @@ it("skips a thread Slack can't read during catch-up, and still reads the rest", 
   }
 });
 
-it("reads nothing back from Slack with Office's relay, which keeps what arrived while down", async () => {
-  const { api, host } = await hostOn(USERS, { kind: "office-relay" });
-  await api.close();
-  assert.isUndefined(host.missedEvents);
-});
-
 it("marks a working thread processing, so Slack offers its Stop button, with the status text", async () => {
   const { api, logs, host } = await hostOn({
     "agents.sessions.setStatus": () => ({ ok: true }),

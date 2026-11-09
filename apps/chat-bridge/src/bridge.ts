@@ -895,6 +895,7 @@ export class Bridge {
           attachments: imported.attachments,
           requestId: requestId(event.eventId),
         });
+        this.store.markDelivered(event.eventId, target.threadId);
         return { type: "followed_up", threadId: target.threadId, delivery: sent.delivery };
       }
     }
@@ -927,15 +928,22 @@ export class Bridge {
           return { type: "noted", threadId: binding.threadId };
         }
         await this.threads.setModel(binding.threadId, resolved.selection);
+        // The chat's own selection stays the one followed, so the switch stands until it changes.
+        if (event.followModel === true && event.modelSelection !== undefined)
+          this.store.setFollowedModel(binding.chatThreadKey, event.modelSelection);
         if (nothingElse) {
           await this.notify(event, `Switched to ${describeModel(resolved.selection)}.`);
           return { type: "noted", threadId: binding.threadId };
         }
       } else if (event.followModel === true && event.modelSelection !== undefined) {
-        // The chat's model changed since the thread started, such as in Office's model picker.
-        const current = await this.threads.modelSelection(binding.threadId);
-        if (!sameModel(current, event.modelSelection))
-          await this.threads.setModel(binding.threadId, event.modelSelection);
+        // The chat's model changed since the thread last followed it, such as in Office's
+        // model picker. Bindings from before this was recorded compare with the thread's model.
+        const recorded = this.store.followedModel(binding.chatThreadKey);
+        const followed = recorded ?? (await this.threads.modelSelection(binding.threadId));
+        const changed = !sameModel(followed, event.modelSelection);
+        if (changed) await this.threads.setModel(binding.threadId, event.modelSelection);
+        if (changed || recorded === undefined)
+          this.store.setFollowedModel(binding.chatThreadKey, event.modelSelection);
       }
       const kept = this.store.context(binding.chatThreadKey);
       const imported = await this.threads.importFiles(this.inboundFiles(platform, event.files));
@@ -949,6 +957,7 @@ export class Bridge {
         attachments: imported.attachments,
         requestId: requestId(event.eventId),
       });
+      this.store.markDelivered(event.eventId, binding.threadId);
       if (platform.dispatched !== undefined) {
         const dispatch = {
           eventId: event.eventId,
@@ -1067,6 +1076,10 @@ export class Bridge {
     this.store.transaction(() => {
       if (seed) this.store.consumeSeed(seed, created);
       else this.store.insertBinding(created);
+      // The thread starts on the chat's own model, or on a `!model` switch from it.
+      if (event.followModel === true && event.modelSelection !== undefined)
+        this.store.setFollowedModel(event.chatThreadKey, event.modelSelection);
+      this.store.markDelivered(event.eventId, started.threadId);
       try {
         linked = this.saveLinkedBindings(event.chatThreadKey);
       } catch (error) {
