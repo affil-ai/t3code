@@ -79,7 +79,8 @@ export function imessagePlatform(options: {
     person: (userId, name) => (name && name !== userId ? `${name} (${userId})` : userId),
     firstTurnNote: (chatKey, event) =>
       [
-        "Your final message in each run is sent to this iMessage conversation as plain text: Markdown is removed, so write plainly and keep it short.",
+        "Your final message in each run is sent to this iMessage conversation as plain text, and people read it on a phone. Markdown is removed, so write plainly.",
+        "Keep replies short: one or two sentences for most answers, and a few short lines at most when there is more to say. Lead with the answer. Skip greetings, recaps and offers of more help. Leave out file paths, commit hashes, IDs and other detail unless someone asks for it. Ask at most one question, at the end.",
         QUIET_RULES,
         ...(options.adapter.isDM(event.chatThreadKey)
           ? []
