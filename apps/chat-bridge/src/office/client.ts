@@ -110,6 +110,9 @@ export interface OfficeMutations {
       messageTs: string;
       text: string;
       slackUserName?: string;
+      /** Sent only with `slackUserTeamId`; Office trusts it only for our team. */
+      slackUserEmail?: string;
+      slackUserTeamId?: string;
     };
     result: import("../slack/articles.ts").SlackArticleGrant;
   };

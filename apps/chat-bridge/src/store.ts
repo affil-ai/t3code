@@ -39,6 +39,18 @@ export interface ContextMessage {
 }
 
 /** A thread the bridge keeps following after its run, until its delegated work settles or `until`. */
+/** Office article access staged for one Slack turn; see the `article_access` table. */
+export interface ArticleAccess {
+  readonly eventId: string;
+  readonly chatThreadKey: string;
+  /** Who it was granted to. */
+  readonly author: string;
+  readonly chatId: string;
+  readonly officeRunId: string;
+  readonly expiresAt: number;
+  readonly runId?: string | undefined;
+}
+
 export interface DelegatedFollow {
   readonly reply: OwedReply;
   /** Notifications at or before this position were looked at already. */
@@ -194,6 +206,18 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS slack_relay_row_at ON slack_relay_row (at);
+    -- Office article access staged for a Slack turn, until Office is told it ended. Kept on
+    -- disk, so a restart still ends it. run_id is the T3 run the turn reached, once known.
+    CREATE TABLE IF NOT EXISTS article_access (
+      event_id TEXT PRIMARY KEY,
+      chat_thread_key TEXT NOT NULL,
+      author TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      office_run_id TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      run_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS article_access_run ON article_access (run_id);
   `);
   // Databases made before threads could be muted, or replies knew who asked.
   addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
@@ -897,6 +921,54 @@ export class BridgeStore {
   /** Claims a process that stopped never delivered, owed again so a restart answers them. */
   releaseUnfinishedClaims(): void {
     this.db.prepare("UPDATE owed_reply SET claimed = 0 WHERE posted_at IS NULL").run();
+  }
+
+  stageAccess(access: Omit<ArticleAccess, "runId">): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO article_access
+          (event_id, chat_thread_key, author, chat_id, office_run_id, expires_at, run_id)
+          VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      )
+      .run(
+        access.eventId,
+        access.chatThreadKey,
+        access.author,
+        access.chatId,
+        access.officeRunId,
+        access.expiresAt,
+      );
+  }
+
+  accessDispatched(eventId: string, runId: string): void {
+    this.db.prepare("UPDATE article_access SET run_id = ? WHERE event_id = ?").run(runId, eventId);
+  }
+
+  /** Staged access by event, by the T3 run it reached, or all of it. */
+  articleAccess(filter: { eventId?: string; runId?: string } = {}): Array<ArticleAccess> {
+    const rows =
+      filter.eventId !== undefined
+        ? this.db.prepare("SELECT * FROM article_access WHERE event_id = ?").all(filter.eventId)
+        : filter.runId !== undefined
+          ? this.db.prepare("SELECT * FROM article_access WHERE run_id = ?").all(filter.runId)
+          : this.db.prepare("SELECT * FROM article_access ORDER BY rowid").all();
+    return rows.map((row) => ({
+      eventId: String(row.event_id),
+      chatThreadKey: String(row.chat_thread_key),
+      author: String(row.author),
+      chatId: String(row.chat_id),
+      officeRunId: String(row.office_run_id),
+      expiresAt: Number(row.expires_at),
+      runId: row.run_id === null ? undefined : String(row.run_id),
+    }));
+  }
+
+  moveAccessRun(from: string, to: string): void {
+    this.db.prepare("UPDATE article_access SET run_id = ? WHERE run_id = ?").run(to, from);
+  }
+
+  endAccess(eventId: string): void {
+    this.db.prepare("DELETE FROM article_access WHERE event_id = ?").run(eventId);
   }
 
   saveFollow(follow: DelegatedFollow): void {

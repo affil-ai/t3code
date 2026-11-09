@@ -594,9 +594,12 @@ it("keeps a concurrent article run's connection when the earlier run ends", asyn
   });
   h.t3.finish("run-1", "First done");
   await firstAnswered.promise;
-  await expect(
-    NodeFSP.stat(NodePath.join(h.home, "office-article/chat-1/article-1.json")),
-  ).rejects.toThrow(/ENOENT/);
+  // Removed once the run's delegated work settles, a moment after its answer.
+  await vi.waitFor(() =>
+    expect(
+      NodeFSP.stat(NodePath.join(h.home, "office-article/chat-1/article-1.json")),
+    ).rejects.toThrow(/ENOENT/),
+  );
   assert.equal(
     (await NodeFSP.stat(NodePath.join(h.home, "office-article/chat-1/article-2.json"))).mode &
       0o777,

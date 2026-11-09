@@ -153,8 +153,16 @@ export interface ChatPlatform {
    * Called again after a restart until it succeeds, and before the run's end is reported.
    */
   readonly dispatched?: (eventId: string, runId: string) => Promise<void>;
-  /** Releases resources for this run without touching a concurrent run's resources. */
+  /**
+   * Releases resources for this run, without touching a concurrent run's, once the run
+   * and the delegated work it started have settled (or following that work stopped).
+   */
   readonly runEnded?: (chatThreadKey: string, runId: string) => Promise<void>;
+  /**
+   * True while someone other than `author` holds resources `prepare` granted in these
+   * conversations, such as article access. Their messages wait, then run as their own turn.
+   */
+  readonly heldByOther?: (chatThreadKeys: ReadonlyArray<string>, author: string) => boolean;
 
   /** Posts an answer or a notice. */
   readonly post: (message: OutboundMessage) => Promise<void>;

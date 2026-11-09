@@ -123,6 +123,18 @@ async function start(): Promise<void> {
     if (bridge === undefined) throw new Error("The bridge is not running yet.");
     return bridge.receive(event);
   };
+  // Behind Office's relay, Slack turns get Office article access like Office chats.
+  const slackArticles =
+    botToken && slackTransport && relayed && office !== undefined
+      ? slackArticleAccess({
+          api: { mutate: (name, args) => officeApi!.mutate(name, args) },
+          articles: () => officeChannel?.articles,
+          binding: (key) => store.binding(key),
+          store,
+          identity: async (userId) => (await slackHost?.userIdentity(userId)) ?? {},
+          log,
+        })
+      : undefined;
   const platforms: Array<ChatPlatform> =
     botToken && slackTransport
       ? [
@@ -132,17 +144,7 @@ async function start(): Promise<void> {
             channelRoutes: config.channelProjects,
             directRoute: config.dmProjectId ? { projectId: config.dmProjectId } : undefined,
             eligibility: slackEligibility(slackTransport),
-            // Behind Office's relay, Slack turns get Office article access like Office chats.
-            articles:
-              relayed && office !== undefined
-                ? slackArticleAccess({
-                    api: { mutate: (name, args) => officeApi!.mutate(name, args) },
-                    articles: () => officeChannel?.articles,
-                    binding: (key) => store.binding(key),
-                    email: async (userId) => slackHost?.userEmail(userId),
-                    log,
-                  })
-                : undefined,
+            articles: slackArticles,
           }),
         ]
       : [];
@@ -465,6 +467,8 @@ async function start(): Promise<void> {
       : await startWebhookServer(config.linear.webhookPort, webhookRoutes, log);
   // What a restart left in the inbox first, then what Slack sent while the bridge was down.
   await officeChannel?.start(core);
+  // Before the inbox resumes, so a restart's leftover access ends and a retried event stages anew.
+  await slackArticles?.restore();
   await core.resume();
   // Office's relay sends what Slack posted while the bridge was down first, then live traffic.
   const slackRelay =

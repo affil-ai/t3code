@@ -100,6 +100,7 @@ export function slackPlatform(options: {
           prepare: options.articles.prepare,
           dispatched: options.articles.dispatched,
           runEnded: options.articles.runEnded,
+          heldByOther: options.articles.heldByOther,
           combinesPrepared: true,
         }),
   };

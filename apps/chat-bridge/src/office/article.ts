@@ -208,6 +208,11 @@ export class ArticleFiles {
     );
   }
 
+  /** Removes one Office run's connection file, tracked or not, such as one a restart left. */
+  async discard(chatId: string, officeRunId: string): Promise<void> {
+    await this.remove(NodePath.join(this.root, safeId(chatId), `${safeId(officeRunId)}.json`));
+  }
+
   async close(): Promise<void> {
     for (const scope of this.connections.values()) clearTimeout(scope.timer);
     this.connections.clear();

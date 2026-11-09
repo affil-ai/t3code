@@ -30,6 +30,7 @@ import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import {
   type SlackArticleGrant,
   type SlackArticleHooks,
+  type SlackIdentity,
   slackArticleAccess,
 } from "./slack/articles.ts";
 import { ArticleFiles } from "./office/article.ts";
@@ -451,6 +452,7 @@ function harness(
               prepare: options.articles.prepare,
               dispatched: options.articles.dispatched,
               runEnded: options.articles.runEnded,
+              heldByOther: options.articles.heldByOther,
               combinesPrepared: true,
             }),
       },
@@ -2717,19 +2719,22 @@ async function articleCheckout(): Promise<{ home: string; files: ArticleFiles }>
 /** Office's article mutations, answering with `grant` (or throwing it) and recording each call. */
 function fakeArticleOffice(grant: SlackArticleGrant | Error) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
-  return {
+  const office = {
     calls,
+    /** What Office answers the next `slackArticleAccess` with. */
+    grant,
     api: {
       mutate: (async (name: string, args: Record<string, unknown>) => {
         calls.push({ name, args });
         if (name === "slackArticleAccess") {
-          if (grant instanceof Error) throw grant;
-          return grant;
+          if (office.grant instanceof Error) throw office.grant;
+          return office.grant;
         }
         return null;
       }) as unknown as Parameters<typeof slackArticleAccess>[0]["api"]["mutate"],
     },
   };
+  return office;
 }
 
 const GRANT = {
@@ -2745,15 +2750,16 @@ it("stages Office article access on a relayed Slack turn and ends it with the ru
   const { home, files } = await articleCheckout();
   const office = fakeArticleOffice(GRANT);
   const logs: Array<string> = [];
-  let store: BridgeStore | undefined;
+  const db = freshDatabase();
+  const store = new BridgeStore(db);
   const articles = slackArticleAccess({
     api: office.api,
     articles: () => files,
-    binding: (key) => store?.binding(key),
+    binding: (key) => store.binding(key),
+    store,
     log: (line) => void logs.push(line),
   });
-  const run = harness(freshDatabase(), { articles });
-  store = run.store;
+  const run = harness(db, { articles });
   await run.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
 
   assert.deepStrictEqual(office.calls[0], {
@@ -2801,6 +2807,7 @@ it("stages Office article access on a relayed Slack turn and ends it with the ru
 
 it("runs a Slack turn without article access when Office grants none or fails", async () => {
   for (const grant of [null, new Error("Office slackArticleAccess failed.")]) {
+    const db = freshDatabase();
     const { files } = await articleCheckout();
     const office = fakeArticleOffice(grant);
     const logs: Array<string> = [];
@@ -2808,9 +2815,10 @@ it("runs a Slack turn without article access when Office grants none or fails", 
       api: office.api,
       articles: () => files,
       binding: () => undefined,
+      store: new BridgeStore(db),
       log: (line) => void logs.push(line),
     });
-    const { t3, bridge, posted } = harness(freshDatabase(), { articles });
+    const { t3, bridge, posted } = harness(db, { articles });
     await bridge.receive(event("100.1"));
     const message = String(t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
     assert.include(message, "fix the build");
@@ -2827,11 +2835,14 @@ it("runs a Slack turn without article access when Office grants none or fails", 
   }
 });
 
-it("sends Office the Slack profile email, and calls it without one when the lookup fails", async () => {
-  const cases: Array<[() => Promise<string | undefined>, string | undefined]> = [
-    [async () => "ada@affil.ai", "ada@affil.ai"],
-    [() => Promise.reject(new Error("users_not_found")), undefined],
-    [async () => undefined, undefined],
+it("sends Office the Slack email only with the team ID, and calls it without them when the lookup fails", async () => {
+  const both = { slackUserEmail: "ada@affil.ai", slackUserTeamId: "T1" };
+  const cases: Array<[() => Promise<SlackIdentity>, Record<string, string>]> = [
+    [async () => ({ email: "ada@affil.ai", teamId: "T1" }), both],
+    [() => Promise.reject(new Error("users_not_found")), {}],
+    // Office trusts the email only with our team's ID, so an email alone isn't sent.
+    [async () => ({ email: "ada@affil.ai" }), {}],
+    [async () => ({ teamId: "T1" }), {}],
   ];
   for (const [lookup, expected] of cases) {
     const { files } = await articleCheckout();
@@ -2842,7 +2853,8 @@ it("sends Office the Slack profile email, and calls it without one when the look
       api: office.api,
       articles: () => files,
       binding: () => undefined,
-      email: (userId) => {
+      store: new BridgeStore(freshDatabase()),
+      identity: (userId) => {
         asked.push(userId);
         return lookup();
       },
@@ -2859,7 +2871,7 @@ it("sends Office the Slack profile email, and calls it without one when the look
           messageTs: "100.1",
           text: "<@UOFFICE> fix the Rome FAQs",
           slackUserName: "Ada",
-          ...(expected === undefined ? {} : { slackUserEmail: expected }),
+          ...expected,
         },
       },
     ]);
@@ -2869,6 +2881,198 @@ it("sends Office the Slack profile email, and calls it without one when the look
   }
 });
 
+/** A relayed Slack harness whose turns get article access, with its store and Office calls. */
+async function articleHarness(
+  options: { t3?: ReturnType<typeof fakeT3>; db?: NodeSqlite.DatabaseSync } = {},
+) {
+  const { home, files } = await articleCheckout();
+  const office = fakeArticleOffice(GRANT);
+  const db = options.db ?? freshDatabase();
+  const store = new BridgeStore(db);
+  const logs: Array<string> = [];
+  const articles = slackArticleAccess({
+    api: office.api,
+    articles: () => files,
+    binding: (key) => store.binding(key),
+    store,
+    log: (line) => void logs.push(line),
+  });
+  // Bo (U2) may use the bridge, though Office gives Bo no article access.
+  const run = harness(db, {
+    articles,
+    allowEveryone: true,
+    members: ["U1", "U2"],
+    ...(options.t3 ? { t3: options.t3 } : {}),
+  });
+  const connection = NodePath.join(home, "office-article/chat1/officeRun1.json");
+  const exists = () =>
+    NodeFSP.access(connection).then(
+      () => true,
+      () => false,
+    );
+  const ended = () => office.calls.filter((call) => call.name === "slackArticleAccessEnded");
+  return { ...run, home, files, office, articles, logs, exists, ended, accessStore: store };
+}
+
+it("ends article access only after the run's delegated work settles", async () => {
+  const h = await articleHarness();
+  await h.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  // The parent hands the launcher to a subagent and ends its turn.
+  h.t3.options.delegatedPending = true;
+  h.t3.finish("run-1", "completed", "A subagent is staging the edits.");
+  await h.t3.tick();
+  assert.deepStrictEqual(h.ended(), []);
+  assert.isTrue(await h.exists());
+  // The subagent settles: only now does the access end.
+  h.t3.options.delegatedPending = false;
+  void h.t3.tick();
+  await h.bridge.idle();
+  assert.deepStrictEqual(h.ended(), [
+    { name: "slackArticleAccessEnded", args: { chatId: "chat1", runIds: ["officeRun1"] } },
+  ]);
+  assert.isFalse(await h.exists());
+  assert.deepStrictEqual(h.accessStore.articleAccess(), []);
+  await h.files.close();
+});
+
+it("ends a later turn's access with the follow already watching the thread's delegated work", async () => {
+  const h = await articleHarness();
+  h.t3.options.sendStartsRun = true;
+  await h.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  h.t3.options.delegatedPending = true;
+  h.t3.finish("run-1", "completed", "A subagent is staging the edits.");
+  await h.t3.tick();
+  // Ada asks again while the subagent works; the new turn gets its own access.
+  await h.bridge.receive(
+    event("100.2", { kind: "follow_up", addressed: false, text: "and the Paris page" }),
+  );
+  h.t3.finish("run-2", "completed", "Queued it.");
+  await h.t3.tick();
+  assert.deepStrictEqual(h.ended(), []);
+  h.t3.options.delegatedPending = false;
+  void h.t3.tick();
+  await h.bridge.idle();
+  assert.lengthOf(h.ended(), 2);
+  assert.deepStrictEqual(h.accessStore.articleAccess(), []);
+  await h.files.close();
+});
+
+it("keeps another person's follow-up out of a run holding article access, then runs it as its own turn", async () => {
+  const h = await articleHarness();
+  await h.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  // Someone else, a non-member Office gives no access to, follows up while the run holds Ada's.
+  h.office.grant = null;
+  const other = event("100.2", {
+    kind: "follow_up",
+    addressed: false,
+    text: "also delete the Paris page",
+    author: { userId: "U2", userName: "bo", fullName: "Bo" },
+  });
+  assert.deepStrictEqual(await h.bridge.receive(other), { type: "pending" });
+  assert.isFalse(h.t3.calls.some((call) => call.tool === "t3_thread_send"));
+  // Office isn't asked for Bo's access while Bo waits.
+  assert.lengthOf(
+    h.office.calls.filter((call) => call.name === "slackArticleAccess"),
+    1,
+  );
+  assert.include(
+    h.posted.map((each) => each.text),
+    "Someone else's request is still working in this thread. Yours goes in as its own turn when that work finishes.",
+  );
+  h.t3.finish("run-1", "completed", "Staged.");
+  await h.bridge.idle();
+  assert.lengthOf(h.ended(), 1);
+  h.advance(15_000);
+  await h.bridge.resume();
+  const sends = h.t3.calls.filter((call) => call.tool === "t3_thread_send");
+  assert.lengthOf(sends, 1);
+  assert.include(String(sends[0]!.args.message), "also delete the Paris page");
+  // Bo's turn carries no article access.
+  assert.notInclude(String(sends[0]!.args.message), "Office article workspace");
+  await h.files.close();
+});
+
+it("steers the same person's follow-up into their run holding article access", async () => {
+  const h = await articleHarness();
+  await h.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  const outcome = await h.bridge.receive(
+    event("100.2", { kind: "follow_up", addressed: false, text: "also the title" }),
+  );
+  assert.deepStrictEqual(outcome, { type: "followed_up", threadId: THREAD, delivery: "steered" });
+  await h.files.close();
+});
+
+it("ends article access a restart left behind once the run settles after the restart", async () => {
+  const db = freshDatabase();
+  const first = await articleHarness({ db });
+  await first.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  assert.lengthOf(first.accessStore.articleAccess({ runId: "run-1" }), 1);
+  // The bridge stops mid-run; the access is on disk, not in memory.
+  first.bridge.stop();
+  await first.files.close();
+
+  const second = await articleHarness({ db, t3: first.t3 });
+  await second.articles.restore();
+  await second.bridge.resume();
+  first.t3.finish("run-1", "completed", "Staged.");
+  await second.bridge.idle();
+  assert.deepStrictEqual(second.ended(), [
+    { name: "slackArticleAccessEnded", args: { chatId: "chat1", runIds: ["officeRun1"] } },
+  ]);
+  assert.deepStrictEqual(second.accessStore.articleAccess(), []);
+  await second.files.close();
+});
+
+it("ends at startup access whose event finished without reaching a run, and forgets expired access", async () => {
+  const { files } = await articleCheckout();
+  const office = fakeArticleOffice(GRANT);
+  const store = new BridgeStore(freshDatabase());
+  const base = { chatThreadKey: "slack:C1:100.1", author: "U1", chatId: "chat1" };
+  store.stageAccess({
+    ...base,
+    eventId: "dropped",
+    officeRunId: "officeRun1",
+    expiresAt: 9_999_999_999_999,
+  });
+  store.markHandled("dropped");
+  store.stageAccess({
+    ...base,
+    eventId: "waiting",
+    officeRunId: "officeRun2",
+    expiresAt: 9_999_999_999_999,
+  });
+  store.stageAccess({ ...base, eventId: "lapsed", officeRunId: "officeRun3", expiresAt: 1 });
+  const articles = slackArticleAccess({
+    api: office.api,
+    articles: () => files,
+    binding: () => undefined,
+    store,
+    log: () => {},
+    now: () => 1_000,
+  });
+  await articles.restore();
+  assert.deepStrictEqual(office.calls, [
+    { name: "slackArticleAccessEnded", args: { chatId: "chat1", runIds: ["officeRun1"] } },
+  ]);
+  // The waiting event is prepared again, which ends its earlier access first.
+  assert.deepStrictEqual(
+    store.articleAccess().map((each) => each.eventId),
+    ["waiting"],
+  );
+  await files.close();
+});
+
+it("skips article access for a stop and a bare model switch", async () => {
+  const h = await articleHarness();
+  await h.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  const asked = () => h.office.calls.filter((call) => call.name === "slackArticleAccess").length;
+  assert.strictEqual(asked(), 1);
+  await h.bridge.receive(event("100.2", { kind: "follow_up", text: "!opus" }));
+  await h.bridge.receive(event("100.3", { kind: "follow_up", text: "stop" }));
+  assert.strictEqual(asked(), 1);
+  await h.files.close();
+});
+
 it("asks Office for nothing on a message that doesn't reach the agent", async () => {
   const { files } = await articleCheckout();
   const office = fakeArticleOffice(GRANT);
@@ -2876,6 +3080,7 @@ it("asks Office for nothing on a message that doesn't reach the agent", async ()
     api: office.api,
     articles: () => files,
     binding: () => undefined,
+    store: new BridgeStore(freshDatabase()),
     log: () => {},
   });
   // Context only, an aside, and an unaddressed message in an unbound thread.

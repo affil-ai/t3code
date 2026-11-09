@@ -108,8 +108,10 @@ export interface SlackChatHost {
   readonly isWorkspaceMember: (userId: string) => Promise<boolean>;
   /** Whether someone is a person: any user Slack knows, guests and Slack Connect included, except bots and deleted users. */
   readonly isPerson: (userId: string) => Promise<boolean>;
-  /** Someone's Slack profile email, when Slack shares it; looked up with the membership checks. */
-  readonly userEmail: (userId: string) => Promise<string | undefined>;
+  /** Someone's Slack profile email and team, when Slack shares them; looked up with the membership checks. */
+  readonly userIdentity: (
+    userId: string,
+  ) => Promise<{ readonly email?: string | undefined; readonly teamId?: string | undefined }>;
   /** Posts a message with blocks, such as a question with buttons; returns its `ts`. */
   readonly postBlocks: (message: BlockMessage) => Promise<string>;
   /** Replaces a message posted with `postBlocks`. */
@@ -923,9 +925,13 @@ export function createSlackHost(options: SlackChatHostOptions): {
         people.set(userId, { member: person, until: performance.now() + MEMBER_CACHE_MS });
         return person;
       },
-      userEmail: async (userId) => {
-        const email = (await slackUser(userId))?.profile?.email?.trim();
-        return email ? email : undefined;
+      userIdentity: async (userId) => {
+        const user = await slackUser(userId);
+        const email = user?.profile?.email?.trim();
+        return {
+          ...(email ? { email } : {}),
+          ...(user?.team_id ? { teamId: user.team_id } : {}),
+        };
       },
       rename: async (chatThreadKey, title) => {
         // agents.sessions.rename with channel_id and thread_ts, in DMs and channel threads alike.

@@ -418,7 +418,7 @@ it("lets guests and Slack Connect people through the relay's person check, but n
   }
 });
 
-it("reads a profile email from the same users.info lookup as the person check", async () => {
+it("reads a profile email and team from the same users.info lookup as the person check", async () => {
   let lookups = 0;
   const { api, host } = await hostOn(
     {
@@ -440,8 +440,11 @@ it("reads a profile email from the same users.info lookup as the person check", 
   );
   try {
     assert.isTrue(await host.isPerson("UADA"));
-    assert.strictEqual(await host.userEmail("UADA"), "ada@affil.ai");
-    assert.isUndefined(await host.userEmail("UNOMAIL"));
+    assert.deepStrictEqual(await host.userIdentity("UADA"), {
+      email: "ada@affil.ai",
+      teamId: "T1",
+    });
+    assert.deepStrictEqual(await host.userIdentity("UNOMAIL"), { teamId: "T1" });
     // One users.info per person while it's cached.
     assert.strictEqual(lookups, 2);
   } finally {
