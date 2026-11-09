@@ -48,9 +48,9 @@ const BARE_TOML_KEY = /^[A-Za-z0-9_-]+$/;
 const codexMcpServersOff = (names: ReadonlyArray<string>): ReadonlyArray<string> => {
   const dotted = names.filter((name) => !BARE_TOML_KEY.test(name));
   return [
-    ...names
-      .filter((name) => BARE_TOML_KEY.test(name))
-      .flatMap((name) => ["--config", `mcp_servers.${name}.enabled=false`]),
+    ...names.flatMap((name) =>
+      BARE_TOML_KEY.test(name) ? ["--config", `mcp_servers.${name}.enabled=false`] : [],
+    ),
     ...(dotted.length === 0
       ? []
       : [
