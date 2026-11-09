@@ -202,6 +202,8 @@ export function routeFor(
 export interface BridgeSettings {
   /** The model new threads start with; a `!model` switch starts from it. */
   readonly modelSelection?: ModelSelection | undefined;
+  /** Defaults used before `modelSelection`; see `Config.formerModelSelections`. */
+  readonly formerModelSelections?: ReadonlyArray<ModelSelection> | undefined;
 }
 
 /** What startup catch-up asks a platform to read. */
@@ -596,10 +598,11 @@ export class Bridge {
     // still on the bridge's default never got the chat's model, so it switches now; one
     // on another model was switched on purpose and keeps it.
     const current = await this.threads.modelSelection(binding.threadId);
-    if (
-      !sameModel(current, chat) &&
-      sameModel(current, this.settings.modelSelection ?? DEFAULT_MODEL)
-    ) {
+    const defaults = [
+      this.settings.modelSelection ?? DEFAULT_MODEL,
+      ...(this.settings.formerModelSelections ?? []),
+    ];
+    if (!sameModel(current, chat) && defaults.some((each) => sameModel(current, each))) {
       await this.threads.setModel(binding.threadId, chat);
       this.log(
         `Switched thread ${binding.threadId} from the default to its chat's model, ${describeModel(chat)}.`,

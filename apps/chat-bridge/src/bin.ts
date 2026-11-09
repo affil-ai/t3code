@@ -303,7 +303,10 @@ async function start(): Promise<void> {
   bridge = new Bridge({
     store,
     threads,
-    settings: { modelSelection: config.modelSelection },
+    settings: {
+      modelSelection: config.modelSelection,
+      formerModelSelections: config.formerModelSelections,
+    },
     platforms,
     ...(officeChannel
       ? { seedHistory: officeChannel.seedHistory, chatModel: officeChannel.chatModel }

@@ -257,6 +257,10 @@ async function harness(
     now?: () => number;
     /** As the bridge's config gives it: the model new threads start on. */
     defaultModel?: ModelSelection;
+    /** As the bridge's config gives it: defaults used before `defaultModel`. */
+    formerModels?: ReadonlyArray<ModelSelection>;
+    /** The model T3 reports for threads, when it isn't `defaultModel`. */
+    threadModel?: ModelSelection;
   } = {},
 ) {
   const home =
@@ -299,9 +303,13 @@ async function harness(
   const bridge = new Bridge({
     store,
     threads: new T3Threads(t3.tools, {
-      modelSelection: options.defaultModel ?? { instanceId: "codex", model: "default-model" },
+      modelSelection: options.threadModel ??
+        options.defaultModel ?? { instanceId: "codex", model: "default-model" },
     }),
-    settings: options.defaultModel ? { modelSelection: options.defaultModel } : {},
+    settings: {
+      ...(options.defaultModel ? { modelSelection: options.defaultModel } : {}),
+      ...(options.formerModels ? { formerModelSelections: options.formerModels } : {}),
+    },
     platforms: [channel.platform, ...(options.slack ? [options.slack] : [])],
     seedHistory: channel.seedHistory,
     chatModel: channel.chatModel,
@@ -1794,6 +1802,31 @@ it("switches an Office chat's thread left on the default once Office sends its r
   );
   assert.deepEqual(modelSets(h), [OPUS]);
   assert.deepEqual(h.store.followedModel("office:chat-1"), OPUS);
+});
+
+it("still switches a thread left on a former default after the default changes", async () => {
+  const SOL = { instanceId: "codex", model: "gpt-6.1-sol" };
+  // The default is now Opus; this thread started under the old Astra default.
+  await using h = await harness({ defaultModel: OPUS, formerModels: [ASTRA], threadModel: ASTRA });
+  await h.send(withoutModel());
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  await h.send(
+    request({ eventId: "event-2", messageId: "message-2", firstTurn: false, modelSelection: SOL }),
+  );
+  assert.deepEqual(modelSets(h), [SOL]);
+});
+
+it("keeps a thread on a model that was never a default", async () => {
+  const SOL = { instanceId: "codex", model: "gpt-6.1-sol" };
+  await using h = await harness({ defaultModel: OPUS, threadModel: ASTRA });
+  await h.send(withoutModel());
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  await h.send(
+    request({ eventId: "event-2", messageId: "message-2", firstTurn: false, modelSelection: SOL }),
+  );
+  assert.deepEqual(modelSets(h), []);
 });
 
 it("runs a Slack turn on the thread's model when Office can't say the chat's", async () => {

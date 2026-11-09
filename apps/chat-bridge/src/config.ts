@@ -42,6 +42,12 @@ export interface BridgeConfig {
    * "options": [{ "id": "effort", "value": "medium" }] }`. Omit for the project's default.
    */
   readonly modelSelection?: ModelSelection | undefined;
+  /**
+   * Defaults this bridge used before `modelSelection`. A thread with no followed model that
+   * is on one of these never got its chat's model either, so it switches like one on the
+   * current default.
+   */
+  readonly formerModelSelections?: ReadonlyArray<ModelSelection> | undefined;
   /** iMessage through `affil-imessage` on a Mac. Omit to run without iMessage. */
   readonly imessage?: ImessageConfig | undefined;
   /** Linear agent sessions. Omit to run without Linear. Its secrets come from the environment. */
@@ -282,6 +288,19 @@ export function parseConfig(raw: unknown): BridgeConfig {
   ) {
     fail("modelSelection needs an instanceId and a model, and options must be a list.");
   }
+  if (
+    raw.formerModelSelections !== undefined &&
+    (!Array.isArray(raw.formerModelSelections) ||
+      raw.formerModelSelections.some(
+        (each) =>
+          !isRecord(each) ||
+          typeof each.instanceId !== "string" ||
+          typeof each.model !== "string" ||
+          (each.options !== undefined && !Array.isArray(each.options)),
+      ))
+  ) {
+    fail("formerModelSelections must be a list of model selections.");
+  }
   return {
     t3Url,
     t3EnvironmentId: optionalText(raw, "t3EnvironmentId"),
@@ -293,6 +312,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
     startTools: raw.startTools === true,
     runtimeMode: raw.runtimeMode as string | undefined,
     modelSelection: raw.modelSelection as ModelSelection | undefined,
+    formerModelSelections: raw.formerModelSelections as ReadonlyArray<ModelSelection> | undefined,
     imessage: parseImessage(raw.imessage),
     linear: parseLinear(raw.linear),
     slack: parseSlack(raw.slack),
