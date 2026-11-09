@@ -16,6 +16,7 @@ export interface SlackInboxRow {
   /** The exact bytes Slack sent. */
   readonly rawBody: string;
   readonly contentType: string;
+  /** Slack's transport retry; not replayed to the adapter (see `relayedRequest`). */
   readonly retryNum: number;
 }
 
@@ -81,11 +82,15 @@ export function slackEventTimeMs(row: SlackInboxRow): number | undefined {
 /** Accepts the body as given: Office verified Slack's signature before storing it. */
 export const relayedWebhookVerifier = (_request: Request, body: string): string => body;
 
-/** The request Slack would have posted, rebuilt from a row. Only the adapter reads it. */
+/**
+ * The request Slack would have posted, rebuilt from a row. Always a first
+ * delivery: on a retry number the adapter skips any event it marked delivered,
+ * even one whose earlier try never finished. Office and the inbox dedupe instead.
+ */
 export function relayedRequest(row: SlackInboxRow): Request {
   return new Request("http://127.0.0.1/slack/relay", {
     method: "POST",
-    headers: { "content-type": row.contentType, "x-slack-retry-num": String(row.retryNum) },
+    headers: { "content-type": row.contentType, "x-slack-retry-num": "0" },
     body: row.rawBody,
   });
 }

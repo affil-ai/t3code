@@ -2209,11 +2209,12 @@ it("stops the run from a relayed agent_session_stopped event before marking it d
   await slack.close();
 });
 
-const relayedMention = (id: string): SlackInboxRow => ({
+/** `retryNum` is Slack's: a row Office first received on Slack's retry carries 1. */
+const relayedMention = (id: string, retryNum = 0): SlackInboxRow => ({
   id,
   kind: "event",
   contentType: "application/json",
-  retryNum: 0,
+  retryNum,
   rawBody: JSON.stringify({
     type: "event_callback",
     team_id: "T1",
@@ -2278,7 +2279,8 @@ it("hands a relayed message to the core on a retry after a try stopped past the 
   });
   const launches = () => t3.calls.filter((call) => call.tool === "t3_thread_launch").length;
   slack.whenDelivered(() => launches() === 1);
-  slack.push([relayedMention("row-1")]);
+  // Office first got it on Slack's retry; the adapter's event-delivered mark must not skip it.
+  slack.push([relayedMention("row-1", 1)]);
   await first.reached;
   // The stalled try times out; the retry must not be a no-op that gets the row marked delivered.
   for (const fire of timers.splice(0)) fire();
@@ -2296,13 +2298,14 @@ it("hands a relayed message to the core after a restart that cut its first try s
   // The first process gets past the SDK's dedupe mark, then dies.
   const first = stallFirstHandOff();
   const before = await relayedSlack(bridge, db, { deliver: first.deliver });
-  before.push([relayedMention("row-1")]);
+  // Office first got it on Slack's retry; the adapter's event-delivered mark must not skip it.
+  before.push([relayedMention("row-1", 1)]);
   await first.reached;
 
   const after = await relayedSlack(bridge, db);
   const launches = () => t3.calls.filter((call) => call.tool === "t3_thread_launch").length;
   after.whenDelivered(() => launches() === 1);
-  after.push([relayedMention("row-1")]);
+  after.push([relayedMention("row-1", 1)]);
   await after.idle();
   assert.strictEqual(launches(), 1);
   assert.deepStrictEqual(after.delivered, [{ ids: ["row-1"], handled: true }]);
