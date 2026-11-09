@@ -1,9 +1,13 @@
 // @effect-diagnostics globalTimers:off -- A plain Node app; it does not use Effect.
+// @effect-diagnostics nodeBuiltinImport:off -- A plain Node app; it does not use Effect.
 /**
  * Slack requests Office verified and stored, read over the token-authenticated
  * Office connection, replayed through the Slack adapter's webhook handler, and
  * marked delivered once handled.
  */
+import * as NodeAsyncHooks from "node:async_hooks";
+
+import type { BridgeStore } from "../store.ts";
 
 /** One request Slack sent Office, as `chatBridge:slackInbox` returns it. */
 export interface SlackInboxRow {
@@ -35,6 +39,45 @@ export type SlackWebhookHandler = (
   },
 ) => Promise<Response>;
 
+/** The relayed row whose handling is running, as the Chat SDK's work for it sees it. */
+export interface RelayedRowContext {
+  /**
+   * An earlier try of this row started and didn't finish, so the Chat SDK may
+   * have recorded its message as seen without handing it on. Its dedupe is
+   * skipped; the bridge's own inbox drops a message it already has.
+   */
+  readonly redispatch: boolean;
+  /** When Slack says the event happened, in epoch ms, when the row says. */
+  readonly eventTimeMs: number | undefined;
+}
+
+const relayedRowContext = new NodeAsyncHooks.AsyncLocalStorage<RelayedRowContext>();
+
+/** The relayed row the current work belongs to; undefined outside the relay (Socket Mode). */
+export const currentRelayedRow = (): RelayedRowContext | undefined => relayedRowContext.getStore();
+
+/** True for the Chat SDK's per-message dedupe key, bare or wrapped in a concurrency scope. */
+export const isChatSdkDedupeKey = (key: string): boolean =>
+  key.startsWith("dedupe:") || (key.startsWith("concurrency:") && key.includes('"dedupe:'));
+
+/** The Slack event's own time, from an Events API body; undefined for interactions. */
+export function slackEventTimeMs(row: SlackInboxRow): number | undefined {
+  if (row.kind !== "event") return undefined;
+  try {
+    const body = JSON.parse(row.rawBody) as {
+      readonly event_time?: unknown;
+      readonly event?: { readonly event_ts?: unknown };
+    };
+    const eventTs = Number(body.event?.event_ts);
+    if (Number.isFinite(eventTs) && eventTs > 0) return Math.round(eventTs * 1000);
+    const eventTime = Number(body.event_time);
+    if (Number.isFinite(eventTime) && eventTime > 0) return eventTime * 1000;
+  } catch {
+    // Not JSON; the adapter will refuse it.
+  }
+  return undefined;
+}
+
 /** Accepts the body as given: Office verified Slack's signature before storing it. */
 export const relayedWebhookVerifier = (_request: Request, body: string): string => body;
 
@@ -56,16 +99,22 @@ export function relayedRequest(row: SlackInboxRow): Request {
 export async function handleRelayedRow(
   handler: SlackWebhookHandler,
   row: SlackInboxRow,
+  redispatch = false,
 ): Promise<void> {
   const tasks: Array<Promise<unknown>> = [];
-  const response = await handler(relayedRequest(row), {
-    waitUntil: (task) => {
-      tasks.push(task);
-    },
-    // Rejects the task on a Chat SDK failure, so the row is tried again. The bridge's
-    // own handlers catch their errors; their failed sends retry from its inbox instead.
-    propagateHandlerErrors: true,
-  });
+  // Everything the handler starts, including its `waitUntil` work, runs in this context.
+  const response = await relayedRowContext.run(
+    { redispatch, eventTimeMs: slackEventTimeMs(row) },
+    () =>
+      handler(relayedRequest(row), {
+        waitUntil: (task) => {
+          tasks.push(task);
+        },
+        // Rejects the task on a Chat SDK failure, so the row is tried again. The bridge's
+        // own handlers catch their errors; their failed sends retry from its inbox instead.
+        propagateHandlerErrors: true,
+      }),
+  );
   if (!response.ok) throw new Error(`the Slack handler answered ${response.status}`);
   const failures: Array<unknown> = [];
   while (tasks.length > 0) {
@@ -81,6 +130,10 @@ export const RELAY_MAX_ATTEMPTS = 3;
 export const RELAY_CONCURRENCY = 8;
 /** A row still running after this counts as a failed try. */
 export const RELAY_ROW_TIMEOUT_MS = 120_000;
+/** Office takes at most this many ids per `slackDelivered` call. */
+export const RELAY_ACK_BATCH = 10;
+/** How long a handled row is remembered on disk, well past Office's redelivery of it. */
+const RELAY_ROW_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const RETRY_DELAY_MS = 2_000;
 /** Ids remembered after delivery, so a stale snapshot doesn't replay them. */
 const SEEN_LIMIT = 2_000;
@@ -91,14 +144,23 @@ export interface SlackRelay {
   readonly close: () => Promise<void>;
 }
 
+/** Where the relay records each row's tries on disk: the bridge's store. */
+export type SlackRelayStore = Pick<
+  BridgeStore,
+  "relayRowHandled" | "beginRelayRow" | "finishRelayRow"
+>;
+
 /**
  * Consumes the relay, up to `RELAY_CONCURRENCY` rows at once (the bridge core keeps
  * per-conversation order). A row that fails or times out gets `RELAY_MAX_ATTEMPTS`
- * tries, then is logged and marked delivered; rows are only marked after handling.
+ * tries, then is logged and marked delivered; rows are only marked after handling,
+ * and recorded as handled on disk first, so a restart before the mark only marks them.
  */
 export function startSlackRelay(options: {
   readonly source: SlackRelaySource;
-  readonly handle: (row: SlackInboxRow) => Promise<void>;
+  readonly store: SlackRelayStore;
+  /** `redispatch` is true when an earlier try of the row started, in this process or before a restart. */
+  readonly handle: (row: SlackInboxRow, redispatch: boolean) => Promise<void>;
   readonly log: (line: string) => void;
   /** Between attempts; tests pass one that resolves at once. */
   readonly sleep?: (ms: number) => Promise<void>;
@@ -139,7 +201,8 @@ export function startSlackRelay(options: {
 
   const attempt = async (row: SlackInboxRow) => {
     let timer = false;
-    const handling = options.handle(row);
+    const redispatch = options.store.beginRelayRow(row.id);
+    const handling = options.handle(row, redispatch);
     // A timed-out try keeps running; a retry of the same Slack event is dropped by the bridge's dedupe.
     handling.catch(() => {});
     await Promise.race([
@@ -175,7 +238,7 @@ export function startSlackRelay(options: {
   const ack = () => {
     if (acking || closed || unacked.size === 0) return;
     acking = true;
-    const ids = [...unacked];
+    const ids = [...unacked].slice(0, RELAY_ACK_BATCH);
     track(
       (async () => {
         try {
@@ -196,12 +259,19 @@ export function startSlackRelay(options: {
     for (const row of latest) {
       if (closed || inFlight.size >= RELAY_CONCURRENCY) return;
       if (handled.has(row.id) || inFlight.has(row.id)) continue;
+      if (options.store.relayRowHandled(row.id)) {
+        // Handled before a restart, and not marked delivered then.
+        remember(row.id);
+        ack();
+        continue;
+      }
       inFlight.add(row.id);
       track(
         (async () => {
           const done = await handleRow(row);
           inFlight.delete(row.id);
           if (!done) return;
+          options.store.finishRelayRow(row.id, RELAY_ROW_KEEP_MS);
           remember(row.id);
           ack();
           fill();
@@ -240,6 +310,7 @@ export function startSlackRelay(options: {
 export function connectSlackRelay(options: {
   readonly transport: "socket" | "office-relay";
   readonly source: SlackRelaySource;
+  readonly store: SlackRelayStore;
   readonly chat: { readonly webhooks: Readonly<Record<string, SlackWebhookHandler | undefined>> };
   readonly log: (line: string) => void;
   readonly sleep?: (ms: number) => Promise<void>;
@@ -250,7 +321,8 @@ export function connectSlackRelay(options: {
   if (handler === undefined) throw new Error("The Slack relay needs the Slack adapter.");
   return startSlackRelay({
     source: options.source,
-    handle: (row) => handleRelayedRow(handler, row),
+    store: options.store,
+    handle: (row, redispatch) => handleRelayedRow(handler, row, redispatch),
     log: options.log,
     ...(options.sleep ? { sleep: options.sleep } : {}),
     ...(options.timeout ? { timeout: options.timeout } : {}),

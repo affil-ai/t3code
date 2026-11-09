@@ -23,6 +23,11 @@ export interface ChatStateOptions {
   /** Unix milliseconds. Tests pass a controllable clock. */
   readonly now?: () => number;
   readonly randomToken?: () => string;
+  /**
+   * True for a key `setIfNotExists` should claim even though it is set: the
+   * Chat SDK's dedupe key for a relayed Slack row whose earlier try didn't finish.
+   */
+  readonly reclaim?: (key: string) => boolean;
 }
 
 export function createChatState(
@@ -142,15 +147,25 @@ export function createChatState(
           ON CONFLICT (cache_key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
       ).run(key, encode(value), ttlMs ? now() + ttlMs : null);
     },
-    setIfNotExists: async (key, value, ttlMs) =>
-      db
-        .prepare(
+    setIfNotExists: async (key, value, ttlMs) => {
+      if (options.reclaim?.(key)) {
+        db.prepare(
           `INSERT INTO state_cache (cache_key, value, expires_at) VALUES (?, ?, ?)
+            ON CONFLICT (cache_key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
+        ).run(key, encode(value), ttlMs ? now() + ttlMs : null);
+        return true;
+      }
+      return (
+        db
+          .prepare(
+            `INSERT INTO state_cache (cache_key, value, expires_at) VALUES (?, ?, ?)
             ON CONFLICT (cache_key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at
               WHERE state_cache.expires_at IS NOT NULL AND state_cache.expires_at <= ?
             RETURNING cache_key`,
-        )
-        .all(key, encode(value), ttlMs ? now() + ttlMs : null, now()).length > 0,
+          )
+          .all(key, encode(value), ttlMs ? now() + ttlMs : null, now()).length > 0
+      );
+    },
     delete: async (key) => {
       db.prepare("DELETE FROM state_cache WHERE cache_key = ?").run(key);
     },

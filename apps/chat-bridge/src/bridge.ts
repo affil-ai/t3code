@@ -1795,12 +1795,29 @@ export class Bridge {
     }
   }
 
-  async stopRequested(chatThreadKey: string, userId: string): Promise<boolean> {
+  /**
+   * Stops the thread's running turn. `stoppedAt` (epoch ms) is when the person
+   * pressed stop, when the platform says; a stop from before the thread's
+   * latest run was asked for is a replay and stops nothing.
+   */
+  async stopRequested(chatThreadKey: string, userId: string, stoppedAt?: number): Promise<boolean> {
     const binding = this.store.binding(chatThreadKey);
     if (binding === undefined) return false;
     if (!(await this.isAllowed(this.platform(chatThreadKey), userId))) {
       this.log(`Ignored a stop in ${chatThreadKey} from ${userId}, who is not allowed.`);
       return false;
+    }
+    if (stoppedAt !== undefined) {
+      try {
+        const latest = (await this.threads.shape(binding.threadId)).latestRun;
+        if (latest?.requestedAt !== undefined && latest.requestedAt > stoppedAt) {
+          this.log(`Ignored a stop in ${chatThreadKey} from before ${latest.runId} was asked for.`);
+          return false;
+        }
+      } catch (error) {
+        // A stop someone just pressed matters more than a rare replay; stop anyway.
+        this.log(`Reading ${binding.threadId} before a stop failed: ${String(error)}`);
+      }
     }
     try {
       await this.threads.interrupt(binding.threadId, `Stopped from chat by ${userId}.`);

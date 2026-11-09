@@ -30,7 +30,7 @@ import {
   type SlackChatHost,
   type SlackTransport,
 } from "./slack/host.ts";
-import { connectSlackRelay } from "./slack/relay.ts";
+import { connectSlackRelay, currentRelayedRow, isChatSdkDedupeKey } from "./slack/relay.ts";
 import { slackPlatform, slackWorkNote } from "./slack/platform.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
@@ -314,9 +314,15 @@ async function start(): Promise<void> {
             ...(imessage ? { imessage: imessage.deliver } : {}),
             ...(linear ? { linear: linear.deliver } : {}),
           },
-          state: createChatState(db),
+          state: createChatState(db, {
+            // A relayed Slack row tried again may find the SDK's dedupe mark from a try that
+            // never reached the core; the core's own inbox drops what it already has.
+            reclaim: (key) => currentRelayedRow()?.redispatch === true && isChatSdkDedupeKey(key),
+          }),
           onError: (error) => log(`Chat message failed: ${String(error)}`),
-          onStop: (chatThreadKey, userId) => core.stopRequested(chatThreadKey, userId),
+          // A relayed stop carries Slack's time, so a replayed one can't stop a later run.
+          onStop: (chatThreadKey, userId) =>
+            core.stopRequested(chatThreadKey, userId, currentRelayedRow()?.eventTimeMs),
           onAnswer: (chatThreadKey, userId, value) =>
             core.questionClicked(chatThreadKey, userId, value),
           onReaction: (reaction) => core.reacted(reaction),
@@ -448,6 +454,7 @@ async function start(): Promise<void> {
       ? connectSlackRelay({
           transport: config.slack.transport,
           source: officeApi,
+          store,
           chat: running,
           log,
         })

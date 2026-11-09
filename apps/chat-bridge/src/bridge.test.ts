@@ -20,7 +20,12 @@ import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
 import { createSlackHost } from "./slack/host.ts";
-import { connectSlackRelay, type SlackInboxRow } from "./slack/relay.ts";
+import {
+  connectSlackRelay,
+  currentRelayedRow,
+  isChatSdkDedupeKey,
+  type SlackInboxRow,
+} from "./slack/relay.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
 import { type RunStatus, T3Threads } from "./threads.ts";
@@ -66,7 +71,12 @@ function fakeT3() {
     /** Subagents or background work still running: each wait for them times out at the next tick. */
     delegatedPending?: boolean;
     /** The runs a thread read lists, as for a subagent the bridge didn't start. */
-    recentRuns?: ReadonlyArray<{ runId: string; ordinal: number; status: RunStatus }>;
+    recentRuns?: ReadonlyArray<{
+      runId: string;
+      ordinal: number;
+      status: RunStatus;
+      requestedAt?: string;
+    }>;
     /** T3 accepts the next attachment send, and its reply is lost on the way back. */
     loseAttachmentReply?: boolean;
   } = {
@@ -1991,11 +2001,22 @@ it("posts an answer after a restart between claiming it and posting it, with the
 });
 
 /**
- * The bridge's Slack adapter on a real `Chat`, fed by Office's relay. Slack's
- * Web API points at an address that refuses connections, so user lookups fail
- * and names fall back to ids.
+ * The bridge's Slack adapter on a real `Chat`, fed by Office's relay, wired as
+ * `bin.ts` wires it. Slack's Web API points at an address that refuses
+ * connections, so user lookups fail and names fall back to ids.
  */
-async function relayedSlack(bridge: Bridge, db: NodeSqlite.DatabaseSync) {
+async function relayedSlack(
+  bridge: Bridge,
+  db: NodeSqlite.DatabaseSync,
+  options: {
+    /** Stands in for the Slack host's hand-off of each SDK message to the core. */
+    deliver?: (handOff: () => Promise<void>) => Promise<void>;
+    /** Marking rows delivered fails, as when Office is unreachable. */
+    deliveredFails?: boolean;
+    sleep?: (ms: number) => Promise<void>;
+    timeout?: (ms: number) => Promise<void>;
+  } = {},
+) {
   const slackParts = createSlackHost({
     botToken: "xoxb-test",
     transport: { kind: "office-relay" },
@@ -2005,12 +2026,20 @@ async function relayedSlack(bridge: Bridge, db: NodeSqlite.DatabaseSync) {
   });
   const chat = await startChatHost({
     adapters: { slack: slackParts.adapter },
-    deliver: { slack: slackParts.deliver },
-    state: createChatState(db),
+    deliver: {
+      slack: (thread, message, context, route) => {
+        const handOff = () => slackParts.deliver(thread, message, context, route);
+        return options.deliver ? options.deliver(handOff) : handOff();
+      },
+    },
+    state: createChatState(db, {
+      reclaim: (key) => currentRelayedRow()?.redispatch === true && isChatSdkDedupeKey(key),
+    }),
     onError: (error) => assert.fail(String(error)),
     onAnswer: (chatThreadKey, userId, value) =>
       bridge.questionClicked(chatThreadKey, userId, value),
-    onStop: (chatThreadKey, userId) => bridge.stopRequested(chatThreadKey, userId),
+    onStop: (chatThreadKey, userId) =>
+      bridge.stopRequested(chatThreadKey, userId, currentRelayedRow()?.eventTimeMs),
     log: () => {},
   });
   let push: (rows: ReadonlyArray<SlackInboxRow>) => void = () => {};
@@ -2023,13 +2052,17 @@ async function relayedSlack(bridge: Bridge, db: NodeSqlite.DatabaseSync) {
         push = onRows;
         return () => {};
       },
-      slackDelivered: async (ids) => void delivered.push({ ids, handled: handled() }),
+      slackDelivered: async (ids) => {
+        if (options.deliveredFails === true) throw new Error("Office is unreachable");
+        delivered.push({ ids, handled: handled() });
+      },
     },
+    store: new BridgeStore(db),
     chat,
     log: () => {},
-    sleep: async () => {},
-    // No row here runs long enough to time out.
-    timeout: () => new Promise<void>(() => {}),
+    sleep: options.sleep ?? (async () => {}),
+    // No row here runs long enough to time out, unless the test says.
+    timeout: options.timeout ?? (() => new Promise<void>(() => {})),
   })!;
   return {
     delivered,
@@ -2159,6 +2192,163 @@ it("stops the run from a relayed agent_session_stopped event before marking it d
   ]);
   await slack.idle();
   assert.deepStrictEqual(slack.delivered, [{ ids: ["row-3"], handled: true }]);
+  t3.finish("run-1", "interrupted", "");
+  await bridge.idle();
+  await slack.close();
+});
+
+const relayedMention = (id: string): SlackInboxRow => ({
+  id,
+  kind: "event",
+  contentType: "application/json",
+  retryNum: 0,
+  rawBody: JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event_id: `Ev-${id}`,
+    event: {
+      type: "app_mention",
+      channel: "C1",
+      channel_type: "channel",
+      user: "U1",
+      ts: "100.1",
+      event_ts: "100.1",
+      text: "<@UBOT> fix the build",
+      team: "T1",
+    },
+  }),
+});
+
+/** A press of Slack's stop button in thread 100.1, at `eventTs` (Slack's seconds) when given. */
+const relayedStop = (id: string, eventTs?: string): SlackInboxRow => ({
+  id,
+  kind: "event",
+  contentType: "application/json",
+  retryNum: 0,
+  rawBody: JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event_id: `Ev-${id}`,
+    event: {
+      type: "agent_session_stopped",
+      channel: "C1",
+      thread_ts: "100.1",
+      user: "U1",
+      ...(eventTs === undefined ? {} : { event_ts: eventTs }),
+    },
+  }),
+});
+
+/** A first try that gets past the Chat SDK's dedupe mark, then never reaches the core. */
+function stallFirstHandOff() {
+  let handOffs = 0;
+  let stalled!: () => void;
+  const reached = new Promise<void>((resolve) => (stalled = resolve));
+  return {
+    reached,
+    handOffs: () => handOffs,
+    deliver: (handOff: () => Promise<void>) => {
+      handOffs += 1;
+      if (handOffs > 1) return handOff();
+      stalled();
+      return new Promise<void>(() => {});
+    },
+  };
+}
+
+it("hands a relayed message to the core on a retry after a try stopped past the SDK's dedupe mark", async () => {
+  const { t3, bridge, db } = harness();
+  const first = stallFirstHandOff();
+  const timers: Array<() => void> = [];
+  const slack = await relayedSlack(bridge, db, {
+    deliver: first.deliver,
+    timeout: () => new Promise<void>((resolve) => void timers.push(resolve)),
+  });
+  const launches = () => t3.calls.filter((call) => call.tool === "t3_thread_launch").length;
+  slack.whenDelivered(() => launches() === 1);
+  slack.push([relayedMention("row-1")]);
+  await first.reached;
+  // The stalled try times out; the retry must not be a no-op that gets the row marked delivered.
+  for (const fire of timers.splice(0)) fire();
+  await slack.idle();
+  assert.strictEqual(first.handOffs(), 2);
+  assert.strictEqual(launches(), 1);
+  assert.deepStrictEqual(slack.delivered, [{ ids: ["row-1"], handled: true }]);
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  await slack.close();
+});
+
+it("hands a relayed message to the core after a restart that cut its first try short", async () => {
+  const { t3, bridge, db } = harness();
+  // The first process gets past the SDK's dedupe mark, then dies.
+  const first = stallFirstHandOff();
+  const before = await relayedSlack(bridge, db, { deliver: first.deliver });
+  before.push([relayedMention("row-1")]);
+  await first.reached;
+
+  const after = await relayedSlack(bridge, db);
+  const launches = () => t3.calls.filter((call) => call.tool === "t3_thread_launch").length;
+  after.whenDelivered(() => launches() === 1);
+  after.push([relayedMention("row-1")]);
+  await after.idle();
+  assert.strictEqual(launches(), 1);
+  assert.deepStrictEqual(after.delivered, [{ ids: ["row-1"], handled: true }]);
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  await after.close();
+});
+
+it("only marks delivered a stop row handled before a restart, without stopping again", async () => {
+  const { t3, bridge, db } = harness();
+  await bridge.receive(event("100.1"));
+  const interrupts = () => t3.calls.filter((call) => call.tool === "t3_thread_interrupt").length;
+  // The first process stops the run, then dies before Office hears the row was delivered.
+  let markFailed!: () => void;
+  const markingFailed = new Promise<void>((resolve) => (markFailed = resolve));
+  const before = await relayedSlack(bridge, db, {
+    deliveredFails: true,
+    sleep: () => {
+      markFailed();
+      return new Promise<void>(() => {});
+    },
+  });
+  before.push([relayedStop("row-3")]);
+  await markingFailed;
+  assert.strictEqual(interrupts(), 1);
+
+  const after = await relayedSlack(bridge, db);
+  after.push([relayedStop("row-3")]);
+  await after.idle();
+  assert.strictEqual(interrupts(), 1);
+  assert.deepStrictEqual(after.delivered, [{ ids: ["row-3"], handled: false }]);
+  t3.finish("run-1", "interrupted", "");
+  await bridge.idle();
+  await after.close();
+});
+
+it("ignores a relayed stop from before the thread's latest run was asked for", async () => {
+  const { t3, bridge, db } = harness();
+  await bridge.receive(event("100.1"));
+  // T3 lists the run as asked for at 10:00:05 UTC; Slack times are seconds since the epoch.
+  const runAsked = 1_762_682_405_000;
+  t3.options.recentRuns = [
+    { runId: "run-1", ordinal: 1, status: "running", requestedAt: "2025-11-09T10:00:05.000Z" },
+  ];
+  const interrupts = () => t3.calls.filter((call) => call.tool === "t3_thread_interrupt").length;
+  const slack = await relayedSlack(bridge, db);
+  slack.push([relayedStop("row-old", String((runAsked - 5_000) / 1000))]);
+  await slack.idle();
+  assert.strictEqual(interrupts(), 0);
+  assert.deepStrictEqual(
+    slack.delivered.flatMap((batch) => batch.ids),
+    ["row-old"],
+  );
+
+  // A stop pressed during the run still stops it.
+  slack.push([relayedStop("row-new", String((runAsked + 5_000) / 1000))]);
+  await slack.idle();
+  assert.strictEqual(interrupts(), 1);
   t3.finish("run-1", "interrupted", "");
   await bridge.idle();
   await slack.close();

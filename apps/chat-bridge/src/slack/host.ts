@@ -594,11 +594,13 @@ export function createSlackHost(options: SlackChatHostOptions): {
     route: Route,
   ) => {
     const botNames = await botMentionNames();
-    // In a direct message every message is addressed and may start a thread.
-    const kind = route === "subscribed" || route === "unsubscribed" ? "follow_up" : "mention";
     // The queue strategy hands over only the latest message; earlier ones arrive as `skipped`.
     for (const each of [...(context?.skipped ?? []), message]) {
+      // In a direct message every message is addressed and may start a thread. So may a
+      // mention in a thread already followed, such as one whose first mention was cut short
+      // and relayed again: the core only reads the kind where nothing is bound yet.
       const addressed = route === "mention" || route === "direct" || each.isMention === true;
+      const kind = addressed ? "mention" : "follow_up";
       const event = await eventOf(thread.id, each, kind, addressed, botNames);
       if (event !== undefined) await options.onEvent(event);
     }

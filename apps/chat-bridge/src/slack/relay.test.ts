@@ -1,7 +1,11 @@
+import * as NodeSqlite from "node:sqlite";
+
 import { assert, it } from "vite-plus/test";
 
+import { BridgeStore, ensureSchema } from "../store.ts";
 import {
   connectSlackRelay,
+  RELAY_ACK_BATCH,
   RELAY_CONCURRENCY,
   RELAY_MAX_ATTEMPTS,
   type SlackInboxRow,
@@ -16,6 +20,13 @@ const row = (id: string): SlackInboxRow => ({
   contentType: "application/json",
   retryNum: 0,
 });
+
+/** The bridge's store on a fresh in-memory database. */
+function freshStore(): BridgeStore {
+  const db = new NodeSqlite.DatabaseSync(":memory:");
+  ensureSchema(db);
+  return new BridgeStore(db);
+}
 
 function fakeOffice() {
   let push: ((rows: ReadonlyArray<SlackInboxRow>) => void) | undefined;
@@ -59,6 +70,7 @@ it("gives up on a row that keeps failing after three tries and marks it delivere
   const relay = connectSlackRelay({
     transport: "office-relay",
     source: office.source,
+    store: freshStore(),
     chat: { webhooks: { slack: handler } },
     log: (line) => void logs.push(line),
     sleep: async () => {},
@@ -86,6 +98,7 @@ it("doesn't subscribe to the relay in Socket Mode", () => {
   const relay = connectSlackRelay({
     transport: "socket",
     source: office.source,
+    store: freshStore(),
     chat: { webhooks: { slack: async () => new Response("ok") } },
     log: () => {},
   });
@@ -108,6 +121,7 @@ it("handles other rows while one hangs, and retries the hung one when it times o
   const relay = connectSlackRelay({
     transport: "office-relay",
     source: office.source,
+    store: freshStore(),
     chat: { webhooks: { slack: handler } },
     log: () => {},
     sleep: async () => {},
@@ -148,6 +162,7 @@ it("runs at most RELAY_CONCURRENCY rows at once", async () => {
   const relay = connectSlackRelay({
     transport: "office-relay",
     source: office.source,
+    store: freshStore(),
     chat: { webhooks: { slack: handler } },
     log: () => {},
     sleep: async () => {},
@@ -161,5 +176,47 @@ it("runs at most RELAY_CONCURRENCY rows at once", async () => {
   await relay.idle();
   assert.strictEqual(peak, RELAY_CONCURRENCY);
   assert.strictEqual(new Set(office.delivered.flat()).size, rows.length);
+  await relay.close();
+});
+
+it("marks rows delivered at most RELAY_ACK_BATCH ids at a time", async () => {
+  const rows = Array.from({ length: 25 }, (_, index) => row(`r${index}`));
+  let push: (rows: ReadonlyArray<SlackInboxRow>) => void = () => {};
+  const delivered: Array<ReadonlyArray<string>> = [];
+  // The first mark waits until every row is handled, so the rest pile up behind it.
+  let allHandled!: () => void;
+  const handledAll = new Promise<void>((resolve) => (allHandled = resolve));
+  let handledCount = 0;
+  const relay = connectSlackRelay({
+    transport: "office-relay",
+    source: {
+      subscribeSlackInbox: (onRows) => {
+        push = onRows;
+        return () => {};
+      },
+      slackDelivered: async (ids) => {
+        if (delivered.length === 0) await handledAll;
+        delivered.push(ids);
+      },
+    },
+    store: freshStore(),
+    chat: {
+      webhooks: {
+        slack: async () => {
+          handledCount += 1;
+          if (handledCount === rows.length) allHandled();
+          return new Response("ok");
+        },
+      },
+    },
+    log: () => {},
+    sleep: async () => {},
+    timeout: () => new Promise<void>(() => {}),
+  })!;
+  push(rows);
+  await relay.idle();
+  assert.isAbove(delivered.length, 2);
+  assert.isTrue(delivered.every((ids) => ids.length >= 1 && ids.length <= RELAY_ACK_BATCH));
+  assert.deepStrictEqual(delivered.flat().toSorted(), rows.map((each) => each.id).toSorted());
   await relay.close();
 });

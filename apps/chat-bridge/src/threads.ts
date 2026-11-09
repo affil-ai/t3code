@@ -104,7 +104,14 @@ export interface ThreadShape {
   readonly parentThreadId: string | null;
   /** `subagent` for a child `delegate_task` made. */
   readonly relationshipToParent: string | null;
-  readonly latestRun: { readonly runId: string; readonly status: RunStatus } | undefined;
+  readonly latestRun:
+    | {
+        readonly runId: string;
+        readonly status: RunStatus;
+        /** When the run was asked for, in epoch ms, when T3 says. */
+        readonly requestedAt: number | undefined;
+      }
+    | undefined;
 }
 
 /** A thread's activity after a position, with what the thread looks like now. */
@@ -480,15 +487,24 @@ export class T3Threads {
         readonly runId: string;
         readonly ordinal: number;
         readonly status: RunStatus;
+        readonly requestedAt?: string | null;
       }>;
     }>("t3_thread_read", { threadId, view: "messages", limit: 1, runLimit: 5, maxCharsPerItem: 1 });
     const latest = [...(read.recentRuns ?? [])].toSorted((a, b) => b.ordinal - a.ordinal)[0];
+    const requestedAt = latest?.requestedAt ? Date.parse(latest.requestedAt) : Number.NaN;
     return {
       projectId: read.thread.projectId,
       title: read.thread.title ?? "",
       parentThreadId: read.thread.parentThreadId ?? null,
       relationshipToParent: read.thread.relationshipToParent ?? null,
-      latestRun: latest === undefined ? undefined : { runId: latest.runId, status: latest.status },
+      latestRun:
+        latest === undefined
+          ? undefined
+          : {
+              runId: latest.runId,
+              status: latest.status,
+              requestedAt: Number.isFinite(requestedAt) ? requestedAt : undefined,
+            },
     };
   }
 

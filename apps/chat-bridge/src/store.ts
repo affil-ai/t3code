@@ -178,6 +178,14 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       chat_thread_key TEXT NOT NULL,
       run_id TEXT NOT NULL
     );
+    -- Rows from Office's Slack relay: 'started' once a try began, 'handled' once done, so a
+    -- restart neither replays a handled row nor lets the Chat SDK's dedupe drop an unfinished one.
+    CREATE TABLE IF NOT EXISTS slack_relay_row (
+      row_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS slack_relay_row_at ON slack_relay_row (at);
   `);
   // Databases made before threads could be muted, or replies knew who asked.
   addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
@@ -643,6 +651,43 @@ export class BridgeStore {
     return (
       this.db.prepare("SELECT 1 FROM handled_message WHERE event_id = ?").get(eventId) !== undefined
     );
+  }
+
+  /** True once the relayed Slack row was handled (or given up on). */
+  relayRowHandled(rowId: string): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM slack_relay_row WHERE row_id = ? AND state = 'handled'")
+        .get(rowId) !== undefined
+    );
+  }
+
+  /** Records that a try of the relayed row is starting; true when an earlier try already started. */
+  beginRelayRow(rowId: string): boolean {
+    return this.transaction(() => {
+      const earlier =
+        this.db.prepare("SELECT 1 FROM slack_relay_row WHERE row_id = ?").get(rowId) !== undefined;
+      this.db
+        .prepare(
+          `INSERT INTO slack_relay_row (row_id, state, at) VALUES (?, 'started', ?)
+            ON CONFLICT (row_id) DO NOTHING`,
+        )
+        .run(rowId, this.now());
+      return earlier;
+    });
+  }
+
+  /** Records the relayed row as handled, and forgets rows older than `keepMs`. */
+  finishRelayRow(rowId: string, keepMs: number): void {
+    this.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO slack_relay_row (row_id, state, at) VALUES (?, 'handled', ?)
+            ON CONFLICT (row_id) DO UPDATE SET state = 'handled', at = excluded.at`,
+        )
+        .run(rowId, this.now());
+      this.db.prepare("DELETE FROM slack_relay_row WHERE at < ?").run(this.now() - keepMs);
+    });
   }
 
   markHandled(eventId: string): void {
