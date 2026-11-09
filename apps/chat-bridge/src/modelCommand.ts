@@ -92,6 +92,17 @@ export function parseModelCommand(text: string): {
   return { text };
 }
 
+/** True when both name the same provider, model and options, in any option order. */
+export function sameModel(a: ModelSelection, b: ModelSelection): boolean {
+  const options = (selection: ModelSelection) =>
+    JSON.stringify(
+      (selection.options ?? [])
+        .map((option) => [option.id, option.value] as const)
+        .toSorted(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)),
+    );
+  return a.instanceId === b.instanceId && a.model === b.model && options(a) === options(b);
+}
+
 /** The effort a selection runs at, if it names one. */
 export function effortOf(selection: ModelSelection): string | undefined {
   const id = EFFORT_OPTION[selection.instanceId];

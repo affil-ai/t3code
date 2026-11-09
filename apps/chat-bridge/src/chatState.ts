@@ -30,6 +30,26 @@ export interface ChatStateOptions {
   readonly reclaim?: (key: string) => boolean;
 }
 
+/**
+ * Forgets the Chat SDK's dedupe mark for one message (`dedupe:<adapter>:<id>`,
+ * bare or inside a concurrency scope), so the SDK hands it on again. For an
+ * operator's resend; the bridge's own record is `BridgeStore.forgetMessage`.
+ */
+export function forgetChatSdkMessage(
+  db: NodeSqlite.DatabaseSync,
+  adapter: string,
+  messageId: string,
+): number {
+  const key = `dedupe:${adapter}:${messageId}`;
+  const result = db
+    .prepare(
+      `DELETE FROM state_cache WHERE cache_key = ?
+        OR (cache_key LIKE 'concurrency:%' AND instr(cache_key, ?) > 0)`,
+    )
+    .run(key, JSON.stringify(key));
+  return Number(result.changes);
+}
+
 export function createChatState(
   db: NodeSqlite.DatabaseSync,
   options: ChatStateOptions = {},

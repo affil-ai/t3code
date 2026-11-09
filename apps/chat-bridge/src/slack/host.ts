@@ -121,11 +121,16 @@ export interface SlackChatHost {
   /** Follows a channel thread, so its replies arrive without a mention. */
   readonly follow: (chatThreadKey: string) => Promise<void>;
   /**
-   * Messages sent since `since`, oldest first: replies in the bound threads,
-   * and new top-level messages in the channels (mentions of the bot, or any
-   * message in a direct-message channel).
+   * Messages since `since`, oldest first: replies in the bound threads, and new
+   * mentions or direct messages in the channels. An unreadable thread or channel
+   * is logged and skipped. Absent with Office's relay, which keeps every event.
    */
-  readonly missedEvents: (request: MissedRequest) => Promise<Array<InboundEvent>>;
+  readonly missedEvents: ((request: MissedRequest) => Promise<Array<InboundEvent>>) | undefined;
+  /**
+   * One message read back from Slack as the event it would have arrived as,
+   * for `resend-slack`; undefined when Slack has no such message or it is a bot's.
+   */
+  readonly messageEvent: (channel: string, ts: string) => Promise<InboundEvent | undefined>;
 }
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -627,17 +632,33 @@ export function createSlackHost(options: SlackChatHostOptions): {
     const oldest = (request.since / 1000).toFixed(6);
     const botNames = await botMentionNames();
     const events: Array<InboundEvent> = [];
+    /** One unreadable thread or channel, such as a deleted thread, must not lose the rest. */
+    const readOrSkip = async (
+      where: string,
+      read: () => Promise<Array<SlackRawMessage>>,
+    ): Promise<Array<SlackRawMessage>> => {
+      try {
+        return await read();
+      } catch (error) {
+        skipped += 1;
+        log("warn", `Catch-up skipped ${where}: ${slackErrorCode(error) ?? String(error)}`);
+        return [];
+      }
+    };
+    let skipped = 0;
     for (const chatThreadKey of request.threads) {
       const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
       if (!threadTs) continue;
-      const replies = await readPages((cursor) =>
-        slack.webClient.conversations.replies({
-          channel,
-          ts: threadTs,
-          oldest,
-          limit: 200,
-          ...(cursor ? { cursor } : {}),
-        }),
+      const replies = await readOrSkip(chatThreadKey, () =>
+        readPages((cursor) =>
+          slack.webClient.conversations.replies({
+            channel,
+            ts: threadTs,
+            oldest,
+            limit: 200,
+            ...(cursor ? { cursor } : {}),
+          }),
+        ),
       );
       for (const raw of replies) {
         if (raw.ts === undefined || raw.ts === threadTs || Number(raw.ts) < Number(oldest))
@@ -650,13 +671,15 @@ export function createSlackHost(options: SlackChatHostOptions): {
     }
     for (const channel of request.channels) {
       const direct = channel.startsWith("D");
-      const recent = await readPages((cursor) =>
-        slack.webClient.conversations.history({
-          channel,
-          oldest,
-          limit: 200,
-          ...(cursor ? { cursor } : {}),
-        }),
+      const recent = await readOrSkip(`channel ${channel}`, () =>
+        readPages((cursor) =>
+          slack.webClient.conversations.history({
+            channel,
+            oldest,
+            limit: 200,
+            ...(cursor ? { cursor } : {}),
+          }),
+        ),
       );
       for (const raw of recent) {
         // Replies in threads the bot follows are read above; this looks for new threads only.
@@ -669,7 +692,35 @@ export function createSlackHost(options: SlackChatHostOptions): {
         if (event !== undefined) events.push(event);
       }
     }
+    if (skipped > 0) log("warn", `Catch-up skipped ${skipped} unreadable thread(s) or channel(s).`);
     return events.toSorted((a, b) => Number(a.messageId) - Number(b.messageId));
+  };
+
+  const messageEvent = async (channel: string, ts: string) => {
+    // With `ts` as both bounds Slack returns the message, and its thread's parent when it is a reply.
+    const result = await slack.webClient.conversations.replies({
+      channel,
+      ts,
+      oldest: ts,
+      latest: ts,
+      inclusive: true,
+      limit: 2,
+    });
+    const raw = ((result.messages ?? []) as Array<SlackRawMessage & { thread_ts?: string }>).find(
+      (message) => message.ts === ts,
+    );
+    if (raw === undefined) return undefined;
+    const message = await parsed(channel, raw);
+    // Routed as a live delivery would be: a mention or direct message is addressed, and may start a thread.
+    const addressed = channel.startsWith("D") || message.isMention === true;
+    const threadId = `slack:${channel}:${raw.thread_ts ?? ts}`;
+    return eventOf(
+      threadId,
+      message,
+      addressed ? "mention" : "follow_up",
+      addressed,
+      await botMentionNames(),
+    );
   };
   const log = options.log ?? (() => {});
   const connect = (chat: Chat): SlackChatHost => {
@@ -684,6 +735,7 @@ export function createSlackHost(options: SlackChatHostOptions): {
     const legacyThreads = new Set<string>();
     let legacyLogged = false;
     let legacyUnavailable = false;
+    let stopWarned = false;
     /**
      * The status text under the thread, as Office and Devin show it: Slack draws
      * `loading_messages` beside the app's icon with a spinner. Empty clears it.
@@ -782,15 +834,30 @@ export function createSlackHost(options: SlackChatHostOptions): {
       setState: async (chatThreadKey, state, text) => {
         const { channel, threadTs } = slack.decodeThreadId(chatThreadKey);
         if (!threadTs) return;
-        // Slack's `processing` state draws a "Stop" pill in place of the status
-        // text, so a working thread stays `active` and shows only the text, as
-        // Devin does; people stop a run with the `stop` command. `suspended`
-        // marks a thread that waits on an answer.
+        // Slack offers Stop only while the session is `processing` (with an
+        // `agent_session_stopped` subscription). The text goes through the
+        // assistant status, shown in the session's loading indicator.
         const statusText = state === "processing" ? text : "";
-        const sessionState = state === "processing" ? "active" : state;
         if (!legacyThreads.has(chatThreadKey)) {
           try {
-            await slack.setSessionStatus(channel, threadTs, sessionState);
+            const result = await api("agents.sessions.setStatus", {
+              channel_id: channel,
+              thread_ts: threadTs,
+              status: state,
+            });
+            const warnings = (result.response_metadata as { warnings?: unknown } | undefined)
+              ?.warnings;
+            if (
+              !stopWarned &&
+              Array.isArray(warnings) &&
+              warnings.includes("missing_agent_session_stopped_event_subscription")
+            ) {
+              stopWarned = true;
+              log(
+                "warn",
+                "Slack shows no Stop button: subscribe the app to the agent_session_stopped bot event.",
+              );
+            }
             if (statusText !== "") await setStatusText(channel, threadTs, statusText);
             return;
           } catch (error) {
@@ -880,7 +947,8 @@ export function createSlackHost(options: SlackChatHostOptions): {
         if (slack.decodeThreadId(chatThreadKey).channel.startsWith("D")) return;
         await chat.thread(chatThreadKey).subscribe();
       },
-      missedEvents,
+      missedEvents: transport.kind === "office-relay" ? undefined : missedEvents,
+      messageEvent,
     };
   };
   return { adapter: slack, deliver, connect };

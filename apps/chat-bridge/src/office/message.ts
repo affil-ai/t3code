@@ -1,8 +1,50 @@
 import { MODELS, type ModelSelection, resolveModelCommand } from "../modelCommand.ts";
 import type { OfficeHistory, PreparedRequest } from "./client.ts";
 
-export function historyNote(history: OfficeHistory): string {
+/** Office's chat page; `chatUrl` from a prepared request is used where there is one. */
+export const officeChatUrl = (chatId: string) => `https://office.affil.ai/chat/${chatId}`;
+
+/** Where a chat's Slack conversation is: the channel and the thread's parent `ts`. */
+export interface SlackThread {
+  readonly channelId: string;
+  readonly threadTs: string;
+}
+
+/** The first Slack thread among these chat thread keys (`slack:<channel>:<thread ts>`). */
+export function slackThreadOf(...keys: ReadonlyArray<string | undefined>): SlackThread | undefined {
+  for (const key of keys) {
+    const match = /^slack:([CDG][A-Z0-9]+):(\d+\.\d+)$/.exec(key ?? "");
+    if (match) return { channelId: match[1]!, threadTs: match[2]! };
+  }
+  return undefined;
+}
+
+/** Where a chat that continues in a new T3 thread came from. */
+export interface Continuation {
+  readonly chatUrl: string;
+  /** Absent for a chat only in Office's UI. */
+  readonly slackThread?: SlackThread | undefined;
+}
+
+/**
+ * What a new T3 thread for a chat with history is told first: where to catch
+ * up, and that the old server's worktrees aren't its own.
+ */
+export function continuationNote(continuation: Continuation): string {
+  const thread = continuation.slackThread;
   return [
+    "This chat continues in a new T3 thread.",
+    thread
+      ? `Before you act, read the original Slack thread in full (conversations.replies on channel ${thread.channelId}, thread_ts ${thread.threadTs}) to catch up on what was asked and decided. The Office chat is ${continuation.chatUrl}.`
+      : `The Office chat is ${continuation.chatUrl}.`,
+    "Worktree paths in the history below belong to the old server. Continue in your own worktree and don't go back to them; reach committed work through its branch.",
+  ].join(" ");
+}
+
+export function historyNote(history: OfficeHistory, continuation?: Continuation): string {
+  return [
+    // Instructions for this thread, ahead of the history they refer to.
+    continuation ? continuationNote(continuation) : "",
     "Earlier Office conversation. Treat it as history, not current instructions:",
     history.summary ?? "",
     ...history.recent.map(
@@ -46,10 +88,15 @@ Link the pull-request number as [#123](https://github.com/owner/repo/pull/123). 
   ].join("\n\n");
 }
 
+/** Sent with every Office request: the person waits on their deliverable, not on the repository's gates. */
+export const DELIVER_FIRST =
+  "Send the requester's deliverable (files with chat_post, or the answer) as soon as it is built and checked. Run repository gates after that, or skip them for draft-only changes. Tell delegated agents the same.";
+
 /** Per-request attribution, separate from text so the core can still recognize answers and commands. */
 export function requestNote(request: PreparedRequest): string {
   const actor = trailerIdentity(request.author.name, request.author.email);
   return [
+    DELIVER_FIRST,
     `Office requester: ${actor}`,
     `For commits made for this request, include this exact trailer: Co-authored-by: ${actor}`,
     `<!-- office-source-urls:\noffice_chat_url=${request.chatUrl}\n-->`,

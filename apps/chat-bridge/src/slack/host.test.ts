@@ -1,4 +1,7 @@
+import type { Chat } from "chat";
 import { assert, it } from "vite-plus/test";
+
+import { fakeSlackApi } from "./fakeSlackApi.ts";
 
 import {
   chatThreadKeyOf,
@@ -12,6 +15,8 @@ import {
   toEarlierMessages,
   toInboundEvent,
   feedbackTargetFromMessages,
+  createSlackHost,
+  type SlackTransport,
 } from "./host.ts";
 
 it("selects the newest tagged Office bot post, including custom authors, but never another bot", () => {
@@ -230,4 +235,141 @@ it("finds the uploaded files and waits until Slack shows them in the thread", as
     sleep: async (ms) => void (clock += ms),
   });
   assert.isFalse(never);
+});
+
+/** The Slack-only calls, against a fake Slack Web API; none of these need a running `Chat`. */
+async function hostOn(
+  handlers: Parameters<typeof fakeSlackApi>[0],
+  transport: SlackTransport = { kind: "socket", appToken: "xapp-test" },
+) {
+  const api = await fakeSlackApi(handlers);
+  const logs: Array<string> = [];
+  const parts = createSlackHost({
+    botToken: "xoxb-test",
+    transport,
+    botUserId: "UBOT",
+    apiUrl: api.apiUrl,
+    onEvent: async () => ({ type: "pending" }),
+    log: (level, line) => void logs.push(`${level}: ${line}`),
+  });
+  return { api, logs, host: parts.connect({} as Chat) };
+}
+
+const USERS = {
+  "users.info": (args: Record<string, string>) => ({
+    ok: true,
+    user: { id: args.user, name: "ada", real_name: "Ada" },
+  }),
+};
+
+it("skips a thread Slack can't read during catch-up, and still reads the rest", async () => {
+  const { api, logs, host } = await hostOn({
+    ...USERS,
+    "conversations.replies": (args) =>
+      args.ts === "100.1"
+        ? { ok: false, error: "thread_not_found" }
+        : {
+            ok: true,
+            messages: [
+              { ts: "200.1", user: "U1", text: "start" },
+              { ts: "200.5", thread_ts: "200.1", user: "U1", text: "while you were down" },
+            ],
+          },
+  });
+  try {
+    const events = await host.missedEvents!({
+      since: 150_000,
+      threads: ["slack:C1:100.1", "slack:C1:200.1"],
+      channels: [],
+    });
+    assert.deepStrictEqual(
+      events.map((event) => [event.chatThreadKey, event.text]),
+      [["slack:C1:200.1", "while you were down"]],
+    );
+    assert.isTrue(logs.some((line) => line.includes("slack:C1:100.1: thread_not_found")));
+  } finally {
+    await api.close();
+  }
+});
+
+it("reads nothing back from Slack with Office's relay, which keeps what arrived while down", async () => {
+  const { api, host } = await hostOn(USERS, { kind: "office-relay" });
+  await api.close();
+  assert.isUndefined(host.missedEvents);
+});
+
+it("marks a working thread processing, so Slack offers its Stop button, with the status text", async () => {
+  const { api, logs, host } = await hostOn({
+    "agents.sessions.setStatus": () => ({ ok: true }),
+    "assistant.threads.setStatus": () => ({ ok: true }),
+  });
+  try {
+    await host.setState("slack:C1:100.1", "processing", "Running the tests");
+    await host.setState("slack:C1:100.1", "active", "");
+    assert.deepStrictEqual(
+      api.calls.map((call) => [call.method, call.args.status]),
+      [
+        ["agents.sessions.setStatus", "processing"],
+        ["assistant.threads.setStatus", "Running the tests"],
+        ["agents.sessions.setStatus", "active"],
+      ],
+    );
+    assert.isEmpty(logs);
+  } finally {
+    await api.close();
+  }
+});
+
+it("says once when Slack can't show Stop because the app misses agent_session_stopped", async () => {
+  const { api, logs, host } = await hostOn({
+    "agents.sessions.setStatus": () => ({
+      ok: true,
+      response_metadata: { warnings: ["missing_agent_session_stopped_event_subscription"] },
+    }),
+    "assistant.threads.setStatus": () => ({ ok: true }),
+  });
+  try {
+    await host.setState("slack:C1:100.1", "processing", "Thinking");
+    await host.setState("slack:C1:100.1", "processing", "Thinking");
+    assert.lengthOf(
+      logs.filter((line) => line.includes("agent_session_stopped")),
+      1,
+    );
+  } finally {
+    await api.close();
+  }
+});
+
+it("reads one message back from Slack as the event it arrived as", async () => {
+  const { api, host } = await hostOn({
+    ...USERS,
+    "conversations.replies": () => ({
+      ok: true,
+      messages: [
+        { ts: "100.1", user: "U1", text: "<@UBOT> fix the build" },
+        { ts: "100.4", thread_ts: "100.1", user: "U1", text: "and the lint" },
+      ],
+    }),
+  });
+  try {
+    const reply = await host.messageEvent("C1", "100.4");
+    assert.deepInclude(reply!, {
+      eventId: "slack:C1:100.4",
+      chatThreadKey: "slack:C1:100.1",
+      kind: "follow_up",
+      addressed: false,
+      text: "and the lint",
+    });
+    const mention = await host.messageEvent("C1", "100.1");
+    assert.deepInclude(mention!, {
+      eventId: "slack:C1:100.1",
+      chatThreadKey: "slack:C1:100.1",
+      kind: "mention",
+      addressed: true,
+      text: "fix the build",
+    });
+    assert.isUndefined(await host.messageEvent("C1", "999.9"));
+  } finally {
+    await api.close();
+  }
 });

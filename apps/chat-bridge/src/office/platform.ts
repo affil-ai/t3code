@@ -5,7 +5,14 @@ import { type ChatPlatform, QUIET_RULES, RetryAfter, type ThreadRoute } from "..
 import type { BridgeStore, ConversationSeed } from "../store.ts";
 import { ArticleFiles } from "./article.ts";
 import type { InboxEvent, OfficeApi, PreparedRequest } from "./client.ts";
-import { historyNote, officeModel, requestNote, threadStartConventions } from "./message.ts";
+import {
+  historyNote,
+  officeChatUrl,
+  officeModel,
+  requestNote,
+  slackThreadOf,
+  threadStartConventions,
+} from "./message.ts";
 
 const chatIdOf = (key: string) => key.slice("office:".length);
 
@@ -101,13 +108,28 @@ export function createOfficeChannel(options: {
         ...inbound(request),
         requestNote: [requestNote(request), articleNote].filter(Boolean).join("\n\n"),
         instructions: request.instructions,
-        modelSelection: officeModel(request.model),
+        modelSelection: request.modelSelection ?? officeModel(request.model),
+        ...(request.modelSelection === undefined ? {} : { followModel: true }),
         historyNote:
           request.history || seed
-            ? historyNote({
-                ...(request.history ?? { recent: [] }),
-                ...(seed && !request.history?.oldThreadId ? { oldThreadId: seed.oldThreadId } : {}),
-              })
+            ? historyNote(
+                {
+                  ...(request.history ?? { recent: [] }),
+                  ...(seed && !request.history?.oldThreadId
+                    ? { oldThreadId: seed.oldThreadId }
+                    : {}),
+                },
+                // A chat with a summary, or one imported from the old server, carries on from before.
+                seed || request.history?.summary
+                  ? {
+                      chatUrl: request.chatUrl,
+                      slackThread: slackThreadOf(
+                        request.slack?.chatThreadKey,
+                        ...store.seeds(request.chatId).map((each) => each.chatThreadKey),
+                      ),
+                    }
+                  : undefined,
+              )
             : undefined,
         files: request.files.map((file) => ({
           name: file.filename,
@@ -293,10 +315,19 @@ export function createOfficeChannel(options: {
         await api.mutate("requestCompaction", { chatId: seed.chatId });
         throw new RetryAfter(result.retryAfterMs);
       }
-      return historyNote({
-        ...result.history,
-        oldThreadId: result.history.oldThreadId ?? seed.oldThreadId,
-      });
+      return historyNote(
+        {
+          ...result.history,
+          oldThreadId: result.history.oldThreadId ?? seed.oldThreadId,
+        },
+        {
+          chatUrl: officeChatUrl(seed.chatId),
+          slackThread: slackThreadOf(
+            seed.chatThreadKey,
+            ...store.seeds(seed.chatId).map((each) => each.chatThreadKey),
+          ),
+        },
+      );
     },
     async start(bridge: Bridge): Promise<void> {
       core = bridge;

@@ -19,7 +19,10 @@ import { isQuietReply, type OutboundMessage, QUIET_REPLY } from "./platform.ts";
 import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
+import type { Chat } from "chat";
 import { createSlackHost } from "./slack/host.ts";
+import { fakeSlackApi } from "./slack/fakeSlackApi.ts";
+import { resendSlackMessage, RUNNING_PID_KEY, runningBridge } from "./slack/resend.ts";
 import {
   connectSlackRelay,
   currentRelayedRow,
@@ -1685,6 +1688,15 @@ it("keeps the old mark when catch-up cannot read Slack", async () => {
   assert.strictEqual(store.caughtUpTo(), 500);
 });
 
+it("only keeps the catch-up mark when the transport holds what arrived while down", async () => {
+  const { bridge, store, setClock } = harness();
+  store.setCaughtUpTo(500);
+  setClock(9_000_000);
+  await bridge.receive(event("100.1"));
+  await bridge.catchUp("slack", undefined);
+  assert.strictEqual(store.caughtUpTo(), 9_000_000 - 60_000);
+});
+
 /** An orchestrator's subagent, already running its brief when its work becomes a chat's. */
 function subagentHarness(status: RunStatus) {
   const parts = harness();
@@ -2352,4 +2364,74 @@ it("ignores a relayed stop from before the thread's latest run was asked for", a
   t3.finish("run-1", "interrupted", "");
   await bridge.idle();
   await slack.close();
+});
+
+it("resends a relayed message its dedupe dropped, so the next start hands it on once", async () => {
+  const db = freshDatabase();
+  const first = harness(db);
+  const launches = (t3: ReturnType<typeof fakeT3>) =>
+    t3.calls.filter((call) => call.tool === "t3_thread_launch").length;
+  // A try that got past both dedupe marks and never reached T3, as in production.
+  first.store.markHandled("slack:C1:100.1");
+  const slack = await relayedSlack(first.bridge, db);
+  await createChatState(db).set("dedupe:slack:100.1", true, 60_000);
+  // Office records the row again under a new event id: both marks drop it.
+  slack.push([relayedMention("row-2")]);
+  await slack.idle();
+  assert.strictEqual(launches(first.t3), 0);
+  await slack.close();
+  first.bridge.stop();
+
+  const api = await fakeSlackApi({
+    "users.info": (args) => ({ ok: true, user: { id: args.user, name: "ada", real_name: "Ada" } }),
+    "conversations.replies": (args) => {
+      assert.strictEqual(args.ts, "100.1");
+      return { ok: true, messages: [{ ts: "100.1", user: "U1", text: "<@UBOT> fix the build" }] };
+    },
+  });
+  try {
+    const host = createSlackHost({
+      botToken: "xoxb-test",
+      transport: { kind: "office-relay" },
+      botUserId: "UBOT",
+      apiUrl: api.apiUrl,
+      onEvent: async () => ({ type: "pending" }),
+    }).connect({} as Chat);
+    const store = new BridgeStore(db);
+    // The bridge's own process never counts as the running one; another live one does.
+    store.setMeta(RUNNING_PID_KEY, "4242");
+    assert.strictEqual(
+      runningBridge(store, (pid) => pid === 4242),
+      4242,
+    );
+    assert.isUndefined(runningBridge(store, () => false));
+    const resent = await resendSlackMessage({
+      db,
+      store,
+      channel: "C1",
+      ts: "100.1",
+      messageEvent: host.messageEvent,
+    });
+    assert.deepInclude(resent, {
+      eventId: "slack:C1:100.1",
+      kind: "mention",
+      text: "fix the build",
+    });
+  } finally {
+    await api.close();
+  }
+
+  const second = harness(db);
+  await second.bridge.resume();
+  assert.strictEqual(launches(second.t3), 1);
+  const launch = second.t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  assert.include(String(launch.args.message), "fix the build");
+  // Handled once: the same message again, live or relayed, is a duplicate.
+  assert.deepStrictEqual(await second.bridge.receive(event("100.1")), {
+    type: "ignored",
+    reason: "duplicate",
+  });
+  second.t3.finish("run-1", "completed", "Fixed.");
+  await second.bridge.idle();
+  assert.deepStrictEqual(second.posted, [{ chatThreadKey: "slack:C1:100.1", text: "Fixed." }]);
 });

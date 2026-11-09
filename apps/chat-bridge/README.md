@@ -36,10 +36,11 @@ instead take Slack's traffic from Office, which keeps the app's Request URLs
   Office and Devin show (`assistant.threads.setStatus`), read from T3's
   `t3_thread_read` activity view every 2.5 seconds, at most 50 characters,
   with anything that looks like a secret redacted. The agent session
-  (`agents.sessions.setStatus`) is `suspended` while T3 waits on a person and
-  `active` otherwise. The bridge never sets `processing`: Slack draws a "Stop"
-  pill in its place and hides the status text. Both are sent again every 90
-  seconds.
+  (`agents.sessions.setStatus`) is `processing` while a run goes, which is
+  when Slack offers its Stop button, `suspended` while T3 waits on a person,
+  and `active` otherwise. The status text is sent after the session state,
+  and Slack shows it in the session's loading indicator. Both are sent again
+  every 90 seconds.
 - **Answers are normal replies.** When a run ends, its final message is posted
   to the thread in parts of up to 12,000 characters, Slack's limit. A run that
   ends without a final message, or whose whole final message is `NO_REPLY`,
@@ -92,8 +93,11 @@ instead take Slack's traffic from Office, which keeps the app's Request URLs
   and Slack takes the T3 title again the next time T3 changes it.
 - **Stop.** `@bot stop` in a thread interrupts its T3 run
   (`t3_thread_interrupt`), and the thread says "The run was stopped." Slack's own stop
-  button (`agent_session_stopped`) does the same where Slack shows it. Only
-  people in `allowedUserIds` can stop a run.
+  button (`agent_session_stopped`) does the same. Slack shows it only while
+  the session is `processing` and the app subscribes to the
+  `agent_session_stopped` bot event; when Slack says the subscription is
+  missing, the bridge logs it once. Only people in `allowedUserIds` can stop
+  a run.
 - **Nothing is lost.** Each Slack message is saved to an inbox table in SQLite
   before the bridge acts on it, and each Slack thread's messages are handled
   from that table in order. If T3 can't take a message, it stays in the inbox
@@ -102,11 +106,15 @@ instead take Slack's traffic from Office, which keeps the app's Request URLs
   drops it. Later messages in that thread wait behind it. T3 retry keys make a
   retried message land once.
 - **Restarts are safe.** After a restart the bridge works through what is left
-  in the inbox and picks up runs it still owes a reply for. Then it reads Slack
-  for messages sent while it was down: replies in threads bound in the last 14
-  days (up to 200 threads), new mentions in mapped channels, and new messages
-  in direct-message channels it has answered before. It reads from a minute
-  before it last ran, and skips messages it already has.
+  in the inbox and picks up runs it still owes a reply for. In Socket Mode it
+  then reads Slack for messages sent while it was down: replies in threads
+  bound in the last 14 days (up to 200 threads), new mentions in mapped
+  channels, and new messages in direct-message channels it has answered
+  before. It reads from a minute before it last ran, and skips messages it
+  already has. A thread or channel Slack can't read, such as a deleted thread
+  (`thread_not_found`), is logged and skipped. With `"office-relay"` it reads
+  nothing back: Office keeps every Slack event while the bridge is down.
+- **Resend a dropped message.** See [Resend a Slack message](#resend-a-slack-message).
 
 Who can use it is set in the config, in one of two ways:
 
@@ -357,10 +365,22 @@ reading it. The old `OFFICE_AGENT_SERVICE_TOKEN` is no longer used.
 
 Office's `chatBridge:prepare` checks access before delivery. One Office chat
 maps to one T3 thread. New threads get Office's mode instructions and the
-requester's commit trailer. Known Office model names map to T3 models;
-unknown names use the configured default. An existing Office conversation
+requester's commit trailer. When the prepared request carries the chat's own
+`modelSelection` (`{ instanceId, model, options? }`), a new thread starts on
+it, over the config's, and a follow-up first switches a thread running another
+model to it with `t3_thread_configure`. Without it, known Office model names
+map to T3 models, unknown names use the configured default, and follow-ups
+leave the thread's model alone. An existing Office conversation
 starts a new T3 thread with its checkpoint summary, recent messages, and the
 old thread ID for reference. The bridge never adopts the retired worker's thread.
+That first turn, for an imported chat or one with a summary, also tells the agent
+to read the original Slack thread in full before acting (its channel ID and
+`thread_ts`) and gives the Office chat link, or only the link for a chat that
+is in Office alone. It says worktree paths in the history belong to the old
+server: the agent continues in its own worktree and reaches committed work
+through its branch. Every Office request also tells the agent to send the
+requester's files or answer as soon as they are built and checked, and to
+run repository gates afterwards, or skip them for draft-only changes.
 
 The channel subscribes to `chatBridge:inbox` with the Convex client; it does
 not poll. Once the core accepts an event into SQLite, the channel acknowledges
@@ -447,6 +467,28 @@ credential type. Do not copy its `T3_BEARER_TOKEN` into `T3_TOKEN`. Use
 level the bridge needs. The login is bound to the server's origin. A login
 for the rehearsal server on port 3911 cannot authenticate to port 3778.
 An existing MCP credential may instead come from `T3_TOKEN`.
+
+### Prepare the stock T3 server
+
+The bridge talks to an ordinary T3 server, which needs what the shared
+server has, or its runs fail or use the wrong provider:
+
+- **Provider settings.** Copy them from the shared server's settings. Codex
+  **Launch arguments**: `-c model_provider="cliproxy8" -c
+  model_catalog_json=<the shared server's catalog path>`. Claude environment:
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:8327`, and `ANTHROPIC_AUTH_TOKEN` as a
+  sensitive value, from the owning secret manager. Restart T3 afterwards: it
+  doesn't restart a running provider when settings change.
+- **No project from the working directory.** Set
+  `T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false` in the server's systemd unit,
+  so it doesn't register its working directory as a project.
+- **A model for new threads.** Give each routed project a default model in
+  T3, or set `modelSelection` in the bridge's config. Office chats that name
+  their own model use it instead.
+- **The chat tools.** Register `t3-chat-bridge` for both providers (step 5):
+  `[mcp_servers.t3-chat-bridge]` in `~/.codex/config.toml`, and
+  `claude mcp add --scope user …` for Claude. Every agent on the server sees
+  the tools; the chat key in each turn is the permission.
 
 Office needs these non-secret settings in the bridge's environment:
 
@@ -634,6 +676,26 @@ and confirmed that the legacy worker is stopped. A subsequent authorized
 staff reply in an imported Slack thread must start one new T3 thread with
 Office history. For support and mockups, confirm that the new exchange appears in both places.
 This live check is separate from the read-only import rehearsal.
+
+## Resend a Slack message
+
+A message the bridge already marked as handled is dropped when it arrives
+again, including a relayed row Office records again under a new event id: the
+Chat SDK dedupes by the message's `ts`, and the bridge by its
+`handled_message` record. To hand one on again, stop the bridge, then run:
+
+```sh
+SLACK_BOT_TOKEN=xoxb-… node src/bin.ts resend-slack <channel id> <message ts>
+```
+
+It refuses while a bridge runs on the same data dir. It reads the message from
+Slack (`conversations.replies` for that `ts`), clears that message's
+`handled_message` row, inbox row and kept context, and the Chat SDK's
+`dedupe:slack:<ts>` mark, and saves it to the inbox, in one transaction. Start
+the bridge again: it hands the message to T3 as a normal message, once. The
+T3 retry key is the message's own, so a message T3 already took returns that
+earlier send instead of sending it twice. A bot's message, or one Slack
+doesn't have, is refused.
 
 ## iMessage
 
@@ -877,24 +939,24 @@ pnpm --filter @t3tools/chat-bridge typecheck
 pnpm --filter @t3tools/chat-bridge test
 ```
 
-| File                   | What it does                                                                                                           |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `src/bin.ts`           | The `start`, `login`, `manifest`, and `import-office` commands.                                                        |
-| `src/bridge.ts`        | The core: chat messages into T3 turns, each run watched, answers back.                                                 |
-| `src/platform.ts`      | `ChatPlatform`: what the core needs from a platform beyond the SDK.                                                    |
-| `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                                                                 |
-| `src/slack/`           | Slack: the adapter's messages and Slack-only calls (`host.ts`), its `ChatPlatform`, text helpers and the app manifest. |
-| `src/linear/`          | Linear: agent sessions as `InboundEvent`s, file uploads, and its `ChatPlatform`.                                       |
-| `src/office/`          | Office: Convex inbox, presentation API, requester context, and expiring article connections.                           |
-| `src/webhookServer.ts` | Loopback webhooks for platforms that need them, at exact paths only.                                                   |
-| `src/imessage/`        | iMessage: the Chat SDK adapter, its RPC client and its `ChatPlatform`.                                                 |
-| `mac/`                 | The Mac service and its LaunchAgent.                                                                                   |
-| `src/runFeed.ts`       | What a run is doing now, from T3's activity view.                                                                      |
-| `src/activity.ts`      | T3 activity items as status lines; redaction.                                                                          |
-| `src/questions.ts`     | Agents' questions as buttons or numbered text, and their answers.                                                      |
-| `src/threads.ts`       | The T3 MCP calls: launch, send, wait, read, configure.                                                                 |
-| `src/t3Client.ts`      | The MCP client for T3.                                                                                                 |
-| `src/toolServer.ts`    | The `chat_post` / `chat_react` MCP server.                                                                             |
-| `src/store.ts`         | Inbox, bindings, handled messages and owed replies.                                                                    |
-| `src/chatState.ts`     | The Chat SDK's state on the same SQLite file.                                                                          |
-| `src/login.ts`         | T3's MCP OAuth sign-in.                                                                                                |
+| File                   | What it does                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `src/bin.ts`           | The `start`, `login`, `manifest`, `import-office`, and `resend-slack` commands.                                          |
+| `src/bridge.ts`        | The core: chat messages into T3 turns, each run watched, answers back.                                                   |
+| `src/platform.ts`      | `ChatPlatform`: what the core needs from a platform beyond the SDK.                                                      |
+| `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                                                                   |
+| `src/slack/`           | Slack: the adapter's messages and Slack-only calls (`host.ts`), its `ChatPlatform`, the relay, resends and the manifest. |
+| `src/linear/`          | Linear: agent sessions as `InboundEvent`s, file uploads, and its `ChatPlatform`.                                         |
+| `src/office/`          | Office: Convex inbox, presentation API, requester context, and expiring article connections.                             |
+| `src/webhookServer.ts` | Loopback webhooks for platforms that need them, at exact paths only.                                                     |
+| `src/imessage/`        | iMessage: the Chat SDK adapter, its RPC client and its `ChatPlatform`.                                                   |
+| `mac/`                 | The Mac service and its LaunchAgent.                                                                                     |
+| `src/runFeed.ts`       | What a run is doing now, from T3's activity view.                                                                        |
+| `src/activity.ts`      | T3 activity items as status lines; redaction.                                                                            |
+| `src/questions.ts`     | Agents' questions as buttons or numbered text, and their answers.                                                        |
+| `src/threads.ts`       | The T3 MCP calls: launch, send, wait, read, configure.                                                                   |
+| `src/t3Client.ts`      | The MCP client for T3.                                                                                                   |
+| `src/toolServer.ts`    | The `chat_post` / `chat_react` MCP server.                                                                               |
+| `src/store.ts`         | Inbox, bindings, handled messages and owed replies.                                                                      |
+| `src/chatState.ts`     | The Chat SDK's state on the same SQLite file.                                                                            |
+| `src/login.ts`         | T3's MCP OAuth sign-in.                                                                                                  |

@@ -24,6 +24,7 @@ import {
   type ModelSelection,
   parseModelCommand,
   resolveModelCommand,
+  sameModel,
 } from "./modelCommand.ts";
 import {
   type ChannelRoute,
@@ -122,6 +123,11 @@ export interface InboundEvent {
   readonly requestNote?: string | undefined;
   readonly instructions?: string | undefined;
   readonly modelSelection?: ModelSelection | undefined;
+  /**
+   * `modelSelection` is the chat's own model, not only the one it starts on: a
+   * follow-up first switches a thread running another model to it.
+   */
+  readonly followModel?: boolean | undefined;
   readonly historyNote?: string | undefined;
 }
 
@@ -925,6 +931,11 @@ export class Bridge {
           await this.notify(event, `Switched to ${describeModel(resolved.selection)}.`);
           return { type: "noted", threadId: binding.threadId };
         }
+      } else if (event.followModel === true && event.modelSelection !== undefined) {
+        // The chat's model changed since the thread started, such as in Office's model picker.
+        const current = await this.threads.modelSelection(binding.threadId);
+        if (!sameModel(current, event.modelSelection))
+          await this.threads.setModel(binding.threadId, event.modelSelection);
       }
       const kept = this.store.context(binding.chatThreadKey);
       const imported = await this.threads.importFiles(this.inboundFiles(platform, event.files));
@@ -1205,19 +1216,19 @@ export class Bridge {
   }
 
   /**
-   * Hands over the Slack messages sent while the bridge was down, read by
-   * `missed`, then keeps the mark of how far Slack has been read up to date.
-   * The first start only sets the mark. Saved and handled messages are
-   * skipped, so overlap with live events is harmless.
+   * Hands over the messages `missed` reads back from the time the bridge was
+   * down, then keeps the read-up-to mark current; the first start only sets it.
+   * Saved and handled messages are skipped. Without `missed` (Office's relay,
+   * which keeps every event meanwhile) only the mark is kept.
    */
   async catchUp(
     platformId: string,
-    missed: (request: MissedRequest) => Promise<ReadonlyArray<InboundEvent>>,
+    missed: ((request: MissedRequest) => Promise<ReadonlyArray<InboundEvent>>) | undefined,
   ): Promise<void> {
     const platform = this.platforms.find((each) => each.id === platformId)!;
     const startedAt = this.now();
     const since = this.store.caughtUpTo();
-    if (since !== undefined) {
+    if (since !== undefined && missed !== undefined) {
       const bindings = this.store
         .recentBindings(startedAt - CATCH_UP_WINDOW_MS, CATCH_UP_THREAD_LIMIT)
         .filter((binding) => binding.chatThreadKey.startsWith(`${platformId}:`));

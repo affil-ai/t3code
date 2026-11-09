@@ -690,6 +690,18 @@ export class BridgeStore {
     });
   }
 
+  /**
+   * Forgets that a message was handled, saved or kept as context, so it can be
+   * saved again as new. For an operator's resend, with the bridge stopped.
+   */
+  forgetMessage(eventId: string): void {
+    this.transaction(() => {
+      this.db.prepare("DELETE FROM handled_message WHERE event_id = ?").run(eventId);
+      this.db.prepare("DELETE FROM inbox WHERE event_id = ?").run(eventId);
+      this.db.prepare("DELETE FROM thread_context WHERE event_id = ?").run(eventId);
+    });
+  }
+
   markHandled(eventId: string): void {
     this.db
       .prepare("INSERT OR IGNORE INTO handled_message (event_id, handled_at) VALUES (?, ?)")

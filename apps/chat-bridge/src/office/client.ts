@@ -33,6 +33,12 @@ export interface PreparedRequest {
   }>;
   modeKey: string;
   model?: string;
+  /** The chat's own model. It wins over `model` and the bridge's default, and a follow-up switches the thread to it. */
+  modelSelection?: {
+    instanceId: string;
+    model: string;
+    options?: Array<{ id: string; value: string | boolean }>;
+  };
   instructions: string;
   firstTurn: boolean;
   history?: OfficeHistory;

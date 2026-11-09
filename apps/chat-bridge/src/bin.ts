@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off -- A plain Node app; it does not use Effect.
 /**
- * t3-chat-bridge `login | start | manifest | import-office`; see README.md. Settings are in
+ * t3-chat-bridge `login | start | manifest | import-office | resend-slack`; see README.md. Settings are in
  * `<data dir>/config.json` (or `--config FILE`); the data dir is
  * `~/.t3-chat-bridge` unless T3_CHAT_BRIDGE_HOME says otherwise.
  */
@@ -32,6 +32,7 @@ import {
 } from "./slack/host.ts";
 import { connectSlackRelay, currentRelayedRow, isChatSdkDedupeKey } from "./slack/relay.ts";
 import { slackPlatform, slackWorkNote } from "./slack/platform.ts";
+import { resendSlackMessage, RUNNING_PID_KEY, runningBridge } from "./slack/resend.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
@@ -91,6 +92,8 @@ async function start(): Promise<void> {
   NodeFS.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const db = openDatabase(NodePath.join(dir, "bridge.db"));
   const store = new BridgeStore(db);
+  // Only `resend-slack` reads it, to refuse while the bridge runs.
+  store.setMeta(RUNNING_PID_KEY, String(process.pid));
   const t3 = new T3Client(new URL(config.t3Url), token, config.t3EnvironmentId);
   if (config.t3EnvironmentId) await t3.verifyEnvironment();
   const threads = new T3Threads(
@@ -459,7 +462,8 @@ async function start(): Promise<void> {
           log,
         })
       : undefined;
-  if (slack) await core.catchUp("slack", (request) => slack.missedEvents(request));
+  // Office's relay already holds what Slack sent while the bridge was down; only Socket Mode reads Slack back.
+  if (slack) await core.catchUp("slack", slack.missedEvents);
   log(
     `Connected channels: ${platforms.map((platform) => platform.name).join(", ")}. T3: ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
   );
@@ -488,6 +492,7 @@ async function start(): Promise<void> {
     linear?.started.stop();
     await running?.shutdown().catch(() => {});
     await t3.close();
+    store.setMeta(RUNNING_PID_KEY, "");
     db.close();
     process.exit(0);
   };
@@ -574,9 +579,61 @@ function linearLogger(log: (line: string) => void) {
   return logger;
 }
 
+/**
+ * `resend-slack <channel> <ts>`: saves one Slack message to the inbox again,
+ * clearing what made the bridge drop it. Refuses while the bridge runs.
+ */
+async function resendSlack(channel: string | undefined, ts: string | undefined): Promise<void> {
+  if (!channel || !ts || !/^\d+\.\d+$/.test(ts))
+    throw new Error("Usage: t3-chat-bridge resend-slack <channel id> <message ts>");
+  const botToken = requireEnv("SLACK_BOT_TOKEN");
+  const db = openDatabase(NodePath.join(dir, "bridge.db"));
+  const store = new BridgeStore(db);
+  try {
+    const running = runningBridge(store);
+    if (running !== undefined)
+      throw new Error(
+        `The bridge is running (pid ${running}). Stop it, run resend-slack, then start it again: the start hands the message on.`,
+      );
+    // Read-only use of Slack: the adapter parses the message as a live delivery would.
+    const slackParts = createSlackHost({
+      botToken,
+      transport: { kind: "office-relay" },
+      onEvent: async () => {
+        throw new Error("resend-slack handles no live events.");
+      },
+      log: (level, line) => log(`slack ${level}: ${line}`),
+    });
+    const chat = await startChatHost({
+      adapters: { slack: slackParts.adapter },
+      deliver: {},
+      state: createChatState(db),
+      onError: (error) => log(`Chat message failed: ${String(error)}`),
+      log,
+    });
+    try {
+      const event = await resendSlackMessage({
+        db,
+        store,
+        channel,
+        ts,
+        messageEvent: slackParts.connect(chat).messageEvent,
+      });
+      print(
+        `Saved ${event.eventId} (${event.kind} in ${event.chatThreadKey}) to the inbox; the bridge's next start hands it on.`,
+      );
+    } finally {
+      await chat.shutdown().catch(() => {});
+    }
+  } finally {
+    db.close();
+  }
+}
+
 async function main(): Promise<void> {
   const [command] = positionals;
   if (command === "start") return start();
+  if (command === "resend-slack") return resendSlack(positionals[1], positionals[2]);
   if (command === "import-office") {
     const office = takeOfficeConnection();
     if (!office) throw new Error("Set OFFICE_CONVEX_URL and OFFICE_CHAT_BRIDGE_TOKEN.");
@@ -598,7 +655,7 @@ async function main(): Promise<void> {
     return;
   }
   print(
-    "Usage: t3-chat-bridge <start | login | manifest | import-office [--dry-run]>. See apps/chat-bridge/README.md.",
+    "Usage: t3-chat-bridge <start | login | manifest | import-office [--dry-run] | resend-slack <channel> <ts>>. See apps/chat-bridge/README.md.",
   );
   process.exitCode = command === undefined ? 0 : 1;
 }

@@ -127,6 +127,8 @@ function fakeT3() {
   let wake: string | undefined;
   const questions = new Map<string, Array<Record<string, unknown>>>();
   const failures = new Set<string>();
+  /** The thread's model, as launches and `t3_thread_configure` set it. */
+  const model: { current: unknown } = { current: undefined };
   // A tool held here waits, standing in for a process that stops partway through.
   const holds = new Map<string, Promise<void>>();
   const startRun = () => {
@@ -142,8 +144,13 @@ function fakeT3() {
       await holds.get(tool);
       if (failures.has(tool)) throw new Error("T3 unavailable");
       let result: unknown;
-      if (tool === "t3_thread_launch") result = { threadId: "thread-1", runId: startRun() };
-      else if (tool === "t3_thread_send" || tool === "t3_thread_send_attachments") {
+      if (tool === "t3_thread_launch") {
+        result = { threadId: "thread-1", runId: startRun() };
+        if (args.modelSelection !== undefined) model.current = args.modelSelection;
+      } else if (tool === "t3_thread_configure") {
+        if (args.modelSelection !== undefined) model.current = args.modelSelection;
+        result = { threadId: args.threadId, modelSelection: model.current };
+      } else if (tool === "t3_thread_send" || tool === "t3_thread_send_attachments") {
         result = { runId: startRun(), delivery: "started" };
       } else if (tool === "t3_thread_wait") {
         const runId = String(args.runId);
@@ -213,6 +220,7 @@ function fakeT3() {
   return {
     tools,
     calls,
+    model,
     runs,
     failures,
     holds,
@@ -1315,4 +1323,170 @@ it("shows synced questions in both conversations and closes both when Slack answ
   await h.bridge.idle();
   assert.isTrue(posts.some((post) => post.text === "Selected one"));
   assert.isTrue([...h.office.posts.values()].some((post) => post.text === "Selected one"));
+});
+
+it("starts a thread on the chat's own model, and switches the thread to it when it changes", async () => {
+  await using h = await harness();
+  const opus = {
+    instanceId: "claudeAgent",
+    model: "claude-opus-5-5",
+    options: [{ id: "effort", value: "high" }],
+  };
+  await h.send(request({ modelSelection: opus }));
+  const launch = h.t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  assert.deepEqual(launch.args.modelSelection, opus);
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+
+  const sets = () =>
+    h.t3.calls.filter(
+      (call) => call.tool === "t3_thread_configure" && call.args.modelSelection !== undefined,
+    );
+  // Same model, options in another order: nothing to change.
+  await h.send(
+    request({
+      eventId: "event-2",
+      messageId: "message-2",
+      firstTurn: false,
+      modelSelection: { ...opus, options: [{ id: "effort", value: "high" }] },
+    }),
+  );
+  assert.lengthOf(sets(), 0);
+  h.t3.finish("run-2", "Done.");
+  await h.bridge.idle();
+
+  const terra = {
+    instanceId: "codex",
+    model: "gpt-6.1-terra",
+    options: [{ id: "reasoningEffort", value: "high" }],
+  };
+  await h.send(
+    request({
+      eventId: "event-3",
+      messageId: "message-3",
+      firstTurn: false,
+      modelSelection: terra,
+    }),
+  );
+  assert.deepEqual(
+    sets().map((call) => call.args.modelSelection),
+    [terra],
+  );
+  // The switch lands before the message, so the message runs on it.
+  const order = h.t3.calls.map((call) => call.tool);
+  assert.isBelow(order.lastIndexOf("t3_thread_configure"), order.lastIndexOf("t3_thread_send"));
+  h.t3.finish("run-3", "Done.");
+  await h.bridge.idle();
+
+  // Without the field, a follow-up leaves the thread's model alone.
+  await h.send(request({ eventId: "event-4", messageId: "message-4", firstTurn: false }));
+  assert.lengthOf(
+    h.t3.calls.filter((call) => call.tool === "t3_thread_configure"),
+    3,
+  );
+});
+
+const SLACK_CATCH_UP = "Before you act, read the original Slack thread in full";
+const OLD_WORKTREES =
+  "Worktree paths in the history below belong to the old server. Continue in your own worktree and don't go back to them; reach committed work through its branch.";
+const DELIVER =
+  "Send the requester's deliverable (files with chat_post, or the answer) as soon as it is built and checked. Run repository gates after that, or skip them for draft-only changes.";
+
+it("tells a new thread for a Slack-linked chat with history to read the Slack thread first, and to deliver before gates", async () => {
+  const slack: ChatPlatform = {
+    id: "slack",
+    name: "Slack",
+    place: "Slack thread",
+    access: { allowedUserIds: ["staff"] },
+    channelRoutes: [{ channelId: "C1", projectId: "project-1" }],
+    person: (_id, name) => name,
+    firstTurnNote: () => "",
+    refusal: () => "",
+    post: async () => {},
+  };
+  await using h = await harness({ slack });
+  for (const key of ["office:chat-1", "slack:C1:1.1"])
+    h.store.insertSeed({
+      chatThreadKey: key,
+      channelId: key.startsWith("office") ? "chat-1" : "C1",
+      chatId: "chat-1",
+      oldThreadId: "old",
+      sync: true,
+    });
+  await h.send(request({ history: { summary: "Worked in /old/worktrees/fix", recent: [] } }));
+  const text = String(h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
+  assert.include(
+    text,
+    `${SLACK_CATCH_UP} (conversations.replies on channel C1, thread_ts 1.1) to catch up on what was asked and decided. The Office chat is https://office.example/chat/chat-1.`,
+  );
+  assert.include(text, OLD_WORKTREES);
+  // The instructions come ahead of the history, which is only context.
+  assert.isBelow(text.indexOf(SLACK_CATCH_UP), text.indexOf("Earlier Office conversation."));
+  assert.include(text, DELIVER);
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+
+  // Every later request repeats the delivery rule, and not the catch-up.
+  await h.send(request({ eventId: "event-2", messageId: "message-2", firstTurn: false }));
+  const send = String(h.t3.calls.find((call) => call.tool === "t3_thread_send")!.args.message);
+  assert.include(send, DELIVER);
+  assert.notInclude(send, SLACK_CATCH_UP);
+});
+
+it("gives a new thread for an Office-only chat with a summary the chat link alone", async () => {
+  await using h = await harness();
+  await h.send(request({ history: { summary: "We chose the smaller fix.", recent: [] } }));
+  const text = String(h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
+  assert.include(
+    text,
+    "This chat continues in a new T3 thread. The Office chat is https://office.example/chat/chat-1.",
+  );
+  assert.include(text, OLD_WORKTREES);
+  assert.notInclude(text, "Slack thread");
+  assert.include(text, DELIVER);
+});
+
+it("tells a new thread for a seeded Slack conversation where its Slack thread and Office chat are", async () => {
+  const slack: ChatPlatform = {
+    id: "slack",
+    name: "Slack",
+    place: "Slack thread",
+    access: { allowedUserIds: ["staff"] },
+    channelRoutes: [{ channelId: "C1", projectId: "project-1" }],
+    person: (_id, name) => name,
+    firstTurnNote: () => "",
+    refusal: () => "",
+    post: async () => {},
+  };
+  await using h = await harness({ slack });
+  h.store.insertSeed({
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    chatId: "chat-9",
+    oldThreadId: "old",
+    sync: false,
+  });
+  h.office.histories.set("chat-9", {
+    kind: "ready",
+    history: { summary: "Checkpoint", recent: [] },
+  });
+  await h.bridge.receive({
+    eventId: "slack:C1:2.1",
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    messageId: "2.1",
+    kind: "follow_up",
+    addressed: false,
+    direct: false,
+    author: { userId: "staff", userName: "Ada", fullName: "Ada" },
+    text: "Continue",
+    files: [],
+    mentions: [],
+  });
+  const text = String(h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
+  assert.include(
+    text,
+    `${SLACK_CATCH_UP} (conversations.replies on channel C1, thread_ts 1.1) to catch up on what was asked and decided. The Office chat is https://office.affil.ai/chat/chat-9.`,
+  );
+  assert.include(text, OLD_WORKTREES);
 });
