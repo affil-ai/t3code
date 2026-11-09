@@ -4,7 +4,7 @@
  * the platform id and a colon (`slack:…`, `imessage:42`).
  */
 import type { PlanStep, RunStep } from "./activity.ts";
-import type { EarlierMessage, InboundEvent, SessionState } from "./bridge.ts";
+import type { EarlierMessage, InboundEvent, SessionState, TurnOutcome } from "./bridge.ts";
 
 export class RetryAfter extends Error {
   readonly retryAfterMs: number;
@@ -150,8 +150,16 @@ export interface ChatPlatform {
   readonly postBlocks?: (message: BlockMessage) => Promise<string>;
   /** Replaces a message posted with `postBlocks`. */
   readonly updateBlocks?: (message: BlockMessage & { readonly messageId: string }) => Promise<void>;
-  /** Shows the conversation's agent state, and what it is doing while it processes. */
-  readonly setState?: (chatThreadKey: string, state: SessionState, text: string) => Promise<void>;
+  /**
+   * Shows the conversation's agent state, and what it is doing while it
+   * processes. `active` after a turn carries how the turn ended.
+   */
+  readonly setState?: (
+    chatThreadKey: string,
+    state: SessionState,
+    text: string,
+    outcome?: TurnOutcome,
+  ) => Promise<void>;
   /** Lists one finished step of the run, such as a command it ran; absent where steps show only as the state's text. */
   readonly step?: (chatThreadKey: string, step: RunStep) => Promise<void>;
   /** Shows the run's to-do list, replaced whole on each change; absent where it isn't shown. */
@@ -178,6 +186,21 @@ export interface ChatPlatform {
   readonly quiet?: (chatThreadKey: string) => Promise<void>;
   /** Called once a conversation is bound, so the platform can follow it. */
   readonly bound?: (chatThreadKey: string) => Promise<void>;
+}
+
+/**
+ * Reacts on the conversation's platform for `chat_react`. Returns what to tell
+ * the agent instead where reactions exist but nobody sees them.
+ */
+export async function reactOn(
+  platforms: ReadonlyArray<ChatPlatform>,
+  reaction: Reaction,
+): Promise<string | undefined> {
+  const platform = platformFor(platforms, reaction.chatThreadKey);
+  if (platform.reactionsUnseen !== undefined) return platform.reactionsUnseen;
+  if (platform.react === undefined) throw new Error(`${platform.name} has no reactions.`);
+  await platform.react(reaction);
+  return undefined;
 }
 
 /** The platform a chat thread key belongs to. */

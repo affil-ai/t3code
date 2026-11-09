@@ -1044,6 +1044,77 @@ it.effect("only the caller that prepared a pending upload can discard it", () =>
   ),
 );
 
+it.effect("a retried attachment send with the same key names the same message", () => {
+  const stored = ChatImageAttachment.make({
+    type: "image",
+    id: "owned-image",
+    name: "shot.png",
+    mimeType: "image/png",
+    sizeBytes: 12,
+  });
+  const sent: Array<ThreadManagement.ThreadManagementSendInput> = [];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const send = (clientRequestId?: string) =>
+      server
+        .callTool({
+          name: "t3_thread_send_attachments",
+          arguments: {
+            threadId,
+            message: "see the log",
+            attachments: [stored],
+            ...(clientRequestId === undefined ? {} : { clientRequestId }),
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    const first = yield* send("chat-bridge:event-1");
+    const retry = yield* send("chat-bridge:event-1");
+    yield* send("chat-bridge:event-2");
+    yield* send();
+    expect(first.isError).toBe(false);
+    expect(retry.structuredContent).toMatchObject({
+      messageId: (first.structuredContent as { readonly messageId: string }).messageId,
+    });
+    const [once, again, other, unkeyed] = sent;
+    expect(again!.commandId).toBe(once!.commandId);
+    expect(again!.messageId).toBe(once!.messageId);
+    expect(other!.commandId).not.toBe(once!.commandId);
+    expect(unkeyed!.commandId).not.toBe(once!.commandId);
+  }).pipe(
+    Effect.provide(
+      McpHttpServer.layerAttachmentToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+            getProjectThreadRecords: () =>
+              Effect.succeed({
+                ...McpToolAccessTestkit.idleThreadProjection(
+                  McpToolAccessTestkit.liveThreadShell(threadId),
+                ),
+                messages: [{ attachments: [stored] } as never],
+              }),
+            sendToThread: (input) =>
+              Effect.sync(() => {
+                sent.push(input);
+                return {
+                  run: { id: "run-1", status: "running" },
+                  message: { attachments: input.attachments },
+                } as never;
+              }),
+          }),
+        ),
+        Layer.provide(ServerSecretStore.layer),
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-attachment-" })),
+        Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+      ),
+    ),
+  );
+});
+
 it.effect(
   "t3_thread_list settled:false with an empty statuses list lists the unsettled threads",
   () => {

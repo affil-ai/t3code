@@ -60,6 +60,8 @@ export interface AskedRecord {
   readonly asked: Asked;
   /** The chat message that shows the question; empty until it is posted. */
   readonly messageId: string;
+  /** False until the question reaches the chat, so a failed post is tried again. */
+  readonly posted: boolean;
   readonly closed: boolean;
 }
 
@@ -100,7 +102,7 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       event_id TEXT PRIMARY KEY,
       handled_at INTEGER NOT NULL
     );
-    -- Runs whose answer goes to Slack. posted_at is set when the reply is claimed.
+    -- Runs whose answer goes to Slack. posted_at is set once the reply is delivered.
     CREATE TABLE IF NOT EXISTS owed_reply (
       run_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,
@@ -167,6 +169,10 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
   addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "owed_reply", "requested_by", "TEXT");
   migrateBindingGroups(db);
+  // A claimed reply is being answered; posted_at waits for delivery, so a crash in between resumes it.
+  addColumn(db, "owed_reply", "claimed", "INTEGER NOT NULL DEFAULT 0");
+  // Questions saved before this column were posted when saved.
+  addColumn(db, "question", "posted", "INTEGER NOT NULL DEFAULT 1");
   // Feedback buttons were tried and removed (2026-11-04).
   db.exec("DROP TABLE IF EXISTS feedback");
 }
@@ -246,6 +252,7 @@ const questionFromRow = (row: Record<string, unknown>): AskedRecord => ({
   threadId: String(row.thread_id),
   asked: JSON.parse(String(row.asked)) as Asked,
   messageId: String(row.message_id),
+  posted: row.posted === 1,
   closed: row.closed === 1,
 });
 
@@ -256,6 +263,20 @@ export class BridgeStore {
   constructor(db: NodeSqlite.DatabaseSync, now: () => number = Date.now) {
     this.db = db;
     this.now = now;
+  }
+
+  /** Runs `run` in one transaction, or inside the one already open. */
+  transaction<T>(run: () => T): T {
+    if (this.db.isTransaction) return run();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = run();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   seed(chatThreadKey: string): ConversationSeed | undefined {
@@ -312,8 +333,7 @@ export class BridgeStore {
 
   /** Publish every destination and its import receipt in the same transaction as removing the seeds. */
   consumeSeed(source: ConversationSeed, binding: Binding): void {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
+    this.transaction(() => {
       for (const seed of this.seeds(source.chatId)) {
         const existing = this.binding(seed.chatThreadKey);
         if (existing && existing.threadId !== binding.threadId)
@@ -335,11 +355,7 @@ export class BridgeStore {
       }
       this.setSync(binding.threadId, source.sync);
       this.db.prepare("DELETE FROM conversation_seed WHERE chat_id = ?").run(source.chatId);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   binding(chatThreadKey: string): Binding | undefined {
@@ -573,15 +589,10 @@ export class BridgeStore {
 
   /** Moves a message from the inbox to the handled list, in one step. */
   finish(eventId: string): void {
-    this.db.exec("BEGIN");
-    try {
+    this.transaction(() => {
       this.db.prepare("DELETE FROM inbox WHERE event_id = ?").run(eventId);
       this.markHandled(eventId);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   /** Every Slack message before this time (epoch ms) has been saved or handled. */
@@ -639,8 +650,8 @@ export class BridgeStore {
   addQuestion(record: AskedRecord): boolean {
     const inserted = this.db
       .prepare(
-        `INSERT INTO question (request_id, chat_thread_key, thread_id, asked, message_id, closed)
-          VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (request_id, chat_thread_key) DO NOTHING RETURNING request_id`,
+        `INSERT INTO question (request_id, chat_thread_key, thread_id, asked, message_id, posted, closed)
+          VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (request_id, chat_thread_key) DO NOTHING RETURNING request_id`,
       )
       .all(
         record.asked.requestId,
@@ -648,6 +659,7 @@ export class BridgeStore {
         record.threadId,
         JSON.stringify(record.asked),
         record.messageId,
+        record.posted ? 1 : 0,
         record.closed ? 1 : 0,
       );
     return inserted.length > 0;
@@ -656,11 +668,12 @@ export class BridgeStore {
   updateQuestion(record: AskedRecord): void {
     this.db
       .prepare(
-        "UPDATE question SET asked = ?, message_id = ?, closed = ? WHERE request_id = ? AND chat_thread_key = ?",
+        "UPDATE question SET asked = ?, message_id = ?, posted = ?, closed = ? WHERE request_id = ? AND chat_thread_key = ?",
       )
       .run(
         JSON.stringify(record.asked),
         record.messageId,
+        record.posted ? 1 : 0,
         record.closed ? 1 : 0,
         record.asked.requestId,
         record.chatThreadKey,
@@ -692,10 +705,10 @@ export class BridgeStore {
       .map(questionFromRow);
   }
 
-  /** Replies not yet posted, oldest first; the watcher resumes these at startup. */
+  /** Replies not yet posted or being answered, oldest first; the watcher resumes these at startup. */
   pendingReplies(): Array<OwedReply> {
     return this.db
-      .prepare("SELECT * FROM owed_reply WHERE posted_at IS NULL ORDER BY rowid")
+      .prepare("SELECT * FROM owed_reply WHERE posted_at IS NULL AND claimed = 0 ORDER BY rowid")
       .all()
       .map((row) => ({
         runId: String(row.run_id),
@@ -706,17 +719,30 @@ export class BridgeStore {
   }
 
   /**
-   * True the first time a run's reply is claimed. A run that never owed a
-   * reply, such as a restart's continuation, is recorded as claimed.
+   * True the first time a run's reply is claimed for answering. A run that
+   * never owed a reply, such as a restart's continuation, is recorded as
+   * claimed. `deliveredReply` or `releaseReply` ends the claim.
    */
   claimReply(reply: OwedReply): boolean {
     this.oweReply(reply);
     const claimed = this.db
       .prepare(
-        "UPDATE owed_reply SET posted_at = ? WHERE run_id = ? AND chat_thread_key = ? AND posted_at IS NULL RETURNING run_id",
+        "UPDATE owed_reply SET claimed = 1 WHERE run_id = ? AND chat_thread_key = ? AND posted_at IS NULL AND claimed = 0 RETURNING run_id",
       )
-      .all(this.now(), reply.runId, reply.chatThreadKey);
+      .all(reply.runId, reply.chatThreadKey);
     return claimed.length > 0;
+  }
+
+  /** The claimed reply reached the chat, or chose to post nothing. */
+  deliveredReply(runId: string, chatThreadKey: string): void {
+    this.db
+      .prepare("UPDATE owed_reply SET posted_at = ? WHERE run_id = ? AND chat_thread_key = ?")
+      .run(this.now(), runId, chatThreadKey);
+  }
+
+  /** Claims a process that stopped never delivered, owed again so a restart answers them. */
+  releaseUnfinishedClaims(): void {
+    this.db.prepare("UPDATE owed_reply SET claimed = 0 WHERE posted_at IS NULL").run();
   }
 
   saveFollow(follow: DelegatedFollow): void {
@@ -766,10 +792,14 @@ export class BridgeStore {
 
   releaseReply(runId: string, chatThreadKey?: string): void {
     if (chatThreadKey === undefined)
-      this.db.prepare("UPDATE owed_reply SET posted_at = NULL WHERE run_id = ?").run(runId);
+      this.db
+        .prepare("UPDATE owed_reply SET posted_at = NULL, claimed = 0 WHERE run_id = ?")
+        .run(runId);
     else
       this.db
-        .prepare("UPDATE owed_reply SET posted_at = NULL WHERE run_id = ? AND chat_thread_key = ?")
+        .prepare(
+          "UPDATE owed_reply SET posted_at = NULL, claimed = 0 WHERE run_id = ? AND chat_thread_key = ?",
+        )
         .run(runId, chatThreadKey);
   }
 }

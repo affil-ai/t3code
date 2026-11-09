@@ -187,7 +187,8 @@ export class T3Threads {
   /**
    * Sends a follow-up. `steer` joins the run in flight, or starts one when the
    * thread is idle; `queue` runs after it. A message with files is sent the
-   * way T3 sends attachments, which steers as `auto` does.
+   * way T3 sends attachments, which steers as `auto` does. `requestId` makes a
+   * retried send return the message the first one made, with or without files.
    */
   async send(input: {
     readonly threadId: string;
@@ -209,6 +210,7 @@ export class T3Threads {
       threadId: input.threadId,
       message: input.text,
       attachments: input.attachments,
+      clientRequestId: input.requestId,
     });
     return { runId: sent.runId, delivery: "sent" };
   }

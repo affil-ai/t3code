@@ -217,6 +217,9 @@ export interface Reply {
  */
 export type SessionState = "processing" | "suspended" | "active";
 
+/** How a conversation's turn ended, sent with its `active` state. */
+export type TurnOutcome = "completed" | "failed" | "canceled";
+
 const TERMINAL_TEXT: Partial<Record<RunStatus, string>> = {
   failed: "The run failed. Open the thread in T3 Code for details.",
   cancelled: "The run was stopped.",
@@ -446,8 +449,16 @@ export class Bridge {
       state: SessionState;
       text: string;
       timer: NodeJS.Timeout;
+      /** Someone asked to stop the turn. */
+      stopRequested: boolean;
+      /** A run in the turn failed, or ended some other way than finishing or a stop. */
+      failed: boolean;
+      /** A run in the turn ended because of a stop. */
+      canceled: boolean;
     }
   >();
+  /** Questions being posted now, by request and chat thread, so two watchers post one once. */
+  private readonly postingQuestions = new Set<string>();
   /** What the agent said it is doing with `chat_status`, and the activity position it said it at. */
   private readonly notes = new Map<string, { readonly text: string; readonly at: number }>();
   /** The newest activity position seen in each chat thread. */
@@ -603,8 +614,7 @@ export class Bridge {
     if (isAside(event.text) || event.forAnotherBot === true) return false;
     if (controlCommand(event.text) !== undefined) return false;
     if (parseModelCommand(event.text).command !== undefined) return false;
-    const asking = this.store.openQuestions(binding.chatThreadKey)[0];
-    if (asking !== undefined && openQuestion(asking.asked) !== undefined) return false;
+    if (this.asking(binding.chatThreadKey) !== undefined) return false;
     return this.isAllowed(this.platform(event.chatThreadKey), event.author.userId);
   }
 
@@ -885,10 +895,8 @@ export class Bridge {
         this.keep(binding, event);
         return { type: "noted", threadId: binding.threadId };
       }
-      const asking = this.store.openQuestions(binding.chatThreadKey)[0];
-      if (asking !== undefined && openQuestion(asking.asked) !== undefined) {
-        return this.answerByText(binding, asking, event);
-      }
+      const asking = this.asking(binding.chatThreadKey);
+      if (asking !== undefined) return this.answerByText(binding, asking, event);
       if (switched.command !== undefined) {
         const current = await this.threads.modelSelection(binding.threadId);
         const resolved = resolveModelCommand(switched.command, current);
@@ -1005,9 +1013,28 @@ export class Bridge {
       chatKey,
       createdByUserId: event.author.userId,
     };
-    if (seed) this.store.consumeSeed(seed, created);
-    else this.store.insertBinding(created);
-    await this.bindLinked(event.chatThreadKey);
+    const owed =
+      started.runId === null
+        ? undefined
+        : {
+            runId: started.runId,
+            threadId: started.threadId,
+            chatThreadKey: event.chatThreadKey,
+            requestedBy: event.author.userId,
+          };
+    // With the binding saved, a replay would go to the thread as a follow-up, so the
+    // event is finished and its answer owed in the same step, before the work below.
+    this.store.transaction(() => {
+      if (seed) this.store.consumeSeed(seed, created);
+      else this.store.insertBinding(created);
+      if (owed !== undefined) this.store.oweReply(owed);
+      this.store.finish(event.eventId);
+    });
+    await this.bindLinked(event.chatThreadKey).catch((error: unknown) => {
+      this.log(
+        `Binding the conversations linked to ${event.chatThreadKey} failed: ${String(error)}`,
+      );
+    });
     await this.mirror(event);
     // T3 can write a summary title; the request's first sentence stands until it does.
     await this.threads.regenerateTitle(started.threadId).catch((error: unknown) => {
@@ -1016,16 +1043,11 @@ export class Bridge {
     await platform.bound?.(event.chatThreadKey).catch((error: unknown) => {
       this.log(`Following ${event.chatThreadKey} failed: ${String(error)}`);
     });
-    if (started.runId !== null) {
-      await platform.dispatched?.(event, started.runId).catch(() => {
-        this.log(`Associating resources for ${started.runId} failed.`);
+    if (owed !== undefined) {
+      await platform.dispatched?.(event, owed.runId).catch(() => {
+        this.log(`Associating resources for ${owed.runId} failed.`);
       });
-      this.owe({
-        runId: started.runId,
-        threadId: started.threadId,
-        chatThreadKey: event.chatThreadKey,
-        requestedBy: event.author.userId,
-      });
+      this.owe(owed);
     }
     return { type: "started", threadId: started.threadId };
   }
@@ -1070,6 +1092,7 @@ export class Bridge {
         await this.notify(event, "Nothing is running here.");
         return { type: "ignored", reason: "not_running" };
       }
+      this.stopping(binding.chatThreadKey);
       await this.threads.interrupt(
         binding.threadId,
         `Stopped from chat by ${event.author.userId}.`,
@@ -1133,6 +1156,8 @@ export class Bridge {
 
   /** Watches every reply still owed and works through the inbox, such as what a restart left. */
   async resume(): Promise<void> {
+    // A claim the last process held unfinished may not have reached the chat; the stable delivery id dedupes a repost.
+    this.store.releaseUnfinishedClaims();
     for (const reply of this.store.pendingReplies()) this.watch(reply);
     // Subagents and background work a run left going report back in runs the chat is owed.
     for (const follow of this.store.follows()) this.followDelegatedWork(follow.reply, follow);
@@ -1310,6 +1335,12 @@ export class Bridge {
     const asked = applyClick(record.asked, value);
     if (asked === record.asked) return;
     await this.saveAnswer(record, { ...asked, answeredBy: userId });
+  }
+
+  /** The question a message in the conversation answers: the first still open that people have seen. */
+  private asking(chatThreadKey: string): AskedRecord | undefined {
+    const asking = this.store.openQuestions(chatThreadKey).find((each) => each.posted);
+    return asking !== undefined && openQuestion(asking.asked) !== undefined ? asking : undefined;
   }
 
   /** Text sent while a question is open answers it; text it can't take is refused. */
@@ -1531,24 +1562,35 @@ export class Bridge {
       await this.showQuestion(closed, "Answered elsewhere.");
     }
     for (const { requestId, questions } of pending) {
-      const record: AskedRecord = {
+      this.store.addQuestion({
         chatThreadKey: reply.chatThreadKey,
         threadId: reply.threadId,
         asked: { requestId, questions, answers: {}, submitted: [] },
         messageId: "",
+        posted: false,
         closed: false,
-      };
-      if (!this.store.addQuestion(record)) continue;
-      if (platform.postBlocks === undefined) {
-        await this.ask(reply.chatThreadKey, record.asked);
-        continue;
-      }
-      const messageId = await platform.postBlocks({
-        chatThreadKey: reply.chatThreadKey,
-        text: questionText(record.asked),
-        blocks: questionBlocks(record.asked),
       });
-      this.store.updateQuestion({ ...record, messageId });
+      const key = `${requestId}\n${reply.chatThreadKey}`;
+      const record = this.store.question(requestId, reply.chatThreadKey);
+      if (record === undefined || record.posted || record.closed) continue;
+      if (this.postingQuestions.has(key)) continue;
+      this.postingQuestions.add(key);
+      try {
+        // A failed post leaves it unposted, so the next check asks again.
+        if (platform.postBlocks === undefined) {
+          await this.ask(reply.chatThreadKey, record.asked);
+          this.store.updateQuestion({ ...record, posted: true });
+          continue;
+        }
+        const messageId = await platform.postBlocks({
+          chatThreadKey: reply.chatThreadKey,
+          text: questionText(record.asked),
+          blocks: questionBlocks(record.asked),
+        });
+        this.store.updateQuestion({ ...record, messageId, posted: true });
+      } finally {
+        this.postingQuestions.delete(key);
+      }
     }
   }
 
@@ -1678,6 +1720,7 @@ export class Bridge {
       return false;
     }
     try {
+      this.stopping(chatThreadKey);
       await this.threads.interrupt(binding.threadId, `Stopped from chat by ${userId}.`);
       this.log(`Stopped ${binding.threadId} from ${chatThreadKey}.`);
       return true;
@@ -1702,6 +1745,9 @@ export class Bridge {
       state: "processing",
       text: THINKING,
       timer,
+      stopRequested: false,
+      failed: false,
+      canceled: false,
     });
     this.sendState(chatThreadKey);
   }
@@ -1735,11 +1781,33 @@ export class Bridge {
     clearInterval(entry.timer);
     this.running.delete(chatThreadKey);
     this.notes.delete(chatThreadKey);
+    const outcome: TurnOutcome = entry.failed
+      ? "failed"
+      : entry.canceled
+        ? "canceled"
+        : "completed";
     await this.platform(chatThreadKey)
-      .setState?.(chatThreadKey, "active", "")
+      .setState?.(chatThreadKey, "active", "", outcome)
       .catch((error: unknown) => {
         this.log(`Setting the state in ${chatThreadKey} failed: ${String(error)}`);
       });
+  }
+
+  /** Counts how one run of the conversation's turn ended, for the turn's outcome. */
+  private runOutcome(chatThreadKey: string, status: RunStatus | "undelivered"): void {
+    const entry = this.running.get(chatThreadKey);
+    if (entry === undefined || status === "completed") return;
+    if ((status === "interrupted" || status === "cancelled") && entry.stopRequested)
+      entry.canceled = true;
+    else entry.failed = true;
+  }
+
+  /** Marks the turn in flight in each of the conversation's destinations as stopped by request. */
+  private stopping(chatThreadKey: string): void {
+    for (const key of this.store.recipients(chatThreadKey)) {
+      const entry = this.running.get(key);
+      if (entry !== undefined) entry.stopRequested = true;
+    }
   }
 
   /** Shows new status text in a thread whose run is processing. */
@@ -1851,6 +1919,7 @@ export class Bridge {
         .catch(() => {
           this.log(`Releasing resources for ${reply.runId} failed.`);
         });
+      this.runOutcome(reply.chatThreadKey, waited.status);
       await this.afterEarlierAnswer(before);
       try {
         await this.answer(reply, waited.runId, waited.status);
@@ -1860,6 +1929,7 @@ export class Bridge {
         postFailures += 1;
         // Slack refusing the same post again and again would otherwise retry forever.
         if (postFailures >= MAX_POST_ATTEMPTS) {
+          this.runOutcome(reply.chatThreadKey, "undelivered");
           this.log(`Giving up on the answer to ${reply.runId} until restart: ${String(error)}`);
           return;
         }
@@ -1872,9 +1942,15 @@ export class Bridge {
   /** Posts the run's answer once. A completed run with no final message, or only `NO_REPLY`, chose to stay quiet. */
   private async answer(reply: OwedReply, finalRunId: string, status: RunStatus): Promise<void> {
     if (!this.store.claimReply(reply)) return;
+    const delivered = () => {
+      this.store.deliveredReply(reply.runId, reply.chatThreadKey);
+      if (finalRunId !== reply.runId) this.store.deliveredReply(finalRunId, reply.chatThreadKey);
+    };
     // A restart continues in a new run; claim it too, so a later message that joins it does not answer twice.
-    if (finalRunId !== reply.runId && !this.store.claimReply({ ...reply, runId: finalRunId }))
+    if (finalRunId !== reply.runId && !this.store.claimReply({ ...reply, runId: finalRunId })) {
+      this.store.deliveredReply(reply.runId, reply.chatThreadKey);
       return;
+    }
     try {
       const text =
         status === "completed"
@@ -1887,6 +1963,7 @@ export class Bridge {
           "answer",
           `answer:${reply.threadId}:${finalRunId}`,
         );
+        delivered();
       } else {
         this.log(
           `${finalRunId} answered ${text === undefined ? "nothing" : QUIET_REPLY}; nothing posted to ${reply.chatThreadKey}.`,
@@ -1895,12 +1972,13 @@ export class Bridge {
         const later = this.store
           .pendingReplies()
           .some((each) => each.chatThreadKey === reply.chatThreadKey);
-        if (later) return;
-        await this.platform(reply.chatThreadKey)
-          .quiet?.(reply.chatThreadKey)
-          .catch((error: unknown) => {
-            this.log(`Ending the quiet run in ${reply.chatThreadKey} failed: ${String(error)}`);
-          });
+        if (!later)
+          await this.platform(reply.chatThreadKey)
+            .quiet?.(reply.chatThreadKey)
+            .catch((error: unknown) => {
+              this.log(`Ending the quiet run in ${reply.chatThreadKey} failed: ${String(error)}`);
+            });
+        delivered();
       }
     } catch (error) {
       this.store.releaseReply(reply.runId, reply.chatThreadKey);

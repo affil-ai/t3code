@@ -15,7 +15,7 @@ import {
   type Reply,
 } from "./bridge.ts";
 import type { PlanStep, RunStep } from "./activity.ts";
-import { isQuietReply, QUIET_REPLY } from "./platform.ts";
+import { isQuietReply, type OutboundMessage, QUIET_REPLY } from "./platform.ts";
 import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
@@ -40,7 +40,10 @@ function fakeT3() {
   const launches = new Map<string, { threadId: string; runId: string }>();
   /** Calls to fail or never answer, by tool, before the next one succeeds. */
   const failures = new Map<string, number>();
-  const hangs = new Set<string>();
+  /** Calls that never answer, each with what to tell the test once one arrives. */
+  const hangs = new Map<string, () => void>();
+  /** Attachment sends T3 accepted, by retry key, with the run each joined. */
+  const attachmentSends = new Map<string, string>();
   /** Activity items besides the answers, and the thread as a read shows it. */
   const activity: Array<Record<string, unknown>> = [];
   const thread = { title: "fix the build", pendingRequestCount: 0 };
@@ -60,6 +63,8 @@ function fakeT3() {
     delegatedPending?: boolean;
     /** The runs a thread read lists, as for a subagent the bridge didn't start. */
     recentRuns?: ReadonlyArray<{ runId: string; ordinal: number; status: RunStatus }>;
+    /** T3 accepts the next attachment send, and its reply is lost on the way back. */
+    loseAttachmentReply?: boolean;
   } = {
     splitPendingTools: false,
   };
@@ -103,7 +108,12 @@ function fakeT3() {
           args = { ...input, action };
         }
       }
-      if (hangs.delete(tool)) return new Promise<T>(() => {});
+      const hung = hangs.get(tool);
+      if (hung !== undefined) {
+        hangs.delete(tool);
+        hung();
+        return new Promise<T>(() => {});
+      }
       const failing = failures.get(tool) ?? 0;
       if (failing > 0) {
         failures.set(tool, failing - 1);
@@ -119,6 +129,18 @@ function fakeT3() {
           }
           case "t3_attachment_prepare_upload":
             return { attachmentId: `attachment-${calls.length}`, relativeUrl: "/upload" };
+          case "t3_thread_send_attachments": {
+            // A retry with the same key returns the message the first send made.
+            const key =
+              args.clientRequestId === undefined ? undefined : String(args.clientRequestId);
+            const runId = (key && attachmentSends.get(key)) || `run-${runs}`;
+            attachmentSends.set(key ?? `unkeyed-${calls.length}`, runId);
+            if (options.loseAttachmentReply === true) {
+              options.loseAttachmentReply = false;
+              throw new Error("socket hang up");
+            }
+            return { threadId: THREAD, runId, status: "running" };
+          }
           case "t3_thread_send":
             if (args.mode !== "auto") throw new Error("the bridge always sends with auto");
             // T3 steers the run in flight, or starts one if it has just ended.
@@ -244,6 +266,7 @@ function fakeT3() {
     thread,
     questions,
     options,
+    attachmentSends,
     /**
      * Ends the waits in flight as timed out, and resolves once the watcher has
      * checked the run's activity and is waiting again.
@@ -255,7 +278,8 @@ function fakeT3() {
       await waiting;
     },
     fail: (tool: string, times: number) => failures.set(tool, times),
-    hang: (tool: string) => hangs.add(tool),
+    /** The next call to `tool` never answers; resolves once it arrives. */
+    hang: (tool: string) => new Promise<void>((resolve) => hangs.set(tool, resolve)),
     /** Sets a run's status without ending it, such as "starting". */
     setStatus: (runId: string, status: RunStatus) => {
       run(runId).status = status;
@@ -291,6 +315,8 @@ function harness(
     steps?: boolean;
     /** The platform has no buttons, as Linear and iMessage don't. */
     noButtons?: boolean;
+    /** Posting a question with buttons fails this many times before it succeeds. */
+    questionPostFailures?: number;
     sleep?: (ms: number) => Promise<void>;
     /** The same T3 as another harness's, such as across a restart. */
     t3?: ReturnType<typeof fakeT3>;
@@ -300,6 +326,7 @@ function harness(
   const blockPosts: Array<BlockMessage & { messageId?: string }> = [];
   const renamed: Array<string> = [];
   let renameFailures = options.renameFailures ?? 0;
+  let questionPostFailures = options.questionPostFailures ?? 0;
   const t3 = options.t3 ?? fakeT3();
   const posted: Array<Reply & { readonly kind?: string }> = [];
   const statuses: Array<string> = [];
@@ -350,6 +377,10 @@ function harness(
           ? {}
           : {
               postBlocks: async (message) => {
+                if (questionPostFailures > 0) {
+                  questionPostFailures -= 1;
+                  throw new Error("Slack is unavailable");
+                }
                 blockPosts.push(message);
                 return `900.${blockPosts.length}`;
               },
@@ -1840,4 +1871,117 @@ it("posts nothing for a run that answers NO_REPLY, and tells every chat how to",
   assert.isFalse(isQuietReply("No reply needed"));
   assert.include(slackFirstTurnNote("key"), `exactly ${QUIET_REPLY}`);
   assert.include(slackFirstTurnNote("key"), "wake you more than once");
+});
+
+it("finishes a launched message before its follow-on work, so a restart doesn't send it again", async () => {
+  const db = freshDatabase();
+  const first = harness(db);
+  // T3 took the launch; the process dies while it asks T3 for a title.
+  const titling = first.t3.hang("t3_thread_update");
+  void first.bridge.receive(event("100.1"));
+  await titling;
+  first.bridge.stop();
+
+  const second = harness(db, { t3: first.t3 });
+  await second.bridge.resume();
+  assert.lengthOf(
+    second.t3.calls.filter((call) => call.tool === "t3_thread_launch"),
+    1,
+  );
+  assert.isUndefined(second.t3.calls.find((call) => call.tool === "t3_thread_send"));
+  second.t3.finish("run-1", "completed", "Done once.");
+  await second.bridge.idle();
+  assert.deepStrictEqual(
+    second.posted.map((reply) => reply.text),
+    ["Done once."],
+  );
+});
+
+it("sends a follow-up with files once when T3 took it but its reply was lost", async () => {
+  const { t3, bridge, store, advance } = harness();
+  await bridge.receive(event("100.1"));
+  t3.options.loseAttachmentReply = true;
+  const followUp = event("100.2", {
+    kind: "follow_up",
+    text: "see the log",
+    files: [{ name: "log.txt", mimeType: "text/plain", sizeBytes: 3, url: "https://files/log" }],
+  });
+  assert.deepStrictEqual(await bridge.receive(followUp), { type: "pending" });
+  advance(15_000);
+  await bridge.resume();
+
+  const sends = t3.calls.filter((call) => call.tool === "t3_thread_send_attachments");
+  assert.lengthOf(sends, 2);
+  assert.strictEqual(sends[0]!.args.clientRequestId, "chat-bridge:slack:C1:100.2");
+  assert.strictEqual(sends[1]!.args.clientRequestId, sends[0]!.args.clientRequestId);
+  assert.strictEqual(t3.attachmentSends.size, 1, "T3 made one message");
+  assert.isTrue(store.isHandled("slack:C1:100.2"));
+});
+
+it("asks a question again after posting it failed, and takes no message as its answer meanwhile", async () => {
+  const { t3, bridge, blockPosts } = harness(freshDatabase(), { questionPostFailures: 1 });
+  await bridge.receive(event("100.1"));
+  t3.questions.set("req-1", [
+    {
+      id: "q1",
+      header: "Deploy",
+      question: "Which environment?",
+      options: [
+        { label: "Staging", description: "Safe" },
+        { label: "Production", description: "Live" },
+      ],
+    },
+  ]);
+  t3.activity.push({
+    itemId: "ask",
+    type: "user_input_request",
+    runId: "run-1",
+    status: "waiting",
+  });
+  await t3.tick();
+  assert.lengthOf(blockPosts, 0);
+  // Nobody has seen the question, so a message goes to the agent instead of answering it.
+  const meanwhile = await bridge.receive(event("100.2", { kind: "follow_up", text: "Staging" }));
+  assert.strictEqual(meanwhile.type, "followed_up");
+  assert.isUndefined(t3.calls.find((call) => call.args.action === "respond"));
+
+  await t3.tick();
+  assert.lengthOf(blockPosts, 1);
+  await t3.tick();
+  assert.lengthOf(blockPosts, 1, "asked once it reached the chat");
+  t3.activity[0]!.status = "completed";
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+});
+
+it("posts an answer after a restart between claiming it and posting it, with the same delivery id", async () => {
+  const db = freshDatabase();
+  const deliveries: Array<string | undefined> = [];
+  let posting = () => {};
+  const reached = new Promise<void>((resolve) => (posting = resolve));
+  const first = harness(db, {
+    post: (message: OutboundMessage) => {
+      deliveries.push(message.eventId);
+      posting();
+      return new Promise<void>(() => {});
+    },
+  });
+  await first.bridge.receive(event("100.1"));
+  first.t3.finish("run-1", "completed", "Fixed.");
+  await reached;
+  first.bridge.stop();
+
+  const posted: Array<string> = [];
+  const second = harness(db, {
+    t3: first.t3,
+    post: async (message: OutboundMessage) => {
+      deliveries.push(message.eventId);
+      posted.push(message.text);
+    },
+  });
+  await second.bridge.resume();
+  await second.bridge.idle();
+  assert.deepStrictEqual(posted, ["Fixed."]);
+  assert.deepStrictEqual(deliveries, ["answer:thread-1:run-1", "answer:thread-1:run-1"]);
+  assert.deepStrictEqual(second.store.pendingReplies(), []);
 });

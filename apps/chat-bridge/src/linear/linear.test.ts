@@ -7,6 +7,7 @@ import { assert, it, vi } from "vite-plus/test";
 
 import type { InboundEvent } from "../bridge.ts";
 import { parseConfig } from "../config.ts";
+import { reactOn } from "../platform.ts";
 import { startWebhookServer } from "../webhookServer.ts";
 import {
   commentEvent,
@@ -911,7 +912,8 @@ it("names a HEIC upload as the JPEG image the agent gets", () => {
   );
 });
 
-it("tells the agent reactions don't show on Linear instead of adding one", () => {
+it("tells the agent reactions don't show on Linear instead of adding one", async () => {
+  const createReaction = vi.fn(async () => ({}));
   const { platform } = linearPlatform({
     chat: () => undefined,
     adapter: () => ({
@@ -921,6 +923,7 @@ it("tells the agent reactions don't show on Linear instead of adding one", () =>
         ...noSession,
         issue: async () => ({}),
         fileUpload: async () => ({}),
+        createReaction,
       } as never,
     }),
     access: { allowedUserIds: [], allowEveryone: true },
@@ -929,10 +932,13 @@ it("tells the agent reactions don't show on Linear instead of adding one", () =>
     onEvent: async () => ({ type: "pending" }),
     log: () => {},
   });
-  assert.isUndefined(platform.react);
-  assert.strictEqual(platform.reactionsUnseen, REACTIONS_UNSEEN);
-  assert.include(platform.reactionsUnseen, "Acknowledge in words");
-  assert.notInclude(platform.firstTurnNote("key", {} as InboundEvent), "chat_react");
+  const instead = await reactOn([platform], {
+    chatThreadKey: "linear:issue-1",
+    messageId: "1700000000.000100",
+    emoji: "eyes",
+  });
+  assert.strictEqual(instead, REACTIONS_UNSEEN);
+  assert.strictEqual(createReaction.mock.calls.length, 0);
 });
 
 const commentPayload = (data: Record<string, unknown>, action = "create") =>

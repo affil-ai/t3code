@@ -369,7 +369,7 @@ it("starts and follows an Office chat through the core, preserves attribution, a
   assert.isTrue(h.office.calls.some((call) => call.name === "plan"));
   assert.deepInclude(h.office.calls, {
     name: "state",
-    args: { chatId: "chat-1", state: "active", text: "" },
+    args: { chatId: "chat-1", state: "active", text: "", outcome: "completed" },
   });
   await h.send(
     request({
@@ -404,6 +404,10 @@ it("stops through the core and does not repeat a stop whose ack was lost", async
   assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_interrupt").length, 1);
   assert.isTrue(h.store.isHandled("office:stop-1"));
   assert.include([...h.office.posts.values()][0]!.text, "stopped");
+  assert.deepInclude(h.office.calls, {
+    name: "state",
+    args: { chatId: "chat-1", state: "active", text: "", outcome: "canceled" },
+  });
   await h.channel.close();
   h.office.fail.clear();
   await using restarted = await harness({ office: h.office, t3: h.t3, db: h.db, home: h.home });
@@ -420,8 +424,33 @@ it("NO_REPLY ends the Office state without posting", async () => {
   assert.equal(h.office.posts.size, 0);
   assert.deepInclude(h.office.calls, {
     name: "state",
-    args: { chatId: "chat-1", state: "active", text: "" },
+    args: { chatId: "chat-1", state: "active", text: "", outcome: "completed" },
   });
+});
+
+it("tells Office how each turn ended when it sets the chat active", async () => {
+  await using h = await harness();
+  await h.send();
+  const failed = h.t3.runs.get("run-1")!;
+  failed.status = "failed";
+  failed.end();
+  await h.bridge.idle();
+  await h.send(
+    request({ eventId: "event-2", messageId: "message-2", text: "Try again", firstTurn: false }),
+  );
+  h.t3.finish("run-2", "Fixed.");
+  await h.bridge.idle();
+  assert.deepEqual(
+    h.office.calls
+      .filter((call) => call.name === "state" && call.args.state === "active")
+      .map((call) => call.args.outcome),
+    ["failed", "completed"],
+  );
+  assert.isTrue(
+    h.office.calls
+      .filter((call) => call.name === "state" && call.args.state !== "active")
+      .every((call) => !("outcome" in call.args)),
+  );
 });
 
 it("uploads chat_post files with a stable invocation identity, independent of their text", async () => {

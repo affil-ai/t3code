@@ -82,7 +82,13 @@ export interface OfficeMutations {
     result: unknown;
   };
   state: {
-    args: { chatId: string; state: "processing" | "suspended" | "active"; text: string };
+    args: {
+      chatId: string;
+      state: "processing" | "suspended" | "active";
+      text: string;
+      /** Only with `active`: how the turn ended. */
+      outcome?: "completed" | "failed" | "canceled";
+    };
     result: unknown;
   };
   rename: { args: { chatId: string; title: string }; result: unknown };

@@ -1,11 +1,14 @@
 import {
   ATTACHMENT_UPLOAD_URL_TTL_MS,
   type ChatAttachment,
+  CommandId,
   MessageId,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Hex from "effect/encoding/Hex";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Upload from "../../../assets/AttachmentUpload.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
@@ -36,6 +39,16 @@ export function resolveAttachmentReferences(
 
 /** The 24-hour sweep starts at upload completion, possibly one upload-URL lifetime after issue. */
 const UPLOAD_OWNER_TTL_MS = 24 * 60 * 60 * 1000 + ATTACHMENT_UPLOAD_URL_TTL_MS;
+
+/** The same caller and key name the same message, so the send's command receipt replays a retry. */
+const retryCommandId = Effect.fn("mcp.attachmentSendCommandId")(function* (key: string) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  const crypto = yield* Crypto.Crypto;
+  // @effect-diagnostics-next-line preferSchemaOverJson:off - a JSON pair keeps the caller apart from the key.
+  const bytes = new TextEncoder().encode(JSON.stringify([scope.requestNamespace, key]));
+  const digest = yield* crypto.digest("SHA-256", bytes).pipe(Effect.mapError(unavailable));
+  return CommandId.make(`mcp:send-attachments:${Hex.encode(digest)}`);
+});
 
 const uploadOwner = McpInvocationContext.McpInvocationContext.pipe(
   Effect.map((scope) => scope.thread?.threadId ?? scope.requestNamespace),
@@ -92,7 +105,10 @@ export const layer = McpToolAccess.toLayer(
               input.attachments,
               projection.messages.flatMap((message) => message.attachments),
             );
-            const commandId = yield* newCommandId();
+            const commandId =
+              input.clientRequestId === undefined
+                ? yield* newCommandId()
+                : yield* retryCommandId(input.clientRequestId);
             const messageId = MessageId.make(commandId);
             const result = yield* ThreadMessageIntake.sendToThread({
               projectId: projection.thread.projectId,

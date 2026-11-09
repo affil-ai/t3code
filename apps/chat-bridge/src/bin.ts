@@ -23,7 +23,7 @@ import { authRetry, retryMethods, startInBackground } from "./linear/startup.ts"
 import { handlingLinearEvents } from "./linear/stop.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
-import { type ChatPlatform, platformFor } from "./platform.ts";
+import { type ChatPlatform, reactOn } from "./platform.ts";
 import { createSlackHost, redactSlackSecrets, type SlackChatHost } from "./slack/host.ts";
 import { slackPlatform, slackWorkNote } from "./slack/platform.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
@@ -312,13 +312,7 @@ async function start(): Promise<void> {
       bindingByChatKey: (chatKey) => store.bindingByChatKey(chatKey),
       workspaceRoots: (threadId) => threads.workspaceRoots(threadId),
       post: (message) => core.postFromAgent(message),
-      react: async (reaction) => {
-        const platform = platformFor(platforms, reaction.chatThreadKey);
-        if (platform.reactionsUnseen !== undefined) return platform.reactionsUnseen;
-        if (platform.react === undefined) throw new Error(`${platform.name} has no reactions.`);
-        await platform.react(reaction);
-        return undefined;
-      },
+      react: (reaction) => reactOn(platforms, reaction),
       setStatus: (chatThreadKey, status) => core.setStatus(chatThreadKey, status),
       startSlack: !config.startTools
         ? undefined

@@ -50,8 +50,14 @@ export function createOfficeChannel(options: {
   let closed = false;
   let core: Bridge;
 
-  const state: NonNullable<ChatPlatform["setState"]> = async (key, value, text) => {
-    await api.mutate("state", { chatId: chatIdOf(key), state: value, text });
+  const state: NonNullable<ChatPlatform["setState"]> = async (key, value, text, outcome) => {
+    await api.mutate("state", {
+      chatId: chatIdOf(key),
+      state: value,
+      text,
+      // Office finishes the requests it handed over with this outcome, and keeps the rest queued.
+      ...(value === "active" && outcome !== undefined ? { outcome } : {}),
+    });
   };
   const platform: ChatPlatform = {
     id: "office",
@@ -144,8 +150,8 @@ export function createOfficeChannel(options: {
         ...(files.length === 0 ? {} : { files }),
       });
     },
+    // No `quiet`: the run's end sets `active` with the turn's outcome right after.
     setState: state,
-    quiet: (key) => state(key, "active", ""),
     step: async (key, step) => {
       await api.mutate("step", {
         chatId: chatIdOf(key),
@@ -186,7 +192,8 @@ export function createOfficeChannel(options: {
           throw new Error("Office stop could not reach T3.");
         }
         store.markHandled(eventId);
-        if (!core.hasRunInFlight(chatThreadKey)) await state(chatThreadKey, "active", "");
+        if (!core.hasRunInFlight(chatThreadKey))
+          await state(chatThreadKey, "active", "", "canceled");
       } else {
         const outcome = await core.receive({
           eventId,
