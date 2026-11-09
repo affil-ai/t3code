@@ -1,7 +1,7 @@
 // @effect-diagnostics globalFetch:off globalTimers:off -- A plain Node app; it does not use Effect.
 /**
- * Slack on the shared `Chat` (see `chatHost.ts`): the Slack adapter in Socket
- * Mode, Slack messages as `InboundEvent`s, and what Chat SDK has no API for,
+ * Slack on the shared `Chat` (see `chatHost.ts`): the Slack adapter, in Socket
+ * Mode or fed by Office's relay, Slack messages as `InboundEvent`s, and what Chat SDK has no API for,
  * such as agent session status, Block Kit questions and file uploads with a
  * comment. Nothing here touches T3.
  */
@@ -29,6 +29,7 @@ import {
 
 export { splitMarkdown };
 import type { InboundFile } from "../threads.ts";
+import { relayedWebhookVerifier } from "./relay.ts";
 
 /** The `users.info` fields that tell a full member from a guest, a bot or another company's person. */
 interface SlackMember {
@@ -41,10 +42,22 @@ interface SlackMember {
 
 const MEMBER_CACHE_MS = 10 * 60 * 1000;
 
+/**
+ * How Slack's events and button clicks reach the bridge: over its own Socket
+ * Mode connection, or relayed by Office, which keeps the app's Request URLs and
+ * verifies each request before the bridge reads it (see `relay.ts`).
+ */
+export type SlackTransport =
+  | {
+      readonly kind: "socket";
+      /** The app-level token (`xapp-…`) Socket Mode connects with. */
+      readonly appToken: string;
+    }
+  | { readonly kind: "office-relay" };
+
 export interface SlackChatHostOptions {
   readonly botToken: string;
-  /** The app-level token (`xapp-…`) Socket Mode connects with. */
-  readonly appToken: string;
+  readonly transport: SlackTransport;
   readonly onEvent: (event: InboundEvent) => Promise<InboundOutcome>;
   /** Tests point the Web API at an address that refuses connections. */
   readonly apiUrl?: string | undefined;
@@ -389,12 +402,23 @@ export function createSlackHost(options: SlackChatHostOptions): {
   readonly deliver: Deliver;
   readonly connect: (chat: Chat) => SlackChatHost;
 } {
+  const transport = options.transport;
   const slack: SlackAdapter = createSlackAdapter({
-    mode: "socket",
+    ...(transport.kind === "socket"
+      ? {
+          mode: "socket",
+          appToken: transport.appToken,
+          // Socket Mode does not use the HTTP signing secret.
+          signingSecret: "",
+        }
+      : {
+          // Webhook mode, but no HTTP route reaches it: rows come only from Office's
+          // relay, over the token-authenticated Office connection, after Office
+          // checked Slack's signature. So the body is taken as given.
+          mode: "webhook",
+          webhookVerifier: relayedWebhookVerifier,
+        }),
     botToken: options.botToken,
-    appToken: options.appToken,
-    // Socket Mode does not use the HTTP signing secret.
-    signingSecret: "",
     ...(options.botUserId ? { botUserId: options.botUserId } : {}),
     ...(options.apiUrl
       ? { apiUrl: options.apiUrl, webClientOptions: { retryConfig: { retries: 0 } } }

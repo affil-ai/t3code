@@ -24,7 +24,13 @@ import { handlingLinearEvents } from "./linear/stop.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import { slackAppManifest } from "./slack/manifest.ts";
 import { type ChatPlatform, reactOn } from "./platform.ts";
-import { createSlackHost, redactSlackSecrets, type SlackChatHost } from "./slack/host.ts";
+import {
+  createSlackHost,
+  redactSlackSecrets,
+  type SlackChatHost,
+  type SlackTransport,
+} from "./slack/host.ts";
+import { connectSlackRelay } from "./slack/relay.ts";
 import { slackPlatform, slackWorkNote } from "./slack/platform.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
@@ -66,9 +72,20 @@ async function start(): Promise<void> {
   const office = takeOfficeSettings();
   const botToken = process.env.SLACK_BOT_TOKEN;
   const appToken = process.env.SLACK_APP_TOKEN;
-  if (botToken || appToken) {
+  const relayed = config.slack.transport === "office-relay";
+  let slackTransport: SlackTransport | undefined;
+  if (relayed) {
+    // Office relays Slack's requests; the bridge needs only the bot token, and Office.
+    if (botToken) {
+      if (office === undefined)
+        throw new Error(
+          'slack.transport "office-relay" needs Office: set OFFICE_CONVEX_URL, OFFICE_CHAT_BRIDGE_TOKEN and OFFICE_T3_PROJECT_ID.',
+        );
+      slackTransport = { kind: "office-relay" };
+    }
+  } else if (botToken || appToken) {
     requireEnv("SLACK_BOT_TOKEN");
-    requireEnv("SLACK_APP_TOKEN");
+    slackTransport = { kind: "socket", appToken: requireEnv("SLACK_APP_TOKEN") };
   }
 
   NodeFS.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -103,7 +120,7 @@ async function start(): Promise<void> {
     return bridge.receive(event);
   };
   const platforms: Array<ChatPlatform> =
-    botToken && appToken
+    botToken && slackTransport
       ? [
           slackPlatform({
             host: () => slackHost,
@@ -244,6 +261,8 @@ async function start(): Promise<void> {
       `Linear is configured but ${LINEAR_SECRET_NAMES.join(", ")} aren't all set; its webhook answers 503 until they are.`,
     );
   }
+  const officeApi =
+    office === undefined ? undefined : new OfficeClient(office.convexUrl, office.serviceToken);
   const officeChannel =
     office === undefined
       ? undefined
@@ -252,7 +271,7 @@ async function start(): Promise<void> {
             projectId: office.projectId,
           });
           const channel = createOfficeChannel({
-            api: new OfficeClient(office.convexUrl, office.serviceToken),
+            api: officeApi!,
             store,
             route: { projectId: office.projectId, worktreeFrom: office.worktreeFrom },
             home: dir,
@@ -273,10 +292,10 @@ async function start(): Promise<void> {
   });
   const core = bridge;
   const slackParts =
-    botToken && appToken
+    botToken && slackTransport
       ? createSlackHost({
           botToken,
-          appToken,
+          transport: slackTransport,
           // The bridge logs each outcome as it handles the event.
           onEvent: receive,
           log: (level, line) => log(`slack ${level}: ${line}`),
@@ -423,6 +442,16 @@ async function start(): Promise<void> {
   // What a restart left in the inbox first, then what Slack sent while the bridge was down.
   await officeChannel?.start(core);
   await core.resume();
+  // Office's relay sends what Slack posted while the bridge was down first, then live traffic.
+  const slackRelay =
+    slack && running && officeApi
+      ? connectSlackRelay({
+          transport: config.slack.transport,
+          source: officeApi,
+          chat: running,
+          log,
+        })
+      : undefined;
   if (slack) await core.catchUp("slack", (request) => slack.missedEvents(request));
   log(
     `Connected channels: ${platforms.map((platform) => platform.name).join(", ")}. T3: ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
@@ -445,6 +474,7 @@ async function start(): Promise<void> {
   const shutdown = async () => {
     log("Shutting down.");
     core.stop();
+    await slackRelay?.close();
     await officeChannel?.close();
     tools.close();
     webhooks?.close();

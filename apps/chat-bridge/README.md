@@ -7,7 +7,9 @@ features, and ends with the agent's final message.
 
 It works with stock T3 Code. The bridge is a separate process that talks to T3
 through T3's MCP endpoint, the same one Claude and Codex use, and to Slack over
-Socket Mode, so it needs no public URL.
+Socket Mode, so it needs no public URL. A bridge for Office's Slack app can
+instead take Slack's traffic from Office, which keeps the app's Request URLs
+(`slack.transport: "office-relay"`, see [Office](#office)).
 
 ## What it does
 
@@ -342,7 +344,10 @@ the core's replies and status back.
 ## Office
 
 Set `OFFICE_CONVEX_URL`, `OFFICE_CHAT_BRIDGE_TOKEN`, and `OFFICE_T3_PROJECT_ID`
-in the bridge's environment. Article chats run Office's article tool
+in the bridge's environment. With `"slack": { "transport": "office-relay" }` in
+`config.json`, Slack also arrives through Office: Office keeps the Slack app's
+Request URLs and relays each verified request to the bridge (see
+[Change the Office Slack app at cutover](#change-the-office-slack-app-at-cutover)). Article chats run Office's article tool
 (`apps/office/scripts/article-workspace.cts`) from a nextcard checkout with its
 packages installed: `OFFICE_REPOSITORY_PATH`, or the project's checkout when
 it isn't set.
@@ -477,38 +482,53 @@ the scratch server's project IDs, MCP login, or binding database.
 ### Change the Office Slack app at cutover
 
 Use the Office app, `A0BDG2PFNHZ`, not T3 Code Dev. The production manifest
-was read without changes on November 8, 2026. The cutover owner must:
+was read without changes on November 8, 2026.
 
-1. Enable **Socket Mode** and issue an app-level token with `connections:write`.
-   Supply that as `SLACK_APP_TOKEN`, and the Office app's bot token as
-   `SLACK_BOT_TOKEN`. Run only one bridge with this app token.
-2. Keep event subscriptions enabled. Keep `app_mention`, `message.channels`,
-   `message.groups`, and `message.im`. Add `agent_session_stopped` and
-   `app_context_changed`. The existing `message.mpim` subscription can remain.
-   Remove the retired Convex event Request URL when switching delivery to
-   Socket Mode.
-3. Keep **Interactivity** enabled and remove its retired Convex Request URL.
-   Socket Mode carries the bridge's question-button interactions.
-4. Keep `agent_view` enabled. Enable the App Home Messages tab, allow messages
-   in that tab, and enable `app_home.agent_tasks_enabled`. The exported
-   production manifest already has `agent_view`, but no `app_home` settings.
-5. Keep these bot scopes: `app_mentions:read`, `assistant:write`,
-   `channels:history`, `groups:history`, `im:history`, `chat:write`,
-   `files:read`, `files:write`, `reactions:write`, `users:read`, and
-   `metadata.message:read`. Office already has all of them. Do not remove
-   its other scopes as part of this cutover. Reinstall if any scope changes.
-   To capture reaction context, also subscribe to `reaction_added` and
-   `reaction_removed` with `reactions:read`, which Office already has.
+The Office app keeps its HTTP Request URLs on Office Convex, for events and
+for interactivity, so Office's own alert buttons keep working. Do not turn on
+Socket Mode and do not change either URL. Office verifies each Slack request's
+signature and stores its exact body; the bridge reads the undelivered rows
+through `chatBridge:slackInbox` over its Office connection, replays each through
+the Slack adapter, and marks it delivered with `chatBridge:slackDelivered` once
+the bridge has handled it. Slack events posted while the bridge is down wait in
+Office and are handled when it starts. A row that fails three times is logged by
+id and marked delivered, so it can't hold up the rest.
 
-Socket Mode requires only `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`.
-`SLACK_SIGNING_SECRET` is needed for signed HTTP webhooks, not for this bridge's
-Socket Mode transport. The bridge uses neither `SLACK_CLIENT_ID` nor
-`SLACK_CLIENT_SECRET`, and it does not require the relay's
-`OFFICE_FEEDBACK_RELAY_SECRET`.
-The three `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, and `SLACK_SIGNING_SECRET`
-names were absent from the selected `office/prod` Infisical namespace during
-the read-only check. Provision the Office app credentials there before cutover.
-No credentials were copied during verification.
+Set this in the bridge's `config.json`:
+
+```json
+{ "slack": { "transport": "office-relay" } }
+```
+
+The bridge then needs only `SLACK_BOT_TOKEN`, the Office app's bot token, and
+the Office settings above. It needs no `SLACK_APP_TOKEN` and no
+`SLACK_SIGNING_SECRET`; Office holds the signing secret. Without the setting,
+`transport` is `socket`, which other bridges such as T3 Code Dev keep using.
+
+The manifest edits are additive. Compared with the production manifest, the
+bridge needs:
+
+1. Under `settings.event_subscriptions.bot_events`, add `agent_session_stopped`
+   (the stop button) and `app_context_changed`. Keep `app_mention`,
+   `message.channels`, `message.groups`, `message.im`, and the existing
+   `message.mpim`. These events reach Office's events URL like any other.
+2. Under `features.app_home`, set `messages_tab_enabled: true`,
+   `messages_tab_read_only_enabled: false`, and `agent_tasks_enabled: true`,
+   so people can message the bot from its Messages tab. The production manifest
+   already has `agent_view`, but no `app_home` settings.
+
+Nothing else changes. Interactivity stays on with its current URL; the bridge's
+question buttons reach it through Office's relay. The app already has every bot
+scope the bridge uses (`app_mentions:read`, `assistant:write`,
+`channels:history`, `groups:history`, `im:history`, `chat:write`, `files:read`,
+`files:write`, `reactions:write`, `users:read`, `metadata.message:read`), so no
+reinstall is needed. To capture reaction context, also subscribe to
+`reaction_added` and `reaction_removed`; Office already has `reactions:read`.
+
+The bridge uses neither `SLACK_CLIENT_ID` nor `SLACK_CLIENT_SECRET`, and it does
+not require `OFFICE_FEEDBACK_RELAY_SECRET`. `SLACK_BOT_TOKEN` was absent from the
+selected `office/prod` Infisical namespace during the read-only check. Provision
+it there before cutover. No credentials were copied during verification.
 
 Replies under Office-bot posts tagged `office_feedback_thread` go to the T3
 thread named by the newest tagged post before that reply. Custom display names

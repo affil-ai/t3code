@@ -1,6 +1,8 @@
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 
+import type { SlackInboxRow, SlackRelaySource } from "../slack/relay.ts";
+
 export type InboxEvent =
   | { id: string; kind: "message"; chatId: string; messageId: string; createdAt: number }
   | { id: string; kind: "stop"; chatId: string; memberId: string; createdAt: number };
@@ -106,7 +108,7 @@ export interface OfficeApi {
 }
 
 /** Convex owns subscription reconnects. Neither its logger nor thrown errors may expose arguments. */
-export class OfficeClient implements OfficeApi {
+export class OfficeClient implements OfficeApi, SlackRelaySource {
   private readonly client: ConvexClient;
   private readonly token: string;
 
@@ -124,6 +126,34 @@ export class OfficeClient implements OfficeApi {
       (result) => onInbox(result.events),
       () => onError(),
     );
+  }
+
+  /** Slack requests Office verified and stored for the bridge, oldest first. */
+  subscribeSlackInbox(
+    onRows: (rows: ReadonlyArray<SlackInboxRow>) => void,
+    onError: () => void,
+  ): () => void {
+    return this.client.onUpdate(
+      makeFunctionReference<"query", { token: string; limit?: number }, Array<SlackInboxRow>>(
+        "chatBridge:slackInbox",
+      ),
+      { token: this.token },
+      (rows) => onRows(rows),
+      () => onError(),
+    );
+  }
+
+  async slackDelivered(ids: ReadonlyArray<string>): Promise<void> {
+    try {
+      await this.client.mutation(
+        makeFunctionReference<"mutation", { token: string; ids: Array<string> }, unknown>(
+          "chatBridge:slackDelivered",
+        ),
+        { token: this.token, ids: [...ids] },
+      );
+    } catch {
+      throw new Error("Office slackDelivered failed.");
+    }
   }
 
   async history(chatId: string): Promise<HistoryResult> {

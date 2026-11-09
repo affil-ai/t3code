@@ -74,3 +74,13 @@ it("reads channel routes with a match, a worktree branch and a note", () => {
     /match/,
   );
 });
+
+it("uses Socket Mode for Slack unless told to read Office's relay", () => {
+  const base = { t3Url: "http://x", channelProjects: [], allowedUserIds: [] };
+  assert.strictEqual(parseConfig(base).slack.transport, "socket");
+  assert.strictEqual(
+    parseConfig({ ...base, slack: { transport: "office-relay" } }).slack.transport,
+    "office-relay",
+  );
+  assert.throws(() => parseConfig({ ...base, slack: { transport: "http" } }), /slack.transport/);
+});

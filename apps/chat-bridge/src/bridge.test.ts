@@ -17,6 +17,10 @@ import {
 import type { PlanStep, RunStep } from "./activity.ts";
 import { isQuietReply, type OutboundMessage, QUIET_REPLY } from "./platform.ts";
 import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
+import { startChatHost } from "./chatHost.ts";
+import { createChatState } from "./chatState.ts";
+import { createSlackHost } from "./slack/host.ts";
+import { connectSlackRelay, type SlackInboxRow } from "./slack/relay.ts";
 import { BridgeStore, ensureSchema } from "./store.ts";
 import type { T3Tools } from "./t3Client.ts";
 import { type RunStatus, T3Threads } from "./threads.ts";
@@ -1984,4 +1988,176 @@ it("posts an answer after a restart between claiming it and posting it, with the
   assert.deepStrictEqual(posted, ["Fixed."]);
   assert.deepStrictEqual(deliveries, ["answer:thread-1:run-1", "answer:thread-1:run-1"]);
   assert.deepStrictEqual(second.store.pendingReplies(), []);
+});
+
+/**
+ * The bridge's Slack adapter on a real `Chat`, fed by Office's relay. Slack's
+ * Web API points at an address that refuses connections, so user lookups fail
+ * and names fall back to ids.
+ */
+async function relayedSlack(bridge: Bridge, db: NodeSqlite.DatabaseSync) {
+  const slackParts = createSlackHost({
+    botToken: "xoxb-test",
+    transport: { kind: "office-relay" },
+    botUserId: "UBOT",
+    apiUrl: "http://127.0.0.1:9/api/",
+    onEvent: (inbound) => bridge.receive(inbound),
+  });
+  const chat = await startChatHost({
+    adapters: { slack: slackParts.adapter },
+    deliver: { slack: slackParts.deliver },
+    state: createChatState(db),
+    onError: (error) => assert.fail(String(error)),
+    onAnswer: (chatThreadKey, userId, value) =>
+      bridge.questionClicked(chatThreadKey, userId, value),
+    onStop: (chatThreadKey, userId) => bridge.stopRequested(chatThreadKey, userId),
+    log: () => {},
+  });
+  let push: (rows: ReadonlyArray<SlackInboxRow>) => void = () => {};
+  const delivered: Array<{ ids: ReadonlyArray<string>; handled: boolean }> = [];
+  let handled = () => false;
+  const relay = connectSlackRelay({
+    transport: "office-relay",
+    source: {
+      subscribeSlackInbox: (onRows) => {
+        push = onRows;
+        return () => {};
+      },
+      slackDelivered: async (ids) => void delivered.push({ ids, handled: handled() }),
+    },
+    chat,
+    log: () => {},
+    sleep: async () => {},
+  })!;
+  return {
+    delivered,
+    /** What `delivered` records about the bridge when each batch is marked. */
+    whenDelivered: (check: () => boolean) => (handled = check),
+    push: (rows: ReadonlyArray<SlackInboxRow>) => push(rows),
+    idle: () => relay.idle(),
+    close: async () => {
+      await relay.close();
+      await chat.shutdown();
+    },
+  };
+}
+
+it("handles a relayed Slack mention, then marks the row delivered", async () => {
+  const { t3, bridge, db } = harness();
+  const slack = await relayedSlack(bridge, db);
+  slack.whenDelivered(() => t3.calls.some((call) => call.tool === "t3_thread_launch"));
+  slack.push([
+    {
+      id: "row-1",
+      kind: "event",
+      contentType: "application/json",
+      retryNum: 0,
+      rawBody: JSON.stringify({
+        type: "event_callback",
+        team_id: "T1",
+        event_id: "Ev1",
+        event: {
+          type: "app_mention",
+          channel: "C1",
+          channel_type: "channel",
+          user: "U1",
+          ts: "100.1",
+          text: "<@UBOT> fix the build",
+          team: "T1",
+        },
+      }),
+    },
+  ]);
+  await slack.idle();
+  assert.deepStrictEqual(slack.delivered, [{ ids: ["row-1"], handled: true }]);
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  await slack.close();
+});
+
+it("resolves a question from a relayed button click", async () => {
+  const { t3, bridge, blockPosts, db } = harness();
+  await bridge.receive(event("100.1"));
+  t3.questions.set("req-1", [
+    {
+      id: "q1",
+      header: "Deploy",
+      question: "Which environment?",
+      options: [
+        { label: "Staging", description: "Safe" },
+        { label: "Production", description: "Live", value: "prod" },
+      ],
+    },
+  ]);
+  t3.activity.push({
+    itemId: "ask",
+    type: "user_input_request",
+    runId: "run-1",
+    status: "waiting",
+  });
+  await t3.tick();
+  const actions = blockPosts[0]!.blocks.find((block) => block.type === "actions") as {
+    elements: Array<{ action_id: string; value: string }>;
+  };
+  const button = actions.elements[1]!;
+  const slack = await relayedSlack(bridge, db);
+  slack.whenDelivered(() => t3.calls.some((call) => call.args.action === "respond"));
+  const payload = {
+    type: "block_actions",
+    user: { id: "U1", username: "ada", name: "Ada" },
+    team: { id: "T1" },
+    channel: { id: "C1" },
+    container: { type: "message", channel_id: "C1", message_ts: "900.1", thread_ts: "100.1" },
+    message: { ts: "900.1", thread_ts: "100.1" },
+    trigger_id: "trigger-1",
+    actions: [{ action_id: button.action_id, value: button.value }],
+  };
+  slack.push([
+    {
+      id: "row-2",
+      kind: "interaction",
+      contentType: "application/x-www-form-urlencoded",
+      retryNum: 0,
+      rawBody: `payload=${encodeURIComponent(JSON.stringify(payload))}`,
+    },
+  ]);
+  await slack.idle();
+  const respond = t3.calls.find((call) => call.args.action === "respond");
+  assert.deepStrictEqual(respond?.args, {
+    action: "respond",
+    threadId: THREAD,
+    requestId: "req-1",
+    answers: { q1: "prod" },
+  });
+  assert.deepStrictEqual(slack.delivered, [{ ids: ["row-2"], handled: true }]);
+  t3.activity[0]!.status = "completed";
+  t3.finish("run-1", "completed", "Deployed.");
+  await bridge.idle();
+  await slack.close();
+});
+
+it("stops the run from a relayed agent_session_stopped event before marking it delivered", async () => {
+  const { t3, bridge, db } = harness();
+  await bridge.receive(event("100.1"));
+  const slack = await relayedSlack(bridge, db);
+  slack.whenDelivered(() => t3.calls.some((call) => call.tool === "t3_thread_interrupt"));
+  slack.push([
+    {
+      id: "row-3",
+      kind: "event",
+      contentType: "application/json",
+      retryNum: 0,
+      rawBody: JSON.stringify({
+        type: "event_callback",
+        team_id: "T1",
+        event_id: "Ev3",
+        event: { type: "agent_session_stopped", channel: "C1", thread_ts: "100.1", user: "U1" },
+      }),
+    },
+  ]);
+  await slack.idle();
+  assert.deepStrictEqual(slack.delivered, [{ ids: ["row-3"], handled: true }]);
+  t3.finish("run-1", "interrupted", "");
+  await bridge.idle();
+  await slack.close();
 });

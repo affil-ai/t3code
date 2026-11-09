@@ -46,6 +46,17 @@ export interface BridgeConfig {
   readonly imessage?: ImessageConfig | undefined;
   /** Linear agent sessions. Omit to run without Linear. Its secrets come from the environment. */
   readonly linear?: LinearConfig | undefined;
+  readonly slack: SlackConfig;
+}
+
+export interface SlackConfig {
+  /**
+   * `socket` (the default): the bridge's own Socket Mode connection, with
+   * SLACK_APP_TOKEN. `office-relay`: Office keeps the Slack app's Request URLs,
+   * verifies each request and stores it, and the bridge reads them over its
+   * Office connection; it needs no app token.
+   */
+  readonly transport: "socket" | "office-relay";
 }
 
 export interface LinearConfig {
@@ -223,6 +234,15 @@ function parseLinear(raw: unknown): LinearConfig | undefined {
   };
 }
 
+function parseSlack(raw: unknown): SlackConfig {
+  if (raw === undefined) return { transport: "socket" };
+  if (!isRecord(raw)) return fail("slack must be an object.");
+  const transport = raw.transport ?? "socket";
+  if (transport !== "socket" && transport !== "office-relay")
+    fail('slack.transport must be "socket" or "office-relay".');
+  return { transport: transport as SlackConfig["transport"] };
+}
+
 export function parseConfig(raw: unknown): BridgeConfig {
   if (!isRecord(raw)) return fail("The config must be a JSON object.");
   const t3Url = typeof raw.t3Url === "string" ? raw.t3Url : fail("t3Url is required.");
@@ -275,6 +295,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
     modelSelection: raw.modelSelection as ModelSelection | undefined,
     imessage: parseImessage(raw.imessage),
     linear: parseLinear(raw.linear),
+    slack: parseSlack(raw.slack),
   };
 }
 
