@@ -30,6 +30,11 @@ export interface BridgeConfig {
   /** `steer` joins a reply to the run in flight; `queue` runs it after. */
   /** The port of the `chat_post` / `chat_react` MCP server on 127.0.0.1. */
   readonly toolsPort: number;
+  /**
+   * Serve `slack_start` and `linear_start`. Off unless set to true: they take no chat
+   * key, so every agent on the T3 server could call them.
+   */
+  readonly startTools: boolean;
   /** For new threads; T3 caps it at what the login was granted. Omit for T3's default. */
   readonly runtimeMode?: string | undefined;
   /**
@@ -242,6 +247,9 @@ export function parseConfig(raw: unknown): BridgeConfig {
   if (raw.allowEveryone !== undefined && typeof raw.allowEveryone !== "boolean") {
     fail("allowEveryone must be true or false.");
   }
+  if (raw.startTools !== undefined && typeof raw.startTools !== "boolean") {
+    fail("startTools must be true or false.");
+  }
   if (raw.runtimeMode !== undefined && typeof raw.runtimeMode !== "string") {
     fail("runtimeMode must be a string.");
   }
@@ -262,6 +270,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
     allowedUserIds: stringList(raw.allowedUserIds, "allowedUserIds"),
     allowEveryone: raw.allowEveryone === true,
     toolsPort: toolsPort as number,
+    startTools: raw.startTools === true,
     runtimeMode: raw.runtimeMode as string | undefined,
     modelSelection: raw.modelSelection as ModelSelection | undefined,
     imessage: parseImessage(raw.imessage),

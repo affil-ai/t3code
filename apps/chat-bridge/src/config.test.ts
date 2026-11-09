@@ -22,6 +22,12 @@ it("fills defaults and rejects a bad config", () => {
     /t3EnvironmentId/,
   );
   assert.isFalse(config.allowEveryone, "the allowlist is the default");
+  assert.isFalse(config.startTools, "slack_start and linear_start are off unless enabled");
+  assert.throws(
+    () =>
+      parseConfig({ t3Url: "http://x", channelProjects: [], allowedUserIds: [], startTools: 1 }),
+    /startTools/,
+  );
   assert.throws(
     () =>
       parseConfig({

@@ -128,6 +128,26 @@ const SLACK_START_TOOL = {
 
 class ToolInputError extends Error {}
 
+/**
+ * Why `slack_start` may not post to `channel`, or undefined when it may: only a
+ * configured channel, or a DM to someone allowed to use the bot.
+ */
+export function slackStartRefusal(
+  access: {
+    readonly channelProjects: ReadonlyArray<{ readonly channelId: string }>;
+    readonly allowedUserIds: ReadonlyArray<string>;
+    readonly allowEveryone: boolean;
+  },
+  channel: string,
+): string | undefined {
+  if (channel.startsWith("U") || channel.startsWith("W")) {
+    if (access.allowEveryone || access.allowedUserIds.includes(channel)) return undefined;
+    return `${channel} isn't allowed to use the bot, so slack_start won't DM them.`;
+  }
+  if (access.channelProjects.some((route) => route.channelId === channel)) return undefined;
+  return `${channel} isn't one of the bridge's channels, so slack_start won't post there.`;
+}
+
 const TOOLS = [
   {
     name: "chat_post",

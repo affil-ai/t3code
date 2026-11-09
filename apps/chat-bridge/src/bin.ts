@@ -32,7 +32,7 @@ import { T3Threads } from "./threads.ts";
 import { OfficeClient } from "./office/client.ts";
 import { createOfficeChannel } from "./office/platform.ts";
 import { runOfficeImport } from "./office/importCommand.ts";
-import { startToolServer } from "./toolServer.ts";
+import { slackStartRefusal, startToolServer } from "./toolServer.ts";
 import { startWebhookServer, type WebhookRoute } from "./webhookServer.ts";
 
 const log = (line: string) =>
@@ -320,25 +320,35 @@ async function start(): Promise<void> {
         return undefined;
       },
       setStatus: (chatThreadKey, status) => core.setStatus(chatThreadKey, status),
-      startSlack: async (request) => {
-        const slackPlatform = platforms.find((each) => each.id === "slack");
-        if (slackPlatform?.startConversation === undefined)
-          throw new Error("Slack isn't connected.");
-        const refusal = await core.attachRefusal({ threadId: request.threadId, replace: false });
-        if (refusal !== undefined) throw new Error(refusal);
-        const chatThreadKey = await slackPlatform.startConversation(request.channel, request.text);
-        const channelId = chatThreadKey.split(":")[1] ?? request.channel;
-        await core.attach({
-          chatThreadKey,
-          channelId,
-          threadId: request.threadId,
-          createdByUserId: "",
-          note: (chatKey) => slackWorkNote(chatThreadKey, chatKey),
-        });
-        return `Started a Slack thread (${chatThreadKey}) for thread ${request.threadId}: replies there continue it, and its final message in each run posts there.`;
-      },
+      startSlack: !config.startTools
+        ? undefined
+        : async (request) => {
+            const destination = slackStartRefusal(config, request.channel);
+            if (destination !== undefined) throw new Error(destination);
+            const slackPlatform = platforms.find((each) => each.id === "slack");
+            if (slackPlatform?.startConversation === undefined)
+              throw new Error("Slack isn't connected.");
+            const refusal = await core.attachRefusal({
+              threadId: request.threadId,
+              replace: false,
+            });
+            if (refusal !== undefined) throw new Error(refusal);
+            const chatThreadKey = await slackPlatform.startConversation(
+              request.channel,
+              request.text,
+            );
+            const channelId = chatThreadKey.split(":")[1] ?? request.channel;
+            await core.attach({
+              chatThreadKey,
+              channelId,
+              threadId: request.threadId,
+              createdByUserId: "",
+              note: (chatKey) => slackWorkNote(chatThreadKey, chatKey),
+            });
+            return `Started a Slack thread (${chatThreadKey}) for thread ${request.threadId}: replies there continue it, and its final message in each run posts there.`;
+          },
       startLinear:
-        linear === undefined
+        linear === undefined || !config.startTools
           ? undefined
           : async (request) => {
               if (!linear.started.ready())

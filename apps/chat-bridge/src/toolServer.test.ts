@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 import { assert, it } from "vite-plus/test";
 
 import type { OutboundMessage, Reaction } from "./platform.ts";
-import { callTool, type ToolDeps } from "./toolServer.ts";
+import { callTool, slackStartRefusal, type ToolDeps } from "./toolServer.ts";
 
 function harness() {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chat-bridge-"));
@@ -193,6 +193,23 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
   }
   assert.lengthOf(requests, 3);
   assert.isTrue((await callTool(deps, "slack_start", requests[0] as never)).isError);
+});
+
+it("lets slack_start post only to the bridge's channels and to people allowed to use the bot", () => {
+  const access = {
+    channelProjects: [{ channelId: "C0AJ5HR70PR" }],
+    allowedUserIds: ["U0123ABCD"],
+    allowEveryone: false,
+  };
+  assert.isUndefined(slackStartRefusal(access, "C0AJ5HR70PR"));
+  assert.isUndefined(slackStartRefusal(access, "U0123ABCD"));
+  assert.match(
+    slackStartRefusal(access, "C0OTHER0001") ?? "",
+    /isn't one of the bridge's channels/,
+  );
+  assert.match(slackStartRefusal(access, "U0STRANGER1") ?? "", /isn't allowed/);
+  assert.match(slackStartRefusal(access, "D0123ABCD") ?? "", /isn't one of the bridge's channels/);
+  assert.isUndefined(slackStartRefusal({ ...access, allowEveryone: true }, "U0STRANGER1"));
 });
 
 it("sets a status only while the thread has a run in flight", async () => {

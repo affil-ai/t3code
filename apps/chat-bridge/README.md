@@ -141,8 +141,11 @@ A T3 thread can start a conversation itself instead of waiting for one:
 
 Both take the thread's own id or a subagent's `childThreadId`, and need no
 chat key. Stock T3 never tells the bridge which thread is calling, so the
-bridge can't prove the caller is that thread; the tools are served on
-loopback only, to agents on this host, as the other chat tools are.
+bridge can't prove the caller is that thread, and every agent on the T3
+server sees the tools. So they are off unless `startTools` is `true` in the
+config, and `slack_start` posts only in a channel listed in `channelProjects`
+or as a DM to someone allowed to use the bot. Leave them off on a T3 server
+other people's chats run on, such as Office's.
 
 ## How the agent posts files and reactions
 
@@ -238,6 +241,8 @@ when that is set. Create `config.json` there:
 - `allowEveryone`: optional, `false` by default. `true` also lets every full
   member of the workspace use the bot (see above).
 - `toolsPort`: the port for the `chat_post` / `chat_react` server. Default 3920.
+- `startTools`: optional, `false` by default. `true` also serves `slack_start`
+  and `linear_start` (see "Threads that start their own conversation").
 - `runtimeMode` and `modelSelection`: optional, for new threads. Without them
   T3 uses the project's defaults. T3 caps the runtime mode at the access you
   grant the bridge in step 4.
