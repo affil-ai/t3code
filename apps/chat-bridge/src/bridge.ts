@@ -388,6 +388,10 @@ function controlCommand(text: string): ControlCommand | undefined {
 /** A message led by the word "aside" is for the people in the thread, not the agent. */
 const isAside = (text: string) => /^\s*aside\b/i.test(text);
 
+/** `stop`, `mute` and `unmute` addressed to the bot, which are never held. */
+const isControl = (event: InboundEvent) =>
+  event.addressed && controlCommand(event.text) !== undefined;
+
 function turnText(
   platform: ChatPlatform,
   event: InboundEvent,
@@ -664,15 +668,25 @@ export class Bridge {
     const outcomes = new Map<string, InboundOutcome>();
     /** Events waiting on someone else's grant; the messages after them carry on. */
     const held = new Set<string>();
+    /** Authors with a held event: their later messages wait behind it, so theirs stay in order. */
+    const heldAuthors = new Set<string>();
+    const hold = (each: InboundEvent) => {
+      held.add(each.eventId);
+      heldAuthors.add(each.author.userId);
+    };
     while (!this.stopped) {
       const entry = this.store.inboxGroupHead(this.conversationKeys(chatThreadKey), held);
       if (entry === undefined) break;
       let event = JSON.parse(entry.event) as InboundEvent;
+      if (heldAuthors.has(event.author.userId) && !isControl(event)) {
+        held.add(entry.eventId);
+        continue;
+      }
       const wait = entry.retryAt - this.now();
       if (wait > 0) {
         this.retryIn(chatThreadKey, wait);
         if (this.heldByOther(event)) {
-          held.add(entry.eventId);
+          hold(event);
           continue;
         }
         break;
@@ -683,7 +697,7 @@ export class Bridge {
           // A run still starting can't take a steer yet; T3 would make the message its own run.
           await this.untilSteerable(event.chatThreadKey);
           // What arrived meanwhile, or alongside it, goes to the agent as one message.
-          const waiting = await this.waitingFollowUps(event.chatThreadKey, held);
+          const waiting = await this.waitingFollowUps(event.chatThreadKey, held, heldAuthors);
           if (waiting.length > 1) {
             event = this.combine(waiting);
             together = waiting.map((each) => each.eventId);
@@ -703,7 +717,7 @@ export class Bridge {
           this.store.retryLater(event.eventId, entry.attempts, this.now() + delay, error.message);
           this.retryIn(chatThreadKey, delay);
           if (error instanceof HeldByOther) {
-            held.add(event.eventId);
+            hold(event);
             continue;
           }
           break;
@@ -712,6 +726,12 @@ export class Bridge {
         if (attempts >= MAX_HANDOFF_ATTEMPTS) {
           this.log(`Giving up on ${event.eventId} after ${attempts} tries: ${String(error)}`);
           this.store.finish(event.eventId);
+          // What `prepare` staged for it would otherwise hold the conversation until it expires.
+          await this.platform(event.chatThreadKey)
+            .abandoned?.(event.eventId)
+            .catch((failure: unknown) => {
+              this.log(`Releasing what ${event.eventId} staged failed: ${String(failure)}`);
+            });
           await this.notify(event, GIVE_UP_TEXT);
           continue;
         }
@@ -772,12 +792,14 @@ export class Bridge {
   private async waitingFollowUps(
     chatThreadKey: string,
     held: ReadonlySet<string>,
+    heldAuthors: ReadonlySet<string>,
   ): Promise<ReadonlyArray<InboundEvent>> {
     const waiting: Array<InboundEvent> = [];
     for (const entry of this.store.inbox(chatThreadKey, MAX_COMBINED + held.size)) {
       if (held.has(entry.eventId)) continue;
       if (waiting.length >= MAX_COMBINED || entry.retryAt > this.now()) break;
       const event = JSON.parse(entry.event) as InboundEvent;
+      if (heldAuthors.has(event.author.userId)) break;
       if (!(await this.isPlainFollowUp(event))) break;
       // What `prepare` adds is scoped to the first author, so only their messages join it.
       if (
@@ -1271,6 +1293,11 @@ export class Bridge {
           `Binding the conversations linked to ${event.chatThreadKey} failed: ${String(error)}`,
         );
       }
+      // A `!model` pick that starts the thread is a person's pick, as one later is, so a
+      // follow never mistakes it for a thread left on a former default.
+      if (switched.command !== undefined)
+        for (const each of this.store.bindingsForThread(started.threadId))
+          this.store.markModelSwitched(each.chatThreadKey);
       if (owed !== undefined)
         for (const chatThreadKey of this.store.recipients(event.chatThreadKey))
           this.store.oweReply({ ...owed, chatThreadKey });
@@ -1413,6 +1440,16 @@ export class Bridge {
     for (const run of this.store.followRuns())
       if (!this.watching.has(`delegated:${run.reply.threadId}`))
         this.followDelegatedWork(run.reply);
+    // A run answered with nothing following its delegated work, such as one the last process
+    // stopped between answering and following, is followed now: its resources go once that
+    // work settles, at once when there is none. One still owed is followed after its answer.
+    for (const platform of this.platforms)
+      for (const held of platform.heldRuns?.() ?? []) {
+        if (this.store.isFollowedRun(held.runId)) continue;
+        const answered =
+          this.store.answeredReply(held.dispatchedRunId) ?? this.store.answeredReply(held.runId);
+        if (answered !== undefined) this.followDelegatedWork({ ...answered, runId: held.runId });
+      }
     await Promise.all(this.store.inboxThreads().map((chatThreadKey) => this.drain(chatThreadKey)));
   }
 
@@ -1691,11 +1728,18 @@ export class Bridge {
 
   /** Tells the platform a run and its delegated work are done, so it releases their resources. */
   private async release(reply: OwedReply): Promise<void> {
-    await this.platform(reply.chatThreadKey)
-      .runEnded?.(reply.chatThreadKey, reply.runId)
-      .catch(() => {
-        this.log(`Releasing resources for ${reply.runId} failed.`);
-      });
+    // Whichever conversation's answer recorded the follow, a linked conversation's platform
+    // may hold the run's resources too, such as Slack article access behind an Office answer.
+    const keys = new Set([
+      reply.chatThreadKey,
+      ...this.store.bindingsForThread(reply.threadId).map((each) => each.chatThreadKey),
+    ]);
+    for (const key of keys)
+      await this.platform(key)
+        .runEnded?.(key, reply.runId)
+        .catch(() => {
+          this.log(`Releasing resources for ${reply.runId} in ${key} failed.`);
+        });
   }
 
   /** Releases a followed run and stops waiting on it. */

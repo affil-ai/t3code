@@ -1887,6 +1887,36 @@ it("keeps a person's pick of a former default made while Office couldn't say the
   assert.deepEqual(h.store.followedModel("slack:C1:1.1"), OPUS);
 });
 
+it("keeps a pick that starts the thread while Office couldn't say the chat's model", async () => {
+  await using h = await harness({
+    slack: slackPlatformForSeeds(),
+    defaultModel: OPUS,
+    formerModels: [ASTRA],
+    threadModel: ASTRA,
+  });
+  h.store.insertSeed({
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    chatId: "chat-9",
+    oldThreadId: "old",
+    sync: false,
+  });
+  const chatModel = h.office.api.chatModel;
+  h.office.api.chatModel = async () => {
+    throw new Error("Office chatModel failed.");
+  };
+  await h.bridge.receive(slackTurn("2.1", "!astra Continue"));
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  assert.isTrue(h.store.modelSwitched("slack:C1:1.1"));
+  h.office.api.chatModel = chatModel;
+  h.office.chatModels.set("chat-9", OPUS);
+  await h.bridge.receive(slackTurn("3.1", "And the docs"));
+  // The thread stays on the Astra the person picked.
+  assert.deepEqual(modelSets(h), []);
+  assert.deepEqual(h.store.followedModel("slack:C1:1.1"), OPUS);
+});
+
 it("runs a Slack turn on the thread's model when Office can't say the chat's", async () => {
   await using h = await seededSlack(undefined);
   h.office.api.chatModel = async () => {

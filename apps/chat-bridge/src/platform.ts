@@ -163,6 +163,17 @@ export interface ChatPlatform {
    * conversations, such as article access. Their messages wait, then run as their own turn.
    */
   readonly heldByOther?: (chatThreadKeys: ReadonlyArray<string>, author: string) => boolean;
+  /**
+   * The runs still holding what `prepare` granted: `runId` now, `dispatchedRunId` the run the
+   * turn was handed to (they differ once T3 continues it). At startup, one already answered
+   * with nothing following its delegated work is followed again, which releases it.
+   */
+  readonly heldRuns?: () => ReadonlyArray<{
+    readonly runId: string;
+    readonly dispatchedRunId: string;
+  }>;
+  /** Releases what `prepare` staged for an event the bridge gave up handing to T3. */
+  readonly abandoned?: (eventId: string) => Promise<void>;
 
   /** Posts an answer or a notice. */
   readonly post: (message: OutboundMessage) => Promise<void>;

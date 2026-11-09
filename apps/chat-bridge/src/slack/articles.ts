@@ -25,9 +25,14 @@ export interface SlackArticleHooks {
   readonly runEnded: (chatThreadKey: string, runId: string) => Promise<void>;
   /** True while someone other than `author` holds live access in these conversations. */
   readonly heldByOther: (chatThreadKeys: ReadonlyArray<string>, author: string) => boolean;
+  /** The runs live access is staged for; the bridge's startup follows the answered ones again. */
+  readonly heldRuns: () => ReadonlyArray<{ readonly runId: string; readonly dispatchedRunId: string }>;
+  /** Ends access staged for an event the bridge gave up on, unless a run already took it. */
+  readonly abandoned: (eventId: string) => Promise<void>;
   /**
-   * At startup: forgets expired access, and ends access a finished event never handed to a
-   * run or whose run was answered with nothing left following its delegated work.
+   * At startup, before the bridge resumes: forgets expired access, and ends access a finished
+   * event never handed to a run. Access a run took is left to the bridge, which releases it
+   * once that run and its delegated work have settled.
    */
   readonly restore: () => Promise<void>;
 }
@@ -55,8 +60,6 @@ export function slackArticleAccess(options: {
     | "endAccess"
     | "isHandled"
     | "owedDispatches"
-    | "isAnswered"
-    | "isFollowedRun"
   >;
   /** The person's Slack profile email and team, which Office matches when the Slack ID isn't linked. */
   readonly identity?: ((userId: string) => Promise<SlackIdentity>) | undefined;
@@ -171,6 +174,19 @@ export function slackArticleAccess(options: {
             access.expiresAt > now() &&
             chatThreadKeys.includes(access.chatThreadKey),
         ),
+    heldRuns: () =>
+      store
+        .articleAccess()
+        .filter((access) => access.expiresAt > now())
+        .flatMap((access) =>
+          access.runId === undefined
+            ? []
+            : [{ runId: access.runId, dispatchedRunId: access.dispatchedRunId ?? access.runId }],
+        ),
+    abandoned: async (eventId) => {
+      const staged = store.articleAccess({ eventId }).filter((access) => access.runId === undefined);
+      if (staged.length > 0) await end(staged);
+    },
     restore: async () => {
       for (const access of store.articleAccess()) {
         if (access.expiresAt <= now()) {
@@ -178,13 +194,9 @@ export function slackArticleAccess(options: {
           store.endAccess(access.eventId);
           continue;
         }
-        if (access.runId !== undefined) {
-          // A run still going, or one whose delegated work a follow waits on, is released by
-          // that; one answered with nothing following it was missed and ends now.
-          if (store.isAnswered(access.runId) && !store.isFollowedRun(access.runId))
-            await end([access], access.runId);
-          continue;
-        }
+        // A run took it: the bridge releases it when the run and its delegated work settle,
+        // following that work again at startup when nothing follows it yet.
+        if (access.runId !== undefined) continue;
         // Still on its way to a run: a waiting event reuses it when prepared again, an owed
         // dispatch is sent.
         if (!store.isHandled(access.eventId)) continue;

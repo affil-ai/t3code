@@ -457,6 +457,8 @@ function harness(
               dispatched: options.articles.dispatched,
               runEnded: options.articles.runEnded,
               heldByOther: options.articles.heldByOther,
+              heldRuns: options.articles.heldRuns,
+              abandoned: options.articles.abandoned,
               combinesPrepared: true,
             }),
       },
@@ -2892,6 +2894,7 @@ async function articleHarness(
     t3?: ReturnType<typeof fakeT3>;
     db?: NodeSqlite.DatabaseSync;
     otherPlatform?: ChatPlatform;
+    post?: (reply: Reply) => Promise<void>;
   } = {},
 ) {
   const { home, files } = await articleCheckout();
@@ -2913,6 +2916,7 @@ async function articleHarness(
     members: ["U1", "U2"],
     ...(options.t3 ? { t3: options.t3 } : {}),
     ...(options.otherPlatform ? { otherPlatform: options.otherPlatform } : {}),
+    ...(options.post ? { post: options.post } : {}),
   });
   const connection = NodePath.join(home, "office-article/chat1/officeRun1.json");
   const exists = () =>
@@ -3041,44 +3045,66 @@ it("ends a joined turn's access after a restart once its own delegated work sett
   await second.files.close();
 });
 
-it("ends at startup access whose run was answered with nothing following its work", async () => {
-  const { files } = await articleCheckout();
-  const office = fakeArticleOffice(GRANT);
-  const store = new BridgeStore(freshDatabase());
-  const base = { chatThreadKey: "slack:C1:100.1", author: "U1", chatId: "chat1" };
-  const reply = { threadId: THREAD, chatThreadKey: base.chatThreadKey };
-  // Answered, nothing follows it: missed. Answered and followed, or still running: kept.
-  for (const [eventId, runId] of [
-    ["missed", "run-1"],
-    ["followed", "run-2"],
-    ["running", "run-3"],
-  ] as const) {
-    store.stageAccess({ ...base, eventId, officeRunId: `office-${runId}`, expiresAt: 9e12 });
-    store.markHandled(eventId);
-    store.accessDispatched(eventId, runId);
-    store.oweReply({ ...reply, runId });
+/**
+ * Ada's run-1 holds access and leaves a subagent working; the bridge stops after posting its
+ * answer and before following its work, which `arrange` adjusts. Returns the restarted bridge.
+ */
+async function restartAfterAnswer(
+  arrange: (store: BridgeStore) => void = () => {},
+): Promise<Awaited<ReturnType<typeof articleHarness>>> {
+  const db = freshDatabase();
+  const first = await articleHarness({ db });
+  await first.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  first.bridge.stop();
+  await first.files.close();
+  const reply = { runId: "run-1", threadId: THREAD, chatThreadKey: "slack:C1:100.1" };
+  // What `answer` records once the answer is posted; no follow was saved after it.
+  assert.isTrue(first.store.claimReply(reply));
+  first.store.deliveredReply("run-1", reply.chatThreadKey);
+  arrange(first.store);
+  first.t3.options.delegatedPending = true;
+  first.t3.finish("run-1", "completed", "A subagent is staging the edits.");
+  const second = await articleHarness({ db, t3: first.t3 });
+  await second.articles.restore();
+  await second.bridge.resume();
+  return second;
+}
+
+it("keeps at startup the access of an answered run its delegated work still needs, then ends it", async () => {
+  // Stopped between answering and following; or a follow saved before runs were saved with it.
+  for (const legacy of [false, true]) {
+    const h = await restartAfterAnswer((store) => {
+      if (legacy)
+        store.saveFollow({
+          reply: { runId: "run-1", threadId: THREAD, chatThreadKey: "slack:C1:100.1" },
+          cursor: -1,
+          until: 9e12,
+        });
+    });
+    const label = legacy ? "legacy follow" : "no follow";
+    assert.deepStrictEqual(h.ended(), [], label);
+    await h.t3.tick();
+    assert.deepStrictEqual(h.ended(), [], label);
+    assert.lengthOf(h.accessStore.articleAccess({ runId: "run-1" }), 1);
+    h.t3.options.delegatedPending = false;
+    void h.t3.tick();
+    await h.bridge.idle();
+    assert.lengthOf(h.ended(), 1);
+    assert.deepStrictEqual(h.accessStore.articleAccess(), []);
+    h.bridge.stop();
+    await h.files.close();
   }
-  for (const runId of ["run-1", "run-2"]) {
-    assert.isTrue(store.claimReply({ ...reply, runId }));
-    store.deliveredReply(runId, base.chatThreadKey);
-  }
-  store.addFollowRun({ ...reply, runId: "run-2" }, 9e12);
-  const articles = slackArticleAccess({
-    api: office.api,
-    articles: () => files,
-    binding: () => undefined,
-    store,
-    log: () => {},
-  });
-  await articles.restore();
-  assert.deepStrictEqual(office.calls, [
-    { name: "slackArticleAccessEnded", args: { chatId: "chat1", runIds: ["office-run-1"] } },
-  ]);
-  assert.deepStrictEqual(
-    store.articleAccess().map((each) => each.eventId),
-    ["followed", "running"],
-  );
-  await files.close();
+});
+
+it("ends at startup, once its work settles, access a continued run took after its answer", async () => {
+  // T3 continued run-1 in run-1b; only run-1 was owed the reply.
+  const h = await restartAfterAnswer((store) => store.moveAccessRun("run-1", "run-1b"));
+  h.t3.options.delegatedPending = false;
+  void h.t3.tick();
+  await h.bridge.idle();
+  assert.lengthOf(h.ended(), 1);
+  assert.deepStrictEqual(h.accessStore.articleAccess(), []);
+  await h.files.close();
 });
 
 it("keeps another person's follow-up out of a run holding article access, then runs it as its own turn", async () => {
@@ -3203,6 +3229,128 @@ it("doesn't hold an Office reply in a linked chat behind a Slack member's access
     }),
   );
   assert.deepStrictEqual(reply, { type: "followed_up", threadId: THREAD, delivery: "steered" });
+  await h.files.close();
+});
+
+/** An Office conversation that can be linked to a Slack one; it records what it's sent. */
+function officePlatform(posts: Array<string> = []): ChatPlatform {
+  return {
+    id: "office",
+    name: "Office",
+    place: "Office chat",
+    access: { allowedUserIds: ["member-1"] },
+    channelRoutes: [],
+    person: (_id, name) => name,
+    firstTurnNote: () => "",
+    refusal: () => "",
+    post: async (message) => void posts.push(message.text),
+  };
+}
+
+it("ends Slack article access when the linked Office conversation's answer records the follow", async () => {
+  let open = () => {};
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  let gated = false;
+  const officePosts: Array<string> = [];
+  const h = await articleHarness({
+    otherPlatform: officePlatform(officePosts),
+    // Slack's answer waits, so Office's watcher answers and records the follow first.
+    post: async () => {
+      if (gated) await gate;
+    },
+  });
+  let released = () => {};
+  const ended = new Promise<void>((resolve) => (released = resolve));
+  // Access ends last in its release, once Office was told and the connection removed.
+  const endAccess = h.accessStore.endAccess.bind(h.accessStore);
+  h.accessStore.endAccess = (eventId) => {
+    endAccess(eventId);
+    released();
+  };
+  await h.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  await h.bridge.linkConversations([
+    { chatThreadKey: "slack:C1:100.1", channelId: "C1", createdByUserId: "U1" },
+    { chatThreadKey: "office:chat1", channelId: "chat1", createdByUserId: "member-1" },
+  ]);
+  // Office's follow-up steers into run-1, so Office is owed its answer too.
+  await h.bridge.receive(
+    event("office-1", {
+      eventId: "office:event-1",
+      chatThreadKey: "office:chat1",
+      channelId: "chat1",
+      kind: "follow_up",
+      text: "and keep the tone",
+      author: { userId: "member-1", userName: "member", fullName: "Ada in Office" },
+    }),
+  );
+  gated = true;
+  h.t3.finish("run-1", "completed", "Staged.");
+  // Nothing delegated: the follow Office's answer started releases the run at once.
+  await ended;
+  assert.include(officePosts, "Staged.");
+  assert.lengthOf(h.ended(), 1);
+  assert.deepStrictEqual(h.accessStore.articleAccess(), []);
+  assert.isFalse(await h.exists());
+  open();
+  await h.bridge.idle();
+  assert.lengthOf(h.ended(), 1);
+  await h.files.close();
+});
+
+it("keeps a held person's later message behind their earlier one", async () => {
+  const h = await articleHarness();
+  await h.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  h.office.grant = null;
+  // Ada's run-1 access ends while her follow-up is being prepared.
+  const mutate = h.office.api.mutate;
+  h.office.api.mutate = (async (name: string, args: Record<string, unknown>) => {
+    if (name === "slackArticleAccess" && args.messageTs === "100.3")
+      await h.articles.runEnded("slack:C1:100.1", "run-1");
+    return (mutate as (name: string, args: Record<string, unknown>) => Promise<unknown>)(
+      name,
+      args,
+    );
+  }) as unknown as typeof mutate;
+  const queued = [
+    event("100.2", { kind: "follow_up", addressed: false, text: "delete Paris", author: BO }),
+    event("100.3", { kind: "follow_up", addressed: false, text: "also the title" }),
+    event("100.4", { kind: "follow_up", addressed: false, text: "and Lyon", author: BO }),
+  ];
+  for (const each of queued)
+    h.store.enqueue({
+      eventId: each.eventId,
+      chatThreadKey: each.chatThreadKey,
+      event: JSON.stringify(each),
+    });
+  await h.bridge.resume();
+  const sends = h.t3.calls.filter((call) => call.tool === "t3_thread_send");
+  assert.deepStrictEqual(
+    sends.map((call) => String(call.args.message).includes("also the title")),
+    [true],
+  );
+  // Both of Bo's messages still wait, the first one first.
+  assert.deepStrictEqual(
+    h.store.inbox("slack:C1:100.1").map((each) => each.eventId),
+    ["slack:C1:100.2", "slack:C1:100.4"],
+  );
+  await h.files.close();
+});
+
+it("ends the access a hand-off staged when the bridge gives up on it", async () => {
+  const h = await articleHarness();
+  h.t3.fail("t3_thread_launch", 100);
+  await h.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+  assert.lengthOf(h.accessStore.articleAccess(), 1);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    h.advance(10 * 60_000);
+    await h.bridge.resume();
+  }
+  assert.isTrue(h.store.isHandled("slack:C1:100.1"));
+  assert.deepStrictEqual(h.ended(), [
+    { name: "slackArticleAccessEnded", args: { chatId: "chat1", runIds: ["officeRun1"] } },
+  ]);
+  assert.deepStrictEqual(h.accessStore.articleAccess(), []);
+  assert.isFalse(await h.exists());
   await h.files.close();
 });
 

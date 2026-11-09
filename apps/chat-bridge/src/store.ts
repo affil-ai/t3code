@@ -48,6 +48,8 @@ export interface ArticleAccess {
   readonly officeRunId: string;
   readonly expiresAt: number;
   readonly runId?: string | undefined;
+  /** The run the turn was handed to, which `runId` leaves when T3 continues it in another. */
+  readonly dispatchedRunId?: string | undefined;
 }
 
 /** A thread the bridge keeps following after its run, until its delegated work settles or `until`. */
@@ -238,6 +240,8 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
   addColumn(db, "binding", "followed_model", "TEXT");
   // Set once a person picks the thread's model with `!model`; see `modelSwitched`.
   addColumn(db, "binding", "model_switched", "INTEGER NOT NULL DEFAULT 0");
+  // The run access was handed to, kept when T3 continues it; see `ArticleAccess.dispatchedRunId`.
+  addColumn(db, "article_access", "dispatched_run_id", "TEXT");
   // A claimed reply is being answered; posted_at waits for delivery, so a crash in between resumes it.
   addColumn(db, "owed_reply", "claimed", "INTEGER NOT NULL DEFAULT 0");
   // Questions saved before this column were posted when saved.
@@ -738,6 +742,22 @@ export class BridgeStore {
     return Number(row?.owed ?? 0) > 0 && Number(row?.owed) === Number(row?.posted);
   }
 
+  /** One of the chats owed the run's reply, once every one of them has had it; see `isAnswered`. */
+  answeredReply(runId: string): OwedReply | undefined {
+    if (!this.isAnswered(runId)) return undefined;
+    const row = this.db
+      .prepare("SELECT * FROM owed_reply WHERE run_id = ? ORDER BY rowid")
+      .get(runId);
+    return row === undefined
+      ? undefined
+      : {
+          runId: String(row.run_id),
+          threadId: String(row.thread_id),
+          chatThreadKey: String(row.chat_thread_key),
+          ...(row.requested_by === null ? {} : { requestedBy: String(row.requested_by) }),
+        };
+  }
+
   /** True once the chat is owed the run's reply, whether or not it was posted. */
   isOwed(runId: string): boolean {
     return this.db.prepare("SELECT 1 FROM owed_reply WHERE run_id = ?").get(runId) !== undefined;
@@ -983,7 +1003,9 @@ export class BridgeStore {
   }
 
   accessDispatched(eventId: string, runId: string): void {
-    this.db.prepare("UPDATE article_access SET run_id = ? WHERE event_id = ?").run(runId, eventId);
+    this.db
+      .prepare("UPDATE article_access SET run_id = ?, dispatched_run_id = ? WHERE event_id = ?")
+      .run(runId, runId, eventId);
   }
 
   /** Staged access by event, by the T3 run it reached, or all of it. */
@@ -1002,11 +1024,21 @@ export class BridgeStore {
       officeRunId: String(row.office_run_id),
       expiresAt: Number(row.expires_at),
       runId: row.run_id === null ? undefined : String(row.run_id),
+      dispatchedRunId:
+        row.dispatched_run_id === null || row.dispatched_run_id === undefined
+          ? undefined
+          : String(row.dispatched_run_id),
     }));
   }
 
+  /** Access follows the run T3 continued its run in, and keeps the run it was handed to. */
   moveAccessRun(from: string, to: string): void {
-    this.db.prepare("UPDATE article_access SET run_id = ? WHERE run_id = ?").run(to, from);
+    this.db
+      .prepare(
+        `UPDATE article_access SET dispatched_run_id = COALESCE(dispatched_run_id, run_id),
+          run_id = ? WHERE run_id = ?`,
+      )
+      .run(to, from);
   }
 
   endAccess(eventId: string): void {
