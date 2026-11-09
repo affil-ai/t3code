@@ -270,6 +270,8 @@ const PERMISSION_TEXT =
   "The agent asked for a permission I can't grant from chat, so I stopped the run. Ask again in a way that doesn't need it.";
 /** Posting an answer stops after this many failures in a row; a restart tries again. */
 const MAX_POST_ATTEMPTS = 5;
+/** Office ack retries slow to at most this many retry delays apart. */
+const MAX_DISPATCH_BACKOFF = 20;
 /** A follow-up waits at most this long for a starting run to take steers. */
 const STEER_WAIT_MS = 30_000;
 const STEER_POLL_MS = 1_000;
@@ -1292,7 +1294,8 @@ export class Bridge {
   /**
    * Sends the conversation's owed notices before its run's end is reported:
    * Office finishes only the requests it was told reached a run, and a notice
-   * arriving later would reopen one. Gives up after `MAX_POST_ATTEMPTS`.
+   * arriving later would reopen one. Keeps trying, more slowly, until each is
+   * sent or the bridge stops; the answer waits with it.
    */
   private async dispatchesSent(chatThreadKey: string): Promise<void> {
     for (let attempt = 1; ; attempt++) {
@@ -1301,13 +1304,11 @@ export class Bridge {
       const sent = await Promise.all(owed.map((each) => this.dispatch(each)));
       // A stopping process keeps the notices, so the next start sends them first.
       if (sent.every(Boolean) || this.stopped) return;
-      if (attempt >= MAX_POST_ATTEMPTS) {
-        for (const [index, each] of owed.entries())
-          if (!sent[index]) this.store.dispatchSent(each.eventId);
-        this.log(`Giving up on telling ${chatThreadKey} that its requests reached a run.`);
-        return;
-      }
-      await this.sleep(RETRY_DELAY_MS);
+      if (attempt === MAX_POST_ATTEMPTS)
+        this.log(
+          `Still can't tell ${chatThreadKey} that its requests reached a run; the answer waits.`,
+        );
+      await this.sleep(RETRY_DELAY_MS * Math.min(attempt, MAX_DISPATCH_BACKOFF));
     }
   }
 
@@ -1987,15 +1988,15 @@ export class Bridge {
       const ended = !waited.timedOut && TERMINAL_STATUSES.has(waited.status);
       await this.check(reply, feed, ended);
       if (!ended) continue;
+      await this.dispatchesSent(reply.chatThreadKey);
+      // The answer stays owed for the next start, which sends the notices first.
+      if (this.stopped) return;
       await this.platform(reply.chatThreadKey)
         .runEnded?.(reply.chatThreadKey, reply.runId)
         .catch(() => {
           this.log(`Releasing resources for ${reply.runId} failed.`);
         });
       this.runOutcome(reply.chatThreadKey, waited.status);
-      await this.dispatchesSent(reply.chatThreadKey);
-      // The answer stays owed for the next start, which sends the notices first.
-      if (this.stopped) return;
       await this.afterEarlierAnswer(before);
       try {
         await this.answer(reply, waited.runId, waited.status);

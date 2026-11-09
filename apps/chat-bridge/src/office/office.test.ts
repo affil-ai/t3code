@@ -3,7 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import * as NodeTimers from "node:timers/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 
 import { assert, expect, it, vi } from "vite-plus/test";
 
@@ -293,7 +293,9 @@ async function harness(
     log: (line) => {
       logs.push(line);
     },
-    sleep: async () => {},
+    // Yields, so a retry loop waiting on Office never starves the test.
+    // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- a zero-delay macrotask boundary, not a wait for time
+    sleep: () => NodeTimersPromises.setImmediate(),
     schedule: () => {},
   });
   await channel.start(bridge);
@@ -588,24 +590,29 @@ it("keeps a concurrent article run's connection when the earlier run ends", asyn
   ).rejects.toThrow(/ENOENT/);
 });
 
-it("acks redelivery after a crash before ack without starting or posting again", async () => {
+it("acks after a restart when every ack failed, then answers without starting again", async () => {
   await using h = await harness();
   h.office.fail.add("ack");
-  await h.send();
+  h.office.message(request());
+  await vi.waitFor(() => assert.isTrue(h.store.isHandled("office:event-1")));
   h.t3.finish("run-1", "Done.");
-  await h.bridge.idle();
-  assert.isTrue(h.store.isHandled("office:event-1"));
+  await vi.waitFor(() => assert.isTrue(h.office.calls.filter((c) => c.name === "ack").length >= 3));
+  assert.equal(h.office.posts.size, 0, "the answer waits for the ack");
+  h.bridge.stop();
   await h.channel.close();
   h.office.fail.clear();
   await using restarted = await harness({ office: h.office, t3: h.t3, db: h.db, home: h.home });
   await restarted.bridge.resume();
   await restarted.send();
+  await restarted.bridge.idle();
   assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_launch").length, 1);
   assert.equal(h.office.posts.size, 1);
-  assert.deepEqual(h.office.calls.at(-1), {
-    name: "ack",
-    args: { eventId: "event-1", result: "stored" },
-  });
+  const names = h.office.calls.map((call) => call.name);
+  assert.isBelow(
+    names.lastIndexOf("ack"),
+    names.indexOf("post"),
+    "Office hears of the request first",
+  );
 });
 
 /** Stops the launch at its title request, after the launch is saved, until released. */
@@ -651,10 +658,10 @@ it("doesn't end an Office turn when the bridge stops mid-run, and reports it aft
   const active = () =>
     h.office.calls.filter((call) => call.name === "state" && call.args.state === "active");
   h.bridge.stop();
-  // Give the stopped watcher time to exit.
-  await NodeTimers.setTimeout(50);
-  assert.isEmpty(active(), "the run is still going in T3");
+  // The run ends while the bridge is stopping: its watcher wakes, but must not end the turn.
   h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  assert.isEmpty(active(), "a stopping bridge leaves the turn to the next start");
   await using restarted = await harness({ office: h.office, t3: h.t3, db: h.db, home: h.home });
   await restarted.bridge.resume();
   await restarted.bridge.idle();
@@ -665,10 +672,11 @@ it("doesn't end an Office turn when the bridge stops mid-run, and reports it aft
   assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Done.");
 });
 
-it("keeps an Office request's answer waiting until a failed ack goes through", async () => {
+it("keeps an Office request's answer and end waiting until a failed ack goes through, past the post retries", async () => {
   await using h = await harness();
   const mutate = h.office.api.mutate;
-  let ackFailures = 2;
+  // More failures than MAX_POST_ATTEMPTS: the ack is never dropped.
+  let ackFailures = 7;
   const acked: boolean[] = [];
   h.office.api.mutate = async (name, args) => {
     if (name === "ack") {
@@ -687,7 +695,13 @@ it("keeps an Office request's answer waiting until a failed ack goes through", a
   await h.bridge.idle();
   await h.channel.idle();
   assert.isTrue(answeredAfterAck, "the answer waits for the ack");
-  assert.deepEqual(acked, [false, false, true]);
+  assert.deepEqual(acked, [false, false, false, false, false, false, false, true]);
+  const calls = h.office.calls.map((call) => `${call.name}:${String(call.args.state ?? "")}`);
+  assert.isBelow(
+    calls.indexOf("ack:"),
+    calls.indexOf("state:active"),
+    "Office hears of the request first",
+  );
   assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Done.");
   assert.isEmpty(h.store.owedDispatches());
 });
