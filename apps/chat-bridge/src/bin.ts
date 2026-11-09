@@ -139,6 +139,7 @@ async function start(): Promise<void> {
                     api: { mutate: (name, args) => officeApi!.mutate(name, args) },
                     articles: () => officeChannel?.articles,
                     binding: (key) => store.binding(key),
+                    email: async (userId) => slackHost?.userEmail(userId),
                     log,
                   })
                 : undefined,

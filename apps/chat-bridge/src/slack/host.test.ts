@@ -418,6 +418,37 @@ it("lets guests and Slack Connect people through the relay's person check, but n
   }
 });
 
+it("reads a profile email from the same users.info lookup as the person check", async () => {
+  let lookups = 0;
+  const { api, host } = await hostOn(
+    {
+      "auth.test": () => ({ ok: true, team_id: "T1", user_id: "UBOT" }),
+      "users.info": (args: Record<string, string>) => {
+        lookups++;
+        return {
+          ok: true,
+          user: {
+            id: args.user,
+            name: "x",
+            team_id: "T1",
+            ...(args.user === "UADA" ? { profile: { email: " ada@affil.ai " } } : { profile: {} }),
+          },
+        };
+      },
+    },
+    { kind: "office-relay" },
+  );
+  try {
+    assert.isTrue(await host.isPerson("UADA"));
+    assert.strictEqual(await host.userEmail("UADA"), "ada@affil.ai");
+    assert.isUndefined(await host.userEmail("UNOMAIL"));
+    // One users.info per person while it's cached.
+    assert.strictEqual(lookups, 2);
+  } finally {
+    await api.close();
+  }
+});
+
 it("asks the person check behind Office's relay and the member check in Socket Mode", async () => {
   const asked: Array<string> = [];
   const host = {

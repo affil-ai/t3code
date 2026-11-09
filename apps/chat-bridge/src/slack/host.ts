@@ -38,6 +38,8 @@ interface SlackMember {
   readonly is_bot?: boolean;
   readonly is_restricted?: boolean;
   readonly is_ultra_restricted?: boolean;
+  /** Present with the `users:read.email` scope. */
+  readonly profile?: { readonly email?: string | undefined } | undefined;
 }
 
 const MEMBER_CACHE_MS = 10 * 60 * 1000;
@@ -106,6 +108,8 @@ export interface SlackChatHost {
   readonly isWorkspaceMember: (userId: string) => Promise<boolean>;
   /** Whether someone is a person: any user Slack knows, guests and Slack Connect included, except bots and deleted users. */
   readonly isPerson: (userId: string) => Promise<boolean>;
+  /** Someone's Slack profile email, when Slack shares it; looked up with the membership checks. */
+  readonly userEmail: (userId: string) => Promise<string | undefined>;
   /** Posts a message with blocks, such as a question with buttons; returns its `ts`. */
   readonly postBlocks: (message: BlockMessage) => Promise<string>;
   /** Replaces a message posted with `postBlocks`. */
@@ -733,8 +737,16 @@ export function createSlackHost(options: SlackChatHostOptions): {
     /** Workspace membership by user, for `allowEveryone`, checked again after a while. */
     const members = new Map<string, { member: boolean; until: number }>();
     const people = new Map<string, { member: boolean; until: number }>();
-    const slackUser = async (userId: string) =>
-      ((await slack.webClient.users.info({ user: userId })) as { user?: SlackMember }).user;
+    /** `users.info` by user, shared by the membership checks and the email lookup. */
+    const users = new Map<string, { user: SlackMember | undefined; until: number }>();
+    const slackUser = async (userId: string) => {
+      const cached = users.get(userId);
+      if (cached !== undefined && cached.until > performance.now()) return cached.user;
+      const user = ((await slack.webClient.users.info({ user: userId })) as { user?: SlackMember })
+        .user;
+      users.set(userId, { user, until: performance.now() + MEMBER_CACHE_MS });
+      return user;
+    };
     let ownTeam: string | undefined;
     /** Chat threads where Slack refused agent session calls; they use the legacy status. */
     const legacyThreads = new Set<string>();
@@ -910,6 +922,10 @@ export function createSlackHost(options: SlackChatHostOptions): {
           user.is_bot !== true;
         people.set(userId, { member: person, until: performance.now() + MEMBER_CACHE_MS });
         return person;
+      },
+      userEmail: async (userId) => {
+        const email = (await slackUser(userId))?.profile?.email?.trim();
+        return email ? email : undefined;
       },
       rename: async (chatThreadKey, title) => {
         // agents.sessions.rename with channel_id and thread_ts, in DMs and channel threads alike.

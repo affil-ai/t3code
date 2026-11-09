@@ -2827,6 +2827,48 @@ it("runs a Slack turn without article access when Office grants none or fails", 
   }
 });
 
+it("sends Office the Slack profile email, and calls it without one when the lookup fails", async () => {
+  const cases: Array<[() => Promise<string | undefined>, string | undefined]> = [
+    [async () => "ada@affil.ai", "ada@affil.ai"],
+    [() => Promise.reject(new Error("users_not_found")), undefined],
+    [async () => undefined, undefined],
+  ];
+  for (const [lookup, expected] of cases) {
+    const { files } = await articleCheckout();
+    const office = fakeArticleOffice(null);
+    const logs: Array<string> = [];
+    const asked: Array<string> = [];
+    const articles = slackArticleAccess({
+      api: office.api,
+      articles: () => files,
+      binding: () => undefined,
+      email: (userId) => {
+        asked.push(userId);
+        return lookup();
+      },
+      log: (line) => void logs.push(line),
+    });
+    await articles.prepare(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+    assert.deepStrictEqual(asked, ["U1"]);
+    assert.deepStrictEqual(office.calls, [
+      {
+        name: "slackArticleAccess",
+        args: {
+          chatThreadKey: "slack:C1:100.1",
+          slackUserId: "U1",
+          messageTs: "100.1",
+          text: "<@UOFFICE> fix the Rome FAQs",
+          slackUserName: "Ada",
+          ...(expected === undefined ? {} : { slackUserEmail: expected }),
+        },
+      },
+    ]);
+    // A failed lookup is quiet, and the email never reaches the log.
+    assert.deepStrictEqual(logs, []);
+    await files.close();
+  }
+});
+
 it("asks Office for nothing on a message that doesn't reach the agent", async () => {
   const { files } = await articleCheckout();
   const office = fakeArticleOffice(GRANT);

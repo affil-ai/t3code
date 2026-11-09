@@ -31,6 +31,8 @@ export function slackArticleAccess(options: {
   readonly articles: () => ArticleFiles | undefined;
   /** The conversation's binding, if any: a follow-up in an unmuted bound thread is a turn too. */
   readonly binding: (chatThreadKey: string) => { readonly muted?: boolean | undefined } | undefined;
+  /** The person's Slack profile email, which Office matches when the Slack ID isn't linked. */
+  readonly email?: ((userId: string) => Promise<string | undefined>) | undefined;
   readonly log: (line: string) => void;
 }): SlackArticleHooks {
   const { api, log } = options;
@@ -51,6 +53,8 @@ export function slackArticleAccess(options: {
     prepare: async (event) => {
       const articles = options.articles();
       if (articles === undefined || !reachesAgent(event)) return event;
+      // Office still matches by Slack ID when the email can't be read. The email is never logged.
+      const slackUserEmail = await options.email?.(event.author.userId).catch(() => undefined);
       try {
         const grant = await api.mutate("slackArticleAccess", {
           chatThreadKey: event.chatThreadKey,
@@ -58,6 +62,7 @@ export function slackArticleAccess(options: {
           messageTs: event.messageId,
           text: event.text,
           slackUserName: event.author.fullName || event.author.userName,
+          ...(slackUserEmail ? { slackUserEmail } : {}),
         });
         if (grant === null) return event;
         const { chatId, ...article } = grant;
