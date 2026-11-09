@@ -475,7 +475,7 @@ server has, or its runs fail or use the wrong provider:
 
 - **Provider settings.** Copy them from the shared server's settings. Codex
   **Launch arguments**: `-c model_provider="cliproxy8" -c
-  model_catalog_json=<the shared server's catalog path>`. Claude environment:
+  model_catalog_json="/home/vivek-affil/.config/cliproxy8/codex-models.json"`. Claude environment:
   `ANTHROPIC_BASE_URL=http://127.0.0.1:8327`, and `ANTHROPIC_AUTH_TOKEN` as a
   sensitive value, from the owning secret manager. Restart T3 afterwards: it
   doesn't restart a running provider when settings change.

@@ -5,7 +5,6 @@ import { assert, it } from "vite-plus/test";
 import { BridgeStore, ensureSchema } from "../store.ts";
 import {
   connectSlackRelay,
-  RELAY_ACK_BATCH,
   RELAY_CONCURRENCY,
   RELAY_MAX_ATTEMPTS,
   type SlackInboxRow,
@@ -179,7 +178,10 @@ it("runs at most RELAY_CONCURRENCY rows at once", async () => {
   await relay.close();
 });
 
-it("marks rows delivered at most RELAY_ACK_BATCH ids at a time", async () => {
+/** Office's own cap: nextcard's `chatBridge:slackDelivered` throws TOO_MANY_IDS above it. */
+const OFFICE_DELIVERED_ID_LIMIT = 10;
+
+it("marks rows delivered at most Office's 10 ids at a time", async () => {
   const rows = Array.from({ length: 25 }, (_, index) => row(`r${index}`));
   let push: (rows: ReadonlyArray<SlackInboxRow>) => void = () => {};
   const delivered: Array<ReadonlyArray<string>> = [];
@@ -216,7 +218,9 @@ it("marks rows delivered at most RELAY_ACK_BATCH ids at a time", async () => {
   push(rows);
   await relay.idle();
   assert.isAbove(delivered.length, 2);
-  assert.isTrue(delivered.every((ids) => ids.length >= 1 && ids.length <= RELAY_ACK_BATCH));
+  assert.isTrue(
+    delivered.every((ids) => ids.length >= 1 && ids.length <= OFFICE_DELIVERED_ID_LIMIT),
+  );
   assert.deepStrictEqual(delivered.flat().toSorted(), rows.map((each) => each.id).toSorted());
   await relay.close();
 });

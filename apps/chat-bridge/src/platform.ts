@@ -83,6 +83,10 @@ export const QUIET_RULES = [
     ".",
 ].join(" ");
 
+/** The person waits on their deliverable, not on the repository's gates. Office repeats it per request; Slack says it on a thread's first turn. */
+export const DELIVER_FIRST =
+  "Send the requester's deliverable (files with chat_post, or the answer) as soon as it is built and checked. Run repository gates after that, or skip them for draft-only changes. Tell delegated agents the same.";
+
 export interface Reaction {
   readonly chatThreadKey: string;
   /** The message id the turn showed. */

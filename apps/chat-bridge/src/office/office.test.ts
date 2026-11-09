@@ -21,6 +21,7 @@ import type {
   OfficeMutations,
   PreparedRequest,
 } from "./client.ts";
+import { slackFirstTurnNote } from "../slack/platform.ts";
 import { officeModel } from "./message.ts";
 import { createOfficeChannel } from "./platform.ts";
 
@@ -1446,7 +1447,7 @@ it("gives a new thread for an Office-only chat with a summary the chat link alon
   assert.include(text, DELIVER);
 });
 
-it("tells a new thread for a seeded Slack conversation where its Slack thread and Office chat are", async () => {
+it("tells a new thread for a seeded Slack conversation where its Slack thread and Office chat are, and to deliver before gates", async () => {
   const slack: ChatPlatform = {
     id: "slack",
     name: "Slack",
@@ -1454,7 +1455,7 @@ it("tells a new thread for a seeded Slack conversation where its Slack thread an
     access: { allowedUserIds: ["staff"] },
     channelRoutes: [{ channelId: "C1", projectId: "project-1" }],
     person: (_id, name) => name,
-    firstTurnNote: () => "",
+    firstTurnNote: slackFirstTurnNote,
     refusal: () => "",
     post: async () => {},
   };
@@ -1489,4 +1490,24 @@ it("tells a new thread for a seeded Slack conversation where its Slack thread an
     `${SLACK_CATCH_UP} (conversations.replies on channel C1, thread_ts 1.1) to catch up on what was asked and decided. The Office chat is https://office.affil.ai/chat/chat-9.`,
   );
   assert.include(text, OLD_WORKTREES);
+  // A Slack-originated first turn carries the delivery rule in Slack's own note.
+  assert.include(text, DELIVER);
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  await h.bridge.receive({
+    eventId: "slack:C1:3.1",
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    messageId: "3.1",
+    kind: "follow_up",
+    addressed: false,
+    direct: false,
+    author: { userId: "staff", userName: "Ada", fullName: "Ada" },
+    text: "And the docs",
+    files: [],
+    mentions: [],
+  });
+  // A Slack follow-up doesn't repeat it.
+  const send = String(h.t3.calls.find((call) => call.tool === "t3_thread_send")!.args.message);
+  assert.notInclude(send, DELIVER);
 });

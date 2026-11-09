@@ -3,6 +3,7 @@ import {
   type Access,
   type ChannelRoute,
   type ChatPlatform,
+  DELIVER_FIRST,
   QUIET_REPLY,
   QUIET_RULES,
   type ThreadRoute,
@@ -14,6 +15,7 @@ export function slackFirstTurnNote(chatKey: string): string {
   return [
     "Your final message in each run is posted to this Slack thread.",
     QUIET_RULES,
+    DELIVER_FIRST,
     "To mention someone there, write <@USERID>, such as <@U0123ABCD>.",
     `To send files, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace.`,
     `To react to a message, call the chat_react tool with chatKey "${chatKey}", the message id and an emoji name.`,

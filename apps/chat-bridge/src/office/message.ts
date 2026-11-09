@@ -1,4 +1,5 @@
 import { MODELS, type ModelSelection, resolveModelCommand } from "../modelCommand.ts";
+import { DELIVER_FIRST } from "../platform.ts";
 import type { OfficeHistory, PreparedRequest } from "./client.ts";
 
 /** Office's chat page; `chatUrl` from a prepared request is used where there is one. */
@@ -87,10 +88,6 @@ Link the pull-request number as [#123](https://github.com/owner/repo/pull/123). 
 -->`,
   ].join("\n\n");
 }
-
-/** Sent with every Office request: the person waits on their deliverable, not on the repository's gates. */
-export const DELIVER_FIRST =
-  "Send the requester's deliverable (files with chat_post, or the answer) as soon as it is built and checked. Run repository gates after that, or skip them for draft-only changes. Tell delegated agents the same.";
 
 /** Per-request attribution, separate from text so the core can still recognize answers and commands. */
 export function requestNote(request: PreparedRequest): string {

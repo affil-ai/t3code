@@ -130,7 +130,10 @@ export const RELAY_MAX_ATTEMPTS = 3;
 export const RELAY_CONCURRENCY = 8;
 /** A row still running after this counts as a failed try. */
 export const RELAY_ROW_TIMEOUT_MS = 120_000;
-/** Office takes at most this many ids per `slackDelivered` call. */
+/**
+ * Office takes at most this many ids per `slackDelivered` call: nextcard's
+ * `chatBridge:slackDelivered` throws TOO_MANY_IDS above 10. Raise both together.
+ */
 export const RELAY_ACK_BATCH = 10;
 /** How long a handled row is remembered on disk, well past Office's redelivery of it. */
 const RELAY_ROW_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
