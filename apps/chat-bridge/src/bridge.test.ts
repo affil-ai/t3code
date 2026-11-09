@@ -15,7 +15,13 @@ import {
   type Reply,
 } from "./bridge.ts";
 import type { PlanStep, RunStep } from "./activity.ts";
-import { isQuietReply, type OutboundMessage, QUIET_REPLY } from "./platform.ts";
+import {
+  ACKNOWLEDGE_FIRST,
+  BACKGROUND_STATUS,
+  isQuietReply,
+  type OutboundMessage,
+  QUIET_REPLY,
+} from "./platform.ts";
 import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
@@ -166,6 +172,13 @@ function fakeT3() {
             return { runId: `run-${runs}`, delivery: "steered" };
           case "t3_thread_wait": {
             if (args.untilDelegatedWorkSettled === true) {
+              // A zero timeout only reads whether the work is still going.
+              if (args.timeoutMs === 0)
+                return {
+                  runId: args.runId,
+                  status: "completed",
+                  timedOut: options.delegatedPending === true,
+                };
               if (options.delegatedPending === true) {
                 waitCalled();
                 return ticked.then(() => ({
@@ -352,6 +365,8 @@ function harness(
   const store = new BridgeStore(db);
   let clock = 0;
   const scheduled: Array<number> = [];
+  /** What each schedule runs, for tests that move time on themselves. */
+  const scheduledRuns: Array<{ readonly ms: number; readonly run: () => void }> = [];
   const downloads: Array<string> = [];
   const quieted: Array<string> = [];
   const bridge = new Bridge({
@@ -416,10 +431,15 @@ function harness(
         },
         ...(options.history ? { history: options.history } : {}),
         quiet: async (chatThreadKey) => void quieted.push(chatThreadKey),
+        acknowledgeFirst: true,
+        backgroundStatus: true,
       },
     ],
     // Tests run retries themselves, by moving the clock and calling `resume`.
-    schedule: (ms) => void scheduled.push(ms),
+    schedule: (ms, run) => {
+      scheduled.push(ms);
+      scheduledRuns.push({ ms, run });
+    },
     sleep: options.sleep ?? (async () => {}),
     now: options.now ?? (() => clock),
   });
@@ -434,6 +454,7 @@ function harness(
     blockPosts,
     renamed,
     scheduled,
+    scheduledRuns,
     downloads,
     quieted,
     db,
@@ -1920,6 +1941,61 @@ it("posts nothing for a run that answers NO_REPLY, and tells every chat how to",
   assert.isFalse(isQuietReply("No reply needed"));
   assert.include(slackFirstTurnNote("key"), `exactly ${QUIET_REPLY}`);
   assert.include(slackFirstTurnNote("key"), "wake you more than once");
+});
+
+it("asks for an acknowledgement in the first turn only, not in follow-ups", async () => {
+  // Slack itself asks for it; the harness platform mirrors that.
+  assert.isTrue(SLACK.acknowledgeFirst);
+  const { t3, bridge } = harness();
+  await bridge.receive(event("100.1"));
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  assert.include(String(launch.args.message), ACKNOWLEDGE_FIRST);
+  await bridge.receive(event("100.2", { kind: "follow_up", text: "also lint" }));
+  const send = t3.calls.find((call) => call.tool === "t3_thread_send")!;
+  assert.include(String(send.args.message), "also lint");
+  assert.notInclude(String(send.args.message), ACKNOWLEDGE_FIRST);
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+});
+
+it("shows the thread processing while delegated work goes on after the turn, refreshed until it settles", async () => {
+  const { t3, bridge, statuses, scheduledRuns } = harness();
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", "Started the tests; I'll post the results.");
+  await t3.tick();
+  const background = `slack:C1:100.1 processing ${BACKGROUND_STATUS}`;
+  // The turn ends, and the background status follows it.
+  const ended = statuses.lastIndexOf("slack:C1:100.1 active");
+  assert.isAbove(ended, -1);
+  assert.include(statuses.slice(ended), background);
+  // Refreshed on the injected scheduler, about once a minute.
+  const refresh = scheduledRuns.filter((each) => each.ms === 60_000);
+  assert.lengthOf(refresh, 1);
+  const before = statuses.length;
+  refresh[0]!.run();
+  assert.deepStrictEqual(statuses.slice(before), [background]);
+  assert.lengthOf(
+    scheduledRuns.filter((each) => each.ms === 60_000),
+    2,
+  );
+  // The work settles: the status clears, and a late refresh sets nothing.
+  t3.options.delegatedPending = false;
+  void t3.tick();
+  await bridge.idle();
+  assert.strictEqual(statuses.at(-1), "slack:C1:100.1 active");
+  const after = statuses.length;
+  scheduledRuns.at(-1)!.run();
+  assert.lengthOf(statuses, after);
+});
+
+it("leaves the state alone after the turn when no delegated work is going", async () => {
+  const { t3, bridge, statuses } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  assert.notInclude(statuses, `slack:C1:100.1 processing ${BACKGROUND_STATUS}`);
+  assert.strictEqual(statuses.at(-1), "slack:C1:100.1 active");
 });
 
 it("finishes a launched message before its follow-on work, so a restart doesn't send it again", async () => {

@@ -74,6 +74,7 @@ export function createOfficeChannel(options: {
     directRoute: options.route,
     person: (_id, name) => name,
     refusal: () => "You no longer have access to this Office chat.",
+    acknowledgeFirst: true,
     firstTurnNote: (chatKey) =>
       [
         "Your final message is posted to this Office chat. Use chat_post for files or updates, and chat_status for short progress text. Reactions are unavailable.",

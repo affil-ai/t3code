@@ -88,6 +88,8 @@ export function slackPlatform(options: {
     history: (chatThreadKey, messageId) => connected().history(chatThreadKey, messageId),
     feedbackTarget: (event) => connected().feedbackTarget(event),
     bound: (chatThreadKey) => connected().follow(chatThreadKey),
+    acknowledgeFirst: true,
+    backgroundStatus: true,
     startConversation: (channel, text) => connected().startThread(channel, text),
   };
 }

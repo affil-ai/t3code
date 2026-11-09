@@ -8,7 +8,7 @@ import * as NodeTimersPromises from "node:timers/promises";
 import { assert, expect, it, vi } from "vite-plus/test";
 
 import { Bridge, type InboundEvent } from "../bridge.ts";
-import type { ChatPlatform, OutboundMessage } from "../platform.ts";
+import { ACKNOWLEDGE_FIRST, type ChatPlatform, type OutboundMessage } from "../platform.ts";
 import { BridgeStore, ensureSchema } from "../store.ts";
 import { T3Threads, type RunStatus } from "../threads.ts";
 import type { T3Tools } from "../t3Client.ts";
@@ -352,6 +352,8 @@ it("starts and follows an Office chat through the core, preserves attribution, a
   assert.include(String(launch.message), "Office root and mode instructions.");
   assert.include(String(launch.message), "Co-authored-by: Ada x <ada@example.com>");
   assert.notInclude(String(launch.message), "office-slack-routing");
+  // The first turn asks the agent to acknowledge in its own words before long work.
+  assert.include(String(launch.message), ACKNOWLEDGE_FIRST);
   assert.deepEqual(launch.modelSelection, {
     instanceId: "claudeAgent",
     model: "claude-opus-5-5",
@@ -398,6 +400,7 @@ it("starts and follows an Office chat through the core, preserves attribution, a
   const follow = h.t3.calls.find((call) => call.tool === "t3_thread_send")!.args;
   assert.include(String(follow.message), "Also fix lint");
   assert.notInclude(String(follow.message), "Office root and mode instructions.");
+  assert.notInclude(String(follow.message), ACKNOWLEDGE_FIRST);
   h.t3.finish("run-2", "Fixed.");
   await h.bridge.idle();
   assert.equal(h.office.posts.size, 2, "equal text from different runs is not deduped");

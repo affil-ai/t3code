@@ -27,6 +27,8 @@ import {
   sameModel,
 } from "./modelCommand.ts";
 import {
+  ACKNOWLEDGE_FIRST,
+  BACKGROUND_STATUS,
   type ChannelRoute,
   type ChatPlatform,
   isQuietReply,
@@ -272,6 +274,8 @@ const REFUSAL_INTERVAL_MS = 60 * 60_000;
  * minutes, so one interval serves both.
  */
 const STATUS_REFRESH_MS = 90_000;
+/** The background status is set again this often: Slack's assistant status lapses, and a post clears it. */
+const BACKGROUND_REFRESH_MS = 60_000;
 const PERMISSION_TEXT =
   "The agent asked for a permission I can't grant from chat, so I stopped the run. Ask again in a way that doesn't need it.";
 /** Posting an answer stops after this many failures in a row; a restart tries again. */
@@ -403,6 +407,8 @@ function turnText(
   }
   if (first && note) lines.push("", note);
   if (first && event.instructions) lines.push("", event.instructions);
+  if (first && event.addressed && platform.acknowledgeFirst === true)
+    lines.push("", ACKNOWLEDGE_FIRST);
   lines.push(
     "",
     first
@@ -468,6 +474,8 @@ export class Bridge {
       canceled: boolean;
     }
   >();
+  /** Chat threads showing a T3 thread's delegated work after its turn, with that thread's id. */
+  private readonly background = new Map<string, string>();
   /** Questions being posted now, by request and chat thread, so two watchers post one once. */
   private readonly postingQuestions = new Set<string>();
   /** What the agent said it is doing with `chat_status`, and the activity position it said it at. */
@@ -1538,6 +1546,14 @@ export class Bridge {
         this.store.saveFollow({ reply, cursor, until });
         this.log(`Following ${reply.threadId} after ${reply.runId} from position ${cursor}.`);
       }
+      // A zero wait only reads whether the work is still going.
+      if (this.backgroundKeys(reply).length > 0) {
+        const probe = await this.threads
+          .waitForDelegatedWork(reply.threadId, reply.runId, 0)
+          .catch(() => undefined);
+        if (this.stopped) return;
+        if (probe?.timedOut === true) this.showBackground(reply);
+      }
       /** Owes each run a notification started since the cursor; true when there was one. */
       const scan = async () => {
         const read = await this.threads.activity(reply.threadId, cursor);
@@ -1568,6 +1584,7 @@ export class Bridge {
         );
         // Shutting down: the saved follow picks up from here after the restart.
         if (this.stopped) return;
+        if (waited.timedOut) this.showBackground(reply);
         if (await scan()) continue;
         // T3 can call the work settled a moment before it records the run that
         // reports it, so look once more before stopping.
@@ -1605,9 +1622,57 @@ export class Bridge {
       })
       .finally(() => {
         if (ended) this.store.endFollow(reply.threadId);
+        // A stopping bridge leaves the status; the restarted follow takes it over.
+        if (!this.stopped) this.endBackground(reply.threadId);
         this.watching.delete(key);
       });
     this.watching.set(key, follow);
+  }
+
+  /** The chat threads that show this thread's delegated work, on platforms that do. */
+  private backgroundKeys(reply: OwedReply): ReadonlyArray<string> {
+    return this.store
+      .recipients(reply.chatThreadKey)
+      .filter((key) => this.platform(key).backgroundStatus === true);
+  }
+
+  /** Shows `processing` while the thread's delegated work goes on, and refreshes it until it ends. */
+  private showBackground(reply: OwedReply): void {
+    for (const key of this.backgroundKeys(reply)) {
+      if (this.background.get(key) === reply.threadId) continue;
+      this.background.set(key, reply.threadId);
+      this.sendBackground(key);
+      const refresh = () => {
+        if (this.stopped || this.background.get(key) !== reply.threadId) return;
+        this.sendBackground(key);
+        this.schedule(BACKGROUND_REFRESH_MS, refresh);
+      };
+      this.schedule(BACKGROUND_REFRESH_MS, refresh);
+    }
+  }
+
+  /** Sets the background status, unless a run there shows its own. A failure is only logged. */
+  private sendBackground(chatThreadKey: string): void {
+    if (this.running.has(chatThreadKey)) return;
+    this.platform(chatThreadKey)
+      .setState?.(chatThreadKey, "processing", BACKGROUND_STATUS)
+      .catch((error: unknown) => {
+        this.log(`Setting the background state in ${chatThreadKey} failed: ${String(error)}`);
+      });
+  }
+
+  /** The thread's delegated work is over: clears its status where no run shows one. */
+  private endBackground(threadId: string): void {
+    for (const [key, shown] of this.background) {
+      if (shown !== threadId) continue;
+      this.background.delete(key);
+      if (this.running.has(key)) continue;
+      this.platform(key)
+        .setState?.(key, "active", "")
+        .catch((error: unknown) => {
+          this.log(`Setting the state in ${key} failed: ${String(error)}`);
+        });
+    }
   }
 
   /**
@@ -1929,6 +1994,8 @@ export class Bridge {
       .catch((error: unknown) => {
         this.log(`Setting the state in ${chatThreadKey} failed: ${String(error)}`);
       });
+    // The turn's answer cleared the status; delegated work still going shows it again.
+    if (this.background.has(chatThreadKey)) this.sendBackground(chatThreadKey);
   }
 
   /** Counts how one run of the conversation's turn ended, for the turn's outcome. A run stopped from chat or from T3 was canceled. */

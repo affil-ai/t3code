@@ -87,6 +87,15 @@ export const QUIET_RULES = [
 export const DELIVER_FIRST =
   "Send the requester's deliverable (files with chat_post, or the answer) as soon as it is built and checked. Run repository gates after that, or skip them for draft-only changes. Tell delegated agents the same.";
 
+/**
+ * Added to a conversation's first turn where the platform asks for it, so the
+ * person hears back in the agent's own words before long work.
+ */
+export const ACKNOWLEDGE_FIRST = [
+  "Unless your full answer will be ready within about 15 seconds, first use chat_post to send one short sentence, in your own words, saying what you're about to do; no canned phrase. Then do the work and post the result.",
+  `Never end a turn addressed to you with ${QUIET_REPLY} while work continues.`,
+].join("\n");
+
 export interface Reaction {
   readonly chatThreadKey: string;
   /** The message id the turn showed. */
@@ -193,7 +202,18 @@ export interface ChatPlatform {
   readonly quiet?: (chatThreadKey: string) => Promise<void>;
   /** Called once a conversation is bound, so the platform can follow it. */
   readonly bound?: (chatThreadKey: string) => Promise<void>;
+  /** The first turn, which starts the T3 thread, carries `ACKNOWLEDGE_FIRST`; follow-ups don't. */
+  readonly acknowledgeFirst?: boolean;
+  /**
+   * While a thread's delegated work goes on after its turn ended, `setState`
+   * shows `processing` with `BACKGROUND_STATUS`, refreshed, and `active` once
+   * the work settles. Absent: the state stays as the turn left it.
+   */
+  readonly backgroundStatus?: boolean;
 }
+
+/** The status text while delegated work goes on after the turn. */
+export const BACKGROUND_STATUS = "Working in the background…";
 
 /**
  * Reacts on the conversation's platform for `chat_react`. Returns what to tell
