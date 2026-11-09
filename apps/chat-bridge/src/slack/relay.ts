@@ -62,7 +62,8 @@ export async function handleRelayedRow(
     waitUntil: (task) => {
       tasks.push(task);
     },
-    // A failure in the Chat SDK then rejects the task, so the row is tried again.
+    // Rejects the task on a Chat SDK failure, so the row is tried again. The bridge's
+    // own handlers catch their errors; their failed sends retry from its inbox instead.
     propagateHandlerErrors: true,
   });
   if (!response.ok) throw new Error(`the Slack handler answered ${response.status}`);
@@ -76,6 +77,10 @@ export async function handleRelayedRow(
 }
 
 export const RELAY_MAX_ATTEMPTS = 3;
+/** Rows handled at once, so one slow conversation doesn't hold up the others. */
+export const RELAY_CONCURRENCY = 8;
+/** A row still running after this counts as a failed try. */
+export const RELAY_ROW_TIMEOUT_MS = 120_000;
 const RETRY_DELAY_MS = 2_000;
 /** Ids remembered after delivery, so a stale snapshot doesn't replay them. */
 const SEEN_LIMIT = 2_000;
@@ -87,10 +92,9 @@ export interface SlackRelay {
 }
 
 /**
- * Consumes the relay: rows in order, one batch at a time. A row that fails
- * is tried up to `RELAY_MAX_ATTEMPTS` times, then logged and marked delivered
- * anyway, so one bad row can't hold up the rest. Rows waiting when the bridge
- * starts, such as messages sent while it was down, come in the first update.
+ * Consumes the relay, up to `RELAY_CONCURRENCY` rows at once (the bridge core keeps
+ * per-conversation order). A row that fails or times out gets `RELAY_MAX_ATTEMPTS`
+ * tries, then is logged and marked delivered; rows are only marked after handling.
  */
 export function startSlackRelay(options: {
   readonly source: SlackRelaySource;
@@ -98,22 +102,31 @@ export function startSlackRelay(options: {
   readonly log: (line: string) => void;
   /** Between attempts; tests pass one that resolves at once. */
   readonly sleep?: (ms: number) => Promise<void>;
+  /** Resolves when a row has run too long; tests pass a controllable one. */
+  readonly timeout?: (ms: number) => Promise<void>;
 }): SlackRelay {
-  const sleep =
-    options.sleep ??
-    ((ms: number) =>
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, ms).unref();
-      }));
+  const realSleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, ms).unref();
+    });
+  const sleep = options.sleep ?? realSleep;
+  const timeout = options.timeout ?? realSleep;
   let latest: ReadonlyArray<SlackInboxRow> = [];
   /** Handled (or given up on) in this process, in insertion order. */
   const handled = new Set<string>();
   /** Handled ids whose `slackDelivered` hasn't succeeded yet. */
   const unacked = new Set<string>();
+  /** Rows being handled now. */
+  const inFlight = new Set<string>();
+  /** Row tasks and the delivery call still running, for `idle` and `close`. */
+  const active = new Set<Promise<void>>();
+  let acking = false;
   let closed = false;
-  let again = false;
-  let pumping: Promise<void> | undefined;
-  const isClosed = () => closed;
+
+  const track = (task: Promise<void>) => {
+    active.add(task);
+    void task.finally(() => active.delete(task));
+  };
 
   const remember = (id: string) => {
     handled.add(id);
@@ -124,78 +137,97 @@ export function startSlackRelay(options: {
     }
   };
 
-  const handleRow = async (row: SlackInboxRow) => {
-    for (let attempt = 1; ; attempt++) {
+  const attempt = async (row: SlackInboxRow) => {
+    let timer = false;
+    const handling = options.handle(row);
+    // A timed-out try keeps running; a retry of the same Slack event is dropped by the bridge's dedupe.
+    handling.catch(() => {});
+    await Promise.race([
+      handling,
+      timeout(RELAY_ROW_TIMEOUT_MS).then(() => {
+        timer = true;
+      }),
+    ]);
+    if (timer) throw new Error(`still running after ${RELAY_ROW_TIMEOUT_MS / 1000} s`);
+  };
+
+  /** Resolves true when handled or given up on, false when the relay closed first. */
+  const handleRow = async (row: SlackInboxRow): Promise<boolean> => {
+    for (let tries = 1; ; tries++) {
       try {
-        await options.handle(row);
-        return;
+        await attempt(row);
+        return true;
       } catch (error) {
         const reason = error instanceof Error ? error.message : "unknown error";
-        if (attempt >= RELAY_MAX_ATTEMPTS) {
+        if (tries >= RELAY_MAX_ATTEMPTS) {
           options.log(
-            `Slack relay: giving up on ${row.kind} ${row.id} after ${attempt} tries (${reason}); marking it delivered.`,
+            `Slack relay: giving up on ${row.kind} ${row.id} after ${tries} tries (${reason}); marking it delivered.`,
           );
-          return;
+          return true;
         }
-        options.log(`Slack relay: ${row.kind} ${row.id} failed (try ${attempt}): ${reason}`);
-        await sleep(RETRY_DELAY_MS * attempt);
-        if (closed) throw new Error("The Slack relay closed.", { cause: error });
+        options.log(`Slack relay: ${row.kind} ${row.id} failed (try ${tries}): ${reason}`);
+        await sleep(RETRY_DELAY_MS * tries);
+        if (closed) return false;
       }
     }
   };
 
-  const pump = async () => {
-    do {
-      again = false;
-      for (const row of latest.filter((each) => !handled.has(each.id))) {
-        if (closed) return;
-        try {
-          await handleRow(row);
-        } catch {
-          return;
-        }
-        remember(row.id);
-      }
-      if (unacked.size > 0 && !closed) {
-        const ids = [...unacked];
+  const ack = () => {
+    if (acking || closed || unacked.size === 0) return;
+    acking = true;
+    const ids = [...unacked];
+    track(
+      (async () => {
         try {
           await options.source.slackDelivered(ids);
           for (const id of ids) unacked.delete(id);
         } catch {
           options.log(`Slack relay: marking ${ids.length} row(s) delivered failed; retrying.`);
           await sleep(RETRY_DELAY_MS);
-          again = true;
+        } finally {
+          acking = false;
         }
-      }
-    } while (again && !isClosed());
+        ack();
+      })(),
+    );
   };
 
-  const kick = () => {
-    if (pumping !== undefined) {
-      again = true;
-      return;
+  const fill = () => {
+    for (const row of latest) {
+      if (closed || inFlight.size >= RELAY_CONCURRENCY) return;
+      if (handled.has(row.id) || inFlight.has(row.id)) continue;
+      inFlight.add(row.id);
+      track(
+        (async () => {
+          const done = await handleRow(row);
+          inFlight.delete(row.id);
+          if (!done) return;
+          remember(row.id);
+          ack();
+          fill();
+        })(),
+      );
     }
-    pumping = pump().finally(() => {
-      pumping = undefined;
-    });
   };
 
   const unsubscribe = options.source.subscribeSlackInbox(
     (rows) => {
       latest = rows;
-      kick();
+      fill();
     },
     () => options.log("Slack relay: inbox subscription failed; waiting for Convex to reconnect."),
   );
 
+  const settled = async () => {
+    while (active.size > 0) await Promise.allSettled(active);
+  };
+
   return {
-    idle: async () => {
-      for (let current = pumping; current !== undefined; current = pumping) await current;
-    },
+    idle: settled,
     close: async () => {
       closed = true;
       unsubscribe();
-      await pumping;
+      await settled();
     },
   };
 }
@@ -211,6 +243,7 @@ export function connectSlackRelay(options: {
   readonly chat: { readonly webhooks: Readonly<Record<string, SlackWebhookHandler | undefined>> };
   readonly log: (line: string) => void;
   readonly sleep?: (ms: number) => Promise<void>;
+  readonly timeout?: (ms: number) => Promise<void>;
 }): SlackRelay | undefined {
   if (options.transport !== "office-relay") return undefined;
   const handler = options.chat.webhooks.slack;
@@ -220,5 +253,6 @@ export function connectSlackRelay(options: {
     handle: (row) => handleRelayedRow(handler, row),
     log: options.log,
     ...(options.sleep ? { sleep: options.sleep } : {}),
+    ...(options.timeout ? { timeout: options.timeout } : {}),
   });
 }

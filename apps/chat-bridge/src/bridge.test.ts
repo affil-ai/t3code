@@ -2028,6 +2028,8 @@ async function relayedSlack(bridge: Bridge, db: NodeSqlite.DatabaseSync) {
     chat,
     log: () => {},
     sleep: async () => {},
+    // No row here runs long enough to time out.
+    timeout: () => new Promise<void>(() => {}),
   })!;
   return {
     delivered,
