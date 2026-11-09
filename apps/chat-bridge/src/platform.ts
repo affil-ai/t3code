@@ -129,8 +129,11 @@ export interface ChatPlatform {
   readonly feedbackTarget?: (
     event: InboundEvent,
   ) => Promise<{ threadId: string; note: string } | undefined>;
-  /** Associates prepared resources with the accepted run, including steers. */
-  readonly dispatched?: (event: InboundEvent, runId: string) => Promise<void>;
+  /**
+   * Associates prepared resources with the accepted run, including steers.
+   * Called again after a restart until it succeeds, and before the run's end is reported.
+   */
+  readonly dispatched?: (eventId: string, runId: string) => Promise<void>;
   /** Releases resources for this run without touching a concurrent run's resources. */
   readonly runEnded?: (chatThreadKey: string, runId: string) => Promise<void>;
 

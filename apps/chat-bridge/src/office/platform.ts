@@ -117,9 +117,9 @@ export function createOfficeChannel(options: {
         })),
       };
     },
-    dispatched: async (event, runId) => {
-      await articles.dispatched(event.eventId, runId);
-      await api.mutate("ack", { eventId: event.eventId.slice("office:".length), result: "stored" });
+    dispatched: async (eventId, runId) => {
+      await articles.dispatched(eventId, runId);
+      await api.mutate("ack", { eventId: eventId.slice("office:".length), result: "stored" });
     },
     runEnded: (key, runId) => articles.complete(chatIdOf(key), runId),
     post: async (message) => {

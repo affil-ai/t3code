@@ -126,6 +126,8 @@ function fakeT3() {
   let wake: string | undefined;
   const questions = new Map<string, Array<Record<string, unknown>>>();
   const failures = new Set<string>();
+  // A tool held here waits, standing in for a process that stops partway through.
+  const holds = new Map<string, Promise<void>>();
   const startRun = () => {
     const id = `run-${++nextRun}`;
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -136,6 +138,7 @@ function fakeT3() {
     upload: async () => {},
     call: async <T>(tool: string, args: Record<string, unknown>) => {
       calls.push({ tool, args });
+      await holds.get(tool);
       if (failures.has(tool)) throw new Error("T3 unavailable");
       let result: unknown;
       if (tool === "t3_thread_launch") result = { threadId: "thread-1", runId: startRun() };
@@ -211,6 +214,7 @@ function fakeT3() {
     calls,
     runs,
     failures,
+    holds,
     items,
     questions,
     tick: () => {
@@ -440,11 +444,19 @@ it("tells Office how each turn ended when it sets the chat active", async () => 
   );
   h.t3.finish("run-2", "Fixed.");
   await h.bridge.idle();
+  await h.send(
+    request({ eventId: "event-3", messageId: "message-3", text: "And docs", firstTurn: false }),
+  );
+  // Stopped from the T3 UI, not from Office.
+  const interrupted = h.t3.runs.get("run-3")!;
+  interrupted.status = "interrupted";
+  interrupted.end();
+  await h.bridge.idle();
   assert.deepEqual(
     h.office.calls
       .filter((call) => call.name === "state" && call.args.state === "active")
       .map((call) => call.args.outcome),
-    ["failed", "completed"],
+    ["failed", "completed", "canceled"],
   );
   assert.isTrue(
     h.office.calls
@@ -594,6 +606,126 @@ it("acks redelivery after a crash before ack without starting or posting again",
     args: { eventId: "event-1", result: "stored" },
   });
 });
+
+/** Stops the launch at its title request, after the launch is saved, until released. */
+function holdTitle(t3: ReturnType<typeof fakeT3>) {
+  const held = Promise.withResolvers<void>();
+  t3.holds.set("t3_thread_update", held.promise);
+  return {
+    [Symbol.dispose]: () => {
+      t3.holds.delete("t3_thread_update");
+      held.resolve();
+    },
+  };
+}
+
+it("tells Office a request reached its run before a restart reports the run's end", async () => {
+  await using h = await harness();
+  using _held = holdTitle(h.t3);
+  h.office.message(request());
+  await vi.waitFor(() => assert.isTrue(h.store.isHandled("office:event-1")));
+  assert.isFalse(h.office.calls.some((call) => call.name === "ack"));
+  // The process stops here, before acking; the run ends while it is down.
+  h.bridge.stop();
+  h.t3.finish("run-1", "Done.");
+  const before = h.office.calls.length;
+  await using restarted = await harness({ office: h.office, t3: h.t3, db: h.db, home: h.home });
+  await restarted.bridge.resume();
+  await restarted.bridge.idle();
+  const after = h.office.calls.slice(before);
+  const acked = after.findIndex(
+    (call) =>
+      call.name === "ack" && call.args.eventId === "event-1" && call.args.result === "stored",
+  );
+  const ended = after.findIndex((call) => call.name === "state" && call.args.state === "active");
+  assert.isAtLeast(acked, 0, "the ack the crash lost is sent");
+  assert.isAbove(ended, acked, "Office hears of the request before the turn ends");
+  assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Done.");
+  assert.isEmpty(h.store.owedDispatches());
+});
+
+it("keeps an Office request's answer waiting until a failed ack goes through", async () => {
+  await using h = await harness();
+  const mutate = h.office.api.mutate;
+  let ackFailures = 2;
+  const acked: boolean[] = [];
+  h.office.api.mutate = async (name, args) => {
+    if (name === "ack") {
+      acked.push(ackFailures <= 0);
+      if (ackFailures-- > 0) throw new Error("Unavailable");
+    }
+    return mutate(name, args);
+  };
+  let answeredAfterAck: boolean | undefined;
+  h.office.onPost(() => {
+    answeredAfterAck = acked.includes(true);
+  });
+  h.office.message(request());
+  await vi.waitFor(() => assert.isNotEmpty(acked));
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  await h.channel.idle();
+  assert.isTrue(answeredAfterAck, "the answer waits for the ack");
+  assert.deepEqual(acked, [false, false, true]);
+  assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Done.");
+  assert.isEmpty(h.store.owedDispatches());
+});
+
+it.each(["seeded", "linked"])(
+  "answers a %s synced Slack conversation when a restart interrupts the launch",
+  async (kind) => {
+    const posts: OutboundMessage[] = [];
+    const slack: ChatPlatform = {
+      id: "slack",
+      name: "Slack",
+      place: "Slack thread",
+      access: { allowedUserIds: ["staff"] },
+      channelRoutes: [{ channelId: "C1", projectId: "project-1" }],
+      person: (_id, name) => name,
+      firstTurnNote: () => "",
+      refusal: () => "",
+      startConversation: async () => "slack:C1:1.1",
+      post: async (message) => {
+        posts.push(message);
+      },
+    };
+    await using h = await harness({ slack });
+    using _held = holdTitle(h.t3);
+    if (kind === "seeded") {
+      for (const key of ["office:chat-1", "slack:C1:1.1"])
+        h.store.insertSeed({
+          chatThreadKey: key,
+          channelId: key.startsWith("office") ? "chat-1" : "C1",
+          chatId: "chat-1",
+          oldThreadId: "old",
+          sync: true,
+        });
+    }
+    h.office.message(
+      kind === "seeded"
+        ? request({ history: { summary: "Old conversation", recent: [] } })
+        : request({ slack: { channelId: "C1", chatThreadKey: "slack:C1:1.1" }, sync: true }),
+    );
+    await vi.waitFor(() => assert.isTrue(h.store.isHandled("office:event-1")));
+    h.bridge.stop();
+    h.t3.finish("run-1", "Done.");
+    await using restarted = await harness({
+      slack,
+      office: h.office,
+      t3: h.t3,
+      db: h.db,
+      home: h.home,
+    });
+    await restarted.bridge.resume();
+    await restarted.bridge.idle();
+    assert.equal(h.store.binding("slack:C1:1.1")?.threadId, "thread-1");
+    assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Done.");
+    assert.deepEqual(
+      posts.filter((post) => post.kind === "answer").map((post) => post.text),
+      ["Done."],
+    );
+  },
+);
 
 it("starts a new thread with Office history even when the old thread is readable", async () => {
   for (const readable of [true, false]) {

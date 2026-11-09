@@ -53,6 +53,13 @@ export interface OwedReply {
   readonly requestedBy?: string | undefined;
 }
 
+/** A request handed to a run that its platform has still to be told about. */
+export interface OwedDispatch {
+  readonly eventId: string;
+  readonly chatThreadKey: string;
+  readonly runId: string;
+}
+
 /** An agent's question as asked in the chat, with what has been answered. */
 export interface AskedRecord {
   readonly chatThreadKey: string;
@@ -163,6 +170,13 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       chat_id TEXT NOT NULL,
       old_thread_id TEXT NOT NULL,
       thread_id TEXT NOT NULL
+    );
+    -- Requests handed to a run whose platform has not yet been told so. Office finishes only the
+    -- requests it was told about, so a restart tells it before the run's end is reported.
+    CREATE TABLE IF NOT EXISTS owed_dispatch (
+      event_id TEXT PRIMARY KEY,
+      chat_thread_key TEXT NOT NULL,
+      run_id TEXT NOT NULL
     );
   `);
   // Databases made before threads could be muted, or replies knew who asked.
@@ -644,6 +658,35 @@ export class BridgeStore {
           VALUES (?, ?, ?, ?)`,
       )
       .run(reply.runId, reply.threadId, reply.chatThreadKey, reply.requestedBy ?? null);
+  }
+
+  oweDispatch(dispatch: OwedDispatch): void {
+    this.db
+      .prepare(
+        `INSERT INTO owed_dispatch (event_id, chat_thread_key, run_id) VALUES (?, ?, ?)
+          ON CONFLICT (event_id) DO UPDATE SET chat_thread_key = excluded.chat_thread_key,
+            run_id = excluded.run_id`,
+      )
+      .run(dispatch.eventId, dispatch.chatThreadKey, dispatch.runId);
+  }
+
+  /** Requests whose platform has still to be told they reached a run, oldest first. */
+  owedDispatches(chatThreadKey?: string): Array<OwedDispatch> {
+    const rows =
+      chatThreadKey === undefined
+        ? this.db.prepare("SELECT * FROM owed_dispatch ORDER BY rowid").all()
+        : this.db
+            .prepare("SELECT * FROM owed_dispatch WHERE chat_thread_key = ? ORDER BY rowid")
+            .all(chatThreadKey);
+    return rows.map((row) => ({
+      eventId: String(row.event_id),
+      chatThreadKey: String(row.chat_thread_key),
+      runId: String(row.run_id),
+    }));
+  }
+
+  dispatchSent(eventId: string): void {
+    this.db.prepare("DELETE FROM owed_dispatch WHERE event_id = ?").run(eventId);
   }
 
   /** Saves a question when it is first seen. False when it was already saved. */

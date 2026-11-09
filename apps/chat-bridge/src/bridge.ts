@@ -43,6 +43,7 @@ import type {
   BridgeStore,
   ConversationSeed,
   DelegatedFollow,
+  OwedDispatch,
   OwedReply,
 } from "./store.ts";
 import {
@@ -429,6 +430,8 @@ const requestId = (eventId: string) => `chat-bridge:${eventId}`.slice(0, 256);
 export class Bridge {
   /** Runs with a watcher, so a run is watched once. */
   private readonly watching = new Map<string, Promise<void>>();
+  /** Telling a platform its request reached a run, by event id, so concurrent callers share one attempt. */
+  private readonly dispatching = new Map<string, Promise<boolean>>();
   /**
    * Per conversation, settled once the answer owed last has been posted or
    * given up on. Answers post in the order their runs were owed, so two runs
@@ -449,11 +452,9 @@ export class Bridge {
       state: SessionState;
       text: string;
       timer: NodeJS.Timeout;
-      /** Someone asked to stop the turn. */
-      stopRequested: boolean;
       /** A run in the turn failed, or ended some other way than finishing or a stop. */
       failed: boolean;
-      /** A run in the turn ended because of a stop. */
+      /** A run in the turn was stopped, from chat or from T3. */
       canceled: boolean;
     }
   >();
@@ -732,26 +733,37 @@ export class Bridge {
   }
 
   private async bindLinked(chatThreadKey: string): Promise<void> {
+    for (const key of this.saveLinkedBindings(chatThreadKey)) await this.platform(key).bound?.(key);
+  }
+
+  /**
+   * Binds the conversations linked to this one to its thread, in one step,
+   * and returns the ones newly bound. A conflict throws before anything is saved.
+   */
+  private saveLinkedBindings(chatThreadKey: string): ReadonlyArray<string> {
     const links = this.links(chatThreadKey);
-    if (links === undefined) return;
+    if (links === undefined) return [];
     const source = links.conversations
       .map((each) => this.store.binding(each.chatThreadKey))
       .find((each) => each !== undefined);
-    if (source === undefined) return;
-    for (const each of links.conversations) {
+    if (source === undefined) return [];
+    const missing = links.conversations.filter((each) => {
       const existing = this.store.binding(each.chatThreadKey);
       if (existing !== undefined && existing.threadId !== source.threadId) {
         throw new Error("Linked conversations have different T3 threads.");
       }
-      if (existing !== undefined) continue;
-      this.store.insertBinding({
-        ...source,
-        ...each,
-        chatKey: NodeCrypto.randomBytes(16).toString("hex"),
-      });
-      await this.platform(each.chatThreadKey).bound?.(each.chatThreadKey);
-    }
-    this.store.setSync(source.threadId, links.sync);
+      return existing === undefined;
+    });
+    this.store.transaction(() => {
+      for (const each of missing)
+        this.store.insertBinding({
+          ...source,
+          ...each,
+          chatKey: NodeCrypto.randomBytes(16).toString("hex"),
+        });
+      this.store.setSync(source.threadId, links.sync);
+    });
+    return missing.map((each) => each.chatThreadKey);
   }
 
   /** Agent tool posts use the same delivery destinations as answers. */
@@ -922,9 +934,15 @@ export class Bridge {
         attachments: imported.attachments,
         requestId: requestId(event.eventId),
       });
-      await platform.dispatched?.(event, sent.runId).catch(() => {
-        this.log(`Associating resources for ${sent.runId} failed.`);
-      });
+      if (platform.dispatched !== undefined) {
+        const dispatch = {
+          eventId: event.eventId,
+          chatThreadKey: event.chatThreadKey,
+          runId: sent.runId,
+        };
+        this.store.oweDispatch(dispatch);
+        await this.dispatch(dispatch);
+      }
       this.store.dropContext(kept.map((message) => message.eventId));
       // A steered message can join a run someone started in T3; its answer is owed here too.
       this.owe({
@@ -1022,19 +1040,38 @@ export class Bridge {
             chatThreadKey: event.chatThreadKey,
             requestedBy: event.author.userId,
           };
+    const dispatch =
+      owed === undefined || platform.dispatched === undefined
+        ? undefined
+        : { eventId: event.eventId, chatThreadKey: event.chatThreadKey, runId: owed.runId };
     // With the binding saved, a replay would go to the thread as a follow-up, so the
-    // event is finished and its answer owed in the same step, before the work below.
+    // event is finished in the same step as binding its linked conversations and owing
+    // the answer to each of them and the platform's notice of the run. A restart
+    // between here and the work below still answers every conversation, after the notice.
+    let linked: ReadonlyArray<string> = [];
     this.store.transaction(() => {
       if (seed) this.store.consumeSeed(seed, created);
       else this.store.insertBinding(created);
-      if (owed !== undefined) this.store.oweReply(owed);
+      try {
+        linked = this.saveLinkedBindings(event.chatThreadKey);
+      } catch (error) {
+        this.log(
+          `Binding the conversations linked to ${event.chatThreadKey} failed: ${String(error)}`,
+        );
+      }
+      if (owed !== undefined)
+        for (const chatThreadKey of this.store.recipients(event.chatThreadKey))
+          this.store.oweReply({ ...owed, chatThreadKey });
+      if (dispatch !== undefined) this.store.oweDispatch(dispatch);
       this.store.finish(event.eventId);
     });
-    await this.bindLinked(event.chatThreadKey).catch((error: unknown) => {
-      this.log(
-        `Binding the conversations linked to ${event.chatThreadKey} failed: ${String(error)}`,
-      );
-    });
+    for (const key of linked) {
+      await this.platform(key)
+        .bound?.(key)
+        .catch((error: unknown) => {
+          this.log(`Following ${key} failed: ${String(error)}`);
+        });
+    }
     await this.mirror(event);
     // T3 can write a summary title; the request's first sentence stands until it does.
     await this.threads.regenerateTitle(started.threadId).catch((error: unknown) => {
@@ -1043,12 +1080,8 @@ export class Bridge {
     await platform.bound?.(event.chatThreadKey).catch((error: unknown) => {
       this.log(`Following ${event.chatThreadKey} failed: ${String(error)}`);
     });
-    if (owed !== undefined) {
-      await platform.dispatched?.(event, owed.runId).catch(() => {
-        this.log(`Associating resources for ${owed.runId} failed.`);
-      });
-      this.owe(owed);
-    }
+    if (dispatch !== undefined) await this.dispatch(dispatch);
+    if (owed !== undefined) this.owe(owed);
     return { type: "started", threadId: started.threadId };
   }
 
@@ -1092,7 +1125,6 @@ export class Bridge {
         await this.notify(event, "Nothing is running here.");
         return { type: "ignored", reason: "not_running" };
       }
-      this.stopping(binding.chatThreadKey);
       await this.threads.interrupt(
         binding.threadId,
         `Stopped from chat by ${event.author.userId}.`,
@@ -1156,8 +1188,12 @@ export class Bridge {
 
   /** Watches every reply still owed and works through the inbox, such as what a restart left. */
   async resume(): Promise<void> {
-    // A claim the last process held unfinished may not have reached the chat; the stable delivery id dedupes a repost.
+    // A claim the last process held unfinished may not have reached the chat, so it is
+    // answered again: delivery is at least once. Office drops the repost by its delivery
+    // id; Slack can show the answer twice.
     this.store.releaseUnfinishedClaims();
+    // Each reply waits for its own conversation's notices before it answers.
+    for (const owed of this.store.owedDispatches()) void this.dispatch(owed);
     for (const reply of this.store.pendingReplies()) this.watch(reply);
     // Subagents and background work a run left going report back in runs the chat is owed.
     for (const follow of this.store.follows()) this.followDelegatedWork(follow.reply, follow);
@@ -1227,6 +1263,52 @@ export class Bridge {
     this.stopped = true;
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
+  }
+
+  /**
+   * Tells the platform its request reached a run, and forgets the notice once
+   * it has. False when telling it failed; the notice stays owed.
+   */
+  private dispatch(owed: OwedDispatch): Promise<boolean> {
+    const running = this.dispatching.get(owed.eventId);
+    if (running !== undefined) return running;
+    const attempt = Promise.resolve()
+      .then(() => this.platform(owed.chatThreadKey).dispatched?.(owed.eventId, owed.runId))
+      .then(
+        () => {
+          this.store.dispatchSent(owed.eventId);
+          return true;
+        },
+        (error: unknown) => {
+          this.log(`Telling ${owed.chatThreadKey} about ${owed.runId} failed: ${String(error)}`);
+          return false;
+        },
+      )
+      .finally(() => this.dispatching.delete(owed.eventId));
+    this.dispatching.set(owed.eventId, attempt);
+    return attempt;
+  }
+
+  /**
+   * Sends the conversation's owed notices before its run's end is reported:
+   * Office finishes only the requests it was told reached a run, and a notice
+   * arriving later would reopen one. Gives up after `MAX_POST_ATTEMPTS`.
+   */
+  private async dispatchesSent(chatThreadKey: string): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      const owed = this.store.owedDispatches(chatThreadKey);
+      if (owed.length === 0) return;
+      const sent = await Promise.all(owed.map((each) => this.dispatch(each)));
+      // A stopping process keeps the notices, so the next start sends them first.
+      if (sent.every(Boolean) || this.stopped) return;
+      if (attempt >= MAX_POST_ATTEMPTS) {
+        for (const [index, each] of owed.entries())
+          if (!sent[index]) this.store.dispatchSent(each.eventId);
+        this.log(`Giving up on telling ${chatThreadKey} that its requests reached a run.`);
+        return;
+      }
+      await this.sleep(RETRY_DELAY_MS);
+    }
   }
 
   private owe(reply: OwedReply): void {
@@ -1720,7 +1802,6 @@ export class Bridge {
       return false;
     }
     try {
-      this.stopping(chatThreadKey);
       await this.threads.interrupt(binding.threadId, `Stopped from chat by ${userId}.`);
       this.log(`Stopped ${binding.threadId} from ${chatThreadKey}.`);
       return true;
@@ -1745,7 +1826,6 @@ export class Bridge {
       state: "processing",
       text: THINKING,
       timer,
-      stopRequested: false,
       failed: false,
       canceled: false,
     });
@@ -1793,21 +1873,12 @@ export class Bridge {
       });
   }
 
-  /** Counts how one run of the conversation's turn ended, for the turn's outcome. */
+  /** Counts how one run of the conversation's turn ended, for the turn's outcome. A run stopped from chat or from T3 was canceled. */
   private runOutcome(chatThreadKey: string, status: RunStatus | "undelivered"): void {
     const entry = this.running.get(chatThreadKey);
     if (entry === undefined || status === "completed") return;
-    if ((status === "interrupted" || status === "cancelled") && entry.stopRequested)
-      entry.canceled = true;
+    if (status === "interrupted" || status === "cancelled") entry.canceled = true;
     else entry.failed = true;
-  }
-
-  /** Marks the turn in flight in each of the conversation's destinations as stopped by request. */
-  private stopping(chatThreadKey: string): void {
-    for (const key of this.store.recipients(chatThreadKey)) {
-      const entry = this.running.get(key);
-      if (entry !== undefined) entry.stopRequested = true;
-    }
   }
 
   /** Shows new status text in a thread whose run is processing. */
@@ -1920,6 +1991,9 @@ export class Bridge {
           this.log(`Releasing resources for ${reply.runId} failed.`);
         });
       this.runOutcome(reply.chatThreadKey, waited.status);
+      await this.dispatchesSent(reply.chatThreadKey);
+      // The answer stays owed for the next start, which sends the notices first.
+      if (this.stopped) return;
       await this.afterEarlierAnswer(before);
       try {
         await this.answer(reply, waited.runId, waited.status);
