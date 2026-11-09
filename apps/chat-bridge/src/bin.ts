@@ -31,6 +31,7 @@ import {
   type SlackTransport,
 } from "./slack/host.ts";
 import { connectSlackRelay, currentRelayedRow, isChatSdkDedupeKey } from "./slack/relay.ts";
+import { slackArticleAccess } from "./slack/articles.ts";
 import { slackEligibility, slackPlatform, slackWorkNote } from "./slack/platform.ts";
 import { resendSlackMessage, RUNNING_PID_KEY, runningBridge } from "./slack/resend.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
@@ -131,6 +132,16 @@ async function start(): Promise<void> {
             channelRoutes: config.channelProjects,
             directRoute: config.dmProjectId ? { projectId: config.dmProjectId } : undefined,
             eligibility: slackEligibility(slackTransport),
+            // Behind Office's relay, Slack turns get Office article access like Office chats.
+            articles:
+              relayed && office !== undefined
+                ? slackArticleAccess({
+                    api: { mutate: (name, args) => officeApi!.mutate(name, args) },
+                    articles: () => officeChannel?.articles,
+                    binding: (key) => store.binding(key),
+                    log,
+                  })
+                : undefined,
           }),
         ]
       : [];

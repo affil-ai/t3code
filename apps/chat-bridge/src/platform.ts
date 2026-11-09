@@ -138,6 +138,12 @@ export interface ChatPlatform {
   readonly refusal: (userId: string) => string;
   /** Refreshes request context just before handoff, without saving it to the inbox. Undefined rejects it. */
   readonly prepare?: (event: InboundEvent) => Promise<InboundEvent | undefined>;
+  /**
+   * `prepare` only adds context, so plain follow-ups still steer and combine; only one
+   * person's messages combine, since what `prepare` adds is scoped to the first author.
+   * Without it, a platform with `prepare` never combines (Office's requests each carry their own scope).
+   */
+  readonly combinesPrepared?: boolean;
   /** A tagged, externally owned thread receives this message without a bridge binding or answer watch. */
   readonly feedbackTarget?: (
     event: InboundEvent,

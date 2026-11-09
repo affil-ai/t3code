@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Office article files are staged on a temporary disk checkout.
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
 import { assert, it } from "vite-plus/test";
@@ -23,6 +27,12 @@ import {
   QUIET_REPLY,
 } from "./platform.ts";
 import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
+import {
+  type SlackArticleGrant,
+  type SlackArticleHooks,
+  slackArticleAccess,
+} from "./slack/articles.ts";
+import { ArticleFiles } from "./office/article.ts";
 import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
 import type { Chat } from "chat";
@@ -351,6 +361,8 @@ function harness(
     /** The same T3 as another harness's, such as across a restart. */
     t3?: ReturnType<typeof fakeT3>;
     now?: () => number;
+    /** Office article access on each turn, as behind Office's relay. */
+    articles?: SlackArticleHooks;
   } = {},
 ) {
   const blockPosts: Array<BlockMessage & { messageId?: string }> = [];
@@ -433,6 +445,14 @@ function harness(
         quiet: async (chatThreadKey) => void quieted.push(chatThreadKey),
         acknowledgeFirst: true,
         backgroundStatus: true,
+        ...(options.articles === undefined
+          ? {}
+          : {
+              prepare: options.articles.prepare,
+              dispatched: options.articles.dispatched,
+              runEnded: options.articles.runEnded,
+              combinesPrepared: true,
+            }),
       },
     ],
     // Tests run retries themselves, by moving the clock and calling `resume`.
@@ -2675,4 +2695,154 @@ it("reads nothing back from Slack on a start with Office's relay, and still drai
   const socket = await restart({ kind: "socket", appToken: "xapp-test" });
   assert.include(socket.reads, "conversations.replies");
   assert.lengthOf(socket.sent, 1);
+});
+
+/** A checkout with Office's article tool, as `ArticleFiles` needs, and the files it stages in. */
+async function articleCheckout(): Promise<{ home: string; files: ArticleFiles }> {
+  const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "slack-articles-"));
+  const tsx = NodePath.join(home, "apps/office/node_modules/tsx");
+  await NodeFSP.mkdir(tsx, { recursive: true });
+  await NodeFSP.writeFile(
+    NodePath.join(tsx, "package.json"),
+    JSON.stringify({ name: "tsx", exports: { "./cli": "./cli.mjs" } }),
+  );
+  await NodeFSP.writeFile(NodePath.join(tsx, "cli.mjs"), "");
+  await NodeFSP.mkdir(NodePath.join(home, "apps/office/scripts"), { recursive: true });
+  await NodeFSP.writeFile(NodePath.join(home, "apps/office/scripts/article-workspace.cts"), "");
+  const files = new ArticleFiles(home, home, () => {});
+  await files.restore();
+  return { home, files };
+}
+
+/** Office's article mutations, answering with `grant` (or throwing it) and recording each call. */
+function fakeArticleOffice(grant: SlackArticleGrant | Error) {
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  return {
+    calls,
+    api: {
+      mutate: (async (name: string, args: Record<string, unknown>) => {
+        calls.push({ name, args });
+        if (name === "slackArticleAccess") {
+          if (grant instanceof Error) throw grant;
+          return grant;
+        }
+        return null;
+      }) as unknown as Parameters<typeof slackArticleAccess>[0]["api"]["mutate"],
+    },
+  };
+}
+
+const GRANT = {
+  chatId: "chat1",
+  runId: "officeRun1",
+  token: "secret-token",
+  expiresAt: 9_999_999_999_999,
+  convexUrl: "https://office.convex.cloud",
+  instructions: "This is an all-articles chat. Use workspace search.",
+};
+
+it("stages Office article access on a relayed Slack turn and ends it with the run", async () => {
+  const { home, files } = await articleCheckout();
+  const office = fakeArticleOffice(GRANT);
+  const logs: Array<string> = [];
+  let store: BridgeStore | undefined;
+  const articles = slackArticleAccess({
+    api: office.api,
+    articles: () => files,
+    binding: (key) => store?.binding(key),
+    log: (line) => void logs.push(line),
+  });
+  const run = harness(freshDatabase(), { articles });
+  store = run.store;
+  await run.bridge.receive(event("100.1", { text: "<@UOFFICE> fix the Rome FAQs" }));
+
+  assert.deepStrictEqual(office.calls[0], {
+    name: "slackArticleAccess",
+    args: {
+      chatThreadKey: "slack:C1:100.1",
+      slackUserId: "U1",
+      messageTs: "100.1",
+      text: "<@UOFFICE> fix the Rome FAQs",
+      slackUserName: "Ada",
+    },
+  });
+  const message = String(
+    run.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message,
+  );
+  assert.include(message, GRANT.instructions);
+  assert.include(message, "Office article workspace for this request");
+  // The token reaches the agent only through the private connection file, never the turn.
+  assert.notInclude(message, GRANT.token);
+  const connection = NodePath.join(home, "office-article/chat1/officeRun1.json");
+  assert.include(await NodeFSP.readFile(connection, "utf8"), GRANT.token);
+
+  // A follow-up from the same person still steers into the running turn, with its own access.
+  const followUp = await run.bridge.receive(
+    event("100.2", { kind: "follow_up", addressed: false, text: "also the title" }),
+  );
+  assert.deepStrictEqual(followUp, { type: "followed_up", threadId: THREAD, delivery: "steered" });
+  assert.strictEqual(office.calls.filter((call) => call.name === "slackArticleAccess").length, 2);
+
+  run.t3.finish("run-1", "completed", "Staged.");
+  await run.bridge.idle();
+  assert.deepStrictEqual(
+    office.calls.filter((call) => call.name === "slackArticleAccessEnded"),
+    [{ name: "slackArticleAccessEnded", args: { chatId: "chat1", runIds: ["officeRun1"] } }],
+  );
+  assert.isTrue(
+    await NodeFSP.access(connection).then(
+      () => false,
+      () => true,
+    ),
+  );
+  assert.deepStrictEqual(logs, []);
+  await files.close();
+});
+
+it("runs a Slack turn without article access when Office grants none or fails", async () => {
+  for (const grant of [null, new Error("Office slackArticleAccess failed.")]) {
+    const { files } = await articleCheckout();
+    const office = fakeArticleOffice(grant);
+    const logs: Array<string> = [];
+    const articles = slackArticleAccess({
+      api: office.api,
+      articles: () => files,
+      binding: () => undefined,
+      log: (line) => void logs.push(line),
+    });
+    const { t3, bridge, posted } = harness(freshDatabase(), { articles });
+    await bridge.receive(event("100.1"));
+    const message = String(t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
+    assert.include(message, "fix the build");
+    assert.notInclude(message, "Office article workspace");
+    t3.finish("run-1", "completed", "Fixed.");
+    await bridge.idle();
+    assert.deepStrictEqual(posted, [{ chatThreadKey: "slack:C1:100.1", text: "Fixed." }]);
+    assert.isFalse(office.calls.some((call) => call.name === "slackArticleAccessEnded"));
+    assert.deepStrictEqual(
+      logs,
+      grant === null ? [] : ["Slack: Office article access failed; the turn runs without it."],
+    );
+    await files.close();
+  }
+});
+
+it("asks Office for nothing on a message that doesn't reach the agent", async () => {
+  const { files } = await articleCheckout();
+  const office = fakeArticleOffice(GRANT);
+  const articles = slackArticleAccess({
+    api: office.api,
+    articles: () => files,
+    binding: () => undefined,
+    log: () => {},
+  });
+  // Context only, an aside, and an unaddressed message in an unbound thread.
+  for (const each of [
+    event("100.1", { contextOnly: true }),
+    event("100.2", { text: "aside: not for the bot" }),
+    event("100.3", { kind: "follow_up", addressed: false }),
+  ])
+    assert.strictEqual(await articles.prepare(each), each);
+  assert.deepStrictEqual(office.calls, []);
+  await files.close();
 });

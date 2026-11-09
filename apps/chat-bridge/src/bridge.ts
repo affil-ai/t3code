@@ -626,7 +626,8 @@ export class Bridge {
    */
   private async isPlainFollowUp(event: InboundEvent): Promise<boolean> {
     // A prepared request can have its own credential scope and must not be combined.
-    if (this.platform(event.chatThreadKey).prepare !== undefined) return false;
+    const platform = this.platform(event.chatThreadKey);
+    if (platform.prepare !== undefined && platform.combinesPrepared !== true) return false;
     const binding = this.store.binding(event.chatThreadKey);
     // In a bound conversation a mention is a follow-up too, such as a new Linear session on the issue.
     if (binding === undefined || !event.addressed || event.contextOnly === true) return false;
@@ -666,6 +667,13 @@ export class Bridge {
       if (entry.retryAt > this.now()) break;
       const event = JSON.parse(entry.event) as InboundEvent;
       if (!(await this.isPlainFollowUp(event))) break;
+      // What `prepare` adds is scoped to the first author, so only their messages join it.
+      if (
+        waiting[0] !== undefined &&
+        this.platform(chatThreadKey).prepare !== undefined &&
+        event.author.userId !== waiting[0].author.userId
+      )
+        break;
       waiting.push(event);
     }
     return waiting;

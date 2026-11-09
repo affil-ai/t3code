@@ -8,6 +8,7 @@ import {
   QUIET_RULES,
   type ThreadRoute,
 } from "../platform.ts";
+import type { SlackArticleHooks } from "./articles.ts";
 import type { SlackChatHost, SlackTransport } from "./host.ts";
 
 /**
@@ -55,6 +56,8 @@ export function slackPlatform(options: {
    * Office app, guests and Slack Connect users included; bots stay out.
    */
   readonly eligibility?: "workspace" | "person";
+  /** Office article access on each turn, behind Office's relay; see `slackArticleAccess`. */
+  readonly articles?: SlackArticleHooks | undefined;
 }): ChatPlatform {
   const connected = () => {
     const host = options.host();
@@ -91,5 +94,13 @@ export function slackPlatform(options: {
     acknowledgeFirst: true,
     backgroundStatus: true,
     startConversation: (channel, text) => connected().startThread(channel, text),
+    ...(options.articles === undefined
+      ? {}
+      : {
+          prepare: options.articles.prepare,
+          dispatched: options.articles.dispatched,
+          runEnded: options.articles.runEnded,
+          combinesPrepared: true,
+        }),
   };
 }

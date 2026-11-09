@@ -310,6 +310,8 @@ export function createOfficeChannel(options: {
   };
   return {
     platform,
+    /** Shared with Slack turns that get Office article access, so one place owns these files. */
+    articles,
     async seedHistory(seed: ConversationSeed): Promise<string> {
       const result = await api.history(seed.chatId);
       if (result.kind === "later") {
