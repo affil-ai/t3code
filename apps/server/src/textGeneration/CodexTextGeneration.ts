@@ -42,11 +42,23 @@ const CodexMcpServers = Schema.fromJsonString(
 );
 const decodeCodexMcpServers = Schema.decodeEffect(CodexMcpServers);
 
-// mcp_servers={} merges instead of replacing; disable named entries and quote dotted names.
-const codexMcpServersOff = (names: ReadonlyArray<string>): string | null =>
-  names.length === 0
-    ? null
-    : `mcp_servers={${names.map((name) => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`;
+// An inline table replaces a server that another -c flag defined (its url is lost, so Codex
+// fails on "invalid transport"); a dotted key merges. Only names with dots need the table.
+const BARE_TOML_KEY = /^[A-Za-z0-9_-]+$/;
+const codexMcpServersOff = (names: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const dotted = names.filter((name) => !BARE_TOML_KEY.test(name));
+  return [
+    ...names
+      .filter((name) => BARE_TOML_KEY.test(name))
+      .flatMap((name) => ["--config", `mcp_servers.${name}.enabled=false`]),
+    ...(dotted.length === 0
+      ? []
+      : [
+          "--config",
+          `mcp_servers={${dotted.map((name) => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`,
+        ]),
+  ];
+};
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(function* (
   codexConfig: CodexSettings,
@@ -283,7 +295,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ...execLaunchArgs,
           // A user's MCP server could act on the text-generation prompt.
           ...CODEX_NO_PLUGIN_ARGS,
-          ...(mcpServersOff ? ["--config", mcpServersOff] : []),
+          ...mcpServersOff,
           "--ephemeral",
           "--skip-git-repo-check",
           "-s",
