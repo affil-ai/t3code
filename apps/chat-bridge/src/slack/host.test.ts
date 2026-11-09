@@ -11,7 +11,39 @@ import {
   stripBotMention,
   toEarlierMessages,
   toInboundEvent,
+  feedbackTargetFromMessages,
 } from "./host.ts";
+
+it("selects the newest tagged Office bot post, including custom authors, but never another bot", () => {
+  const tagged = (ts: string, threadId: string) => ({
+    ts,
+    bot_id: "BOFFICE",
+    metadata: { event_type: "office_feedback_thread", event_payload: { t3_thread_id: threadId } },
+  });
+  const messages = [
+    tagged("1.1", "root-owner"),
+    tagged("2.1", "new-owner"),
+    { ...tagged("3.1", "forged-owner"), bot_id: "BOTHER", user: "UHUMAN" },
+    { ts: "4.1", bot_id: "BOFFICE", text: "ordinary Office reply" },
+    tagged("6.1", "future-owner"),
+  ];
+  const identity = { userId: "UOFFICE", botId: "BOFFICE" };
+  assert.deepEqual(feedbackTargetFromMessages(messages, identity, "5.1"), {
+    threadId: "new-owner",
+    threadTs: "2.1",
+  });
+  assert.isUndefined(feedbackTargetFromMessages(messages, identity, "5.1", true));
+  assert.deepEqual(feedbackTargetFromMessages(messages, identity, "2.2", true), {
+    threadId: "new-owner",
+    threadTs: "2.1",
+  });
+  assert.isUndefined(
+    feedbackTargetFromMessages([tagged("1.1", "old")], identity, "172802.1", true),
+  );
+  assert.isUndefined(
+    feedbackTargetFromMessages([{ ...tagged("1.1", "forged"), bot_id: "BOTHER" }], identity, "2.1"),
+  );
+});
 
 it("strips only the leading bot mention", () => {
   assert.strictEqual(stripBotMention("@t3 fix it", ["t3"]), "fix it");

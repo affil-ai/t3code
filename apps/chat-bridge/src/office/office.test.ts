@@ -13,7 +13,13 @@ import { T3Threads, type RunStatus } from "../threads.ts";
 import type { T3Tools } from "../t3Client.ts";
 import { callTool } from "../toolServer.ts";
 import { ArticleFiles } from "./article.ts";
-import type { InboxEvent, OfficeApi, OfficeMutations, PreparedRequest } from "./client.ts";
+import type {
+  HistoryResult,
+  InboxEvent,
+  OfficeApi,
+  OfficeMutations,
+  PreparedRequest,
+} from "./client.ts";
 import { officeModel } from "./message.ts";
 import { createOfficeChannel } from "./platform.ts";
 
@@ -37,9 +43,12 @@ function fakeOffice() {
   const calls: Array<{ name: keyof OfficeMutations; args: Record<string, unknown> }> = [];
   const posts = new Map<string, OfficeMutations["post"]["args"]>();
   const fail = new Set<string>();
+  const later = new Map<string, number>();
+  const histories = new Map<string, HistoryResult>();
   let listener = (_events: InboxEvent[]) => {};
   let posted = (_post: OfficeMutations["post"]["args"]) => {};
   const api: OfficeApi = {
+    history: async (chatId) => histories.get(chatId) ?? { kind: "ready", history: { recent: [] } },
     subscribe: (next) => {
       listener = next;
       return () => {
@@ -52,7 +61,13 @@ function fakeOffice() {
       if (fail.has(name)) throw new Error("Unavailable");
       let result: unknown;
       if (name === "prepare") {
-        const prepared = requests.get((args as OfficeMutations["prepare"]["args"]).eventId);
+        const eventId = (args as OfficeMutations["prepare"]["args"]).eventId;
+        if (later.has(eventId))
+          return {
+            kind: "later",
+            retryAfterMs: later.get(eventId),
+          } as OfficeMutations[K]["result"];
+        const prepared = requests.get(eventId);
         result =
           prepared === undefined
             ? { kind: "skip", reason: "revoked" }
@@ -73,6 +88,8 @@ function fakeOffice() {
     calls,
     posts,
     fail,
+    later,
+    histories,
     onPost: (next: typeof posted) => {
       posted = next;
     },
@@ -219,6 +236,7 @@ async function harness(
     db?: NodeSqlite.DatabaseSync;
     home?: string;
     slack?: ChatPlatform;
+    now?: () => number;
   } = {},
 ) {
   const home =
@@ -265,6 +283,8 @@ async function harness(
     }),
     settings: {},
     platforms: [channel.platform, ...(options.slack ? [options.slack] : [])],
+    seedHistory: channel.seedHistory,
+    now: options.now ?? (() => 0),
     log: (line) => {
       logs.push(line);
     },
@@ -546,7 +566,7 @@ it("acks redelivery after a crash before ack without starting or posting again",
   });
 });
 
-it("adopts a readable legacy thread without owing its old answer, or starts fresh when unreadable", async () => {
+it("starts a new thread with Office history even when the old thread is readable", async () => {
   for (const readable of [true, false]) {
     await using h = await harness();
     if (!readable) h.t3.failures.add("t3_thread_read");
@@ -559,17 +579,23 @@ it("adopts a readable legacy thread without owing its old answer, or starts fres
         chatKey: "older-key",
         createdByUserId: "member-1",
       });
-    await h.send(request({ legacyThreadId: "legacy-thread" }));
-    assert.equal(
-      h.t3.calls.filter((call) => call.tool === "t3_thread_launch").length,
-      readable ? 0 : 1,
+    await h.send(
+      request({
+        history: {
+          summary: "We chose the smaller fix.",
+          recent: [{ role: "user", author: "Ada", text: "Keep the existing API.", at: 1 }],
+          oldThreadId: "legacy-thread",
+        },
+      }),
     );
-    assert.equal(
-      h.store.binding("office:chat-1")!.threadId,
-      readable ? "legacy-thread" : "thread-1",
-    );
+    assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_launch").length, 1);
+    assert.equal(h.store.binding("office:chat-1")!.threadId, "thread-1");
     assert.isFalse(h.store.isOwed("legacy-run"));
-    if (readable) assert.lengthOf(h.store.bindingsForThread("legacy-thread"), 2);
+    if (readable) assert.lengthOf(h.store.bindingsForThread("legacy-thread"), 1);
+    const launch = h.t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+    assert.include(String(launch.args.message), "We chose the smaller fix.");
+    assert.include(String(launch.args.message), "Keep the existing API.");
+    assert.include(String(launch.args.message), "legacy-thread");
     assert.equal(h.office.posts.size, 0);
     h.t3.failures.clear();
     h.t3.finish("run-1", "New answer");
@@ -595,9 +621,14 @@ it("rejects revoked requests without handing them to T3", async () => {
   assert.equal(h.office.calls.at(-1)?.args.result, "rejected");
 });
 
-it.each([false, true])(
-  "links support conversations with sync %s, preserving origin routing and staff follow-ups",
-  async (sync) => {
+it.each([
+  { producer: "support", sync: false },
+  { producer: "support", sync: true },
+  { producer: "mockup", sync: true },
+  { producer: "schedule", sync: true },
+])(
+  "links $producer conversations with sync $sync, preserving origin routing and staff follow-ups",
+  async ({ producer, sync }) => {
     const posts: OutboundMessage[] = [];
     const steps: string[] = [];
     const roots: string[] = [];
@@ -630,6 +661,7 @@ it.each([false, true])(
     };
     await using h = await harness({ slack });
     const support = request({
+      modeKey: producer,
       sync,
       slack: { channelId: "C-SUPPORT", rootText: "New case" },
     });
@@ -719,6 +751,246 @@ it.each([false, true])(
     );
   },
 );
+
+it("resumes an Office compaction wait after restart without acking early or launching twice", async () => {
+  let now = 0;
+  await using h = await harness({ now: () => now });
+  h.office.later.set("event-1", 100);
+  await h.send(request({ history: { summary: "Before cutover", recent: [], oldThreadId: "old" } }));
+  assert.equal(h.store.inboxHead("office:chat-1")?.retryAt, 100);
+  assert.equal(h.store.inboxHead("office:chat-1")?.attempts, 0);
+  assert.isFalse(h.office.calls.some((call) => call.name === "ack"));
+  assert.isFalse(h.t3.calls.some((call) => call.tool === "t3_thread_launch"));
+  assert.deepInclude(h.office.calls, { name: "requestCompaction", args: { chatId: "chat-1" } });
+  await h.send(h.office.requests.get("event-1")!);
+  assert.isFalse(h.office.calls.some((call) => call.name === "ack"));
+  h.bridge.stop();
+  await h.channel.close();
+  await using restarted = await harness({
+    office: h.office,
+    t3: h.t3,
+    db: h.db,
+    home: h.home,
+    now: () => now,
+  });
+  await restarted.bridge.resume();
+  assert.isFalse(h.t3.calls.some((call) => call.tool === "t3_thread_launch"));
+  now = 100;
+  h.office.later.clear();
+  await restarted.bridge.resume();
+  await restarted.send(h.office.requests.get("event-1")!);
+  assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_launch").length, 1);
+  assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_send").length, 0);
+  assert.isUndefined(h.store.inboxHead("office:chat-1"));
+  assert.isTrue(h.store.isHandled("office:event-1"));
+  assert.include(
+    String(h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message),
+    "Before cutover",
+  );
+  assert.deepInclude(h.office.calls, {
+    name: "ack",
+    args: { eventId: "event-1", result: "stored" },
+  });
+});
+
+it("serializes simultaneous first messages on a seeded Office and Slack pair", async () => {
+  const slack: ChatPlatform = {
+    id: "slack",
+    name: "Slack",
+    place: "Slack thread",
+    access: { allowedUserIds: ["staff"] },
+    channelRoutes: [{ channelId: "C1", projectId: "project-1" }],
+    person: (_id, name) => name,
+    firstTurnNote: () => "",
+    refusal: () => "",
+    post: async () => {},
+  };
+  await using h = await harness({ slack });
+  for (const key of ["office:chat-1", "slack:C1:1.1"])
+    h.store.insertSeed({
+      chatThreadKey: key,
+      channelId: key.startsWith("office") ? "chat-1" : "C1",
+      chatId: "chat-1",
+      oldThreadId: "old",
+      sync: true,
+    });
+  await Promise.all([
+    h.send(request({ history: { summary: "Old conversation", recent: [] } })),
+    h.bridge.receive({
+      eventId: "slack:C1:2.1",
+      chatThreadKey: "slack:C1:1.1",
+      channelId: "C1",
+      messageId: "2.1",
+      kind: "follow_up",
+      addressed: false,
+      direct: false,
+      author: { userId: "staff", userName: "Ada", fullName: "Ada" },
+      text: "Also fix the tests",
+      files: [],
+      mentions: [],
+    }),
+  ]);
+  assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_launch").length, 1);
+  assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_send").length, 1);
+  assert.equal(
+    h.store.binding("office:chat-1")?.threadId,
+    h.store.binding("slack:C1:1.1")?.threadId,
+  );
+  assert.isEmpty(h.store.seeds("chat-1"));
+});
+
+it.each(["support", "mockup", "slack", "schedule"])(
+  "seeds a %s group from an unmentioned Slack reply and resumes its history wait",
+  async (kind) => {
+    const sync = kind === "support" || kind === "mockup";
+    const posts: OutboundMessage[] = [];
+    const slack: ChatPlatform = {
+      id: "slack",
+      name: "Slack",
+      place: "Slack thread",
+      access: { allowedUserIds: ["staff"] },
+      channelRoutes: [{ channelId: "C1", projectId: "project-1" }],
+      person: (_id, name) => name,
+      firstTurnNote: () => "Reply here",
+      refusal: () => "Not allowed",
+      post: async (message) => {
+        posts.push(message);
+      },
+      history: async () => {
+        throw new Error("Seeded chats must use Office history");
+      },
+    };
+    let now = 0;
+    await using h = await harness({ slack, now: () => now });
+    const keys = sync ? ["office:chat-1", "slack:C1:1.1"] : ["slack:C1:1.1"];
+    for (const chatThreadKey of keys)
+      h.store.insertSeed({
+        chatThreadKey,
+        channelId: chatThreadKey.startsWith("slack") ? "C1" : "chat-1",
+        chatId: "chat-1",
+        oldThreadId: "old-thread",
+        sync,
+      });
+    const event: InboundEvent = {
+      eventId: "slack:C1:2.1",
+      chatThreadKey: "slack:C1:1.1",
+      channelId: "C1",
+      messageId: "2.1",
+      kind: "follow_up",
+      addressed: false,
+      direct: false,
+      author: { userId: "staff", userName: "Ada", fullName: "Ada" },
+      text: "Continue the fix",
+      files: [],
+      mentions: [],
+    };
+    h.office.histories.set("chat-1", { kind: "later", retryAfterMs: 100 });
+    assert.equal((await h.bridge.receive(event)).type, "pending");
+    assert.equal(h.store.inboxHead(event.chatThreadKey)?.retryAt, 100);
+    assert.equal(h.store.inboxHead(event.chatThreadKey)?.attempts, 0);
+    assert.isDefined(h.store.seed(event.chatThreadKey));
+    if (sync) {
+      await h.send(request({ history: { summary: "Office is already ready", recent: [] } }));
+      assert.isFalse(h.t3.calls.some((call) => call.tool === "t3_thread_launch"));
+    }
+    h.bridge.stop();
+    await h.channel.close();
+    await using restarted = await harness({
+      slack,
+      office: h.office,
+      t3: h.t3,
+      db: h.db,
+      home: h.home,
+      now: () => now,
+    });
+    await restarted.bridge.resume();
+    assert.isFalse(h.t3.calls.some((call) => call.tool === "t3_thread_launch"));
+    h.office.histories.set("chat-1", {
+      kind: "ready",
+      history: {
+        summary: "Checkpoint summary",
+        recent: [{ role: "assistant", text: "Next step", at: 1 }],
+      },
+    });
+    now = 100;
+    await restarted.bridge.resume();
+    assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_launch").length, 1);
+    const text = String(h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.message);
+    for (const expected of [
+      "Checkpoint summary",
+      "Next step",
+      "old-thread",
+      "t3_thread_read only if needed",
+    ])
+      assert.include(text, expected);
+    assert.isEmpty(h.store.seeds("chat-1"));
+    for (const key of keys) assert.equal(h.store.binding(key)?.threadId, "thread-1");
+    assert.equal(h.store.synced("thread-1"), sync);
+    assert.equal(h.office.posts.size, sync ? 1 : 0);
+    await restarted.bridge.receive(event);
+    assert.equal(h.t3.calls.filter((call) => call.tool === "t3_thread_launch").length, 1);
+  },
+);
+
+it("relays feedback with files without binding it, while an existing Slack binding wins", async () => {
+  const posts: OutboundMessage[] = [];
+  let lookups = 0;
+  const slack: ChatPlatform = {
+    id: "slack",
+    name: "Slack",
+    place: "Slack thread",
+    access: { allowedUserIds: ["staff"] },
+    person: (_id, name) => name,
+    firstTurnNote: () => "",
+    refusal: () => "Not allowed",
+    post: async (message) => {
+      posts.push(message);
+    },
+    feedbackTarget: async () => {
+      lookups++;
+      return { threadId: "agent-thread", note: "Reply through Executor" };
+    },
+    download: async () => new TextEncoder().encode("Attached content"),
+  };
+  await using h = await harness({ slack });
+  const event: InboundEvent = {
+    eventId: "slack:C1:2.1",
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    messageId: "2.1",
+    kind: "follow_up",
+    addressed: false,
+    direct: false,
+    author: { userId: "staff", userName: "Ada", fullName: "Ada" },
+    text: "My feedback",
+    files: [{ name: "note.txt", mimeType: "text/plain", url: "https://files.slack.com/note" }],
+    mentions: [],
+  };
+  await h.bridge.receive(event);
+  await h.bridge.receive(event);
+  const sent = h.t3.calls.filter((call) => call.tool === "t3_thread_send_attachments");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]!.args.threadId, "agent-thread");
+  assert.include(String(sent[0]!.args.message), "My feedback");
+  assert.include(String(sent[0]!.args.message), "Reply through Executor");
+  assert.lengthOf(sent[0]!.args.attachments as unknown[], 1);
+  assert.isUndefined(h.store.binding(event.chatThreadKey));
+  assert.isEmpty(h.store.pendingReplies());
+  assert.isEmpty(posts);
+  h.store.adoptBinding({
+    chatThreadKey: event.chatThreadKey,
+    channelId: "C1",
+    threadId: "bound-thread",
+    projectId: "project",
+    createdByUserId: "staff",
+  });
+  await h.bridge.receive({ ...event, eventId: "slack:C1:3.1", messageId: "3.1", files: [] });
+  assert.equal(lookups, 1);
+  assert.equal(
+    h.t3.calls.filter((call) => call.tool === "t3_thread_send").at(-1)!.args.threadId,
+    "bound-thread",
+  );
+});
 
 it("rejects support delivery clearly when Slack is unavailable", async () => {
   await using h = await harness();

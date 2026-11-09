@@ -5,16 +5,13 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeHttp from "node:http";
 import type * as NodeNet from "node:net";
-import * as NodeChildProcess from "node:child_process";
-import * as NodeURL from "node:url";
 
 import { assert, expect, it } from "vite-plus/test";
 
 import { createChatState } from "../chatState.ts";
 import { BridgeStore, openDatabase } from "../store.ts";
-import { T3ToolError } from "../t3Client.ts";
-import type { ThreadShape } from "../threads.ts";
 import { importOffice } from "./import.ts";
+import { runOfficeImport } from "./importCommand.ts";
 import type { LegacyBinding, LegacyPage, OfficeExport } from "./legacy.ts";
 
 const binding = (
@@ -25,17 +22,10 @@ const binding = (
   kind,
   chatId,
   threadId: `office:${chatId}:provision:1`,
-  sync: kind === "support",
+  sync: kind === "support" || kind === "mockup",
   ...(kind === "office" ? {} : { slackKey: `slack:C1:${chatId}.1` }),
   ...extra,
 });
-const shape: ThreadShape = {
-  projectId: "office-project",
-  title: "Old conversation",
-  parentThreadId: null,
-  relationshipToParent: null,
-  latestRun: { runId: "old-answer", status: "completed" },
-};
 
 function fixture() {
   const pages: LegacyPage[] = [
@@ -56,6 +46,8 @@ function fixture() {
         binding("support", "4"),
         binding("slack", "5"),
         binding("slack", "1"),
+        binding("mockup", "6"),
+        binding("schedule", "7"),
       ],
       cursor: null,
       isDone: true,
@@ -68,16 +60,7 @@ function fixture() {
       return pages[cursor === null ? 0 : cursor === "page-2" ? 1 : 2]!;
     },
   };
-  const reads: string[] = [];
-  const threads = {
-    shape: async (threadId: string) => {
-      reads.push(threadId);
-      if (threadId === "office:5:provision:1")
-        throw new T3ToolError("t3_thread_read", "Thread not found.", "thread_not_found");
-      return shape;
-    },
-  };
-  return { office, threads, cursors, reads };
+  return { office, cursors };
 }
 
 async function rehearsalServer(input: ReturnType<typeof fixture>) {
@@ -91,6 +74,7 @@ async function rehearsalServer(input: ReturnType<typeof fixture>) {
       for await (const chunk of request) body += String(chunk);
       const payload = JSON.parse(body);
       response.setHeader("content-type", "application/json");
+      response.setHeader("connection", "close");
       if (request.url === "/api/query") {
         assert.strictEqual(payload.path, "chatBridge:legacyBindings");
         const args = payload.args[0];
@@ -123,45 +107,12 @@ async function rehearsalServer(input: ReturnType<typeof fixture>) {
           args.environmentId,
           name === "t3_environment_read" ? undefined : "shared-test-environment",
         );
-        assert.include(
-          ["t3_environment_read", "t3_thread_read"],
-          name,
-          "The importer must never write to T3",
-        );
-        try {
-          const value =
-            name === "t3_environment_read"
-              ? { environmentId: "shared-test-environment" }
-              : {
-                  thread: await input.threads.shape(args.threadId),
-                  recentRuns: [
-                    {
-                      runId: "old-answer",
-                      ordinal: 1,
-                      status: args.threadId === "office:2:provision:1" ? "running" : "completed",
-                    },
-                  ],
-                };
-          result = {
-            content: [{ type: "text", text: JSON.stringify(value) }],
-            structuredContent: value,
-          };
-        } catch (error) {
-          assert.instanceOf(error, T3ToolError);
-          result = {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  _tag: "OrchestratorMcpFailure",
-                  code: (error as T3ToolError).code,
-                  message: "Thread not found.",
-                }),
-              },
-            ],
-          };
-        }
+        assert.equal(name, "t3_environment_read", "Seeds never read or adopt the old T3 threads");
+        const value = { environmentId: "shared-test-environment" };
+        result = {
+          content: [{ type: "text", text: JSON.stringify(value) }],
+          structuredContent: value,
+        };
       }
       response.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id, result }));
     })().catch(() => response.writeHead(500).end("Rehearsal request failed"));
@@ -177,56 +128,26 @@ async function rehearsalServer(input: ReturnType<typeof fixture>) {
   };
 }
 
-function runImport(home: string, url: string, dryRun: boolean) {
-  return new Promise<Record<string, unknown>>((resolve, reject) => {
-    const child = NodeChildProcess.spawn(
-      process.execPath,
-      [
-        NodeURL.fileURLToPath(new URL("../bin.ts", import.meta.url)),
-        "import-office",
-        ...(dryRun ? ["--dry-run"] : []),
-      ],
-      {
-        env: {
-          ...process.env,
-          T3_CHAT_BRIDGE_HOME: home,
-          T3_TOKEN: "fake-t3-token",
-          OFFICE_CONVEX_URL: url,
-          OFFICE_CHAT_BRIDGE_TOKEN: "fake-office-token",
-        },
-      },
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`Import exited ${code}: ${stderr}`));
-        return;
-      }
-      try {
-        assert.notInclude(stdout + stderr, "fake-office-token");
-        assert.notInclude(stdout + stderr, "fake-t3-token");
-        const rows = stdout
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line));
-        assert.include(rows[0], { t3Url: url, environmentId: "shared-test-environment", dryRun });
-        resolve(rows.at(-1));
-      } catch (error) {
-        reject(error);
-      }
-    });
+async function runImport(home: string, url: string, dryRun: boolean) {
+  const output: string[] = [];
+  await runOfficeImport({
+    home,
+    configFile: NodePath.join(home, "config.json"),
+    dryRun,
+    office: { convexUrl: url, serviceToken: "fake-office-token" },
+    token: "fake-t3-token",
+    print: (line) => {
+      output.push(line);
+    },
   });
+  assert.notInclude(output.join("\n"), "fake-office-token");
+  assert.notInclude(output.join("\n"), "fake-t3-token");
+  const rows = output.map((line) => JSON.parse(line));
+  assert.include(rows[0], { t3Url: url, environmentId: "shared-test-environment", dryRun });
+  return rows.at(-1);
 }
 
-it("rehearses paginated dry-run, import, and rerun with a conflict and a missing thread", async () => {
+it("rehearses paginated dry-run, import, and rerun without needing old threads", async () => {
   const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "bridge-cutover-"));
   const input = fixture();
   const server = await rehearsalServer(input);
@@ -256,10 +177,10 @@ it("rehearses paginated dry-run, import, and rerun with a conflict and a missing
     const before = NodeFS.readFileSync(filename);
     const filesBefore = NodeFS.readdirSync(home);
     const expected = {
-      imported: 3,
+      imported: 6,
       unchanged: 1,
       conflicts: 1,
-      skipped: { revoked: 1, missing_agent_id: 1, thread_not_found: 1 },
+      skipped: { revoked: 1, missing_agent_id: 1 },
     };
     assert.deepStrictEqual(await runImport(home, server.url, true), { dryRun: true, ...expected });
     assert.deepStrictEqual(NodeFS.readFileSync(filename), before);
@@ -272,23 +193,36 @@ it("rehearses paginated dry-run, import, and rerun with a conflict and a missing
 
     const db = new NodeSqlite.DatabaseSync(filename, { readOnly: true });
     const store = new BridgeStore(db);
-    const saved = db.prepare("SELECT * FROM binding ORDER BY chat_thread_key").all();
-    assert.lengthOf(saved, 5);
+    const saved = db.prepare("SELECT * FROM conversation_seed ORDER BY chat_thread_key").all();
+    assert.lengthOf(saved, 8);
     assert.isUndefined(
       store.binding("office:1"),
       "Slack-linked Office history is not a destination",
     );
     assert.isUndefined(store.binding("office:4"), "A support conflict cannot leave a half-group");
-    assert.isUndefined(store.binding("slack:C1:5.1"));
+    assert.isDefined(store.seed("slack:C1:5.1"));
     assert.strictEqual(store.binding("slack:C1:4.1")?.threadId, "do-not-replace");
-    assert.isTrue(store.synced("office:2:provision:1"));
-    assert.deepStrictEqual(store.recipients("office:2"), ["office:2", "slack:C1:2.1"]);
+    assert.deepStrictEqual(
+      store.seeds("2").map((seed) => seed.chatThreadKey),
+      ["office:2", "slack:C1:2.1"],
+    );
+    assert.isTrue(store.seed("office:6")?.sync);
+    assert.isFalse(store.seed("slack:C1:7.1")?.sync);
+    assert.isUndefined(store.seed("office:7"));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM binding").get()?.n, 1);
     assert.deepStrictEqual(
       db
         .prepare("SELECT thread_id FROM state_subscription ORDER BY thread_id")
         .all()
         .map((row) => row.thread_id),
-      ["slack:C1:1.1", "slack:C1:2.1", "slack:C1:99.1"],
+      [
+        "slack:C1:1.1",
+        "slack:C1:2.1",
+        "slack:C1:5.1",
+        "slack:C1:6.1",
+        "slack:C1:7.1",
+        "slack:C1:99.1",
+      ],
     );
     for (const table of ["owed_reply", "delegated_follow", "inbox", "question"])
       assert.strictEqual(
@@ -302,11 +236,11 @@ it("rehearses paginated dry-run, import, and rerun with a conflict and a missing
       dryRun: false,
       ...expected,
       imported: 0,
-      unchanged: 4,
+      unchanged: 7,
     });
     const reread = new NodeSqlite.DatabaseSync(filename, { readOnly: true });
     assert.deepStrictEqual(
-      reread.prepare("SELECT * FROM binding ORDER BY chat_thread_key").all(),
+      reread.prepare("SELECT * FROM conversation_seed ORDER BY chat_thread_key").all(),
       saved,
     );
     reread.close();
@@ -328,7 +262,7 @@ it("rehearses paginated dry-run, import, and rerun with a conflict and a missing
   }
 });
 
-it("does not create a dry-run home and propagates failures other than missing threads", async () => {
+it("does not create a dry-run home and propagates Office export failures", async () => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "bridge-cutover-"));
   const home = NodePath.join(root, "not-created");
   try {
@@ -340,48 +274,46 @@ it("does not create a dry-run home and propagates failures other than missing th
       }),
     };
     const options = { home, dryRun: true, office, report: () => {} };
-    assert.deepStrictEqual(
-      await importOffice({ ...options, threads: { shape: async () => shape } }),
-      { imported: 1, unchanged: 0, skipped: {}, conflicts: 0 },
-    );
+    assert.deepStrictEqual(await importOffice(options), {
+      imported: 1,
+      unchanged: 0,
+      skipped: {},
+      conflicts: 0,
+    });
     assert.isFalse(NodeFS.existsSync(home));
-    try {
-      await importOffice({
+    await expect(
+      importOffice({
         ...options,
-        threads: {
-          shape: async () => {
-            throw new T3ToolError("t3_thread_read", "Access denied", "forbidden");
+        office: {
+          legacyBindings: async () => {
+            throw new Error("Office unavailable");
           },
         },
-      });
-      assert.fail("Authentication and server failures must not become skipped threads.");
-    } catch (error) {
-      assert.instanceOf(error, T3ToolError);
-    }
+      }),
+    ).rejects.toThrow("Office unavailable");
     assert.isFalse(NodeFS.existsSync(home));
   } finally {
     NodeFS.rmSync(root, { recursive: true, force: true });
   }
 });
 
-it("repairs a missing Slack subscription and support sync without replacing existing bindings", async () => {
+it("repairs seed subscriptions and preserves a completed import on rerun", async () => {
   const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "bridge-cutover-"));
   try {
     const db = openDatabase(NodePath.join(home, "bridge.db"));
     const store = new BridgeStore(db);
     for (const chatThreadKey of ["office:2", "slack:C1:2.1"])
-      store.adoptBinding({
+      store.insertSeed({
         chatThreadKey,
-        threadId: "office:2:provision:1",
+        oldThreadId: "office:2:provision:1",
         channelId: "C1",
-        projectId: "office-project",
-        createdByUserId: "owner",
+        chatId: "2",
+        sync: true,
       });
     db.close();
     const options = {
       home,
       report: () => {},
-      threads: { shape: async () => shape },
       office: {
         legacyBindings: async () => ({
           page: [binding("support", "2")],
@@ -397,6 +329,24 @@ it("repairs a missing Slack subscription and support sync without replacing exis
         skipped: {},
         conflicts: 0,
       });
+    assert.deepStrictEqual(await importOffice({ ...options, dryRun: false }), {
+      imported: 0,
+      unchanged: 1,
+      skipped: {},
+      conflicts: 0,
+    });
+    const converted = openDatabase(NodePath.join(home, "bridge.db"));
+    const convertedStore = new BridgeStore(converted);
+    convertedStore.consumeSeed(convertedStore.seed("office:2")!, {
+      chatThreadKey: "office:2",
+      channelId: "2",
+      threadId: "new-thread",
+      projectId: "project",
+      chatKey: "private",
+      createdByUserId: "member",
+    });
+    assert.isUndefined(convertedStore.seed("office:2"));
+    converted.close();
     assert.deepStrictEqual(await importOffice({ ...options, dryRun: false }), {
       imported: 0,
       unchanged: 1,

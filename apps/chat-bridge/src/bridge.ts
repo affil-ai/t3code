@@ -33,10 +33,18 @@ import {
   type OutboundMessage,
   platformFor,
   QUIET_REPLY,
+  RetryAfter,
   type ThreadRoute,
 } from "./platform.ts";
 import { RunFeed } from "./runFeed.ts";
-import type { AskedRecord, Binding, BridgeStore, DelegatedFollow, OwedReply } from "./store.ts";
+import type {
+  AskedRecord,
+  Binding,
+  BridgeStore,
+  ConversationSeed,
+  DelegatedFollow,
+  OwedReply,
+} from "./store.ts";
 import {
   type Delivery,
   type ImportedFiles,
@@ -113,7 +121,7 @@ export interface InboundEvent {
   readonly requestNote?: string | undefined;
   readonly instructions?: string | undefined;
   readonly modelSelection?: ModelSelection | undefined;
-  readonly legacyThreadId?: string | undefined;
+  readonly historyNote?: string | undefined;
 }
 
 export interface LinkedConversation {
@@ -365,6 +373,7 @@ function turnText(
 ): string {
   const lines = [
     ...(context ? [context, ""] : []),
+    ...(first && event.historyNote ? [event.historyNote, ""] : []),
     `${platform.name} message ${event.messageId} from ${platform.person(event.author.userId, event.author.fullName || event.author.userName)}:`,
     "",
     event.text,
@@ -465,6 +474,7 @@ export class Bridge {
   private readonly log: (line: string) => void;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly seedHistory: ((seed: ConversationSeed) => Promise<string>) | undefined;
 
   constructor(options: {
     readonly store: BridgeStore;
@@ -478,6 +488,7 @@ export class Bridge {
     /** Tests skip the wait between retries. */
     readonly sleep?: (ms: number) => Promise<void>;
     readonly now?: () => number;
+    readonly seedHistory?: (seed: ConversationSeed) => Promise<string>;
   }) {
     this.store = options.store;
     this.threads = options.threads;
@@ -487,6 +498,7 @@ export class Bridge {
     this.log = options.log ?? (() => {});
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? Date.now;
+    this.seedHistory = options.seedHistory;
   }
 
   /**
@@ -506,7 +518,7 @@ export class Bridge {
 
   /** Works through the chat thread's inbox after any drain already running there. */
   private drain(chatThreadKey: string): Promise<Map<string, InboundOutcome>> {
-    const groupKey = this.links(chatThreadKey)?.conversations[0]?.chatThreadKey ?? chatThreadKey;
+    const groupKey = this.conversationKeys(chatThreadKey)[0]!;
     const previous = this.draining.get(groupKey) ?? Promise.resolve(new Map());
     const next = previous.then(() => this.drainThread(chatThreadKey));
     this.draining.set(groupKey, next);
@@ -523,7 +535,7 @@ export class Bridge {
   private async drainThread(chatThreadKey: string): Promise<Map<string, InboundOutcome>> {
     const outcomes = new Map<string, InboundOutcome>();
     while (!this.stopped) {
-      const entry = this.store.inboxHead(chatThreadKey);
+      const entry = this.store.inboxGroupHead(this.conversationKeys(chatThreadKey));
       if (entry === undefined) break;
       const wait = entry.retryAt - this.now();
       if (wait > 0) {
@@ -535,9 +547,9 @@ export class Bridge {
       try {
         if (await this.isPlainFollowUp(event)) {
           // A run still starting can't take a steer yet; T3 would make the message its own run.
-          await this.untilSteerable(chatThreadKey);
+          await this.untilSteerable(event.chatThreadKey);
           // What arrived meanwhile, or alongside it, goes to the agent as one message.
-          const waiting = await this.waitingFollowUps(chatThreadKey);
+          const waiting = await this.waitingFollowUps(event.chatThreadKey);
           if (waiting.length > 1) {
             event = this.combine(waiting);
             together = waiting.map((each) => each.eventId);
@@ -550,6 +562,14 @@ export class Bridge {
         }
         this.log(`${together.join(" + ")}: ${describeOutcome(outcome)}`);
       } catch (error) {
+        if (error instanceof RetryAfter) {
+          const delay = Number.isFinite(error.retryAfterMs)
+            ? Math.max(1, error.retryAfterMs)
+            : RETRY_DELAY_MS;
+          this.store.retryLater(event.eventId, entry.attempts, this.now() + delay, error.message);
+          this.retryIn(chatThreadKey, delay);
+          break;
+        }
         const attempts = entry.attempts + 1;
         if (attempts >= MAX_HANDOFF_ATTEMPTS) {
           this.log(`Giving up on ${event.eventId} after ${attempts} tries: ${String(error)}`);
@@ -670,6 +690,14 @@ export class Bridge {
   private links(chatThreadKey: string): ConversationLinks | undefined {
     const saved = this.store.meta(`binding_links:${chatThreadKey}`);
     return saved === undefined ? undefined : (JSON.parse(saved) as ConversationLinks);
+  }
+
+  private conversationKeys(chatThreadKey: string): ReadonlyArray<string> {
+    const seed = this.store.seed(chatThreadKey);
+    if (seed) return this.store.seeds(seed.chatId).map((each) => each.chatThreadKey);
+    return (
+      this.links(chatThreadKey)?.conversations.map((each) => each.chatThreadKey) ?? [chatThreadKey]
+    );
   }
 
   /** Host-only linking, before the first request or for an already bound thread. */
@@ -804,22 +832,8 @@ export class Bridge {
       if (prepared === undefined) return { type: "ignored", reason: "not_allowed" };
       event = prepared;
     }
-    let binding = this.store.binding(event.chatThreadKey);
-    let adopted = false;
-    if (binding === undefined && event.legacyThreadId !== undefined) {
-      const shape = await this.threads.shape(event.legacyThreadId).catch(() => undefined);
-      if (shape !== undefined) {
-        binding = this.store.adoptBinding({
-          chatThreadKey: event.chatThreadKey,
-          channelId: event.channelId,
-          projectId: shape.projectId,
-          threadId: event.legacyThreadId,
-          createdByUserId: event.author.userId,
-        });
-        adopted = true;
-        await this.bindLinked(event.chatThreadKey);
-      }
-    }
+    const binding = this.store.binding(event.chatThreadKey);
+    const seed = this.store.seed(event.chatThreadKey);
 
     if (event.contextOnly === true) {
       if (binding === undefined) return { type: "ignored", reason: "unbound_thread" };
@@ -833,6 +847,24 @@ export class Bridge {
       if (binding !== undefined) this.keep(binding, event);
       if (event.addressed) await this.refuse(event);
       return { type: "ignored", reason: "not_allowed" };
+    }
+    if (!binding && !seed && platform.feedbackTarget) {
+      const target = await platform.feedbackTarget(event);
+      if (target) {
+        const imported = await this.threads.importFiles(this.inboundFiles(platform, event.files));
+        const sent = await this.threads.send({
+          threadId: target.threadId,
+          text: [
+            `Slack feedback from ${platform.person(event.author.userId, event.author.fullName || event.author.userName)}:`,
+            event.text || "(no text)",
+            ...imported.skipped.map((file) => `File ${file.name}: ${file.reason}`),
+            target.note,
+          ].join("\n\n"),
+          attachments: imported.attachments,
+          requestId: requestId(event.eventId),
+        });
+        return { type: "followed_up", threadId: target.threadId, delivery: sent.delivery };
+      }
     }
     if (binding !== undefined) await this.mirror(event);
 
@@ -878,7 +910,7 @@ export class Bridge {
       );
       const sent = await this.threads.send({
         threadId: binding.threadId,
-        text: turnText(platform, event, imported.skipped, binding.chatKey, adopted, context),
+        text: turnText(platform, event, imported.skipped, binding.chatKey, false, context),
         attachments: imported.attachments,
         requestId: requestId(event.eventId),
       });
@@ -895,7 +927,10 @@ export class Bridge {
       });
       return { type: "followed_up", threadId: binding.threadId, delivery: sent.delivery };
     }
-    if (event.kind === "follow_up") return { type: "ignored", reason: "unbound_thread" };
+    if (event.kind === "follow_up" && seed === undefined)
+      return { type: "ignored", reason: "unbound_thread" };
+    if (seed && (isAside(event.text) || event.forAnotherBot === true))
+      return { type: "ignored", reason: "unbound_thread" };
 
     const route: ThreadRoute | undefined = event.direct
       ? platform.directRoute
@@ -921,8 +956,24 @@ export class Bridge {
       );
       return { type: "ignored", reason: "bad_command" };
     }
-    const chatKey = NodeCrypto.randomBytes(16).toString("hex");
-    const earlier = await this.loadEarlier(event);
+    if (seed) {
+      if (!event.historyNote) {
+        if (!this.seedHistory) throw new Error("Office history is not configured for this seed.");
+        event = { ...event, historyNote: await this.seedHistory(seed) };
+      }
+      await this.linkConversations(
+        this.store.seeds(seed.chatId).map((each) => ({
+          chatThreadKey: each.chatThreadKey,
+          channelId: each.channelId,
+          createdByUserId: event.author.userId,
+        })),
+        seed.sync,
+      );
+    }
+    const launchKey = `launch_chat_key:${event.eventId}`;
+    const chatKey = this.store.meta(launchKey) ?? NodeCrypto.randomBytes(16).toString("hex");
+    this.store.setMeta(launchKey, chatKey);
+    const earlier = event.historyNote ? [] : await this.loadEarlier(event);
     // The mention's own files come first, so they are the ones kept when there are too many.
     const imported = await this.threads.importFiles([
       ...this.inboundFiles(platform, event.files),
@@ -946,14 +997,16 @@ export class Bridge {
       ...(route.worktreeFrom === undefined ? {} : { worktreeFrom: route.worktreeFrom }),
       ...(modelSelection === undefined ? {} : { modelSelection }),
     });
-    this.store.insertBinding({
+    const created = {
       chatThreadKey: event.chatThreadKey,
       channelId: event.channelId,
       projectId,
       threadId: started.threadId,
       chatKey,
       createdByUserId: event.author.userId,
-    });
+    };
+    if (seed) this.store.consumeSeed(seed, created);
+    else this.store.insertBinding(created);
     await this.bindLinked(event.chatThreadKey);
     await this.mirror(event);
     // T3 can write a summary title; the request's first sentence stands until it does.
@@ -1111,7 +1164,12 @@ export class Bridge {
       try {
         events = await missed({
           since,
-          threads: bindings.map((binding) => binding.chatThreadKey),
+          threads: [
+            ...new Set([
+              ...bindings.map((binding) => binding.chatThreadKey),
+              ...this.store.seedKeys(`${platformId}:`),
+            ]),
+          ],
           channels: [...channels],
         });
       } catch (error) {

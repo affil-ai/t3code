@@ -23,6 +23,14 @@ export interface Binding {
   readonly muted?: boolean | undefined;
 }
 
+export interface ConversationSeed {
+  readonly chatThreadKey: string;
+  readonly channelId: string;
+  readonly chatId: string;
+  readonly oldThreadId: string;
+  readonly sync: boolean;
+}
+
 /** A message the agent sees with its next turn, without starting one. */
 export interface ContextMessage {
   readonly eventId: string;
@@ -140,6 +148,20 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       closed INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS question_thread ON question (chat_thread_key);
+    CREATE TABLE IF NOT EXISTS conversation_seed (
+      chat_thread_key TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      old_thread_id TEXT NOT NULL,
+      sync INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS seed_chat ON conversation_seed (chat_id);
+    CREATE TABLE IF NOT EXISTS seed_receipt (
+      chat_thread_key TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      old_thread_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL
+    );
   `);
   // Databases made before threads could be muted, or replies knew who asked.
   addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
@@ -234,6 +256,90 @@ export class BridgeStore {
   constructor(db: NodeSqlite.DatabaseSync, now: () => number = Date.now) {
     this.db = db;
     this.now = now;
+  }
+
+  seed(chatThreadKey: string): ConversationSeed | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM conversation_seed WHERE chat_thread_key = ?")
+      .get(chatThreadKey);
+    return row === undefined
+      ? undefined
+      : {
+          chatThreadKey: String(row.chat_thread_key),
+          channelId: String(row.channel_id),
+          chatId: String(row.chat_id),
+          oldThreadId: String(row.old_thread_id),
+          sync: row.sync === 1,
+        };
+  }
+
+  seeds(chatId: string): Array<ConversationSeed> {
+    return this.db
+      .prepare(
+        "SELECT chat_thread_key FROM conversation_seed WHERE chat_id = ? ORDER BY chat_thread_key",
+      )
+      .all(chatId)
+      .map((row) => this.seed(String(row.chat_thread_key))!);
+  }
+
+  seedKeys(prefix: string): Array<string> {
+    return this.db
+      .prepare(
+        "SELECT chat_thread_key FROM conversation_seed WHERE substr(chat_thread_key, 1, ?) = ?",
+      )
+      .all(prefix.length, prefix)
+      .map((row) => String(row.chat_thread_key));
+  }
+
+  seedReceipt(key: string): { chatId: string; oldThreadId: string; threadId: string } | undefined {
+    const row = this.db.prepare("SELECT * FROM seed_receipt WHERE chat_thread_key = ?").get(key);
+    return row === undefined
+      ? undefined
+      : {
+          chatId: String(row.chat_id),
+          oldThreadId: String(row.old_thread_id),
+          threadId: String(row.thread_id),
+        };
+  }
+
+  insertSeed(seed: ConversationSeed): void {
+    this.db
+      .prepare(`INSERT INTO conversation_seed
+      (chat_thread_key, channel_id, chat_id, old_thread_id, sync) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (chat_thread_key) DO NOTHING`)
+      .run(seed.chatThreadKey, seed.channelId, seed.chatId, seed.oldThreadId, seed.sync ? 1 : 0);
+  }
+
+  /** Publish every destination and its import receipt in the same transaction as removing the seeds. */
+  consumeSeed(source: ConversationSeed, binding: Binding): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const seed of this.seeds(source.chatId)) {
+        const existing = this.binding(seed.chatThreadKey);
+        if (existing && existing.threadId !== binding.threadId)
+          throw new Error("Seed destination is already bound to another thread.");
+        this.insertBinding({
+          ...binding,
+          chatThreadKey: seed.chatThreadKey,
+          channelId: seed.channelId,
+          chatKey:
+            seed.chatThreadKey === binding.chatThreadKey
+              ? binding.chatKey
+              : NodeCrypto.randomBytes(16).toString("hex"),
+        });
+        this.db
+          .prepare(
+            "INSERT INTO seed_receipt (chat_thread_key, chat_id, old_thread_id, thread_id) VALUES (?, ?, ?, ?)",
+          )
+          .run(seed.chatThreadKey, seed.chatId, seed.oldThreadId, binding.threadId);
+      }
+      this.setSync(binding.threadId, source.sync);
+      this.db.prepare("DELETE FROM conversation_seed WHERE chat_id = ?").run(source.chatId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   binding(chatThreadKey: string): Binding | undefined {
@@ -425,6 +531,16 @@ export class BridgeStore {
   /** The chat thread's oldest message still in the inbox. */
   inboxHead(chatThreadKey: string): InboxEntry | undefined {
     return this.inbox(chatThreadKey, 1)[0];
+  }
+
+  inboxGroupHead(keys: ReadonlyArray<string>): InboxEntry | undefined {
+    if (keys.length === 0) return undefined;
+    const row = this.db
+      .prepare(
+        `SELECT chat_thread_key FROM inbox WHERE chat_thread_key IN (${keys.map(() => "?").join(",")}) ORDER BY rowid LIMIT 1`,
+      )
+      .get(...keys);
+    return row ? this.inboxHead(String(row.chat_thread_key)) : undefined;
   }
 
   /** The chat thread's messages still in the inbox, oldest first. */

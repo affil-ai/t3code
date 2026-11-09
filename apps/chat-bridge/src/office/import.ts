@@ -5,9 +5,7 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeURL from "node:url";
 
 import { createChatState } from "../chatState.ts";
-import { BridgeStore, ensureSchema, openDatabase } from "../store.ts";
-import { T3ToolError } from "../t3Client.ts";
-import type { T3Threads } from "../threads.ts";
+import { BridgeStore, ensureSchema, openDatabase, type ConversationSeed } from "../store.ts";
 import type { LegacyBinding, OfficeExport } from "./legacy.ts";
 
 export interface ImportCounts {
@@ -22,7 +20,7 @@ function conversations(row: LegacyBinding) {
     return [{ chatThreadKey: `office:${row.chatId}`, channelId: row.chatId }];
   if (!row.slackKey || !/^slack:[CDG][A-Z0-9]+:\d+\.\d+$/.test(row.slackKey)) return undefined;
   const slack = { chatThreadKey: row.slackKey, channelId: row.slackKey.split(":")[1]! };
-  return row.kind === "support"
+  return row.kind === "support" || row.kind === "mockup"
     ? [{ chatThreadKey: `office:${row.chatId}`, channelId: row.chatId }, slack]
     : [slack];
 }
@@ -54,7 +52,6 @@ export async function importOffice(options: {
   home: string;
   dryRun: boolean;
   office: OfficeExport;
-  threads: Pick<T3Threads, "shape">;
   report: (row: { chatId: string; threadId: string; status: string; reason?: string }) => void;
 }): Promise<ImportCounts> {
   const db = importDatabase(options.home, options.dryRun);
@@ -68,12 +65,12 @@ export async function importOffice(options: {
         .map((row) => row.name),
     );
     // The overlay makes dry-run duplicates and conflicts behave like a real paginated import.
-    const bindings = new Map<string, string>();
-    const synced = new Set<string>();
+    const seeds = new Map<string, ConversationSeed>();
     const subscriptions = new Set<string>();
-    const boundThread = (key: string) => bindings.get(key) ?? store.binding(key)?.threadId;
-    const isSynced = (threadId: string) =>
-      synced.has(threadId) || (tables.has("binding_group") && store.synced(threadId));
+    const seedFor = (key: string) =>
+      seeds.get(key) ?? (tables.has("conversation_seed") ? store.seed(key) : undefined);
+    const receiptFor = (key: string) =>
+      tables.has("seed_receipt") ? store.seedReceipt(key) : undefined;
     const isSubscribed = (key: string) =>
       subscriptions.has(key) ||
       (tables.has("state_subscription") &&
@@ -101,6 +98,10 @@ export async function importOffice(options: {
           skip("missing_agent_id");
           continue;
         }
+        if (!row.chatId) {
+          skip("missing_chat_id");
+          continue;
+        }
         const keys = conversations(row);
         if (!keys) {
           skip("invalid_slack_key");
@@ -108,39 +109,45 @@ export async function importOffice(options: {
         }
         if (
           keys.some(({ chatThreadKey }) => {
-            const existing = boundThread(chatThreadKey);
-            return existing !== undefined && existing !== row.threadId;
+            const existing = store.binding(chatThreadKey);
+            const seed = seedFor(chatThreadKey);
+            const receipt = receiptFor(chatThreadKey);
+            return (
+              (seed !== undefined &&
+                (seed.chatId !== row.chatId ||
+                  seed.oldThreadId !== row.threadId ||
+                  seed.sync !== row.sync)) ||
+              (existing !== undefined &&
+                (receipt?.chatId !== row.chatId ||
+                  receipt.oldThreadId !== row.threadId ||
+                  receipt.threadId !== existing.threadId)) ||
+              (receipt !== undefined && existing === undefined)
+            );
           })
         ) {
           counts.conflicts++;
-          report("conflict", "key_bound_to_different_thread");
-          continue;
-        }
-        let shape;
-        try {
-          shape = await options.threads.shape(row.threadId);
-        } catch (error) {
-          if (!(error instanceof T3ToolError) || error.code !== "thread_not_found") throw error;
-          skip("thread_not_found");
+          report("conflict", "key_has_different_destination");
           continue;
         }
         const slackKey = keys.find((key) => key.chatThreadKey.startsWith("slack:"))?.chatThreadKey;
         const changed =
-          keys.some((key) => boundThread(key.chatThreadKey) === undefined) ||
-          (row.kind === "support" && !isSynced(row.threadId)) ||
+          keys.some(
+            (key) =>
+              seedFor(key.chatThreadKey) === undefined &&
+              receiptFor(key.chatThreadKey) === undefined,
+          ) ||
           (slackKey !== undefined && !isSubscribed(slackKey));
         if (!options.dryRun && changed) {
           db.exec("BEGIN IMMEDIATE");
           try {
             for (const key of keys)
-              store.adoptBinding({
-                ...key,
-                threadId: row.threadId,
-                projectId: shape.projectId,
-                createdByUserId: "",
-              });
-            if (row.kind === "support" && !isSynced(row.threadId))
-              store.setSync(row.threadId, true);
+              if (!receiptFor(key.chatThreadKey))
+                store.insertSeed({
+                  ...key,
+                  chatId: row.chatId,
+                  oldThreadId: row.threadId,
+                  sync: row.sync,
+                });
             if (slackKey && !isSubscribed(slackKey)) await state!.subscribe(slackKey);
             db.exec("COMMIT");
           } catch (error) {
@@ -148,8 +155,14 @@ export async function importOffice(options: {
             throw error;
           }
         }
-        for (const key of keys) bindings.set(key.chatThreadKey, row.threadId);
-        if (row.kind === "support") synced.add(row.threadId);
+        for (const key of keys)
+          if (!receiptFor(key.chatThreadKey))
+            seeds.set(key.chatThreadKey, {
+              ...key,
+              chatId: row.chatId,
+              oldThreadId: row.threadId,
+              sync: row.sync,
+            });
         if (slackKey) subscriptions.add(slackKey);
         if (changed) counts.imported++;
         else counts.unchanged++;

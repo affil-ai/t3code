@@ -6,6 +6,14 @@
 import type { PlanStep, RunStep } from "./activity.ts";
 import type { EarlierMessage, InboundEvent, SessionState } from "./bridge.ts";
 
+export class RetryAfter extends Error {
+  readonly retryAfterMs: number;
+  constructor(retryAfterMs: number) {
+    super("Conversation history is being compacted.");
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 /** Where a new thread goes: a T3 project, and optionally a new worktree. */
 export interface ThreadRoute {
   readonly projectId: string;
@@ -117,6 +125,10 @@ export interface ChatPlatform {
   readonly refusal: (userId: string) => string;
   /** Refreshes request context just before handoff, without saving it to the inbox. Undefined rejects it. */
   readonly prepare?: (event: InboundEvent) => Promise<InboundEvent | undefined>;
+  /** A tagged, externally owned thread receives this message without a bridge binding or answer watch. */
+  readonly feedbackTarget?: (
+    event: InboundEvent,
+  ) => Promise<{ threadId: string; note: string } | undefined>;
   /** Associates prepared resources with the accepted run, including steers. */
   readonly dispatched?: (event: InboundEvent, runId: string) => Promise<void>;
   /** Releases resources for this run without touching a concurrent run's resources. */

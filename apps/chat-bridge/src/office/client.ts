@@ -5,6 +5,16 @@ export type InboxEvent =
   | { id: string; kind: "message"; chatId: string; messageId: string; createdAt: number }
   | { id: string; kind: "stop"; chatId: string; memberId: string; createdAt: number };
 
+export interface OfficeHistory {
+  summary?: string;
+  recent: Array<{ role: "user" | "assistant"; author?: string; text: string; at: number }>;
+  oldThreadId?: string;
+}
+
+export type HistoryResult =
+  | { kind: "ready"; history: OfficeHistory }
+  | { kind: "later"; retryAfterMs: number };
+
 export interface PreparedRequest {
   eventId: string;
   chatId: string;
@@ -23,7 +33,7 @@ export interface PreparedRequest {
   model?: string;
   instructions: string;
   firstTurn: boolean;
-  legacyThreadId?: string;
+  history?: OfficeHistory;
   slack?: { channelId: string; chatThreadKey?: string; rootText?: string };
   sync?: boolean;
   article?: {
@@ -39,9 +49,11 @@ export interface PreparedRequest {
 
 export type Prepared =
   | { kind: "ready"; request: PreparedRequest }
+  | { kind: "later"; retryAfterMs: number }
   | { kind: "skip"; reason: string };
 
 export interface OfficeMutations {
+  requestCompaction: { args: { chatId: string }; result: unknown };
   prepare: { args: { eventId: string }; result: Prepared };
   ack: {
     args: { eventId: string; result: "stored" | "rejected"; errorMessage?: string };
@@ -78,6 +90,7 @@ export interface OfficeMutations {
 }
 
 export interface OfficeApi {
+  history(chatId: string): Promise<HistoryResult>;
   subscribe(onInbox: (events: InboxEvent[]) => void, onError: () => void): () => void;
   mutate<K extends keyof OfficeMutations>(
     name: K,
@@ -105,6 +118,19 @@ export class OfficeClient implements OfficeApi {
       (result) => onInbox(result.events),
       () => onError(),
     );
+  }
+
+  async history(chatId: string): Promise<HistoryResult> {
+    try {
+      return await this.client.query(
+        makeFunctionReference<"query", { serviceToken: string; chatId: string }, HistoryResult>(
+          "chatBridge:history",
+        ),
+        { serviceToken: this.token, chatId },
+      );
+    } catch {
+      throw new Error("Office history failed.");
+    }
   }
 
   async mutate<K extends keyof OfficeMutations>(

@@ -17,7 +17,7 @@ import type { InboundReaction } from "./bridge.ts";
 import { ANSWER_ACTION_ID } from "./questions.ts";
 
 /** How the SDK routed a message: a new mention, a reply in a followed thread, or a direct message. */
-export type Route = "mention" | "subscribed" | "direct";
+export type Route = "mention" | "subscribed" | "direct" | "unsubscribed";
 
 /** Hands one SDK message, and any the queue skipped before it, to the bridge. */
 export type Deliver = (
@@ -104,6 +104,9 @@ export async function startChatHost(options: ChatHostOptions): Promise<Chat> {
     await guarded("mention")(thread, message, context);
   });
   chat.onSubscribedMessage(guarded("subscribed"));
+  chat.onNewMessage(async (thread, message, context) => {
+    if (thread.adapter.name === "slack") await guarded("unsubscribed")(thread, message, context);
+  });
   chat.onDirectMessage((thread, message, _channel, context) =>
     guarded("direct")(thread, message, context),
   );

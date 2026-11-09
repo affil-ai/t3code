@@ -2,7 +2,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 
 export interface LegacyBinding {
-  kind: "office" | "slack" | "support";
+  kind: "office" | "slack" | "support" | "mockup" | "schedule";
   chatId: string;
   threadId: string;
   environmentId?: string;

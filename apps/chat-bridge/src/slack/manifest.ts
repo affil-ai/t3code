@@ -31,6 +31,7 @@ export function slackAppManifest(appName: string): string {
             // Agent session status, titles and streaming.
             "assistant:write",
             "users:read",
+            "metadata.message:read",
           ],
         },
       },

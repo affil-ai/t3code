@@ -31,8 +31,7 @@ import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
 import { OfficeClient } from "./office/client.ts";
 import { createOfficeChannel } from "./office/platform.ts";
-import { OfficeExportClient } from "./office/legacy.ts";
-import { importOffice } from "./office/import.ts";
+import { runOfficeImport } from "./office/importCommand.ts";
 import { startToolServer } from "./toolServer.ts";
 import { startWebhookServer, type WebhookRoute } from "./webhookServer.ts";
 
@@ -269,6 +268,7 @@ async function start(): Promise<void> {
     threads,
     settings: { modelSelection: config.modelSelection },
     platforms,
+    ...(officeChannel ? { seedHistory: officeChannel.seedHistory } : {}),
     log,
   });
   const core = bridge;
@@ -537,34 +537,16 @@ async function main(): Promise<void> {
   const [command] = positionals;
   if (command === "start") return start();
   if (command === "import-office") {
-    const config = loadConfig(configFile);
     const office = takeOfficeConnection();
     if (!office) throw new Error("Set OFFICE_CONVEX_URL and OFFICE_CHAT_BRIDGE_TOKEN.");
-    const token = process.env.T3_TOKEN || savedToken(dir, config.t3Url);
-    if (!token)
-      throw new Error(`Not signed in to ${config.t3Url}. Run \`t3-chat-bridge login\` first.`);
-    const t3 = new T3Client(new URL(config.t3Url), token, config.t3EnvironmentId);
-    try {
-      const environmentId = await t3.verifyEnvironment();
-      print(
-        JSON.stringify({
-          dryRun: values["dry-run"],
-          t3Url: config.t3Url,
-          environmentId,
-        }),
-      );
-      const counts = await importOffice({
-        home: dir,
-        dryRun: values["dry-run"],
-        office: new OfficeExportClient(office.convexUrl, office.serviceToken),
-        threads: new T3Threads(t3),
-        report: (row) => print(JSON.stringify(row)),
-      });
-      print(JSON.stringify({ dryRun: values["dry-run"], ...counts }));
-    } finally {
-      await t3.close();
-    }
-    return;
+    return runOfficeImport({
+      home: dir,
+      configFile,
+      office,
+      dryRun: values["dry-run"],
+      token: process.env.T3_TOKEN,
+      print,
+    });
   }
   if (command === "login") {
     const t3Url = values["t3-url"] ?? loadConfig(configFile).t3Url;

@@ -78,6 +78,7 @@ export interface SlackReaction {
 }
 
 export interface SlackChatHost {
+  readonly feedbackTarget: NonNullable<import("../platform.ts").ChatPlatform["feedbackTarget"]>;
   readonly post: (message: SlackOutboundMessage) => Promise<void>;
   /** Adds a reaction; reacting twice with the same emoji is not an error. */
   readonly react: (reaction: SlackReaction) => Promise<void>;
@@ -144,6 +145,10 @@ export function mentionedUserIds(rawText: unknown, excludeId: string | undefined
 
 /** The fields of a Slack `conversations.replies` message the bridge reads. */
 export interface SlackRawMessage {
+  readonly metadata?: {
+    readonly event_type?: string;
+    readonly event_payload?: Record<string, unknown>;
+  };
   readonly ts?: string | undefined;
   readonly user?: string | undefined;
   readonly bot_id?: string | undefined;
@@ -161,6 +166,37 @@ export interface SlackRawMessage {
         readonly url_private_download?: string | undefined;
       }>
     | undefined;
+}
+
+export function feedbackTargetFromMessages(
+  messages: ReadonlyArray<SlackRawMessage>,
+  identity: { userId: string; botId?: string | undefined },
+  before: string,
+  direct = false,
+): { threadId: string; threadTs: string } | undefined {
+  const own = messages
+    .filter(
+      (message) =>
+        tsBefore(message.ts, before) &&
+        message.bot_id &&
+        (message.user === identity.userId || message.bot_id === identity.botId),
+    )
+    .toSorted((a, b) => Number(b.ts) - Number(a.ts));
+  for (const message of own) {
+    const threadId = message.metadata?.event_payload?.t3_thread_id;
+    if (
+      message.metadata?.event_type === "office_feedback_thread" &&
+      typeof threadId === "string" &&
+      threadId.length > 0 &&
+      threadId.length <= 200
+    ) {
+      if (direct && (Number(before) - Number(message.ts)) * 1000 > 48 * 60 * 60 * 1000)
+        return undefined;
+      return { threadId, threadTs: message.ts! };
+    }
+    if (direct) return undefined;
+  }
+  return undefined;
 }
 
 function isSlackFileUrl(url: string): boolean {
@@ -357,7 +393,7 @@ export function createSlackHost(options: SlackChatHostOptions): {
     mode: "socket",
     botToken: options.botToken,
     appToken: options.appToken,
-    // The adapter falls back to SLACK_SIGNING_SECRET; Socket Mode does not use it.
+    // Socket Mode does not use the HTTP signing secret.
     signingSecret: "",
     ...(options.botUserId ? { botUserId: options.botUserId } : {}),
     ...(options.apiUrl
@@ -448,6 +484,66 @@ export function createSlackHost(options: SlackChatHostOptions): {
     return toEarlierMessages(raw, messageId, nameOf, download);
   };
 
+  let identity: Promise<{ userId: string; botId: string | undefined }> | undefined;
+  const feedbackTarget: SlackChatHost["feedbackTarget"] = async (event) => {
+    const { channel, threadTs } = slack.decodeThreadId(event.chatThreadKey);
+    const threaded = Boolean(threadTs && tsBefore(threadTs, event.messageId));
+    if (!threaded && !channel.startsWith("D")) return undefined;
+    identity ??= slack.webClient.auth
+      .test()
+      .then((auth) => {
+        if (!auth.user_id) throw new Error("Slack did not return the bot identity.");
+        return { userId: auth.user_id, botId: auth.bot_id };
+      })
+      .catch((error: unknown) => {
+        identity = undefined;
+        throw error;
+      });
+    const own = await identity;
+    const messages: SlackRawMessage[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < HISTORY_PAGES; page++) {
+      const result = threaded
+        ? await slack.webClient.conversations.replies({
+            channel,
+            ts: threadTs!,
+            latest: event.messageId,
+            inclusive: false,
+            include_all_metadata: true,
+            limit: 200,
+            ...(cursor ? { cursor } : {}),
+          })
+        : await slack.webClient.conversations.history({
+            channel,
+            latest: event.messageId,
+            inclusive: false,
+            include_all_metadata: true,
+            limit: 200,
+            ...(cursor ? { cursor } : {}),
+          });
+      messages.push(...((result.messages ?? []) as SlackRawMessage[]));
+      cursor = result.response_metadata?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    // A partial ascending thread read could select an older agent, or miss a newer tagged post.
+    if (cursor) throw new Error("Slack feedback classification exceeded its page limit.");
+    const target = feedbackTargetFromMessages(messages, own, event.messageId, !threaded);
+    if (!target) return undefined;
+    const replyTs = threaded ? threadTs! : target.threadTs;
+    return {
+      threadId: target.threadId,
+      note: [
+        `Feedback source: Slack channel ${channel}, thread ${replyTs}, message ${event.messageId}.`,
+        "This is an agent feedback thread, not a bridge conversation. Your final answer is not posted automatically.",
+        "Reply as Office through Executor's Slack chatPostMessage tool, without a custom username, icon, or signature.",
+        threaded
+          ? `Post in channel ${channel} with thread_ts ${replyTs}.`
+          : `Post top-level in DM ${channel}, with metadata ${JSON.stringify({ event_type: "office_feedback_thread", event_payload: { t3_thread_id: target.threadId } })}.`,
+        `Include an Open in T3 footer for thread ${JSON.stringify(target.threadId)} using the environmentId from t3_environment_read.`,
+      ].join("\n"),
+    };
+  };
+
   /** One message as an inbound event, or nothing for the bot's own and other bots' messages. */
   const eventOf = async (
     threadId: string,
@@ -475,10 +571,10 @@ export function createSlackHost(options: SlackChatHostOptions): {
   ) => {
     const botNames = await botMentionNames();
     // In a direct message every message is addressed and may start a thread.
-    const kind = route === "subscribed" ? "follow_up" : "mention";
+    const kind = route === "subscribed" || route === "unsubscribed" ? "follow_up" : "mention";
     // The queue strategy hands over only the latest message; earlier ones arrive as `skipped`.
     for (const each of [...(context?.skipped ?? []), message]) {
-      const addressed = route !== "subscribed" || each.isMention === true;
+      const addressed = route === "mention" || route === "direct" || each.isMention === true;
       const event = await eventOf(thread.id, each, kind, addressed, botNames);
       if (event !== undefined) await options.onEvent(event);
     }
@@ -742,6 +838,7 @@ export function createSlackHost(options: SlackChatHostOptions): {
         });
       },
       history,
+      feedbackTarget,
       download,
       startThread: async (channel, text) => {
         // A user id posts in the bot's DM with them, which needs only chat:write.

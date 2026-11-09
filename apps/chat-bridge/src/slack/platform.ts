@@ -67,6 +67,7 @@ export function slackPlatform(options: {
     rename: (chatThreadKey, title) => connected().rename(chatThreadKey, title),
     download: (url) => connected().download(url),
     history: (chatThreadKey, messageId) => connected().history(chatThreadKey, messageId),
+    feedbackTarget: (event) => connected().feedbackTarget(event),
     bound: (chatThreadKey) => connected().follow(chatThreadKey),
     startConversation: (channel, text) => connected().startThread(channel, text),
   };

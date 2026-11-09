@@ -1,11 +1,11 @@
 // @effect-diagnostics globalFetch:off globalTimers:off -- A plain Node channel; Convex owns its subscription.
 import { type Bridge, type InboundEvent } from "../bridge.ts";
 import { mimeTypeOf } from "../fileMimeType.ts";
-import { type ChatPlatform, QUIET_RULES, type ThreadRoute } from "../platform.ts";
-import type { BridgeStore } from "../store.ts";
+import { type ChatPlatform, QUIET_RULES, RetryAfter, type ThreadRoute } from "../platform.ts";
+import type { BridgeStore, ConversationSeed } from "../store.ts";
 import { ArticleFiles } from "./article.ts";
 import type { InboxEvent, OfficeApi, PreparedRequest } from "./client.ts";
-import { officeModel, requestNote, threadStartConventions } from "./message.ts";
+import { historyNote, officeModel, requestNote, threadStartConventions } from "./message.ts";
 
 const chatIdOf = (key: string) => key.slice("office:".length);
 
@@ -43,7 +43,6 @@ export function createOfficeChannel(options: {
   const { api, store, log } = options;
   const fetchFile = options.fetch ?? fetch;
   const articles = new ArticleFiles(options.home, options.repositoryPath, log, options.now);
-  const prepared = new Map<string, PreparedRequest>();
   const pending = new Map<string, Promise<void>>();
   const chats = new Map<string, Promise<void>>();
   const retries = new Map<string, NodeJS.Timeout>();
@@ -70,15 +69,23 @@ export function createOfficeChannel(options: {
         `Chat key: ${chatKey}`,
       ].join("\n\n"),
     prepare: async (event) => {
-      let request = prepared.get(event.eventId);
-      prepared.delete(event.eventId);
-      if (request === undefined) {
-        const result = await api.mutate("prepare", {
-          eventId: event.eventId.slice("office:".length),
-        });
-        if (result.kind === "skip") return undefined;
-        request = result.request;
+      const eventId = event.eventId.slice("office:".length);
+      const result = await api.mutate("prepare", { eventId });
+      if (result.kind === "later") {
+        await api.mutate("requestCompaction", { chatId: chatIdOf(event.chatThreadKey) });
+        throw new RetryAfter(result.retryAfterMs);
       }
+      if (result.kind === "skip") {
+        await api.mutate("ack", {
+          eventId,
+          result: "rejected",
+          errorMessage: "This request is no longer available or authorized.",
+        });
+        return undefined;
+      }
+      const request = result.request;
+      if (request.slack && !(await linkSlack(eventId, request))) return undefined;
+      const seed = store.seed(event.chatThreadKey);
       // Only the safe inbound event reaches SQLite; this context lives for this handoff.
       const articleNote =
         request.article === undefined
@@ -89,7 +96,13 @@ export function createOfficeChannel(options: {
         requestNote: [requestNote(request), articleNote].filter(Boolean).join("\n\n"),
         instructions: request.instructions,
         modelSelection: officeModel(request.model),
-        legacyThreadId: request.legacyThreadId,
+        historyNote:
+          request.history || seed
+            ? historyNote({
+                ...(request.history ?? { recent: [] }),
+                ...(seed && !request.history?.oldThreadId ? { oldThreadId: seed.oldThreadId } : {}),
+              })
+            : undefined,
         files: request.files.map((file) => ({
           name: file.filename,
           mimeType: file.mimeType,
@@ -98,7 +111,10 @@ export function createOfficeChannel(options: {
         })),
       };
     },
-    dispatched: (event, runId) => articles.dispatched(event.eventId, runId),
+    dispatched: async (event, runId) => {
+      await articles.dispatched(event.eventId, runId);
+      await api.mutate("ack", { eventId: event.eventId.slice("office:".length), result: "stored" });
+    },
     runEnded: (key, runId) => articles.complete(chatIdOf(key), runId),
     post: async (message) => {
       if (!message.eventId) throw new Error("Office posts require a delivery identity.");
@@ -172,47 +188,54 @@ export function createOfficeChannel(options: {
         store.markHandled(eventId);
         if (!core.hasRunInFlight(chatThreadKey)) await state(chatThreadKey, "active", "");
       } else {
-        const result = await api.mutate("prepare", { eventId: event.id });
-        if (result.kind === "skip") {
-          await api.mutate("ack", {
-            eventId: event.id,
-            result: "rejected",
-            errorMessage: "This request is no longer available or authorized.",
-          });
+        const outcome = await core.receive({
+          eventId,
+          chatThreadKey: `office:${event.chatId}`,
+          channelId: event.chatId,
+          messageId: event.messageId,
+          kind: "mention",
+          direct: true,
+          addressed: true,
+          author: { userId: "", userName: "", fullName: "" },
+          text: "",
+          files: [],
+          mentions: [],
+        });
+        if (outcome.type === "ignored" && outcome.reason === "not_allowed") return;
+        // A pending event belongs to the durable bridge inbox now, including its retry deadline.
+        // Office retains it until prepare is ready so firstTurn/history remain available.
+        if (
+          outcome.type === "pending" ||
+          (outcome.type === "ignored" &&
+            outcome.reason === "duplicate" &&
+            !store.isHandled(eventId))
+        )
           return;
-        }
-        if (result.request.slack !== undefined && !(await linkSlack(event, result.request))) return;
-        prepared.set(eventId, result.request);
-        try {
-          await core.receive(inbound(result.request));
-        } finally {
-          prepared.delete(eventId);
-        }
       }
     }
     await api.mutate("ack", { eventId: event.id, result: "stored" });
   }
 
-  async function linkSlack(event: InboxEvent, request: PreparedRequest): Promise<boolean> {
+  async function linkSlack(eventId: string, request: PreparedRequest): Promise<boolean> {
     const slack = options.slack;
     if (slack?.startConversation === undefined || request.slack === undefined) {
       await api.mutate("ack", {
-        eventId: event.id,
+        eventId,
         result: "rejected",
         errorMessage:
-          "The Slack channel is not configured on this bridge. This support request was not sent.",
+          "The Slack channel is not configured on this bridge. This request was not sent.",
       });
       return false;
     }
     const target = request.slack;
-    const savedKey = store.meta(`office_slack:${event.id}`);
+    const savedKey = store.meta(`office_slack:${eventId}`);
     const chatThreadKey =
       target.chatThreadKey ??
       savedKey ??
       (await slack.startConversation(target.channelId, target.rootText ?? request.text));
     if (!target.chatThreadKey) {
-      store.setMeta(`office_slack:${event.id}`, chatThreadKey);
-      await api.mutate("linkSlack", { eventId: event.id, chatThreadKey });
+      store.setMeta(`office_slack:${eventId}`, chatThreadKey);
+      await api.mutate("linkSlack", { eventId, chatThreadKey });
     }
     await core.linkConversations(
       [
@@ -257,6 +280,17 @@ export function createOfficeChannel(options: {
   };
   return {
     platform,
+    async seedHistory(seed: ConversationSeed): Promise<string> {
+      const result = await api.history(seed.chatId);
+      if (result.kind === "later") {
+        await api.mutate("requestCompaction", { chatId: seed.chatId });
+        throw new RetryAfter(result.retryAfterMs);
+      }
+      return historyNote({
+        ...result.history,
+        oldThreadId: result.history.oldThreadId ?? seed.oldThreadId,
+      });
+    },
     async start(bridge: Bridge): Promise<void> {
       core = bridge;
       await articles.restore();
