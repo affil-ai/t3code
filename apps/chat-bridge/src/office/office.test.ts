@@ -3,6 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import * as NodeTimers from "node:timers/promises";
 
 import { assert, expect, it, vi } from "vite-plus/test";
 
@@ -650,7 +651,8 @@ it("doesn't end an Office turn when the bridge stops mid-run, and reports it aft
   const active = () =>
     h.office.calls.filter((call) => call.name === "state" && call.args.state === "active");
   h.bridge.stop();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Give the stopped watcher time to exit.
+  await NodeTimers.setTimeout(50);
   assert.isEmpty(active(), "the run is still going in T3");
   h.t3.finish("run-1", "Done.");
   await using restarted = await harness({ office: h.office, t3: h.t3, db: h.db, home: h.home });
