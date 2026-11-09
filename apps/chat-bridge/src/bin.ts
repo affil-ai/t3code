@@ -130,6 +130,7 @@ async function start(): Promise<void> {
             access: { allowedUserIds: config.allowedUserIds, allowEveryone: config.allowEveryone },
             channelRoutes: config.channelProjects,
             directRoute: config.dmProjectId ? { projectId: config.dmProjectId } : undefined,
+            eligibility: slackTransport.kind === "office-relay" ? "person" : "workspace",
           }),
         ]
       : [];
@@ -478,7 +479,7 @@ async function start(): Promise<void> {
   if (officeChannel) log("Office channel subscribed.");
   if (slack && config.allowEveryone) {
     log(
-      "WARNING: allowEveryone is on. Every full member of this Slack workspace can start runs, and each run has this bridge's T3 access (often full access on this machine, as the user T3 runs as).",
+      "WARNING: allowEveryone is on. Every full member of this Slack workspace (with the Office relay, anyone who can message the app, guests included) can start runs, and each run has this bridge's T3 access (often full access on this machine, as the user T3 runs as).",
     );
   }
 

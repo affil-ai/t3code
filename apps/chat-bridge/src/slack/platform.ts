@@ -41,6 +41,12 @@ export function slackPlatform(options: {
   readonly access: Access;
   readonly channelRoutes: ReadonlyArray<ChannelRoute>;
   readonly directRoute?: ThreadRoute | undefined;
+  /**
+   * Who `allowEveryone` admits. `workspace` (Socket Mode): full members only. `person`
+   * (Office relay): Office already accepted the event, so any person who can reach the
+   * Office app, guests and Slack Connect users included; bots stay out.
+   */
+  readonly eligibility?: "workspace" | "person";
 }): ChatPlatform {
   const connected = () => {
     const host = options.host();
@@ -52,7 +58,10 @@ export function slackPlatform(options: {
     name: "Slack",
     place: "Slack thread",
     access: options.access,
-    isEligible: (userId) => connected().isWorkspaceMember(userId),
+    isEligible: (userId) =>
+      options.eligibility === "person"
+        ? connected().isPerson(userId)
+        : connected().isWorkspaceMember(userId),
     channelRoutes: options.channelRoutes,
     directRoute: options.directRoute,
     person: (userId, name) => `${name} (<@${userId}>)`,

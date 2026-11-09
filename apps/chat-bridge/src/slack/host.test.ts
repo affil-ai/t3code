@@ -367,3 +367,51 @@ it("reads one message back from Slack as the event it arrived as", async () => {
     await api.close();
   }
 });
+
+it("lets guests and Slack Connect people through the relay's person check, but not bots or deleted users", async () => {
+  const people: Record<string, Record<string, unknown>> = {
+    UGUEST: { team_id: "T1", is_restricted: true },
+    UULTRA: { team_id: "T1", is_ultra_restricted: true },
+    UCONNECT: { team_id: "T2" },
+    UFULL: { team_id: "T1" },
+    UBOT2: { team_id: "T1", is_bot: true },
+    UGONE: { team_id: "T1", deleted: true },
+  };
+  const { api, host } = await hostOn(
+    {
+      "auth.test": () => ({ ok: true, team_id: "T1", user_id: "UBOT" }),
+      "users.info": (args: Record<string, string>) => ({
+        ok: true,
+        user: { id: args.user, name: "x", ...people[args.user ?? ""] },
+      }),
+    },
+    { kind: "office-relay" },
+  );
+  try {
+    const person: Record<string, boolean> = {};
+    const member: Record<string, boolean> = {};
+    for (const id of Object.keys(people)) {
+      person[id] = await host.isPerson(id);
+      member[id] = await host.isWorkspaceMember(id);
+    }
+    assert.deepStrictEqual(person, {
+      UGUEST: true,
+      UULTRA: true,
+      UCONNECT: true,
+      UFULL: true,
+      UBOT2: false,
+      UGONE: false,
+    });
+    // Socket Mode keeps its stricter rule.
+    assert.deepStrictEqual(member, {
+      UGUEST: false,
+      UULTRA: false,
+      UCONNECT: false,
+      UFULL: true,
+      UBOT2: false,
+      UGONE: false,
+    });
+  } finally {
+    await api.close();
+  }
+});
