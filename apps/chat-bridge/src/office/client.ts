@@ -134,10 +134,12 @@ export class OfficeClient implements OfficeApi, SlackRelaySource {
     onError: () => void,
   ): () => void {
     return this.client.onUpdate(
-      makeFunctionReference<"query", { token: string; limit?: number }, Array<SlackInboxRow>>(
-        "chatBridge:slackInbox",
-      ),
-      { token: this.token },
+      makeFunctionReference<
+        "query",
+        { serviceToken: string; limit?: number },
+        Array<SlackInboxRow>
+      >("chatBridge:slackInbox"),
+      { serviceToken: this.token },
       (rows) => onRows(rows),
       () => onError(),
     );
@@ -146,10 +148,10 @@ export class OfficeClient implements OfficeApi, SlackRelaySource {
   async slackDelivered(ids: ReadonlyArray<string>): Promise<void> {
     try {
       await this.client.mutation(
-        makeFunctionReference<"mutation", { token: string; ids: Array<string> }, unknown>(
+        makeFunctionReference<"mutation", { serviceToken: string; ids: Array<string> }, unknown>(
           "chatBridge:slackDelivered",
         ),
-        { token: this.token, ids: [...ids] },
+        { serviceToken: this.token, ids: [...ids] },
       );
     } catch {
       throw new Error("Office slackDelivered failed.");
