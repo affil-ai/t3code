@@ -236,6 +236,8 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
   // After the migration above, which rebuilds binding: the chat's model the thread last
   // followed, as JSON; see `followedModel`.
   addColumn(db, "binding", "followed_model", "TEXT");
+  // Set once a person picks the thread's model with `!model`; see `modelSwitched`.
+  addColumn(db, "binding", "model_switched", "INTEGER NOT NULL DEFAULT 0");
   // A claimed reply is being answered; posted_at waits for delivery, so a crash in between resumes it.
   addColumn(db, "owed_reply", "claimed", "INTEGER NOT NULL DEFAULT 0");
   // Questions saved before this column were posted when saved.
@@ -442,6 +444,23 @@ export class BridgeStore {
     this.db
       .prepare("UPDATE binding SET followed_model = ? WHERE chat_thread_key = ?")
       .run(JSON.stringify(selection), chatThreadKey);
+  }
+
+  /**
+   * Whether a person ever picked this thread's model with `!model`, so a thread
+   * with no followed model that sits on a former default was put there on purpose.
+   */
+  modelSwitched(chatThreadKey: string): boolean {
+    const row = this.db
+      .prepare("SELECT model_switched FROM binding WHERE chat_thread_key = ?")
+      .get(chatThreadKey);
+    return row?.model_switched === 1;
+  }
+
+  markModelSwitched(chatThreadKey: string): void {
+    this.db
+      .prepare("UPDATE binding SET model_switched = 1 WHERE chat_thread_key = ?")
+      .run(chatThreadKey);
   }
 
   binding(chatThreadKey: string): Binding | undefined {

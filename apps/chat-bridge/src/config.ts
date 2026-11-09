@@ -296,7 +296,9 @@ export function parseConfig(raw: unknown): BridgeConfig {
           !isRecord(each) ||
           typeof each.instanceId !== "string" ||
           typeof each.model !== "string" ||
-          (each.options !== undefined && !Array.isArray(each.options)),
+          (each.options !== undefined &&
+            (!Array.isArray(each.options) ||
+              each.options.some((option) => !isRecord(option) || typeof option.id !== "string"))),
       ))
   ) {
     fail("formerModelSelections must be a list of model selections.");

@@ -609,8 +609,12 @@ export class Bridge {
       return;
     }
     // Nothing recorded: a thread from before the bridge followed its chat's model. One
-    // still on the bridge's default never got the chat's model, so it switches now; one
-    // on another model was switched on purpose and keeps it.
+    // still on the bridge's default (or a former one) never got the chat's model, so it
+    // switches now; one on another model, or one a person picked, keeps it.
+    if (this.store.modelSwitched(binding.chatThreadKey)) {
+      this.store.setFollowedModel(binding.chatThreadKey, chat);
+      return;
+    }
     const current = await this.threads.modelSelection(binding.threadId);
     const defaults = [
       this.settings.modelSelection ?? DEFAULT_MODEL,
@@ -619,7 +623,7 @@ export class Bridge {
     if (!sameModel(current, chat) && defaults.some((each) => sameModel(current, each))) {
       await this.threads.setModel(binding.threadId, chat);
       this.log(
-        `Switched thread ${binding.threadId} from the default to its chat's model, ${describeModel(chat)}.`,
+        `Switched thread ${binding.threadId} from ${describeModel(current)}, a default, to its chat's model, ${describeModel(chat)}.`,
       );
     }
     this.store.setFollowedModel(binding.chatThreadKey, chat);
@@ -1103,6 +1107,9 @@ export class Bridge {
           return { type: "noted", threadId: binding.threadId };
         }
         await this.threads.setModel(binding.threadId, resolved.selection);
+        // Remembered even when the chat's model is unknown right now, so a later follow
+        // never mistakes this pick for a thread stuck on a former default.
+        this.store.markModelSwitched(binding.chatThreadKey);
         // The chat's own selection stays the one followed, so the switch stands until it changes.
         if (event.followModel === true && event.modelSelection !== undefined)
           this.store.setFollowedModel(binding.chatThreadKey, event.modelSelection);

@@ -1843,7 +1843,8 @@ it("still switches a thread left on a former default after the default changes",
 
 it("keeps a thread on a model that was never a default", async () => {
   const SOL = { instanceId: "codex", model: "gpt-6.1-sol" };
-  await using h = await harness({ defaultModel: OPUS, threadModel: ASTRA });
+  const TERRA = { instanceId: "codex", model: "gpt-6.1-terra" };
+  await using h = await harness({ defaultModel: OPUS, formerModels: [TERRA], threadModel: ASTRA });
   await h.send(withoutModel());
   h.t3.finish("run-1", "Done.");
   await h.bridge.idle();
@@ -1851,6 +1852,39 @@ it("keeps a thread on a model that was never a default", async () => {
     request({ eventId: "event-2", messageId: "message-2", firstTurn: false, modelSelection: SOL }),
   );
   assert.deepEqual(modelSets(h), []);
+});
+
+it("keeps a person's pick of a former default made while Office couldn't say the chat's model", async () => {
+  await using h = await harness({
+    slack: slackPlatformForSeeds(),
+    defaultModel: OPUS,
+    formerModels: [ASTRA],
+    // T3 reports the model the person picked.
+    threadModel: ASTRA,
+  });
+  h.store.insertSeed({
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    chatId: "chat-9",
+    oldThreadId: "old",
+    sync: false,
+  });
+  const chatModel = h.office.api.chatModel;
+  h.office.api.chatModel = async () => {
+    throw new Error("Office chatModel failed.");
+  };
+  await h.bridge.receive(slackTurn("2.1", "Continue"));
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  await h.bridge.receive(slackTurn("3.1", "!astra"));
+  await h.bridge.idle();
+  const picked = modelSets(h);
+  assert.lengthOf(picked, 1);
+  h.office.api.chatModel = chatModel;
+  h.office.chatModels.set("chat-9", OPUS);
+  await h.bridge.receive(slackTurn("4.1", "And the docs"));
+  assert.deepEqual(modelSets(h), picked);
+  assert.deepEqual(h.store.followedModel("slack:C1:1.1"), OPUS);
 });
 
 it("runs a Slack turn on the thread's model when Office can't say the chat's", async () => {

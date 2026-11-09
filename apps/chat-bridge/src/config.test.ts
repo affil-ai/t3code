@@ -84,3 +84,25 @@ it("uses Socket Mode for Slack unless told to read Office's relay", () => {
   );
   assert.throws(() => parseConfig({ ...base, slack: { transport: "http" } }), /slack.transport/);
 });
+
+it("reads former default models and rejects malformed ones", () => {
+  const base = { t3Url: "http://x", channelProjects: [], allowedUserIds: [] };
+  const astra = {
+    instanceId: "codex",
+    model: "gpt-6-astra",
+    options: [{ id: "reasoningEffort", value: "medium" }],
+  };
+  assert.deepEqual(parseConfig({ ...base, formerModelSelections: [astra] }).formerModelSelections, [
+    astra,
+  ]);
+  for (const bad of [
+    astra,
+    [{ instanceId: "codex" }],
+    [{ ...astra, options: { reasoningEffort: "medium" } }],
+    [{ ...astra, options: [null] }],
+  ])
+    assert.throws(
+      () => parseConfig({ ...base, formerModelSelections: bad }),
+      /formerModelSelections/,
+    );
+});
