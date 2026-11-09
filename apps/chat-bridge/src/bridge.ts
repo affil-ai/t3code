@@ -931,6 +931,15 @@ export class Bridge {
         // The chat's own selection stays the one followed, so the switch stands until it changes.
         if (event.followModel === true && event.modelSelection !== undefined)
           this.store.setFollowedModel(binding.chatThreadKey, event.modelSelection);
+        // A linked conversation that follows its chat's model (Office, when the switch came
+        // from Slack) and has nothing recorded yet would otherwise compare its picker with
+        // the switched model and undo the switch. It last followed the model before it.
+        for (const linked of this.store.bindingsForThread(binding.threadId))
+          if (
+            linked.chatThreadKey !== binding.chatThreadKey &&
+            this.store.followedModel(linked.chatThreadKey) === undefined
+          )
+            this.store.setFollowedModel(linked.chatThreadKey, current);
         if (nothingElse) {
           await this.notify(event, `Switched to ${describeModel(resolved.selection)}.`);
           return { type: "noted", threadId: binding.threadId };

@@ -31,7 +31,7 @@ import {
   type SlackTransport,
 } from "./slack/host.ts";
 import { connectSlackRelay, currentRelayedRow, isChatSdkDedupeKey } from "./slack/relay.ts";
-import { slackPlatform, slackWorkNote } from "./slack/platform.ts";
+import { slackEligibility, slackPlatform, slackWorkNote } from "./slack/platform.ts";
 import { resendSlackMessage, RUNNING_PID_KEY, runningBridge } from "./slack/resend.ts";
 import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
@@ -130,7 +130,7 @@ async function start(): Promise<void> {
             access: { allowedUserIds: config.allowedUserIds, allowEveryone: config.allowEveryone },
             channelRoutes: config.channelProjects,
             directRoute: config.dmProjectId ? { projectId: config.dmProjectId } : undefined,
-            eligibility: slackTransport.kind === "office-relay" ? "person" : "workspace",
+            eligibility: slackEligibility(slackTransport),
           }),
         ]
       : [];

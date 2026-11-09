@@ -2,6 +2,7 @@ import type { Chat } from "chat";
 import { assert, it } from "vite-plus/test";
 
 import { fakeSlackApi } from "./fakeSlackApi.ts";
+import { slackEligibility, slackPlatform } from "./platform.ts";
 
 import {
   chatThreadKeyOf,
@@ -16,6 +17,7 @@ import {
   toInboundEvent,
   feedbackTargetFromMessages,
   createSlackHost,
+  type SlackChatHost,
   type SlackTransport,
 } from "./host.ts";
 
@@ -411,6 +413,47 @@ it("lets guests and Slack Connect people through the relay's person check, but n
       UBOT2: false,
       UGONE: false,
     });
+  } finally {
+    await api.close();
+  }
+});
+
+it("asks the person check behind Office's relay and the member check in Socket Mode", async () => {
+  const asked: Array<string> = [];
+  const host = {
+    isPerson: async (userId: string) => {
+      asked.push(`person ${userId}`);
+      return true;
+    },
+    isWorkspaceMember: async (userId: string) => {
+      asked.push(`member ${userId}`);
+      return false;
+    },
+  } as unknown as SlackChatHost;
+  const platformOn = (transport: SlackTransport) =>
+    slackPlatform({
+      host: () => host,
+      access: { allowedUserIds: [], allowEveryone: true },
+      channelRoutes: [],
+      eligibility: slackEligibility(transport),
+    });
+  assert.isTrue(await platformOn({ kind: "office-relay" }).isEligible!("UGUEST"));
+  assert.isFalse(await platformOn({ kind: "socket", appToken: "xapp-test" }).isEligible!("UGUEST"));
+  assert.deepStrictEqual(asked, ["person UGUEST", "member UGUEST"]);
+});
+
+it("doesn't count Slackbot as a person", async () => {
+  const { api, host } = await hostOn(
+    {
+      "users.info": (args: Record<string, string>) => ({
+        ok: true,
+        user: { id: args.user, name: "slackbot", team_id: "T1" },
+      }),
+    },
+    { kind: "office-relay" },
+  );
+  try {
+    assert.isFalse(await host.isPerson("USLACKBOT"));
   } finally {
     await api.close();
   }

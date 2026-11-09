@@ -8,7 +8,15 @@ import {
   QUIET_RULES,
   type ThreadRoute,
 } from "../platform.ts";
-import type { SlackChatHost } from "./host.ts";
+import type { SlackChatHost, SlackTransport } from "./host.ts";
+
+/**
+ * Who `allowEveryone` admits on a transport. Behind Office's relay, Office already accepted
+ * the event, so any person counts, guests and Slack Connect included; Socket Mode keeps
+ * full members only.
+ */
+export const slackEligibility = (transport: SlackTransport): "workspace" | "person" =>
+  transport.kind === "office-relay" ? "person" : "workspace";
 
 /** Tells the agent how its answer reaches Slack, once per thread. */
 export function slackFirstTurnNote(chatKey: string): string {

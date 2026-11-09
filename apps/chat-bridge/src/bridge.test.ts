@@ -1272,6 +1272,29 @@ it("starts a thread on the model a switch names, without the switch in its messa
   await bridge.idle();
 });
 
+it("records the pre-switch model for a linked conversation, so its picker doesn't undo a Slack !model", async () => {
+  const { t3, bridge, store } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  // Office's side of the same chat, linked to the thread with nothing followed yet.
+  store.insertBinding({
+    chatThreadKey: "office:chat-1",
+    channelId: "office",
+    projectId: PROJECT,
+    threadId: THREAD,
+    chatKey: "office-key",
+    createdByUserId: "U1",
+  });
+  await bridge.receive(event("100.2", { kind: "follow_up", text: "!astra-low" }));
+  // Office follows from the model before the switch, so its unchanged picker keeps Astra.
+  assert.deepStrictEqual(store.followedModel("office:chat-1"), {
+    instanceId: "claudeAgent",
+    model: "claude-opus-5-5",
+  });
+  assert.isUndefined(store.followedModel("slack:C1:100.1"));
+});
+
 it("switches a thread's model, provider included, from a follow-up", async () => {
   const { t3, bridge, posted } = harness();
   await bridge.receive(event("100.1"));

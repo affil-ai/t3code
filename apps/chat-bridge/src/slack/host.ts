@@ -902,7 +902,12 @@ export function createSlackHost(options: SlackChatHostOptions): {
         const cached = people.get(userId);
         if (cached !== undefined && cached.until > performance.now()) return cached.member;
         const user = await slackUser(userId);
-        const person = user !== undefined && user.deleted !== true && user.is_bot !== true;
+        // Slackbot (reminders, auto-responses) has no is_bot flag but isn't a person.
+        const person =
+          userId !== "USLACKBOT" &&
+          user !== undefined &&
+          user.deleted !== true &&
+          user.is_bot !== true;
         people.set(userId, { member: person, until: performance.now() + MEMBER_CACHE_MS });
         return person;
       },
