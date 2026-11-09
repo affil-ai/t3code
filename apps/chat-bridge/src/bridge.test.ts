@@ -2337,7 +2337,7 @@ it("ignores a relayed stop from before the thread's latest run was asked for", a
   ];
   const interrupts = () => t3.calls.filter((call) => call.tool === "t3_thread_interrupt").length;
   const slack = await relayedSlack(bridge, db);
-  slack.push([relayedStop("row-old", String((runAsked - 5_000) / 1000))]);
+  slack.push([relayedStop("row-old", String((runAsked - 60_000) / 1000))]);
   await slack.idle();
   assert.strictEqual(interrupts(), 0);
   assert.deepStrictEqual(
@@ -2345,8 +2345,8 @@ it("ignores a relayed stop from before the thread's latest run was asked for", a
     ["row-old"],
   );
 
-  // A stop pressed during the run still stops it.
-  slack.push([relayedStop("row-new", String((runAsked + 5_000) / 1000))]);
+  // A stop that looks a few seconds early, because Slack's clock and the host's differ, still stops it.
+  slack.push([relayedStop("row-skewed", String((runAsked - 3_000) / 1000))]);
   await slack.idle();
   assert.strictEqual(interrupts(), 1);
   t3.finish("run-1", "interrupted", "");

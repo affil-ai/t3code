@@ -273,6 +273,8 @@ const MAX_POST_ATTEMPTS = 5;
 /** Office ack retries slow to at most this many retry delays apart. */
 const MAX_DISPATCH_BACKOFF = 20;
 /** A follow-up waits at most this long for a starting run to take steers. */
+/** Slack's clock and this host's can differ; a replayed stop is far older than this. */
+const STOP_CLOCK_SKEW_MS = 10_000;
 const STEER_WAIT_MS = 30_000;
 const STEER_POLL_MS = 1_000;
 /** T3 queues a message sent while its run is in one of these, instead of steering it. */
@@ -1810,7 +1812,10 @@ export class Bridge {
     if (stoppedAt !== undefined) {
       try {
         const latest = (await this.threads.shape(binding.threadId)).latestRun;
-        if (latest?.requestedAt !== undefined && latest.requestedAt > stoppedAt) {
+        if (
+          latest?.requestedAt !== undefined &&
+          latest.requestedAt > stoppedAt + STOP_CLOCK_SKEW_MS
+        ) {
           this.log(`Ignored a stop in ${chatThreadKey} from before ${latest.runId} was asked for.`);
           return false;
         }
