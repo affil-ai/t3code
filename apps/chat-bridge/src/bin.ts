@@ -470,7 +470,8 @@ async function start(): Promise<void> {
       : await startWebhookServer(config.linear.webhookPort, webhookRoutes, log);
   // What a restart left in the inbox first, then what Slack sent while the bridge was down.
   await officeChannel?.start(core);
-  // Before the inbox resumes, so a restart's leftover access ends and a retried event stages anew.
+  // Before the inbox resumes, so a restart's leftover access ends; a retried event then reuses
+  // the access it staged.
   await slackArticles?.restore();
   await core.resume();
   // Office's relay sends what Slack posted while the bridge was down first, then live traffic.

@@ -303,6 +303,8 @@ const CATCH_UP_MARGIN_MS = 60_000;
 /** Catch-up reads replies in threads bound this recently, at most this many. */
 const CATCH_UP_WINDOW_MS = 14 * 24 * 60 * 60_000;
 const CATCH_UP_THREAD_LIMIT = 200;
+/** How long a chat found with no recorded model goes before Office is asked again. */
+const CHAT_MODEL_RECHECK_MS = 10 * 60_000;
 /** How often a message waiting for someone else's prepared work checks again. */
 const HELD_RETRY_MS = 15_000;
 const WAIT_FOR_OTHERS_TEXT =
@@ -443,6 +445,14 @@ export function threadTitle(text: string, fallback = "Chat request"): string {
   return `${space > TITLE_LIMIT / 2 ? cut.slice(0, space) : cut}…`;
 }
 
+/** A turn waiting on another person's grant; unlike other retries, it doesn't stop the inbox. */
+class HeldByOther extends RetryAfter {
+  constructor(retryAfterMs: number) {
+    super(retryAfterMs);
+    this.message = "Waiting for another person's prepared work.";
+  }
+}
+
 const describeOutcome = (outcome: InboundOutcome) =>
   `${outcome.type}${"reason" in outcome ? ` (${outcome.reason})` : ""}`;
 
@@ -462,8 +472,11 @@ export class Bridge {
   private readonly answerQueue = new Map<string, Promise<void>>();
   /** The chat thread of each run being watched. */
   private readonly watchedRuns = new Map<string, string>();
-  /** Runs that ended while their thread's delegated work was already followed, by thread. */
-  private readonly followJoined = new Map<string, Array<OwedReply>>();
+  /**
+   * Office chats found with no recorded model, with when to ask again, so each turn neither
+   * asks Office nor logs it; a model picked in Office later is still followed.
+   */
+  private readonly noChatModel = new Map<string, number>();
   /** Events already told they wait for someone else's prepared work; told once per process. */
   private readonly toldToWait = new Set<string>();
   /** Steps listed per run, for `MAX_STEPS_PER_RUN`. */
@@ -564,7 +577,7 @@ export class Bridge {
       (binding !== undefined && this.store.followedModel(binding.chatThreadKey) === undefined
         ? this.store.seedReceipt(binding.chatThreadKey)?.chatId
         : undefined);
-    if (chatId === undefined) return event;
+    if (chatId === undefined || (this.noChatModel.get(chatId) ?? 0) > this.now()) return event;
     let modelSelection: ModelSelection | undefined;
     try {
       modelSelection = await this.chatModel(chatId);
@@ -575,6 +588,7 @@ export class Bridge {
       return event;
     }
     if (modelSelection === undefined) {
+      this.noChatModel.set(chatId, this.now() + CHAT_MODEL_RECHECK_MS);
       this.log(`Office chat ${chatId} has no recorded model; it runs on the default.`);
       return event;
     }
@@ -644,22 +658,28 @@ export class Bridge {
    */
   private async drainThread(chatThreadKey: string): Promise<Map<string, InboundOutcome>> {
     const outcomes = new Map<string, InboundOutcome>();
+    /** Events waiting on someone else's grant; the messages after them carry on. */
+    const held = new Set<string>();
     while (!this.stopped) {
-      const entry = this.store.inboxGroupHead(this.conversationKeys(chatThreadKey));
+      const entry = this.store.inboxGroupHead(this.conversationKeys(chatThreadKey), held);
       if (entry === undefined) break;
+      let event = JSON.parse(entry.event) as InboundEvent;
       const wait = entry.retryAt - this.now();
       if (wait > 0) {
         this.retryIn(chatThreadKey, wait);
+        if (this.heldByOther(event)) {
+          held.add(entry.eventId);
+          continue;
+        }
         break;
       }
-      let event = JSON.parse(entry.event) as InboundEvent;
       let together: ReadonlyArray<string> = [event.eventId];
       try {
         if (await this.isPlainFollowUp(event)) {
           // A run still starting can't take a steer yet; T3 would make the message its own run.
           await this.untilSteerable(event.chatThreadKey);
           // What arrived meanwhile, or alongside it, goes to the agent as one message.
-          const waiting = await this.waitingFollowUps(event.chatThreadKey);
+          const waiting = await this.waitingFollowUps(event.chatThreadKey, held);
           if (waiting.length > 1) {
             event = this.combine(waiting);
             together = waiting.map((each) => each.eventId);
@@ -678,6 +698,10 @@ export class Bridge {
             : RETRY_DELAY_MS;
           this.store.retryLater(event.eventId, entry.attempts, this.now() + delay, error.message);
           this.retryIn(chatThreadKey, delay);
+          if (error instanceof HeldByOther) {
+            held.add(event.eventId);
+            continue;
+          }
           break;
         }
         const attempts = entry.attempts + 1;
@@ -740,11 +764,15 @@ export class Bridge {
     }
   }
 
-  /** The plain follow-ups at the front of the chat thread's inbox that are due now. */
-  private async waitingFollowUps(chatThreadKey: string): Promise<ReadonlyArray<InboundEvent>> {
+  /** The plain follow-ups at the front of the chat thread's inbox that are due now, past held ones. */
+  private async waitingFollowUps(
+    chatThreadKey: string,
+    held: ReadonlySet<string>,
+  ): Promise<ReadonlyArray<InboundEvent>> {
     const waiting: Array<InboundEvent> = [];
-    for (const entry of this.store.inbox(chatThreadKey, MAX_COMBINED)) {
-      if (entry.retryAt > this.now()) break;
+    for (const entry of this.store.inbox(chatThreadKey, MAX_COMBINED + held.size)) {
+      if (held.has(entry.eventId)) continue;
+      if (waiting.length >= MAX_COMBINED || entry.retryAt > this.now()) break;
       const event = JSON.parse(entry.event) as InboundEvent;
       if (!(await this.isPlainFollowUp(event))) break;
       // What `prepare` adds is scoped to the first author, so only their messages join it.
@@ -951,27 +979,38 @@ export class Bridge {
   }
 
   /**
-   * A turn waits while someone else holds what `prepare` granted in its thread, such as
-   * article access whose delegated work is still going, so it neither steers into that
-   * run nor starts a turn beside it. It then goes in as its own turn. The wait is retried,
-   * keeping the thread's order, and ends at the latest when the grant expires.
+   * True when the event would reach the agent while someone else holds what `prepare` granted
+   * in its thread, such as article access. A `stop` is never held. Only the event's own platform
+   * is asked, so an Office reply in a linked chat isn't held behind a Slack member's grant.
+   */
+  private heldByOther(event: InboundEvent): boolean {
+    const binding = this.store.binding(event.chatThreadKey);
+    if (binding === undefined || event.contextOnly === true) return false;
+    if (isAside(event.text) || event.forAnotherBot === true) return false;
+    if (!event.addressed && binding.muted) return false;
+    if (event.addressed && controlCommand(event.text) !== undefined) return false;
+    const held = this.platform(event.chatThreadKey).heldByOther;
+    if (held === undefined) return false;
+    const keys = this.store.bindingsForThread(binding.threadId).map((each) => each.chatThreadKey);
+    return held(keys, event.author.userId);
+  }
+
+  /**
+   * A held turn neither steers into the holder's run nor starts a turn beside it; it goes in
+   * as its own turn once the grant ends, at the latest when it expires. It waits without
+   * holding up the conversation: the holder's own messages and commands carry on past it.
    */
   private async untilOthersRelease(event: InboundEvent): Promise<void> {
-    const binding = this.store.binding(event.chatThreadKey);
-    if (binding === undefined || event.contextOnly === true) return;
-    if (isAside(event.text) || event.forAnotherBot === true) return;
-    if (!event.addressed && binding.muted) return;
+    if (!this.heldByOther(event)) return;
     // Someone the bridge refuses is refused at once, without waiting.
     if (!(await this.isAllowed(this.platform(event.chatThreadKey), event.author.userId))) return;
-    const keys = this.store.bindingsForThread(binding.threadId).map((each) => each.chatThreadKey);
-    const held = this.platforms.some((each) => each.heldByOther?.(keys, event.author.userId));
-    if (!held) return;
     if (!this.toldToWait.has(event.eventId)) {
       this.toldToWait.add(event.eventId);
-      this.log(`${event.eventId} waits: another person's prepared work holds ${binding.threadId}.`);
+      const threadId = this.store.binding(event.chatThreadKey)?.threadId;
+      this.log(`${event.eventId} waits: another person's prepared work holds ${threadId}.`);
       await this.notify(event, WAIT_FOR_OTHERS_TEXT);
     }
-    throw new RetryAfter(HELD_RETRY_MS);
+    throw new HeldByOther(HELD_RETRY_MS);
   }
 
   /**
@@ -1363,6 +1402,10 @@ export class Bridge {
     for (const reply of this.store.pendingReplies()) this.watch(reply);
     // Subagents and background work a run left going report back in runs the chat is owed.
     for (const follow of this.store.follows()) this.followDelegatedWork(follow.reply, follow);
+    // A run saved to follow whose thread's follow wasn't saved yet is followed afresh.
+    for (const run of this.store.followRuns())
+      if (!this.watching.has(`delegated:${run.reply.threadId}`))
+        this.followDelegatedWork(run.reply);
     await Promise.all(this.store.inboxThreads().map((chatThreadKey) => this.drain(chatThreadKey)));
   }
 
@@ -1639,12 +1682,6 @@ export class Bridge {
     if (answers !== undefined) this.followAnswer(next);
   }
 
-  /**
-   * Keeps watching a thread after its run ends, while that run's subagents
-   * and background work are still going. When one reports back, T3 starts a
-   * run with a notification, and the chat is owed that run's answer too. A
-   * run started by a message typed in T3 stays in T3.
-   */
   /** Tells the platform a run and its delegated work are done, so it releases their resources. */
   private async release(reply: OwedReply): Promise<void> {
     await this.platform(reply.chatThreadKey)
@@ -1654,23 +1691,32 @@ export class Bridge {
       });
   }
 
+  /** Releases a followed run and stops waiting on it. */
+  private async releaseFollowed(reply: OwedReply): Promise<void> {
+    await this.release(reply);
+    this.store.endFollowRun(reply.runId);
+  }
+
+  /**
+   * Keeps watching a thread after its run ends, while that run's subagents
+   * and background work are still going. When one reports back, T3 starts a
+   * run with a notification, and the chat is owed that run's answer too. A
+   * run started by a message typed in T3 stays in T3.
+   */
   private followDelegatedWork(reply: OwedReply, saved?: DelegatedFollow): void {
     const key = `delegated:${reply.threadId}`;
-    // A later run in a thread already followed is released with that follow, once all of
-    // the thread's delegated work settles.
-    const joined = this.followJoined.get(reply.threadId);
-    if (this.watching.has(key)) {
-      if (joined !== undefined && !joined.some((each) => each.runId === reply.runId))
-        joined.push(reply);
-      return;
-    }
-    this.followJoined.set(reply.threadId, []);
-    let ended = false;
+    // Each run that ends joins the thread's one follow, saved, and is released when its own
+    // delegated work settles: a later run neither waits for an earlier one's work nor ends first.
+    // A follow saved before runs were saved with it still waits on its own run.
+    if (saved === undefined || this.store.followRuns(reply.threadId).length === 0)
+      this.store.addFollowRun(reply, saved?.until ?? this.now() + DELEGATED_FOLLOW_MS);
+    // The follow already running picks the run up on its next check.
+    if (this.watching.has(key)) return;
+    let outcome: "settled" | "capped" | undefined;
     const follow = (async () => {
       let cursor: number;
-      let until: number;
       if (saved !== undefined) {
-        ({ cursor, until } = saved);
+        ({ cursor } = saved);
         this.log(`Following ${reply.threadId} again after a restart, from position ${cursor}.`);
       } else {
         const first = await this.threads.activity(reply.threadId, undefined);
@@ -1679,9 +1725,8 @@ export class Bridge {
           -1,
           ...first.items.filter((item) => item.runId === reply.runId).map((item) => item.position),
         );
-        until = this.now() + DELEGATED_FOLLOW_MS;
         // Saved, so a restart before the work reports back still owes the chat its answer.
-        this.store.saveFollow({ reply, cursor, until });
+        this.store.saveFollow({ reply, cursor, until: this.now() + DELEGATED_FOLLOW_MS });
         this.log(`Following ${reply.threadId} after ${reply.runId} from position ${cursor}.`);
       }
       // A zero wait only reads whether the work is still going.
@@ -1715,28 +1760,45 @@ export class Bridge {
         return found;
       };
       while (!this.stopped) {
-        const waited = await this.threads.waitForDelegatedWork(
-          reply.threadId,
-          reply.runId,
-          DELEGATED_CHECK_MS,
-        );
-        // Shutting down: the saved follow picks up from here after the restart.
-        if (this.stopped) return;
-        if (waited.timedOut) this.showBackground(reply);
-        if (await scan()) continue;
-        // T3 can call the work settled a moment before it records the run that
-        // reports it, so look once more before stopping.
-        if (!waited.timedOut) {
-          await this.sleep(SETTLE_GRACE_MS);
-          if (await scan()) continue;
-          ended = true;
+        const runs = this.store.followRuns(reply.threadId);
+        if (runs.length === 0) {
+          outcome = "settled";
           this.log(
             `Stopped following ${reply.threadId}: its delegated work settled (read to ${cursor}).`,
           );
           return;
         }
-        if (this.now() > until) {
-          ended = true;
+        // Each run's own work, waited on together; a settled run answers at once.
+        const waits = await Promise.all(
+          runs.map(async (run) => ({
+            run,
+            timedOut: (
+              await this.threads.waitForDelegatedWork(
+                reply.threadId,
+                run.reply.runId,
+                DELEGATED_CHECK_MS,
+              )
+            ).timedOut,
+          })),
+        );
+        // Shutting down: the saved follow picks up from here after the restart.
+        if (this.stopped) return;
+        const going = waits.filter((each) => each.timedOut);
+        if (going.length > 0) this.showBackground(reply);
+        if (await scan()) continue;
+        const settled = waits.filter((each) => !each.timedOut);
+        if (settled.length > 0) {
+          // T3 can call the work settled a moment before it records the run that
+          // reports it, so look once more before releasing.
+          await this.sleep(SETTLE_GRACE_MS);
+          if (await scan()) continue;
+          for (const each of settled) await this.releaseFollowed(each.run.reply);
+          continue;
+        }
+        const capped = going.filter((each) => this.now() > each.run.until);
+        for (const each of capped) await this.releaseFollowed(each.run.reply);
+        if (capped.length > 0 && this.store.followRuns(reply.threadId).length === 0) {
+          outcome = "capped";
           // Never a silent drop: say the work goes on where it can still be seen.
           this.log(
             `Stopped following ${reply.threadId} after six hours with its delegated work still running (read to ${cursor}).`,
@@ -1759,15 +1821,21 @@ export class Bridge {
         this.log(`Following ${reply.threadId}'s delegated work failed: ${String(error)}`);
       })
       .finally(async () => {
-        // Its delegated work settled, ran past the cap or couldn't be followed: what `prepare`
-        // granted the run ends now. A stopping bridge keeps it for the restarted follow.
-        const runs = [reply, ...(this.followJoined.get(reply.threadId) ?? [])];
-        this.followJoined.delete(reply.threadId);
-        if (!this.stopped) for (const each of runs) await this.release(each);
-        if (ended) this.store.endFollow(reply.threadId);
-        // A stopping bridge leaves the status; the restarted follow takes it over.
-        if (!this.stopped) this.endBackground(reply.threadId);
+        // A stopping bridge keeps the runs and the status for the restarted follow.
+        if (this.stopped) {
+          this.watching.delete(key);
+          return;
+        }
+        if (outcome === undefined) {
+          // The work couldn't be followed: what `prepare` granted its runs ends now.
+          for (const each of this.store.followRuns(reply.threadId))
+            await this.releaseFollowed(each.reply);
+        } else this.store.endFollow(reply.threadId);
         this.watching.delete(key);
+        // A run that joined as the follow ended gets a follow of its own.
+        const joined = this.store.followRuns(reply.threadId)[0];
+        if (joined !== undefined) this.followDelegatedWork(joined.reply);
+        else this.endBackground(reply.threadId);
       });
     this.watching.set(key, follow);
   }
@@ -2269,8 +2337,9 @@ export class Bridge {
         // Slack refusing the same post again and again would otherwise retry forever.
         if (postFailures >= MAX_POST_ATTEMPTS) {
           this.runOutcome(reply.chatThreadKey, "undelivered");
-          // Nothing follows its delegated work now, so its resources go here.
-          await this.release(reply);
+          // Nothing follows its delegated work now, so its resources go here, from the run
+          // they moved to when T3 continued it.
+          await this.release({ ...reply, runId });
           this.log(`Giving up on the answer to ${reply.runId} until restart: ${String(error)}`);
           return;
         }

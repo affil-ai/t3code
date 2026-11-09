@@ -25,7 +25,10 @@ export interface SlackArticleHooks {
   readonly runEnded: (chatThreadKey: string, runId: string) => Promise<void>;
   /** True while someone other than `author` holds live access in these conversations. */
   readonly heldByOther: (chatThreadKeys: ReadonlyArray<string>, author: string) => boolean;
-  /** At startup: forgets expired access and ends access a finished event never handed to a run. */
+  /**
+   * At startup: forgets expired access, and ends access a finished event never handed to a
+   * run or whose run was answered with nothing left following its delegated work.
+   */
   readonly restore: () => Promise<void>;
 }
 
@@ -52,6 +55,8 @@ export function slackArticleAccess(options: {
     | "endAccess"
     | "isHandled"
     | "owedDispatches"
+    | "isAnswered"
+    | "isFollowedRun"
   >;
   /** The person's Slack profile email and team, which Office matches when the Slack ID isn't linked. */
   readonly identity?: ((userId: string) => Promise<SlackIdentity>) | undefined;
@@ -92,8 +97,25 @@ export function slackArticleAccess(options: {
     prepare: async (event) => {
       const articles = options.articles();
       if (articles === undefined || !reachesAgent(event)) return event;
-      // A retried event is prepared again; the access its earlier try staged ends first.
-      await end(store.articleAccess({ eventId: event.eventId }));
+      // A retried event is prepared again. Office answers the same message with the run it
+      // granted before, so the access the earlier try staged carries on when it still can.
+      const staged = store.articleAccess({ eventId: event.eventId });
+      const open = staged.find(
+        (access) => access.author === event.author.userId && access.expiresAt > now(),
+      );
+      if (open !== undefined) {
+        const note = await articles
+          .restage(open.chatId, open.officeRunId, event.eventId)
+          .catch(() => undefined);
+        if (note !== undefined) {
+          return {
+            ...event,
+            requestNote: [event.requestNote, note].filter(Boolean).join("\n\n"),
+          };
+        }
+      }
+      // Anything else staged for it, such as expired access, ends before asking Office again.
+      await end(staged);
       // Office trusts the email only with the team ID, so neither is sent alone. Never logged.
       const identity = await options.identity?.(event.author.userId).catch(() => undefined);
       const slack =
@@ -156,8 +178,16 @@ export function slackArticleAccess(options: {
           store.endAccess(access.eventId);
           continue;
         }
-        // Still on its way to a run: a waiting event is prepared again, an owed dispatch sent.
-        if (access.runId !== undefined || !store.isHandled(access.eventId)) continue;
+        if (access.runId !== undefined) {
+          // A run still going, or one whose delegated work a follow waits on, is released by
+          // that; one answered with nothing following it was missed and ends now.
+          if (store.isAnswered(access.runId) && !store.isFollowedRun(access.runId))
+            await end([access], access.runId);
+          continue;
+        }
+        // Still on its way to a run: a waiting event reuses it when prepared again, an owed
+        // dispatch is sent.
+        if (!store.isHandled(access.eventId)) continue;
         const owed = store
           .owedDispatches(access.chatThreadKey)
           .some((each) => each.eventId === access.eventId);

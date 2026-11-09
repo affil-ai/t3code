@@ -38,7 +38,6 @@ export interface ContextMessage {
   readonly line: string;
 }
 
-/** A thread the bridge keeps following after its run, until its delegated work settles or `until`. */
 /** Office article access staged for one Slack turn; see the `article_access` table. */
 export interface ArticleAccess {
   readonly eventId: string;
@@ -51,6 +50,7 @@ export interface ArticleAccess {
   readonly runId?: string | undefined;
 }
 
+/** A thread the bridge keeps following after its run, until its delegated work settles or `until`. */
 export interface DelegatedFollow {
   readonly reply: OwedReply;
   /** Notifications at or before this position were looked at already. */
@@ -146,6 +146,16 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       cursor INTEGER NOT NULL,
       until_ms INTEGER NOT NULL
     );
+    -- Each run a thread's follow waits on, released once its own delegated work settles or
+    -- until_ms passes, so a later run's resources don't wait on, or end with, an earlier run's work.
+    CREATE TABLE IF NOT EXISTS delegated_follow_run (
+      run_id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      chat_thread_key TEXT NOT NULL,
+      requested_by TEXT,
+      until_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS delegated_follow_run_thread ON delegated_follow_run (thread_id);
     -- Slack messages saved on arrival and removed once handled; the bridge works from this table.
     CREATE TABLE IF NOT EXISTS inbox (
       event_id TEXT PRIMARY KEY,
@@ -589,9 +599,11 @@ export class BridgeStore {
       this.db
         .prepare("UPDATE binding_group SET last_chat_thread_key = ? WHERE last_chat_thread_key = ?")
         .run(to, from);
-      this.db
-        .prepare("UPDATE delegated_follow SET chat_thread_key = ? WHERE chat_thread_key = ?")
-        .run(to, from);
+      for (const table of ["delegated_follow", "delegated_follow_run"]) {
+        this.db
+          .prepare(`UPDATE ${table} SET chat_thread_key = ? WHERE chat_thread_key = ?`)
+          .run(to, from);
+      }
       this.db.exec("COMMIT");
       return true;
     } catch (error) {
@@ -625,14 +637,21 @@ export class BridgeStore {
     return this.inbox(chatThreadKey, 1)[0];
   }
 
-  inboxGroupHead(keys: ReadonlyArray<string>): InboxEntry | undefined {
+  /** The oldest message in these chat threads' inboxes, passing over the events in `skip`. */
+  inboxGroupHead(
+    keys: ReadonlyArray<string>,
+    skip: ReadonlySet<string> = new Set(),
+  ): InboxEntry | undefined {
     if (keys.length === 0) return undefined;
+    const skipped = [...skip];
     const row = this.db
       .prepare(
-        `SELECT chat_thread_key FROM inbox WHERE chat_thread_key IN (${keys.map(() => "?").join(",")}) ORDER BY rowid LIMIT 1`,
+        `SELECT * FROM inbox WHERE chat_thread_key IN (${keys.map(() => "?").join(",")})${
+          skipped.length === 0 ? "" : ` AND event_id NOT IN (${skipped.map(() => "?").join(",")})`
+        } ORDER BY rowid LIMIT 1`,
       )
-      .get(...keys);
-    return row ? this.inboxHead(String(row.chat_thread_key)) : undefined;
+      .get(...keys, ...skipped);
+    return row ? inboxFromRow(row) : undefined;
   }
 
   /** The chat thread's messages still in the inbox, oldest first. */
@@ -640,13 +659,7 @@ export class BridgeStore {
     return this.db
       .prepare("SELECT * FROM inbox WHERE chat_thread_key = ? ORDER BY rowid LIMIT ?")
       .all(chatThreadKey, limit)
-      .map((row) => ({
-        eventId: String(row.event_id),
-        chatThreadKey: String(row.chat_thread_key),
-        event: String(row.event),
-        attempts: Number(row.attempts),
-        retryAt: Number(row.retry_at),
-      }));
+      .map(inboxFromRow);
   }
 
   /** Chat threads with messages in the inbox, in the order their oldest arrived. */
@@ -694,6 +707,16 @@ export class BridgeStore {
           ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       )
       .run(key, value);
+  }
+
+  /** True once every chat owed the run's reply has had it, or given it up as quiet. */
+  isAnswered(runId: string): boolean {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS owed, COUNT(posted_at) AS posted FROM owed_reply WHERE run_id = ?",
+      )
+      .get(runId);
+    return Number(row?.owed ?? 0) > 0 && Number(row?.owed) === Number(row?.posted);
   }
 
   /** True once the chat is owed the run's reply, whether or not it was posted. */
@@ -1000,6 +1023,46 @@ export class BridgeStore {
     this.db.prepare("DELETE FROM delegated_follow WHERE thread_id = ?").run(threadId);
   }
 
+  /** Adds a run to its thread's follow; a run already there keeps its cap. */
+  addFollowRun(reply: OwedReply, until: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO delegated_follow_run (run_id, thread_id, chat_thread_key, requested_by, until_ms)
+          VALUES (?, ?, ?, ?, ?) ON CONFLICT (run_id) DO NOTHING`,
+      )
+      .run(reply.runId, reply.threadId, reply.chatThreadKey, reply.requestedBy ?? null, until);
+  }
+
+  /** The runs a follow still waits on, oldest first: the thread's, or every thread's. */
+  followRuns(threadId?: string): Array<{ readonly reply: OwedReply; readonly until: number }> {
+    const rows =
+      threadId === undefined
+        ? this.db.prepare("SELECT * FROM delegated_follow_run ORDER BY rowid").all()
+        : this.db
+            .prepare("SELECT * FROM delegated_follow_run WHERE thread_id = ? ORDER BY rowid")
+            .all(threadId);
+    return rows.map((row) => ({
+      reply: {
+        runId: String(row.run_id),
+        threadId: String(row.thread_id),
+        chatThreadKey: String(row.chat_thread_key),
+        ...(row.requested_by === null ? {} : { requestedBy: String(row.requested_by) }),
+      },
+      until: Number(row.until_ms),
+    }));
+  }
+
+  isFollowedRun(runId: string): boolean {
+    return (
+      this.db.prepare("SELECT 1 FROM delegated_follow_run WHERE run_id = ?").get(runId) !==
+      undefined
+    );
+  }
+
+  endFollowRun(runId: string): void {
+    this.db.prepare("DELETE FROM delegated_follow_run WHERE run_id = ?").run(runId);
+  }
+
   follows(): Array<DelegatedFollow> {
     return this.db
       .prepare("SELECT * FROM delegated_follow ORDER BY rowid")
@@ -1028,4 +1091,14 @@ export class BridgeStore {
         )
         .run(runId, chatThreadKey);
   }
+}
+
+function inboxFromRow(row: Record<string, unknown>): InboxEntry {
+  return {
+    eventId: String(row.event_id),
+    chatThreadKey: String(row.chat_thread_key),
+    event: String(row.event),
+    attempts: Number(row.attempts),
+    retryAt: Number(row.retry_at),
+  };
 }

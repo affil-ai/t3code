@@ -1708,8 +1708,12 @@ const slackTurn = (ts: string, text: string): InboundEvent => ({
   mentions: [],
 });
 
-async function seededSlack(chatModel: ModelSelection | undefined) {
-  const h = await harness({ slack: slackPlatformForSeeds(), defaultModel: ASTRA });
+async function seededSlack(chatModel: ModelSelection | undefined, now?: () => number) {
+  const h = await harness({
+    slack: slackPlatformForSeeds(),
+    defaultModel: ASTRA,
+    ...(now ? { now } : {}),
+  });
   h.store.insertSeed({
     chatThreadKey: "slack:C1:1.1",
     channelId: "C1",
@@ -1744,7 +1748,14 @@ it("continues an imported Slack conversation on its Office chat's model", async 
 
 it("switches an imported thread left on the default to its chat's model on the next turn", async () => {
   // Before the fix: the conversation started on the default, with nothing followed.
-  await using h = await seededSlack(undefined);
+  let clock = 0;
+  await using h = await seededSlack(undefined, () => clock);
+  const asked: Array<string> = [];
+  const chatModel = h.office.api.chatModel;
+  h.office.api.chatModel = async (chatId) => {
+    asked.push(chatId);
+    return chatModel(chatId);
+  };
   await h.bridge.receive(slackTurn("2.1", "Continue"));
   assert.deepEqual(
     h.t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.modelSelection,
@@ -1754,8 +1765,19 @@ it("switches an imported thread left on the default to its chat's model on the n
   assert.isUndefined(h.store.followedModel("slack:C1:1.1"));
   h.t3.finish("run-1", "Done.");
   await h.bridge.idle();
+  // The next turns soon after neither ask Office again nor log it again.
+  await h.bridge.receive(slackTurn("2.2", "One more"));
+  h.t3.finish("run-2", "Done.");
+  await h.bridge.idle();
+  assert.deepEqual(asked, ["chat-9"]);
+  assert.lengthOf(
+    h.logs.filter((line) => line.includes("has no recorded model")),
+    1,
+  );
 
+  // A model picked in Office later is followed once Office is asked again.
   h.office.chatModels.set("chat-9", OPUS);
+  clock += 10 * 60_000 + 1;
   await h.bridge.receive(slackTurn("3.1", "And the docs"));
   assert.deepEqual(modelSets(h), [OPUS]);
   assert.deepEqual(h.store.followedModel("slack:C1:1.1"), OPUS);
@@ -1765,7 +1787,8 @@ it("switches an imported thread left on the default to its chat's model on the n
 });
 
 it("keeps a !model switch made in an imported thread before the fix", async () => {
-  await using h = await seededSlack(undefined);
+  let clock = 0;
+  await using h = await seededSlack(undefined, () => clock);
   await h.bridge.receive(slackTurn("2.1", "Continue"));
   h.t3.finish("run-1", "Done.");
   await h.bridge.idle();
@@ -1773,6 +1796,7 @@ it("keeps a !model switch made in an imported thread before the fix", async () =
   await h.t3.tools.call("t3_thread_configure", { threadId: "thread-1", modelSelection: SOL });
 
   h.office.chatModels.set("chat-9", OPUS);
+  clock += 10 * 60_000 + 1;
   await h.bridge.receive(slackTurn("3.1", "And the docs"));
   assert.deepEqual(modelSets(h), [SOL]);
   assert.deepEqual(h.store.followedModel("slack:C1:1.1"), OPUS);

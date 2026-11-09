@@ -163,6 +163,23 @@ export class ArticleFiles {
     ].join("\n\n");
   }
 
+  /**
+   * Stages again the access a retried event staged on an earlier try, from its connection
+   * file, and returns the same note. Undefined when the file is gone, belongs to another
+   * event or has expired; Office won't grant the same message twice.
+   */
+  async restage(chatId: string, officeRunId: string, eventId: string): Promise<string | undefined> {
+    const connection = NodePath.join(this.root, safeId(chatId), `${safeId(officeRunId)}.json`);
+    const saved = await NodeFSP.readFile(connection, "utf8").then(
+      (text) => JSON.parse(text) as Record<string, unknown>,
+      () => undefined,
+    );
+    if (saved === undefined || saved.bridgeEventId !== eventId) return undefined;
+    if (typeof saved.expiresAt !== "number" || saved.expiresAt <= this.now()) return undefined;
+    const { bridgeEventId: _eventId, bridgeRunId: _runId, ...article } = saved;
+    return this.stage(chatId, eventId, article as NonNullable<PreparedRequest["article"]>);
+  }
+
   private expire(
     path: string,
     chatId: string,
