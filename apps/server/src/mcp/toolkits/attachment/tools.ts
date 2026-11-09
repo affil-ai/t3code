@@ -4,7 +4,6 @@ import {
   AttachmentCreateUploadUrlResult,
   AttachmentDeleteInput,
   MessageId,
-  OrchestratorMcpClientRequestId,
   RunId,
   ThreadId,
   OrchestrationV2RunStatus,
@@ -49,7 +48,7 @@ const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
   ...shared,
   dependencies: [...shared.dependencies, DocumentText.DocumentText],
   description:
-    "Send uploaded attachments as a new message to a thread. After an error or lost reply, retry with the same `clientRequestId`. Target modes cannot exceed yours. Success does not mean the provider read them or finished.",
+    "Send uploaded attachments as a new message to a thread. No retry key. Target modes cannot exceed yours. Success does not mean the provider read them or finished.",
   parameters: Schema.Struct({
     threadId: Schema.optional(ThreadId),
     message: Schema.optional(Schema.String.check(Schema.isMaxLength(120000))),
@@ -57,7 +56,6 @@ const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
       Schema.isMinLength(1),
       Schema.isMaxLength(8),
     ),
-    clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
   }),
   success: Schema.Struct({
     threadId: ThreadId,
