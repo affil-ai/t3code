@@ -26,7 +26,7 @@ export interface ThreadRoute {
 /** A channel's route. A channel may have several; the first that matches wins. */
 export interface ChannelRoute extends ThreadRoute {
   readonly channelId: string;
-  /** Only messages containing this text, any case, such as "[nextcard]". Without it, any message. */
+  /** Only messages containing this text, any case, such as "[webapp]". Without it, any message. */
   readonly match?: string | undefined;
 }
 

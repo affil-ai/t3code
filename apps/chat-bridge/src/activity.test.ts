@@ -96,8 +96,7 @@ it("leaves out conversation, bookkeeping and T3's own setup", () => {
 });
 
 it("shortens host paths and leading path assignments without exposing secrets", () => {
-  const home =
-    "/home/vivek-affil/.t3/worktrees/t3work/feat-chat-bridge-slack/.scratch/bridge-home-native";
+  const home = "/home/user/project/.scratch/bridge-home";
   for (const [type, text, expected] of [
     ["file_change", `${home}/office-article/chat/request/edit.json\nprivate content`, "edit.json"],
     [

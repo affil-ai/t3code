@@ -1500,28 +1500,28 @@ it("routes a channel message by its text, and starts a matched one in a new work
   const routes: ReadonlyArray<ChannelRoute> = [
     {
       channelId: "C1",
-      projectId: "nextcard",
-      match: "[nextcard]",
+      projectId: "webapp",
+      match: "[webapp]",
       worktreeFrom: "dev",
       note: "Keep it light: no installs or builds.",
     },
     { channelId: "C1", projectId: PROJECT },
   ];
-  assert.strictEqual(routeFor(routes, "C1", "[NextCard] find the map")?.projectId, "nextcard");
+  assert.strictEqual(routeFor(routes, "C1", "[WebApp] find the map")?.projectId, "webapp");
   assert.strictEqual(routeFor(routes, "C1", "what is 12 squared?")?.projectId, PROJECT);
-  assert.isUndefined(routeFor(routes, "C9", "[nextcard] elsewhere"));
+  assert.isUndefined(routeFor(routes, "C9", "[webapp] elsewhere"));
 
   const { t3, bridge } = harness(undefined, { routes });
-  await bridge.receive(event("100.1", { text: "[nextcard] find the map" }));
+  await bridge.receive(event("100.1", { text: "[webapp] find the map" }));
   await bridge.receive(event("200.1", { chatThreadKey: "slack:C1:200.1", text: "12 squared?" }));
-  const [nextcard, plain] = t3.calls.filter((call) => call.tool === "t3_thread_launch");
-  assert.strictEqual(nextcard?.args.projectId, "nextcard");
-  assert.deepStrictEqual(nextcard?.args.workspaceStrategy, {
+  const [webapp, plain] = t3.calls.filter((call) => call.tool === "t3_thread_launch");
+  assert.strictEqual(webapp?.args.projectId, "webapp");
+  assert.deepStrictEqual(webapp?.args.workspaceStrategy, {
     type: "worktree",
     baseRef: "dev",
     startFromOrigin: true,
   });
-  assert.include(String(nextcard?.args.message), "Keep it light: no installs or builds.");
+  assert.include(String(webapp?.args.message), "Keep it light: no installs or builds.");
   assert.strictEqual(plain?.args.projectId, PROJECT);
   assert.isUndefined(plain?.args.workspaceStrategy);
   assert.notInclude(String(plain?.args.message), "Keep it light");
@@ -1556,7 +1556,7 @@ it("makes a short, readable title from a request", () => {
     "What is 19 times 21?",
   );
   assert.strictEqual(
-    threadTitle("<@U0CD52L78DA> [t3 bridge test] test A otter: what is 19 × 21? Just the number."),
+    threadTitle("<@U0BOT000001> [t3 bridge test] test A otter: what is 19 × 21? Just the number."),
     "test A otter: what is 19 × 21?",
   );
   const long = threadTitle(
@@ -2843,12 +2843,12 @@ it("runs a Slack turn without article access when Office grants none or fails", 
 });
 
 it("sends Office the Slack email only with the team ID, and calls it without them when the lookup fails", async () => {
-  const both = { slackUserEmail: "ada@affil.ai", slackUserTeamId: "T1" };
+  const both = { slackUserEmail: "ada@example.com", slackUserTeamId: "T1" };
   const cases: Array<[() => Promise<SlackIdentity>, Record<string, string>]> = [
-    [async () => ({ email: "ada@affil.ai", teamId: "T1" }), both],
+    [async () => ({ email: "ada@example.com", teamId: "T1" }), both],
     [() => Promise.reject(new Error("users_not_found")), {}],
     // Office trusts the email only with our team's ID, so an email alone isn't sent.
-    [async () => ({ email: "ada@affil.ai" }), {}],
+    [async () => ({ email: "ada@example.com" }), {}],
     [async () => ({ teamId: "T1" }), {}],
   ];
   for (const [lookup, expected] of cases) {

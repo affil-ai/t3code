@@ -124,39 +124,39 @@ it("connects a thread to Linear only with a valid thread id and one issue", asyn
     ...deps,
     startLinear: async (request: unknown) => {
       requests.push(request);
-      return "AFF-9 now shows the work.";
+      return "ENG-9 now shows the work.";
     },
   };
   // No chat key: an orchestrator isn't a chat's thread.
   const started = await callTool(linear, "linear_start", {
     threadId: "mcp:launch:abc",
-    newIssue: { team: "AFF", title: "Fix it" },
+    newIssue: { team: "ENG", title: "Fix it" },
   });
   // Earlier callers name it childThreadId.
-  await callTool(linear, "linear_start", { childThreadId: "mcp:launch:def", issue: "AFF-1" });
+  await callTool(linear, "linear_start", { childThreadId: "mcp:launch:def", issue: "ENG-1" });
   assert.isUndefined(started.isError);
-  assert.strictEqual(textOf(started), "AFF-9 now shows the work.");
+  assert.strictEqual(textOf(started), "ENG-9 now shows the work.");
   assert.deepStrictEqual(requests, [
     {
       threadId: "mcp:launch:abc",
       issue: undefined,
-      newIssue: { team: "AFF", title: "Fix it", description: undefined },
+      newIssue: { team: "ENG", title: "Fix it", description: undefined },
       replace: false,
     },
-    { threadId: "mcp:launch:def", issue: "AFF-1", newIssue: undefined, replace: false },
+    { threadId: "mcp:launch:def", issue: "ENG-1", newIssue: undefined, replace: false },
   ]);
   for (const bad of [
     { childThreadId: "mcp:launch:abc" },
-    { childThreadId: "mcp:launch:abc", issue: "AFF-1", newIssue: { team: "AFF", title: "x" } },
+    { childThreadId: "mcp:launch:abc", issue: "ENG-1", newIssue: { team: "ENG", title: "x" } },
     { childThreadId: "mcp:launch:abc", issue: "not an issue" },
-    { childThreadId: "../x y", issue: "AFF-1" },
-    { childThreadId: "mcp:launch:abc", newIssue: { team: "AFF", title: "" } },
+    { childThreadId: "../x y", issue: "ENG-1" },
+    { childThreadId: "mcp:launch:abc", newIssue: { team: "ENG", title: "" } },
   ]) {
     assert.isTrue((await callTool(linear, "linear_start", bad)).isError, JSON.stringify(bad));
   }
   assert.lengthOf(requests, 2);
   // Without Linear the tool refuses.
-  const off = await callTool(deps, "linear_start", { childThreadId: "t", issue: "AFF-1" });
+  const off = await callTool(deps, "linear_start", { childThreadId: "t", issue: "ENG-1" });
   assert.isTrue(off.isError);
 });
 
@@ -170,7 +170,7 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
       return "Started a Slack thread.";
     },
   };
-  for (const channel of ["C0AJ5HR70PR", "U0123ABCD", "D0123ABCD"]) {
+  for (const channel of ["C0CHANNEL01", "U0123ABCD", "D0123ABCD"]) {
     const started = await callTool(slack, "slack_start", {
       threadId: "mcp:launch:abc",
       channel,
@@ -185,9 +185,9 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
   });
   for (const bad of [
     { threadId: "mcp:launch:abc", channel: "#general", text: "hi" },
-    { threadId: "mcp:launch:abc", channel: "C0AJ5HR70PR", text: "  " },
-    { threadId: "mcp:launch:abc", channel: "C0AJ5HR70PR", text: "x".repeat(4_001) },
-    { threadId: "../x y", channel: "C0AJ5HR70PR", text: "hi" },
+    { threadId: "mcp:launch:abc", channel: "C0CHANNEL01", text: "  " },
+    { threadId: "mcp:launch:abc", channel: "C0CHANNEL01", text: "x".repeat(4_001) },
+    { threadId: "../x y", channel: "C0CHANNEL01", text: "hi" },
   ]) {
     assert.isTrue((await callTool(slack, "slack_start", bad)).isError, JSON.stringify(bad));
   }
@@ -197,11 +197,11 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
 
 it("lets slack_start post only to the bridge's channels and to people allowed to use the bot", () => {
   const access = {
-    channelProjects: [{ channelId: "C0AJ5HR70PR" }],
+    channelProjects: [{ channelId: "C0CHANNEL01" }],
     allowedUserIds: ["U0123ABCD"],
     allowEveryone: false,
   };
-  assert.isUndefined(slackStartRefusal(access, "C0AJ5HR70PR"));
+  assert.isUndefined(slackStartRefusal(access, "C0CHANNEL01"));
   assert.isUndefined(slackStartRefusal(access, "U0123ABCD"));
   assert.match(
     slackStartRefusal(access, "C0OTHER0001") ?? "",

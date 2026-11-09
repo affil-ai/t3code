@@ -58,7 +58,10 @@ it("strips only the leading bot mention", () => {
   assert.strictEqual(stripBotMention("ask @t3 later", ["t3"]), "ask @t3 later");
   assert.strictEqual(stripBotMention("@t3bot hi", ["t3"]), "@t3bot hi");
   // Slack renders the mention with the bot's display name, or its id when the lookup failed.
-  assert.strictEqual(stripBotMention("@[Dev] Affil what?", ["[Dev] Affil", "dev-affil"]), "what?");
+  assert.strictEqual(
+    stripBotMention("@[Dev] Helper what?", ["[Dev] Helper", "dev-helper"]),
+    "what?",
+  );
   assert.strictEqual(stripBotMention("@U0BOT hi", ["", "t3", "U0BOT"]), "hi");
 });
 
@@ -431,7 +434,9 @@ it("reads a profile email and team from the same users.info lookup as the person
             id: args.user,
             name: "x",
             team_id: "T1",
-            ...(args.user === "UADA" ? { profile: { email: " ada@affil.ai " } } : { profile: {} }),
+            ...(args.user === "UADA"
+              ? { profile: { email: " ada@example.com " } }
+              : { profile: {} }),
           },
         };
       },
@@ -441,7 +446,7 @@ it("reads a profile email and team from the same users.info lookup as the person
   try {
     assert.isTrue(await host.isPerson("UADA"));
     assert.deepStrictEqual(await host.userIdentity("UADA"), {
-      email: "ada@affil.ai",
+      email: "ada@example.com",
       teamId: "T1",
     });
     assert.deepStrictEqual(await host.userIdentity("UNOMAIL"), { teamId: "T1" });

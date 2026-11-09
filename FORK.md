@@ -1,5 +1,10 @@
 # T3 Work
 
+> **Deprecated.** This fork is no longer developed. The only part still in use
+> is the standalone chat bridge in [`apps/chat-bridge`](apps/chat-bridge/README.md),
+> which runs against stock T3 Code
+> ([`pingdotgg/t3code`](https://github.com/pingdotgg/t3code)).
+
 T3 Work is a fork of T3 Code. Most changes are in the desktop and web client
 and still work against an unmodified T3 server of the same version.
 **Firstmate** changes the server, so it needs this fork's server.
@@ -24,15 +29,21 @@ language, and ownership boundaries.
 
 ## Fork changes and merge rules
 
-| Area                                      | Server change | Location                                                       |
-| ----------------------------------------- | ------------- | -------------------------------------------------------------- |
-| Code and Work modes, Work sidebar         | No            | `apps/web/src/components/work/`, `LegacySidebar.tsx`           |
-| Chat dock                                 | No            | `apps/web/src/components/work/DockChatPanel.tsx`               |
-| Desktop app identity and data directories | No            | `apps/desktop/src/app/`, `scripts/lib/brand-assets.ts`         |
-| Firstmate                                 | **Yes**       | See [Firstmate](#firstmate)                                    |
-| Detached service updates                  | **Yes**       | `apps/server/src/cli/managedProcessTree.ts`                    |
-| Release build dependency pinning          | No            | `scripts/lib/pin-patched-dependencies.ts`                      |
-| Chat bridge app for stock T3 (Slack)      | No            | `apps/chat-bridge/` (its [README](apps/chat-bridge/README.md)) |
+| Area                                               | Server change | Location                                                       |
+| -------------------------------------------------- | ------------- | -------------------------------------------------------------- |
+| Code and Work modes, Work sidebar                  | No            | `apps/web/src/components/work/`, `LegacySidebar.tsx`           |
+| Chat dock                                          | No            | `apps/web/src/components/work/DockChatPanel.tsx`               |
+| Desktop app identity and data directories          | No            | `apps/desktop/src/app/`, `scripts/lib/brand-assets.ts`         |
+| Firstmate                                          | **Yes**       | See [Firstmate](#firstmate)                                    |
+| Detached service updates                           | **Yes**       | `apps/server/src/cli/managedProcessTree.ts`                    |
+| Release build dependency pinning                   | No            | `scripts/lib/pin-patched-dependencies.ts`                      |
+| Chat bridge for stock T3 (Slack, Linear, iMessage) | No            | `apps/chat-bridge/` (its [README](apps/chat-bridge/README.md)) |
+
+**The chat bridge stands alone.** `apps/chat-bridge` runs against stock,
+unmodified T3 Code and needs nothing else from this fork. Every other change
+in this fork (Work mode, Firstmate and the other client and server changes) is
+deprecated: don't build on it, and don't run the fork to use the bridge. Set up
+the bridge from its [README](apps/chat-bridge/README.md).
 
 Keep fork code in its own files. When an upstream file must change, limit the
 edit to an import plus one registration line, and mark it with a

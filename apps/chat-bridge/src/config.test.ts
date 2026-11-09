@@ -55,13 +55,13 @@ it("reads channel routes with a match, a worktree branch and a note", () => {
   const config = parseConfig({
     t3Url: "http://127.0.0.1:3773",
     channelProjects: [
-      { channelId: "C1", projectId: "n", match: "[nextcard]", worktreeFrom: "dev", note: "Light." },
+      { channelId: "C1", projectId: "n", match: "[webapp]", worktreeFrom: "dev", note: "Light." },
       { channelId: "C1", projectId: "p" },
     ],
     allowedUserIds: ["U1"],
   });
   assert.deepStrictEqual(config.channelProjects, [
-    { channelId: "C1", projectId: "n", match: "[nextcard]", worktreeFrom: "dev", note: "Light." },
+    { channelId: "C1", projectId: "n", match: "[webapp]", worktreeFrom: "dev", note: "Light." },
     { channelId: "C1", projectId: "p" },
   ]);
   assert.throws(

@@ -48,7 +48,7 @@ export interface ToolDeps {
 
 export interface LinearStartRequest {
   readonly threadId: string;
-  /** An existing issue, such as AFF-123. */
+  /** An existing issue, such as ENG-123. */
   readonly issue?: string | undefined;
   readonly newIssue?:
     | { readonly team: string; readonly title: string; readonly description?: string | undefined }
@@ -78,17 +78,17 @@ const THREAD_ID_PROPERTY = {
 const LINEAR_START_TOOL = {
   name: "linear_start",
   description:
-    "Connect a T3 thread to a Linear issue: its progress and final message show in the issue's agent session, and later prompts there continue the thread. Pass your own thread id to take your work to Linear, or a subagent's childThreadId (its completion still wakes you). Give either issue (an existing one, such as AFF-123) or newIssue. No chat key needed.",
+    "Connect a T3 thread to a Linear issue: its progress and final message show in the issue's agent session, and later prompts there continue the thread. Pass your own thread id to take your work to Linear, or a subagent's childThreadId (its completion still wakes you). Give either issue (an existing one, such as ENG-123) or newIssue. No chat key needed.",
   inputSchema: {
     type: "object" as const,
     properties: {
       threadId: THREAD_ID_PROPERTY,
-      issue: { type: "string", description: "An existing issue's identifier, such as AFF-123." },
+      issue: { type: "string", description: "An existing issue's identifier, such as ENG-123." },
       newIssue: {
         type: "object",
         description: "An issue to create instead.",
         properties: {
-          team: { type: "string", description: "The team key, such as AFF." },
+          team: { type: "string", description: "The team key, such as ENG." },
           title: { type: "string", maxLength: 255 },
           description: { type: "string", maxLength: 20_000, description: "Markdown." },
         },
@@ -282,7 +282,7 @@ function linearStartRequest(args: Record<string, unknown>): LinearStartRequest {
     throw new ToolInputError("Pass either issue or newIssue.");
   }
   if (issue !== undefined && !ISSUE_ID.test(issue)) {
-    throw new ToolInputError("issue must be an identifier such as AFF-123.");
+    throw new ToolInputError("issue must be an identifier such as ENG-123.");
   }
   let newIssue: LinearStartRequest["newIssue"];
   if (raw !== undefined) {

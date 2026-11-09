@@ -160,8 +160,8 @@ export const REACTIONS_UNSEEN =
   "Not reacted: Linear doesn't show reactions on session messages. Acknowledge in words instead, in your reply or with a short chat_post update while you work.";
 
 /**
- * "AFF-123 Issue title" from Linear's session context, which starts with
- * `<issue identifier="AFF-123">` and a `<title>`. A delegated issue's prompt is
+ * "ENG-123 Issue title" from Linear's session context, which starts with
+ * `<issue identifier="ENG-123">` and a `<title>`. A delegated issue's prompt is
  * only Linear's "This thread is for an agent session with …", so the thread is
  * named after the issue instead.
  */
@@ -310,7 +310,7 @@ export function linearPlatform(options: {
   readonly deliver: Deliver;
   /** Keeps a plain comment as context for its issue's conversation, unless a session took it. */
   readonly comment: (comment: LinearComment) => Promise<void>;
-  /** An existing issue, by identifier such as AFF-123. Reads only. */
+  /** An existing issue, by identifier such as ENG-123. Reads only. */
   readonly findIssue: (identifier: string) => Promise<LinearIssueRef>;
   readonly createIssue: (input: {
     readonly team: string;

@@ -1,298 +1,583 @@
 # T3 chat bridge
 
-Talk to T3 Code agents from Slack, iMessage, Linear, and Office. Mention the bot in a mapped channel and it
-starts a T3 thread in that channel's project. Replies in the Slack thread go to
-the same T3 thread. Each run shows in Slack as it works, with Slack's own agent
-features, and ends with the agent's final message.
+Talk to T3 Code agents from Slack, Linear and iMessage. A message to the bot
+starts a T3 thread, replies continue it, and the agent's final message comes
+back as a normal reply.
 
-It works with stock T3 Code. The bridge is a separate process that talks to T3
-through T3's MCP endpoint, the same one Claude and Codex use, and to Slack over
-Socket Mode, so it needs no public URL. A bridge for Office's Slack app can
-instead take Slack's traffic from Office, which keeps the app's Request URLs
-(`slack.transport: "office-relay"`, see [Office](#office)).
+> **This app is all you need.** `apps/chat-bridge` is a standalone Node app
+> that runs against **stock, unmodified T3 Code**
+> ([`pingdotgg/t3code`](https://github.com/pingdotgg/t3code)). It talks to T3
+> only through T3's MCP endpoint, the same one Claude and Codex use.
+>
+> The rest of this fork (`affil-ai/t3code`: Work mode, Firstmate and the other
+> client and server changes) is **deprecated and not needed** for the bridge.
+> Don't build or run the fork's server or desktop app. Install the workspace
+> dependencies and start `apps/chat-bridge` against your own stock T3 server
+> (see [Quick start](#quick-start)).
+
+## Contents
+
+- [Quick start](#quick-start)
+- [What it does](#what-it-does)
+- [Prerequisites](#prerequisites): a stock T3 server, Node, signing in, projects
+- [Slack](#slack)
+- [Linear](#linear)
+- [iMessage](#imessage)
+- [Give the agents the chat tools](#give-the-agents-the-chat-tools)
+- [Running always on](#running-always-on)
+- [Config reference](#config-reference)
+- [Resend a Slack message](#resend-a-slack-message)
+- [Limits](#limits)
+- [Development](#development)
+
+## Quick start
+
+```sh
+git clone https://github.com/affil-ai/t3code.git
+cd t3code
+git checkout feat/chat-bridge-slack
+pnpm install --filter "@t3tools/chat-bridge..."   # only the bridge's dependencies
+cd apps/chat-bridge
+
+node src/bin.ts login --t3-url http://127.0.0.1:3773   # once, see Prerequisites
+# write ~/.t3-chat-bridge/config.json (see Config reference)
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… node src/bin.ts start
+```
+
+Each platform is optional: the bridge turns on Slack when its tokens are set,
+and Linear and iMessage when their sections are in `config.json`. You can run
+any one of them alone.
+
+The commands are:
+
+| Command                                  | What it does                                                   |
+| ---------------------------------------- | -------------------------------------------------------------- |
+| `node src/bin.ts login --t3-url URL`     | Signs the bridge in to T3 (OAuth) and saves the token.         |
+| `node src/bin.ts manifest --name "NAME"` | Prints a Slack app manifest.                                   |
+| `node src/bin.ts start`                  | Runs the bridge. `--config PATH` uses a config file elsewhere. |
+| `node src/bin.ts resend-slack CH TS`     | Hands one Slack message to T3 again (bridge stopped).          |
+
+`import-office` also exists; it belongs to the optional Office relay channel
+(see [Config reference](#config-reference)) and you won't need it.
 
 ## What it does
 
-- **A mention starts a thread.** The bridge launches a T3 thread in the
-  channel's project with the message, who sent it, and any attached files.
-- **A direct message starts a thread too**, in `dmProjectId`. Each top-level
-  direct message is its own thread; replies under it continue that thread.
+These apply on every platform unless a section says otherwise.
+
+- **A message starts a thread.** In Slack, a mention in a mapped channel or a
+  direct message. In Linear, an agent session (a mention, or delegating or
+  assigning an issue to the app). In iMessage, any message from an allowed
+  person. The bridge launches a T3 thread in the configured project with the
+  message, who sent it, and any attached files.
 - **A mention inside a Slack thread brings the thread along.** The first turn
   includes the messages before the mention, oldest first, within 80,000
-  characters (the newest are kept). Each message shows its author and Slack id,
-  so the agent can tag them. Their files are imported with the mention's own.
-  Messages from people outside `allowedUserIds` are included as context too.
-- **Replies continue it.** A reply steers the run in flight, on every platform,
-  or starts a new run if the thread is idle. Nothing waits for the run to end.
-- **Some replies are only context.** A reply that starts with "aside", one that
-  mentions another bot, and one from someone outside `allowedUserIds` start no
-  run. The agent sees them, up to the newest 50, with the next message it gets.
-- **Mute.** `@bot mute` in a thread makes the bot answer only messages that
-  mention it; the rest become context. `@bot unmute` undoes it.
-- **Status shows what the agent is doing.** While a run goes, the thread's
-  status, at the bottom of the thread with the app's icon and a spinner, says
-  what the agent is doing now: "Running `pnpm test`", "Searching the web for
-  …", "Editing bridge.ts", or "Thinking…" between steps. It is the status
-  Office and Devin show (`assistant.threads.setStatus`), read from T3's
-  `t3_thread_read` activity view every 2.5 seconds, at most 50 characters,
-  with anything that looks like a secret redacted. The agent session
-  (`agents.sessions.setStatus`) is `processing` while a run goes, which is
-  when Slack offers its Stop button, `suspended` while T3 waits on a person,
-  and `active` otherwise. The status text is sent after the session state,
-  and Slack shows it in the session's loading indicator. Both are sent again
-  every 90 seconds.
+  characters (the newest are kept), with each author and their Slack id so the
+  agent can tag them. Their files are imported with the mention's own.
+- **Replies continue it.** A reply steers the run in flight, or starts a new
+  run if the thread is idle.
+- **Some replies are only context.** In Slack, a reply that starts with
+  "aside", one that mentions another bot, and one from someone not allowed
+  start no run. The agent sees them, up to the newest 50, with its next
+  message. `@bot mute` in a thread makes the bot answer only messages that
+  mention it; `@bot unmute` undoes it.
+- **Status shows what the agent is doing.** While a run goes, the bridge reads
+  T3's activity view every 2.5 seconds and shows what the agent is doing now,
+  such as "Running `pnpm test`" or "Thinking…", at most 50 characters, with
+  anything that looks like a secret redacted. In Slack this is the thread's
+  agent status (`assistant.threads.setStatus`) and the agent session state
+  (`processing`, `suspended` while T3 waits on a person, `active`); in Linear
+  it is the session's thoughts.
 - **Answers are normal replies.** When a run ends, its final message is posted
-  to the thread in parts of up to 12,000 characters, Slack's limit. A run that
-  ends without a final message, or whose whole final message is `NO_REPLY`,
-  posts nothing. The marker exists because Claude Code asks a run that ends
-  with no text for a visible reply. Every chat's first turn, and the chat
-  tools' standing instructions, also tell the agent that a subagent or
-  background command can wake it more than once: a wake that only repeats a
-  result already posted, or only says the work is still going, gets `NO_REPLY`. On Linear, a quiet run
-  whose session still shows the agent at work ends it with a short "Done, nothing to add." response,
-  unless another answer is still owed there. A failed run posts a short notice.
-- **Questions come to Slack.** When the agent asks a question, the bridge posts
-  it in the thread with a button for each option, and Submit for a multiple
-  choice. Where the question takes free text, a reply in the thread answers it
-  instead of starting a new turn. The answer goes back through
-  `t3_pending_request` (or `t3_pending_request_respond` on T3 servers from
-  before the per-action tools were merged), so the same run carries on, and
-  the question then shows what was picked. Codex's question ends its run and
-  T3 hands the answer to a new run; the bridge looks for that run after
-  answering and posts its reply like any other. Only people in `allowedUserIds` can answer.
-- **Permissions can't be granted from Slack.** T3's tools can't approve a
-  permission request, so a run that asks for one is stopped, and the thread
-  says why. Threads start in `full-access` mode, so this is rare.
-- **Model switch.** As in Office, `!opus`, `!fable`, `!glm`, `!sol`, `!astra`
-  or `!terra` anywhere in a message picks the model, with an optional effort
-  (`!sol-high`, `!opus-low`); an effort alone (`!high`) keeps the model. The
-  first one outside code is taken out of the message. GPT models run on
-  Codex and the rest on Claude, and a thread can change provider between
-  turns (`t3_thread_configure`). A switch with nothing else confirms it in
-  the thread. New threads start on `modelSelection` from the config.
-- **Results that arrive later.** When a run ends while its subagents or
-  background work are still going, the bridge keeps following the thread
-  (`t3_thread_wait` with `untilDelegatedWorkSettled`, for up to six hours).
-  Each run T3 starts when that work reports back begins with a notification,
-  and its answer is posted like any other, once. The follow is saved, so a
-  restart picks it up where it left off. If six hours pass with the work
-  still going, the bridge stops following and says so in the chat. A run
-  started by a message typed in T3 stays in T3.
-- **Status from the agent.** The `chat_status` tool sets the status text, such
-  as "Running the tests", until the agent's next step.
-- **Titles follow T3.** A new T3 thread starts with a short title: the
-  request's first sentence, without tags such as `[t3 bridge test]` or
-  mentions, at most 60 characters. The bridge then asks T3 to write a summary
-  title (`t3_thread_update` with `regenerate_title`), which needs T3's title
-  generation to work. The Slack thread takes the T3 title, in DMs and channel
-  threads alike, and again whenever T3 renames it (`agents.sessions.rename`
-  with `channel_id` and `thread_ts`). Slack refuses some characters, such as
-  square brackets, so the bridge leaves them out. A rename Slack refuses is
-  tried again on later checks, up to three times per title. The T3 title is
-  the only source: renaming the thread in Slack doesn't rename the T3 thread,
-  and Slack takes the T3 title again the next time T3 changes it.
-- **Stop.** `@bot stop` in a thread interrupts its T3 run
-  (`t3_thread_interrupt`), and the thread says "The run was stopped." Slack's own stop
-  button (`agent_session_stopped`) does the same. Slack shows it only while
-  the session is `processing` and the app subscribes to the
-  `agent_session_stopped` bot event; when Slack says the subscription is
-  missing, the bridge logs it once. Only people in `allowedUserIds` can stop
-  a run.
-- **Nothing is lost.** Each Slack message is saved to an inbox table in SQLite
-  before the bridge acts on it, and each Slack thread's messages are handled
-  from that table in order. If T3 can't take a message, it stays in the inbox
-  and is retried after 15 s, 30 s, 1 min and so on, up to 10 min apart. After
-  nine failed tries (about 36 minutes) the bridge says so in the thread and
-  drops it. Later messages in that thread wait behind it. T3 retry keys make a
-  retried message land once.
+  in parts of up to 12,000 characters. A run that ends without a final
+  message, or whose whole final message is `NO_REPLY`, posts nothing. A
+  failed run posts a short notice.
+- **Questions come to the chat.** When the agent asks a question, Slack gets a
+  button per option (and Submit for multiple choice), Linear gets its own
+  chooser for single choice, and other cases get numbered text. A typed reply
+  answers too. The answer goes back through T3's `t3_pending_request` tool, so
+  the same run carries on.
+- **Permissions can't be granted from chat.** T3's tools can't approve a
+  permission request, so a run that asks for one is stopped and the thread
+  says why. Use `runtimeMode: "full-access"` (or `auto`) to make this rare.
+- **Model switch.** `!opus`, `!sol-high`, `!high` and similar anywhere in a
+  message pick the model and effort for that thread. The aliases and the
+  models they map to are hard-coded in `src/modelCommand.ts`; edit them to
+  match the providers your T3 server runs. New threads start on
+  `modelSelection` from the config, or the project's default.
+- **Results that arrive later.** When a run ends while subagents or background
+  work are still going, the bridge keeps following the thread for up to six
+  hours and posts each later answer once. The follow survives a restart.
+- **Titles follow T3.** The bridge asks T3 to title each new thread, and the
+  Slack thread takes T3's title.
+- **Stop.** `@bot stop` in a Slack thread, Slack's own stop button, or
+  Linear's "Send stop request" interrupts the run (`t3_thread_interrupt`).
+- **Nothing is lost.** Each incoming message is saved to an inbox table in
+  SQLite before the bridge acts on it, and each conversation's messages are
+  handled in order. If T3 can't take a message, it is retried after 15 s,
+  30 s, 1 min and so on, up to 10 min apart; after nine failed tries (about 36
+  minutes) the bridge says so in the chat and drops it. T3 retry keys
+  (`clientRequestId`) make a retried text message land once. **Messages with
+  files are the exception on stock T3:** the bridge sends `clientRequestId` to
+  `t3_thread_send_attachments` too, but stock T3 ignores it there, so if a
+  send with files reached T3 and only its reply was lost, the retry can post
+  that message to the T3 thread twice.
 - **Restarts are safe.** After a restart the bridge works through what is left
-  in the inbox and picks up runs it still owes a reply for. In Socket Mode it
-  then reads Slack for messages sent while it was down: replies in threads
-  bound in the last 14 days (up to 200 threads), new mentions in mapped
-  channels, and new messages in direct-message channels it has answered
-  before. It reads from a minute before it last ran, and skips messages it
-  already has. A thread or channel Slack can't read, such as a deleted thread
-  (`thread_not_found`), is logged and skipped. With `"office-relay"` it reads
-  nothing back: Office keeps every Slack event while the bridge is down.
-- **Resend a dropped message.** See [Resend a Slack message](#resend-a-slack-message).
+  in the inbox and picks up runs it still owes a reply for. Slack catches up
+  on messages sent while it was down (replies in threads bound in the last 14
+  days, new mentions in mapped channels, and direct-message channels it has
+  answered before). iMessage catches up from its saved Messages row id.
 
-Who can use it is set in the config, in one of two ways:
-
-- **An allowlist (the default).** Only Slack users in `allowedUserIds` can use
-  it.
-- **Everyone in the workspace.** With `"allowEveryone": true`, every full
-  member of the workspace can use it as well. People in `allowedUserIds`
-  still can. Guests, bots, deactivated accounts and people from other
-  companies in shared channels can't. The bridge checks each person with
-  `users.info` (their team, `is_restricted`, `is_ultra_restricted`) and
-  remembers the answer for ten minutes. A failed check counts as not allowed.
-
-  Every run has the bridge's T3 access. With a `full-access` runtime mode,
-  anyone in the workspace can then run commands on the machine as the user
-  T3 runs as. The bridge logs a warning at start-up while this is on. Use it
-  with a project and a runtime mode that you would hand to everyone.
-
-The same rule covers starting a thread, follow-ups, answering a question and
-stopping a run. Anyone not allowed who mentions or messages the bot gets a
-short reply, at most once an hour, with their member id to add. Messages from
-bots, including itself, are ignored.
-
-## Threads that start their own conversation
-
-A T3 thread can start a conversation itself instead of waiting for one:
-
-- `slack_start` posts an opening message as a new top-level message in any
-  channel the bot is in, or as a DM when `channel` is a person's member id
-  (`chat.postMessage` takes a user id, so this needs only `chat:write`). The
-  Slack thread under that message is bound to the T3 thread: replies there
-  continue it, and its final message in each run posts there. In a DM, reply
-  in the thread under the bot's message.
-- `linear_start` does the same with a Linear issue (see Linear below).
-
-Both take the thread's own id or a subagent's `childThreadId`, and need no
-chat key. Stock T3 never tells the bridge which thread is calling, so the
-bridge can't prove the caller is that thread, and every agent on the T3
-server sees the tools. So they are off unless `startTools` is `true` in the
-config, and `slack_start` posts only in a channel listed in `channelProjects`
-or as a DM to someone allowed to use the bot. Leave them off on a T3 server
-other people's chats run on, such as Office's.
-
-## How the agent posts files and reactions
+### How the agent posts files and reactions
 
 Stock T3 doesn't tell an MCP server which thread is calling it, so the bridge
-writes a random chat key for each Slack thread into the turn it sends. The
-agent passes that key to `chat_post`, `chat_react` or `chat_status`. The key is the permission:
-it only reaches its own Slack thread, and `chat_post` only reads files inside
-that thread's worktree or project folder.
+writes a random **chat key** for each conversation into the turn it sends.
+The agent passes that key to the bridge's own MCP tools, `chat_post` (text and
+files), `chat_react` and `chat_status`. The key is the permission: it reaches
+only its own conversation, and `chat_post` reads files only inside that
+thread's worktree or project folder. The tools are served on
+`http://127.0.0.1:<toolsPort>/mcp`, on loopback only; see
+[Give the agents the chat tools](#give-the-agents-the-chat-tools).
 
-The tools are served on `http://127.0.0.1:<toolsPort>/mcp`, on loopback only.
-The server also sends the agent short instructions when it connects: that its
-final message goes to Slack, and how to mention people. Those stay in view after
-the first turn is compacted away. Every later turn repeats the chat key.
-Each agent provider must be told about that server (step 5).
+### Threads that start their own conversation
 
-## Setup
+With `"startTools": true`, the bridge also serves `slack_start` (post an
+opening message in a channel or DM and bind its thread) and `linear_start`
+(open an agent session on a Linear issue, new or existing, and bind it). They
+take a thread id and **no chat key**, and stock T3 can't tell the bridge who
+is calling, so every agent on the T3 server can use them. They are off by
+default; leave them off on a T3 server other people's chats run on.
+`slack_start` posts only in a channel listed in `channelProjects`, or as a DM
+to someone allowed to use the bot.
 
-You need Node 24 or later (for `node:sqlite` and running TypeScript directly),
-a T3 Code server, and permission to create a Slack app in your workspace.
+## Prerequisites
 
-### 1. Install
+### A stock T3 server
 
-From the repository root:
+Run an ordinary T3 Code server from
+[`pingdotgg/t3code`](https://github.com/pingdotgg/t3code), on the same machine
+as the bridge (the chat tools are on loopback, and `chat_post` reads files by
+path). Its address is `t3Url` in the config, for example
+`http://127.0.0.1:3773`. The bridge doesn't start T3; it connects to
+`<t3Url>/mcp`.
+
+Before routing chats to it:
+
+- **Providers work.** Sign in Claude and/or Codex in T3's settings and check
+  that a thread started from T3's own UI runs.
+- **Each project has a default model**, or set `modelSelection` in the
+  bridge config.
+- **Title generation works**, if you want summary titles in Slack.
+
+### Node and pnpm
+
+Node 24 or later (for `node:sqlite` and running TypeScript directly) and pnpm.
+
+### Sign the bridge in to T3
+
+The bridge uses T3's MCP OAuth flow, like any MCP client:
 
 ```sh
-pnpm install
 cd apps/chat-bridge
+node src/bin.ts login --t3-url http://127.0.0.1:3773
 ```
 
-### 2. Create the Slack app
+It prints a link. Open it in a browser signed in to that T3 server, choose the
+access level, and approve. T3 redirects to `http://127.0.0.1:3921/callback`,
+where `login` is listening (`--callback-port` changes the port), so open the
+link on the same machine or forward that port. The token is saved to
+`t3-login.json` in the data directory with mode 0600.
 
-Print a manifest and create the app from it at
-<https://api.slack.com/apps> → **Create New App** → **From a manifest**:
+- The access level you approve caps every thread the bridge starts. Agents
+  that must edit files or run commands unattended need `full-access` or
+  `auto`.
+- The login is bound to the server's origin and lasts 30 days. T3 issues no
+  refresh tokens, so run `login` again before it expires.
+- To use an MCP token you already have instead, set `T3_TOKEN` when you run
+  `start`.
+
+### The data directory
+
+The bridge keeps `config.json`, `t3-login.json` and its SQLite database
+(`bridge.db`) in `~/.t3-chat-bridge`, or in `$T3_CHAT_BRIDGE_HOME` when that is
+set. Back it up if you care about thread bindings.
+
+### Choose T3 projects
+
+Each conversation starts its thread in a T3 project. Find project ids in T3,
+or with the `t3_project_list` MCP tool. Every route (a Slack channel, Slack
+DMs, a Linear team, iMessage) takes a project id and, optionally:
+
+- `worktreeFrom`: start each new thread in a new worktree from this branch on
+  `origin` (such as `main`), instead of the project's own checkout;
+- `note`: text added to the thread's first turn, such as limits on what the
+  agent may do.
+
+The bridge checks at start-up that every configured project exists.
+
+## Slack
+
+Slack connects over **Socket Mode**, so Slack needs no public URL.
+
+### 1. Create the app
+
+Print a manifest and create the app from it at <https://api.slack.com/apps> →
+**Create New App** → **From a manifest**:
 
 ```sh
 node src/bin.ts manifest --name "T3 Code"
 ```
 
-The manifest turns on Socket Mode and asks for these bot scopes:
-`app_mentions:read`, `assistant:write`, `channels:history`, `groups:history`,
-`im:history`, `chat:write`, `files:read`, `files:write`, `reactions:write` and
-`users:read` and `metadata.message:read`. It turns on Slack's agent features (`agent_view` and agent
-tasks), the Messages tab so people can send it direct messages, and
-interactivity for the answer buttons. It subscribes to
-`agent_session_stopped` (the stop button) and `app_context_changed` (logged, nothing else) as well as messages and mentions.
+The manifest turns on Socket Mode, interactivity (for question buttons),
+Slack's agent features (`agent_view` and agent tasks) and the Messages tab, so
+people can DM the bot. It asks for these bot scopes:
 
-Then:
+`app_mentions:read`, `assistant:write`, `channels:history`, `chat:write`,
+`files:read`, `files:write`, `groups:history`, `im:history`,
+`metadata.message:read`, `reactions:write`, `users:read`
 
-- Install the app to your workspace and copy the **Bot User OAuth Token**
-  (`xoxb-…`). This is `SLACK_BOT_TOKEN`.
-- Under **Basic Information → App-Level Tokens**, create a token with the
+and subscribes to these bot events:
+
+`agent_session_stopped` (the stop button), `app_context_changed` (logged
+only), `app_mention`, `message.channels`, `message.groups`, `message.im`
+
+**Reactions, optional.** To pass people's emoji reactions to the agent as
+context, also add the `reactions:read` scope and subscribe to
+`reaction_added` and `reaction_removed`, then reinstall the app. A reaction
+never starts a run.
+
+### 2. Get the tokens
+
+- **Install to Workspace**, then copy the **Bot User OAuth Token** (`xoxb-…`).
+  This is `SLACK_BOT_TOKEN`.
+- **Basic Information → App-Level Tokens**: create a token with the
   `connections:write` scope (`xapp-…`). This is `SLACK_APP_TOKEN`.
-- Invite the bot to each channel you want to use (`/invite @T3 Code`).
 
-### 3. Write the config
+Set both as environment variables when you start the bridge. Never put them in
+`config.json`.
 
-The bridge keeps its files in `~/.t3-chat-bridge`, or in `$T3_CHAT_BRIDGE_HOME`
-when that is set. Create `config.json` there:
+### 3. Route channels and DMs
+
+In `config.json`:
 
 ```json
 {
   "t3Url": "http://127.0.0.1:3773",
-  "channelProjects": [{ "channelId": "C0123ABCD", "projectId": "your-t3-project-id" }],
-  "dmProjectId": "your-t3-project-id",
-  "allowedUserIds": ["U0123ABCD"],
-  "toolsPort": 3920,
-  "runtimeMode": "full-access",
-  "modelSelection": { "instanceId": "claudeAgent", "model": "claude-opus-5-5" }
+  "channelProjects": [
+    { "channelId": "C0123456789", "projectId": "<T3 project id>" },
+    { "channelId": "C0123456789", "projectId": "<other project id>", "match": "[web]" }
+  ],
+  "dmProjectId": "<T3 project id>",
+  "allowedUserIds": ["U0123456789"]
 }
 ```
 
-- `t3Url`: your T3 server's address.
-- `t3EnvironmentId`: optional. Checks that `t3Url` serves this environment,
-  then pins thread, project, and pending-request calls to it. Without it,
-  T3 uses the connected server's local environment. Use the ID from
-  `t3_environment_read`, not an Office worker registration name. All channels
-  on one bridge use this target. Linked remote environments are not supported;
-  attachment tools operate on the connected server.
-- `channelProjects`: which T3 project a mention in each channel starts its
-  thread in. A channel id is in the channel's **About** panel. A project id is
-  in T3, or from the `t3_project_list` MCP tool. A channel can have several
-  entries; the first that matches wins. Optional fields per entry:
-  - `match`: only messages containing this text, in any case, such as
-    `[nextcard]`. An entry without it takes every message.
-  - `worktreeFrom`: start each thread in a new worktree from this branch on
-    origin, such as `dev`, instead of the project's own checkout.
-  - `note`: text added to the thread's first turn, such as limits on what the
-    agent may run.
-- `dmProjectId`: optional. The T3 project direct messages start their threads
-  in. Without it, direct messages are ignored.
-- `allowedUserIds`: Slack member ids (profile → **⋯** → **Copy member ID**). Can be
-  empty when `allowEveryone` is on.
-- `allowEveryone`: optional, `false` by default. `true` also lets every full
-  member of the workspace use the bot (see above).
-- `toolsPort`: the port for the `chat_post` / `chat_react` server. Default 3920.
-- `startTools`: optional, `false` by default. `true` also serves `slack_start`
-  and `linear_start` (see "Threads that start their own conversation").
-- `runtimeMode` and `modelSelection`: optional, for new threads. Without them
-  T3 uses the project's defaults. T3 caps the runtime mode at the access you
-  grant the bridge in step 4.
+- `channelProjects`: which project a mention in each channel starts its thread
+  in. A channel id is in the channel's **About** panel. A channel can have
+  several entries; the first whose `match` text the message contains (any
+  case) wins, and an entry without `match` takes every message. Each entry
+  takes `worktreeFrom` and `note` too.
+- `dmProjectId`: where direct messages start their threads. Without it, DMs
+  are ignored. Each top-level DM is its own thread; reply under it to continue.
+- Invite the bot to each mapped channel (`/invite @T3 Code`).
 
-Pass `--config PATH` to `start` to use a config file somewhere else.
+### 4. Decide who may use it
 
-### 4. Sign in to T3
+- **An allowlist (the default).** Only members in `allowedUserIds` (profile →
+  **⋯** → **Copy member ID**). The same rule covers starting a thread,
+  follow-ups, answering a question and stopping a run. Anyone else who
+  mentions the bot gets a short reply, at most once an hour, with their member
+  id to add.
+- **Everyone in the workspace.** `"allowEveryone": true` also lets every full
+  member use it. Guests, bots, deactivated accounts and people from other
+  organizations in shared channels can't. The bridge checks each person with
+  `users.info` and caches the answer for ten minutes.
+
+**Risk:** every run has the bridge's T3 access. With `full-access`, anyone
+allowed can run commands on the machine as the user T3 runs as. The bridge
+logs a warning at start-up when `allowEveryone` is on.
+
+### 5. Start
 
 ```sh
-node src/bin.ts login --t3-url http://127.0.0.1:3773
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… node src/bin.ts start
 ```
 
-It prints a link. Open it in a browser signed in to T3, choose the access level,
-and approve. The bridge listens on `127.0.0.1:3921` for the redirect
-(`--callback-port` changes it) and saves the token to `t3-login.json` with mode 0600. The login lasts 30 days. Run `login` again when it expires.
+Run **one bridge per Slack app**: two processes on the same app token split
+Slack's events between them.
 
-The bridge can only start threads at the access level you approve. Agents that
-must edit files or run commands unattended need `full-access` or `auto`.
+## Linear
 
-To use a token you already have instead, set `T3_TOKEN` when you run `start`.
+The agent works in Linear as an **app user** on Linear's Agents API
+(`@chat-adapter/linear` in agent-sessions mode), so it shows natively in
+issues.
 
-### 5. Give the agents the chat tools
+### How it behaves
+
+- **What starts a run:** an agent session. Mentioning the app in a comment
+  (`@<botName> …`) starts one, and so does delegating or assigning an issue
+  to it. Plain comments on an issue the agent already works on are kept as
+  context for its next run and never answered.
+- **One T3 thread per issue.** Every session on an issue continues the same
+  thread. Each answer goes to the session the latest prompt came from.
+- **What shows in Linear:** a "thought" as soon as a session gets a prompt,
+  the run's status as thoughts, an "action" per finished step (such as "Ran
+  `pnpm test`"), the agent's to-do list as the session plan, and the final
+  message as the response, in Markdown. A quiet run whose session still shows
+  the agent at work ends with "Done, nothing to add."
+- **What the agent gets:** the prompt plus Linear's context for a new session
+  (the issue, its description and comments). Images and files are downloaded
+  with the bridge's token and arrive as files; signed links never reach the
+  agent.
+- **Files:** `chat_post` uploads files to Linear and links them in the
+  response. Linear shows no reactions on session messages, so `chat_react`
+  adds none.
+- **Stop:** the session menu's "Send stop request" interrupts the run. The
+  bridge checks Linear's signature before acting.
+
+### 1. Create the OAuth application
+
+In Linear: **Settings → API → OAuth applications → New**, in the workspace you
+will use the agent in (a client-credentials token acts in the workspace that
+owns the app).
+
+- **Name:** what people will @mention. Put the same name in `linear.botName`.
+- **Callback URL:** Linear requires one, but the bridge doesn't use it: it
+  authenticates with the **client credentials** grant, as the app itself, so
+  there is no OAuth redirect to host. Any URL you control is fine.
+- **Client credentials:** turn this on.
+- **Webhooks:** turn on, and set the URL to your public webhook URL (see
+  [Webhook ingress](#webhook-ingress)), such as
+  `https://bridge.example.com/linear/webhook`. Subscribe to:
+  - **Agent session events** (required: new sessions, prompts and stop
+    requests);
+  - **Comments** (optional: plain comments as context).
+
+The bridge requests these scopes for its token: `read`, `write`,
+`comments:create`, `issues:create`, `app:mentionable` and `app:assignable`.
+The last two make the app something people can @mention and assign or
+delegate issues to.
+
+Copy three values: the **client ID**, the **client secret** and the
+**webhook signing secret**. They become `LINEAR_CLIENT_ID`,
+`LINEAR_CLIENT_SECRET` and `LINEAR_WEBHOOK_SECRET`. The bridge reads them from
+the environment and removes them from its own environment at start-up.
+Without all three, Linear stays off and its webhook answers 503.
+
+### 2. Route teams
+
+```json
+"linear": {
+  "botName": "my-agent",
+  "webhookPort": 3930,
+  "webhookPath": "/linear/webhook",
+  "projectId": "<default T3 project id>",
+  "worktreeFrom": "main",
+  "teams": [{ "team": "ENG", "projectId": "<T3 project id>", "worktreeFrom": "main" }],
+  "allowEveryone": true,
+  "allowedUserIds": []
+}
+```
+
+- **Default route:** `projectId` (required), plus optional `worktreeFrom` and
+  `note`, at the top of the `linear` block. Issues of teams without their own
+  entry start there.
+- **Per-team routes:** `teams`, by team key (the `ENG` in `ENG-123`), each
+  with its own `projectId`, `worktreeFrom` and `note`.
+- `botName`: the app's name as people @mention it. It defaults to `"office"`
+  (the name is historical), so set it.
+- **Access:** `allowEveryone` is **on by default** for Linear: anyone in the
+  workspace who can mention the app may use it. Set it to `false` to allow
+  only `allowedUserIds` (Linear user ids).
+
+### Webhook ingress
+
+The bridge serves the webhook on loopback only, at
+`http://127.0.0.1:<webhookPort><webhookPath>`. It answers POST at exactly that
+path and 404 everywhere else, and checks Linear's signature and timestamp on
+every request. Linear must reach it over public HTTPS, so put any HTTPS tunnel
+or reverse proxy in front that forwards **only that path**. Two examples:
+
+- **Tailscale Funnel:**
+
+  ```sh
+  sudo tailscale funnel --bg --https=8443 --set-path=/linear/webhook \
+    http://127.0.0.1:3930/linear/webhook
+  ```
+
+  The webhook URL is then `https://<machine>.<tailnet>.ts.net:8443/linear/webhook`.
+  `--bg` keeps it across restarts. Undo it with
+  `sudo tailscale funnel --https=8443 --set-path=/linear/webhook off`.
+
+- **Cloudflare Tunnel:** one ingress rule with `path: ^/linear/webhook$` and
+  service `http://127.0.0.1:3930`, followed by the catch-all
+  `http_status:404`.
+
+**Only one bridge may own the webhook.** A Linear app has one webhook URL, and
+each session's state lives in the bridge that received it. Don't point two
+bridges at the same Linear app.
+
+### 3. Start
+
+```sh
+LINEAR_CLIENT_ID=… LINEAR_CLIENT_SECRET=… LINEAR_WEBHOOK_SECRET=… \
+  node src/bin.ts start
+```
+
+Linear's token fetch runs in the background and retries, so Slack and iMessage
+never wait on it; until it succeeds the webhook answers 503 and Linear
+redelivers.
+
+## iMessage
+
+The agent answers iMessages sent to a Mac's Messages account. Each
+conversation is one ongoing T3 thread. Group chats work: every message goes to
+the agent, which decides whether to answer. Photos and files arrive as
+attachments (iPhone HEIC photos as JPEG), and the agent sends files with
+`chat_post`. Answers are plain text. Only the services in `imessage.services`
+are read (default `["iMessage"]`); SMS chats are left alone.
+
+### How it connects
+
+```text
+Messages.app ← imsg rpc ← affil-imessage (Mac, 127.0.0.1:47821)
+                                  ↑ SSH tunnel
+                     bridge host 127.0.0.1:47821 ← chat bridge
+```
+
+- **On the Mac,** `mac/affil-imessage.swift` (the name is historical) runs a
+  pinned [`imsg`](https://github.com/openclaw/imsg) and serves a limited set
+  of its JSON-RPC methods on `127.0.0.1:47821`. It also reads incoming
+  attachments, only from the Messages attachments folder, and stages outgoing
+  files. It serves one client at a time and a new connection replaces the old
+  one, so don't probe it while the bridge is connected.
+- **On the bridge's host,** an SSH tunnel forwards that port. The bridge
+  reconnects by itself and catches up from its saved Messages row id.
+
+### 1. Prepare the Mac
+
+1. Use a Mac user signed in to Messages with the Apple Account the agent
+   should answer as. A dedicated macOS user is a good idea.
+2. Install `imsg` **v0.20.0** (its `v0.20.0` release), the version the
+   service was written and reviewed against, for example to `~/.local/opt/imsg-0.20.0/imsg`.
+3. Build the service, as that user:
+
+   ```sh
+   mkdir -p ~/Applications/affil-imessage
+   swiftc -O -o ~/Applications/affil-imessage/affil-imessage mac/affil-imessage.swift
+   ```
+
+   Sign it with a stable identity (a Developer ID or a local code-signing
+   certificate), not ad hoc, so a rebuild keeps its macOS permissions:
+   `codesign --force --sign "<identity>" ~/Applications/affil-imessage/affil-imessage`.
+
+4. **Grant permissions** in System Settings → Privacy & Security, to the
+   `affil-imessage` binary (its child `imsg` inherits them):
+   - **Full Disk Access**, to read the Messages database and attachments;
+   - **Automation → Messages**, to send. macOS asks the first time it sends;
+     someone has to click Allow at the Mac.
+5. **Install the LaunchAgent.** Copy `mac/com.affil.imessage.plist` (the
+   label is historical; rename it if you like) to
+   `~/Library/LaunchAgents/`, replace `USER` with the user's short name and
+   check the paths, then:
+
+   ```sh
+   mkdir -p ~/Library/Logs/affil-imessage
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.affil.imessage.plist
+   ```
+
+   It has `RunAtLoad` and `KeepAlive`, so it starts at login and restarts if
+   it exits.
+
+> **The LaunchAgent runs only inside that user's GUI session**
+> (`LimitLoadToSessionType: Aqua`; Messages needs it). After the Mac restarts,
+> nothing runs until someone logs that user in. Either make it the
+> **automatic-login user** (System Settings → Users & Groups; requires
+> FileVault off) or log in by hand after each restart. Keep the Mac awake
+> (Energy settings: prevent automatic sleep). Fast User Switching to another
+> user is fine; the service keeps running in the background session.
+
+### 2. Tunnel the port to the bridge's host
+
+The service listens on the Mac's loopback only. From the bridge's host:
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:47821:127.0.0.1:47821 messages-user@mac.example.com
+```
+
+Use a key-only SSH login for that Mac user. See
+[Running always on](#running-always-on) to keep it up.
+
+### 3. Configure
+
+```json
+"imessage": {
+  "host": "127.0.0.1",
+  "port": 47821,
+  "projectId": "<T3 project id>",
+  "worktreeFrom": "main",
+  "allowedHandles": ["+15555550100", "someone@example.com"],
+  "allowEveryone": false,
+  "outboundReactions": false
+}
+```
+
+- `host` and `port`: the tunnel's local end (these are the defaults).
+- `projectId`, `worktreeFrom`, `note`: the route for new conversations.
+- `allowedHandles`: phone numbers and emails, as Messages shows them, that may
+  use the agent.
+- `allowEveryone`: **off by default.** `true` lets anyone who can send this
+  Apple Account an iMessage start runs, with the bridge's T3 access (often full
+  access to the machine). Spam and strangers can reach it. The bridge logs a
+  warning at start-up. Leave it off unless the account's number is private and
+  the T3 project and runtime mode are safe to hand to anyone.
+- `services`: Messages services to read, default `["iMessage"]`.
+- `startAfterRowId`: on the very first start only, also answer messages after
+  this Messages row id. Otherwise the bridge starts from now.
+
+### Reactions and SIP
+
+Incoming tapbacks from allowed people are kept as context for the thread's
+next turn, such as "Ada reacted love (heart) to message <id>". A reaction never
+starts a run.
+
+`imsg` can **send** tapbacks, typing indicators and read receipts only through
+Apple's private Messages framework, by injecting a helper into Messages, and
+that requires **System Integrity Protection (SIP) off**. With SIP on (the
+default), the agent isn't offered `chat_react` in iMessage, there's no typing
+indicator, and messages show as delivered, not read. Everything else works.
+
+To turn on outbound tapbacks anyway (this lowers the security of the whole
+Mac):
+
+1. Shut the Mac down, hold the power button until "Loading startup options",
+   choose **Options**, then **Utilities → Terminal**.
+2. Run `csrutil disable`, then `csrutil status` to check, and restart.
+3. As the Messages user, run `imsg launch --install-agent` and check that
+   `imsg status` shows its bridge running. On macOS 26 and later, library
+   validation can still block it; `imsg status` says so.
+4. Set `imessage.outboundReactions: true` and restart the bridge. On connect
+   it asks `imsg` for `status` and turns tapbacks on only if the helper is
+   running, and logs which way it went.
+
+To undo: `imsg launch --uninstall-agent`, set `outboundReactions: false`, and
+run `csrutil enable` from Recovery.
+
+The bridge doesn't use `imsg react`'s non-SIP mode (UI scripting of the
+Tapback picker): it can't target a message by id, needs Messages frontmost in
+the active session, and can't confirm the tapback was sent.
+
+## Give the agents the chat tools
 
 Register `http://127.0.0.1:3920/mcp` (your `toolsPort`) as an HTTP MCP server
-named `t3-chat-bridge` for each agent provider T3 runs.
+named `t3-chat-bridge` for each provider T3 runs. Without it the bridge still
+works, but agents can't send files, react or set status.
 
 Claude, for every project:
 
 ```sh
 claude mcp add --scope user --transport http t3-chat-bridge http://127.0.0.1:3920/mcp
 ```
-
-Or for one project, in its `.mcp.json`:
-
-```json
-{ "mcpServers": { "t3-chat-bridge": { "type": "http", "url": "http://127.0.0.1:3920/mcp" } } }
-```
-
-Claude asks before using a project server. To skip the prompt, add
-`"enableAllProjectMcpServers": true` to that project's `.claude/settings.json`.
 
 Codex, in `~/.codex/config.toml`:
 
@@ -301,662 +586,239 @@ Codex, in `~/.codex/config.toml`:
 url = "http://127.0.0.1:3920/mcp"
 ```
 
-Or, to give the tools only to Codex runs that T3 starts, set the Codex
-provider's **Launch arguments** in T3's settings to:
+Or, to give the tools only to Codex runs T3 starts, set the Codex provider's
+**Launch arguments** in T3's settings to
+`-c mcp_servers.t3-chat-bridge.url="http://127.0.0.1:3920/mcp"`.
 
-```text
--c mcp_servers.t3-chat-bridge.url="http://127.0.0.1:3920/mcp"
-```
+T3 doesn't restart a running provider when settings change, so restart T3
+afterwards. Every agent on the server sees these tools; the chat key in each
+turn is what limits each call to its own conversation.
 
-T3 runs one Codex app-server per provider instance and doesn't restart it when
-settings change, so restart T3 afterwards.
+## Running always on
 
-Without this step the bridge still works, but agents can't send files or react.
+Everything restarts by itself once set up; only macOS permission prompts and
+the Mac's login need a person.
 
-### 6. Start it
+### Linux: systemd user units
+
+Put secrets in a file only you can read, for example
+`~/.config/t3-chat-bridge/env` (mode 0600):
 
 ```sh
-SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… node src/bin.ts start
+SLACK_BOT_TOKEN=xoxb-…
+SLACK_APP_TOKEN=xapp-…
+LINEAR_CLIENT_ID=…
+LINEAR_CLIENT_SECRET=…
+LINEAR_WEBHOOK_SECRET=…
 ```
 
-It checks that each mapped project exists, connects to Slack, and logs to
-stderr. Keep it running under your process manager of choice (systemd, launchd,
-pm2). Stop it with Ctrl-C or SIGTERM.
+`~/.config/systemd/user/t3-chat-bridge.service`:
 
-Run one bridge per Slack app. Two processes on the same app token would split
-Slack's events between them.
+```ini
+[Unit]
+Description=T3 chat bridge
+After=network-online.target
 
-## How platforms plug in
+[Service]
+WorkingDirectory=%h/t3code/apps/chat-bridge
+EnvironmentFile=%h/.config/t3-chat-bridge/env
+ExecStart=/usr/bin/env node src/bin.ts start
+Restart=always
+RestartSec=5
 
-Slack, iMessage, and Linear share one Chat SDK `Chat` (`src/chatHost.ts`).
-Office subscribes directly to its Convex inbox. Both paths feed the same
-`Bridge.receive`, which saves messages to SQLite before handing them to T3.
+[Install]
+WantedBy=default.target
+```
 
-The bridge core (`src/bridge.ts`) does everything about T3: bindings, the
-inbox, runs, questions, model switches and access. It reaches a platform only
-through `ChatPlatform` (`src/platform.ts`), which carries what the SDK doesn't
-model:
+For iMessage, `~/.config/systemd/user/imessage-tunnel.service`:
 
-- who may use it: an allowlist, and `allowEveryone`;
-- where a new conversation starts its thread: a project, and optionally a new
-  worktree and a note;
-- how a person, a message and the reply rules read to the agent;
-- optional extras: Slack's agent session status, titles and Block Kit
-  questions. A platform without buttons gets questions as numbered text, and
-  people answer by replying with a number, an option or their own words.
+```ini
+[Unit]
+Description=SSH tunnel to the Messages Mac
+After=network-online.target
 
-A platform uses a Chat SDK adapter where one fits, or its own subscription,
-to turn incoming messages into `InboundEvent`s. Its `ChatPlatform` sends
-the core's replies and status back.
+[Service]
+ExecStart=/usr/bin/ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 -o BatchMode=yes \
+  -L 127.0.0.1:47821:127.0.0.1:47821 messages-user@mac.example.com
+Restart=always
+RestartSec=10
 
-## Office
+[Install]
+WantedBy=default.target
+```
 
-Set `OFFICE_CONVEX_URL`, `OFFICE_CHAT_BRIDGE_TOKEN`, and `OFFICE_T3_PROJECT_ID`
-in the bridge's environment. With `"slack": { "transport": "office-relay" }` in
-`config.json`, Slack also arrives through Office: Office keeps the Slack app's
-Request URLs and relays each verified request to the bridge (see
-[Change the Office Slack app at cutover](#change-the-office-slack-app-at-cutover)). Article chats run Office's article tool
-(`apps/office/scripts/article-workspace.cts`) from a nextcard checkout with its
-packages installed: `OFFICE_REPOSITORY_PATH`, or the project's checkout when
-it isn't set.
-`OFFICE_WORKTREE_FROM` optionally starts new threads in worktrees from that
-branch. The bridge removes the service token from its environment after
-reading it. The old `OFFICE_AGENT_SERVICE_TOKEN` is no longer used.
+Run your T3 server as a unit the same way. Then:
 
-Office's `chatBridge:prepare` checks access before delivery. One Office chat
-maps to one T3 thread. New threads get Office's mode instructions and the
-requester's commit trailer. When the prepared request carries the chat's own
-`modelSelection` (`{ instanceId, model, options? }`), a new thread starts on
-it, over the config's, and a follow-up first switches a thread running another
-model to it with `t3_thread_configure`. Without it, known Office model names
-map to T3 models, unknown names use the configured default, and follow-ups
-leave the thread's model alone. An existing Office conversation
-starts a new T3 thread with its checkpoint summary, recent messages, and the
-old thread ID for reference. The bridge never adopts the retired worker's thread.
-That first turn, for an imported chat or one with a summary, also tells the agent
-to read the original Slack thread in full before acting (its channel ID and
-`thread_ts`) and gives the Office chat link, or only the link for a chat that
-is in Office alone. It says worktree paths in the history belong to the old
-server: the agent continues in its own worktree and reaches committed work
-through its branch. Every Office request also tells the agent to send the
-requester's files or answer as soon as they are built and checked, and to
-run repository gates afterwards, or skip them for draft-only changes.
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now t3-chat-bridge.service imessage-tunnel.service
+sudo loginctl enable-linger "$USER"   # start user units at boot, without a login
+journalctl --user -u t3-chat-bridge -f
+```
 
-The channel subscribes to `chatBridge:inbox` with the Convex client; it does
-not poll. Once the core accepts an event into SQLite, the channel acknowledges
-it in Office. Redelivery after a lost acknowledgement does not start another
-turn. The core follows runs and posts answers, questions, uploaded files,
-finished steps, plans, state, and titles. `NO_REPLY` clears the working state
-without posting a message. A stop interrupts the chat's current run.
+Use the full path to `node` in `ExecStart` if it isn't on systemd's `PATH`
+(for example under nvm). Stop the bridge with `systemctl --user stop`; it
+shuts down cleanly on SIGTERM.
 
-Article credentials live in mode-0600 connection files under
-`$T3_CHAT_BRIDGE_HOME/office-article`, never in the prompt or SQLite inbox.
-The agent gets a launcher for nextcard's `apps/office/scripts/article-workspace.cts`
-and a local snapshot when Office supplies one. Connection files are removed
-when their run ends or their token expires. A bridge restart preserves
-connections for running agents and restores expiry timers before resuming runs.
-Snapshots and edit files remain for inspection.
+### macOS: LaunchAgent
 
-Support cases, Slack-target mockup reviews, and new schedule runs have an Office chat and a Slack thread, bound to one T3 thread
-with `sync: true`. The channel opens and links the Slack thread when needed,
-then receives the request on the Office key. A staff reply in Slack appears
-in Office with its author; agent replies, questions, steps, plans, and state
-appear in both. Slack staff messages still use the Slack allowlist. Without
-Slack, the request is rejected with a visible error in Office.
+The iMessage service's LaunchAgent is above. To run the bridge itself on a Mac,
+use a LaunchAgent the same way, with `ProgramArguments` of `node`,
+`src/bin.ts`, `start`, a `WorkingDirectory` of `apps/chat-bridge`, the
+environment variables under `EnvironmentVariables` (keep the plist mode 0600),
+and `RunAtLoad` and `KeepAlive` set to true.
 
-Binding groups default to `sync: false`. In an unsynced group, replies go to
-the conversation that sent the request; delegated-work wakes go to the
-conversation used last. Existing bindings migrate into one-conversation,
-unsynced groups. Linking is host-controlled, with no user-facing linking tool.
+## Config reference
 
-This v1 keeps the core's existing delivery guarantees and forty-step limit.
-It does not add a durable output outbox, execution-specific stop fences,
-or a reverse migration. Posts have stable reply identities
-for Office's deduplication. An upload retried before the post succeeds can
-leave an unused storage object.
-
-## Cutover from office-t3-worker
-
-`import-office` reads every page of `chatBridge:legacyBindings` with the
-Office service token. It verifies the configured T3 environment, but does not
-read old T3 threads. Unavailable old threads are still valid references. It never
-sends a T3 message, subscribes to Office's inbox, connects to Slack, or owes
-an answer from an earlier run.
-
-The import records seeds for these destinations:
-
-- `slack` and historical `schedule` runs: the Slack key only. The Office chat remains history.
-- `support` and `mockup`: the Office key and Slack key, with group sync enabled.
-- `office`: the Office key. Chats not imported can also start with history from `prepare`.
-
-Each seed records the Office chat ID, old thread ID, destination, and sync flag.
-The first message starts a new T3 thread, binds every destination in the group,
-and removes the seeds in one transaction. Import receipts remain, so rerunning
-the import after a group has converted does not recreate its seeds.
-
-Office messages obtain history from `prepare`. Seeded Slack replies obtain it
-from `chatBridge:history`, without needing an @mention. A `later` response
-requests compaction and saves the event's retry deadline in the bridge inbox.
-It neither starts a thread nor spends a failed-handoff attempt. A restart
-resumes the saved event at that deadline. Office does not receive a stored
-acknowledgement while that event waits for compaction.
-
-Slack subscriptions are local Chat SDK state in the same database. They let
-staff replies in the old Slack threads reach the bridge after it starts.
-Importing does not post anything to those threads.
-
-### Target the shared T3 server
-
-The bridge connects to `<t3Url>/mcp` with an MCP bearer token. It does not
-start a T3 server. On the cutover host, these values were verified read-only
-on November 8, 2026:
+`config.json` in the data directory (`~/.t3-chat-bridge`, or
+`$T3_CHAT_BRIDGE_HOME`), or the file given with `start --config PATH`. No
+secrets go in it. A complete example with every platform; remove the blocks
+you don't use:
 
 ```json
 {
-  "t3Url": "http://127.0.0.1:3778",
-  "t3EnvironmentId": "ca333224-0a70-495a-b0e1-419928d47e9c",
-  "channelProjects": [],
-  "allowedUserIds": [],
-  "runtimeMode": "full-access"
+  "t3Url": "http://127.0.0.1:3773",
+  "toolsPort": 3920,
+  "runtimeMode": "full-access",
+  "modelSelection": {
+    "instanceId": "claudeAgent",
+    "model": "claude-opus-5-5",
+    "options": [{ "id": "effort", "value": "medium" }]
+  },
+  "startTools": false,
+
+  "channelProjects": [
+    {
+      "channelId": "C0123456789",
+      "projectId": "<T3 project id>",
+      "worktreeFrom": "main",
+      "note": "Don't deploy anything."
+    },
+    { "channelId": "C0123456789", "projectId": "<T3 project id>", "match": "[docs]" }
+  ],
+  "dmProjectId": "<T3 project id>",
+  "allowedUserIds": ["U0123456789"],
+  "allowEveryone": false,
+
+  "linear": {
+    "botName": "my-agent",
+    "webhookPort": 3930,
+    "webhookPath": "/linear/webhook",
+    "projectId": "<T3 project id>",
+    "worktreeFrom": "main",
+    "teams": [{ "team": "ENG", "projectId": "<T3 project id>" }],
+    "allowEveryone": true,
+    "allowedUserIds": []
+  },
+
+  "imessage": {
+    "host": "127.0.0.1",
+    "port": 47821,
+    "projectId": "<T3 project id>",
+    "allowedHandles": ["+15555550100", "someone@example.com"],
+    "allowEveryone": false,
+    "services": ["iMessage"],
+    "outboundReactions": false
+  }
 }
 ```
 
-The old worker uses that server through native RPC, with a different
-credential type. Do not copy its `T3_BEARER_TOKEN` into `T3_TOKEN`. Use
-`login --t3-url http://127.0.0.1:3778` to approve an MCP login at the access
-level the bridge needs. The login is bound to the server's origin. A login
-for the rehearsal server on port 3911 cannot authenticate to port 3778.
-An existing MCP credential may instead come from `T3_TOKEN`.
+| Field             | Default                | Meaning                                                                                        |
+| ----------------- | ---------------------- | ---------------------------------------------------------------------------------------------- |
+| `t3Url`           | required               | The T3 server's origin.                                                                        |
+| `t3EnvironmentId` | unset                  | Optional. Checks that `t3Url` serves this environment and pins thread and project calls to it. |
+| `toolsPort`       | `3920`                 | Loopback port of the chat-tools MCP server.                                                    |
+| `runtimeMode`     | project default        | For new threads, such as `full-access`. Capped by the access approved at `login`.              |
+| `modelSelection`  | project default        | For new threads: `{ instanceId, model, options? }`.                                            |
+| `startTools`      | `false`                | Serve `slack_start` and `linear_start`.                                                        |
+| `channelProjects` | required (may be `[]`) | Slack channel routes: `channelId`, `projectId`, and optional `match`, `worktreeFrom`, `note`.  |
+| `dmProjectId`     | unset                  | Project for Slack DMs. Unset ignores DMs.                                                      |
+| `allowedUserIds`  | required (may be `[]`) | Slack member ids allowed to use the bot.                                                       |
+| `allowEveryone`   | `false`                | Also allow every full member of the Slack workspace.                                           |
+| `slack.transport` | `"socket"`             | Leave as `socket`. `"office-relay"` belongs to the Office relay below.                         |
+| `linear.*`        | off                    | See [Linear](#linear). `projectId` is required; `allowEveryone` defaults to `true`.            |
+| `imessage.*`      | off                    | See [iMessage](#imessage). `projectId` is required.                                            |
 
-### Prepare the stock T3 server
+`formerModelSelections` is also accepted; it only matters for migrating
+threads after changing `modelSelection`, and you can leave it out.
 
-The bridge talks to an ordinary T3 server, which needs what the shared
-server has, or its runs fail or use the wrong provider:
+### Environment variables
 
-- **Provider settings.** Copy them from the shared server's settings. Codex
-  **Launch arguments**: `-c model_provider="cliproxy8" -c
-  model_catalog_json="/home/vivek-affil/.config/cliproxy8/codex-models.json"`. Claude environment:
-  `ANTHROPIC_BASE_URL=http://127.0.0.1:8327`, and `ANTHROPIC_AUTH_TOKEN` as a
-  sensitive value, from the owning secret manager. Restart T3 afterwards: it
-  doesn't restart a running provider when settings change.
-- **No project from the working directory.** Set
-  `T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false` in the server's systemd unit,
-  so it doesn't register its working directory as a project.
-- **A model for new threads.** Give each routed project a default model in
-  T3, or set `modelSelection` in the bridge's config. Office chats that name
-  their own model use it instead.
-- **The chat tools.** Register `t3-chat-bridge` for both providers (step 5):
-  `[mcp_servers.t3-chat-bridge]` in `~/.codex/config.toml`, and
-  `claude mcp add --scope user …` for Claude. Every agent on the server sees
-  the tools; the chat key in each turn is the permission.
+| Name                    | Needed for          | Notes                                                   |
+| ----------------------- | ------------------- | ------------------------------------------------------- |
+| `SLACK_BOT_TOKEN`       | Slack               | `xoxb-…`. Also used by `resend-slack`.                  |
+| `SLACK_APP_TOKEN`       | Slack (Socket Mode) | `xapp-…`, scope `connections:write`.                    |
+| `LINEAR_CLIENT_ID`      | Linear              | Removed from the bridge's environment after it is read. |
+| `LINEAR_CLIENT_SECRET`  | Linear              | Same.                                                   |
+| `LINEAR_WEBHOOK_SECRET` | Linear              | The webhook signing secret. Same.                       |
+| `T3_TOKEN`              | optional            | An MCP token for T3 instead of the saved `login`.       |
+| `T3_CHAT_BRIDGE_HOME`   | optional            | The data directory. Default `~/.t3-chat-bridge`.        |
 
-Office needs these non-secret settings in the bridge's environment:
-
-```sh
-export OFFICE_T3_PROJECT_ID=1bac8beb-ae3c-4fb4-ad4e-24bd3186525f
-export OFFICE_REPOSITORY_PATH=/home/vivek-affil/nextcard
-export OFFICE_WORKTREE_FROM=dev
-```
-
-That project is the worker's registered `/home/vivek-affil/office` project,
-not the primary nextcard checkout's project. Keep using it for Office
-threads. `OFFICE_REPOSITORY_PATH` points to an installed nextcard checkout
-containing the cutover version of `apps/office/scripts/article-workspace.cts`;
-update that checkout before enabling article chats. It does not change the
-T3 project's workspace. `OFFICE_WORKTREE_FROM=dev` preserves the worker's
-default of creating worktrees for new conversations.
-
-Set `OFFICE_CONVEX_URL` to the intended Office deployment and supply
-`OFFICE_CHAT_BRIDGE_TOKEN` through the owning environment's secret manager.
-The importer needs only these two Office settings plus its T3 MCP login and
-target configuration. New Office threads use `OFFICE_T3_PROJECT_ID`; new
-Slack threads use the configured channel or DM route. Exported `environmentId` values are historical
-metadata, not routing instructions. In particular, the worker registered
-as `dev-affil-server-t3`; that is not the shared server's MCP environment ID.
-Old thread IDs are references, not destinations on the configured T3 target.
-
-The minimal config above enables no Slack access by itself. Before starting
-the bridge, restore the intended Slack allowlist and channel routes using
-project IDs on the shared server, and supply the production Slack app
-credentials. Check every other enabled channel's routes too. Do not reuse
-the scratch server's project IDs, MCP login, or binding database.
-
-### Change the Office Slack app at cutover
-
-Use the Office app, `A0BDG2PFNHZ`, not T3 Code Dev. The production manifest
-was read without changes on November 8, 2026.
-
-The Office app keeps its HTTP Request URLs on Office Convex, for events and
-for interactivity, so Office's own alert buttons keep working. Do not turn on
-Socket Mode and do not change either URL. Office verifies each Slack request's
-signature and stores its exact body; the bridge reads the undelivered rows
-through `chatBridge:slackInbox` over its Office connection, replays each through
-the Slack adapter, and marks it delivered with `chatBridge:slackDelivered` once
-the bridge has handled it. Slack events posted while the bridge is down wait in
-Office and are handled when it starts. A row that fails three times is logged by
-id and marked delivered, so it can't hold up the rest.
-
-Set this in the bridge's `config.json`:
-
-```json
-{ "slack": { "transport": "office-relay" } }
-```
-
-The bridge then needs only `SLACK_BOT_TOKEN`, the Office app's bot token, and
-the Office settings above. It needs no `SLACK_APP_TOKEN` and no
-`SLACK_SIGNING_SECRET`; Office holds the signing secret. Without the setting,
-`transport` is `socket`, which other bridges such as T3 Code Dev keep using.
-
-The manifest edits are additive. Compared with the production manifest, the
-bridge needs:
-
-1. Under `settings.event_subscriptions.bot_events`, add `agent_session_stopped`
-   (the stop button) and `app_context_changed`. Keep `app_mention`,
-   `message.channels`, `message.groups`, `message.im`, and the existing
-   `message.mpim`. These events reach Office's events URL like any other.
-2. Under `features.app_home`, set `messages_tab_enabled: true`,
-   `messages_tab_read_only_enabled: false`, and `agent_tasks_enabled: true`,
-   so people can message the bot from its Messages tab. The production manifest
-   already has `agent_view`, but no `app_home` settings.
-
-Nothing else changes. Interactivity stays on with its current URL; the bridge's
-question buttons reach it through Office's relay. The app already has every bot
-scope the bridge uses (`app_mentions:read`, `assistant:write`,
-`channels:history`, `groups:history`, `im:history`, `chat:write`, `files:read`,
-`files:write`, `reactions:write`, `users:read`, `metadata.message:read`), so no
-reinstall is needed. To capture reaction context, also subscribe to
-`reaction_added` and `reaction_removed`; Office already has `reactions:read`.
-
-The bridge uses neither `SLACK_CLIENT_ID` nor `SLACK_CLIENT_SECRET`, and it does
-not require `OFFICE_FEEDBACK_RELAY_SECRET`. `SLACK_BOT_TOKEN` was absent from the
-selected `office/prod` Infisical namespace during the read-only check. Provision
-it there before cutover. No credentials were copied during verification.
-
-Replies under Office-bot posts tagged `office_feedback_thread` go to the T3
-thread named by the newest tagged post before that reply. Custom display names
-still count through Office's bot ID. The bridge imports reply files, but creates
-no conversation binding and does not automatically publish that agent's answer.
-The target agent replies through its existing Slack tools. An existing bridge
-binding, including a thread opened with `slack_start`, takes precedence.
-Top-level DM replies retain the relay's 48-hour window and latest-bot-post rule.
-
-### Import with the bridge stopped
-
-Run these commands from `apps/chat-bridge`. The cutover owner first drains
-the legacy worker and stops it as part of the production cutover. Then stop
-the bridge with `systemctl --user stop t3-chat-bridge.service` and keep it
-stopped through import and verification. Concurrent import and bridge
-execution against the same home are not supported. A rehearsal in a fresh
-scratch home does not require stopping either live service.
-Do not change the shared T3 service or its configuration.
-
-1. Choose the production bridge home and write its `config.json`. For a
-   rehearsal, use a fresh `mktemp -d` directory. Never use the running
-   `.scratch/bridge-home-native` home for a rehearsal.
-
-   ```sh
-   export T3_CHAT_BRIDGE_HOME=/path/to/cutover-bridge-home
-   node src/bin.ts login --t3-url http://127.0.0.1:3778
-   ```
-
-2. If this home already has a database, checkpoint it after stopping the
-   bridge. A dry-run refuses a nonempty WAL because an immutable read would
-   miss its uncheckpointed changes.
-
-   ```sh
-   sqlite3 "$T3_CHAT_BRIDGE_HOME/bridge.db" 'PRAGMA wal_checkpoint(TRUNCATE);'
-   ```
-
-3. Preview the import with the Office credentials injected through
-   Infisical. This command does not create a bridge home or write database
-   files. `imported` counts rows that would change, not writes performed.
-
-   ```sh
-   agent-env office prod -- node src/bin.ts import-office --dry-run
-   ```
-
-4. Resolve unexpected skips or conflicts before proceeding. Old T3 thread
-   availability is no longer a reason to skip a seed. Then
-   import and rerun:
-
-   ```sh
-   agent-env office prod -- node src/bin.ts import-office
-   agent-env office prod -- node src/bin.ts import-office
-   ```
-
-Each command prints one JSON result per exported row and a final summary
-with `imported`, `unchanged`, `skipped` by reason, and `conflicts`.
-Counts are per export row, so a support pair counts once. The summary also
-includes Office's per-page skip counts, including empty pages. A rerun
-reports zero imports once the seeds or consumed-seed receipts and subscriptions
-exist. A repair of a missing subscription counts as imported.
-
-A key with a different seed or an unrelated binding is a conflict. A binding
-from a previous seed conversion is unchanged only when its receipt matches.
-The importer leaves the
-whole row alone, including both destinations of a support case. It never
-replaces a key, disables an existing sync flag, or changes a chat key.
-Auth, network, and target-environment failures abort the command. Each row commits atomically, so a failed command can
-be rerun after fixing its cause.
-
-### Verify the store before starting the bridge
-
-Read seeds, import receipts, and subscriptions without selecting the private `chat_key`.
-For strict no-file-write reads, use the same immutable mode after checkpointing:
-
-```sh
-sqlite3 -readonly "file:$T3_CHAT_BRIDGE_HOME/bridge.db?immutable=1" '
-  SELECT s.chat_thread_key, s.chat_id, s.old_thread_id, s.sync,
-         CASE WHEN sub.thread_id IS NULL THEN 0 ELSE 1 END AS subscribed
-  FROM conversation_seed s
-  LEFT JOIN state_subscription sub ON sub.thread_id = s.chat_thread_key
-  ORDER BY s.chat_id, s.chat_thread_key;
-  SELECT r.chat_thread_key, r.chat_id, r.old_thread_id, r.thread_id
-  FROM seed_receipt r ORDER BY r.chat_id, r.chat_thread_key;
-  SELECT b.chat_thread_key, b.thread_id, b.project_id, g.sync,
-         CASE WHEN s.thread_id IS NULL THEN 0 ELSE 1 END AS subscribed
-  FROM binding b
-  JOIN binding_group g ON g.thread_id = b.thread_id
-  LEFT JOIN state_subscription s ON s.thread_id = b.chat_thread_key
-  ORDER BY b.thread_id, b.chat_thread_key;
-  SELECT COUNT(*) AS owed FROM owed_reply;
-  SELECT COUNT(*) AS following FROM delegated_follow;
-  SELECT COUNT(*) AS inbox FROM inbox;
-'
-```
-
-Each imported Slack key has `subscribed=1`. Each support or mockup pair shares
-a seed `chat_id` and has `sync=1`. After its first message, that pair shares
-a new T3 thread instead. Ordinary Slack rows have no new Office key. The
-import adds nothing to `owed_reply`, `delegated_follow`, or `inbox`, even
-when a legacy thread has a completed or running answer.
-
-Start the bridge only after the cutover owner has switched Office's producers
-and confirmed that the legacy worker is stopped. A subsequent authorized
-staff reply in an imported Slack thread must start one new T3 thread with
-Office history. For support and mockups, confirm that the new exchange appears in both places.
-This live check is separate from the read-only import rehearsal.
+The code also reads `OFFICE_CONVEX_URL`, `OFFICE_CHAT_BRIDGE_TOKEN`,
+`OFFICE_T3_PROJECT_ID`, `OFFICE_WORKTREE_FROM` and `OFFICE_REPOSITORY_PATH`.
+They configure an optional Office relay channel used by this bridge's authors;
+leave them unset. With them unset, the Office channel, `import-office` and
+`slack.transport: "office-relay"` are all off.
 
 ## Resend a Slack message
 
-A message the bridge already marked as handled is dropped when it arrives
-again, including a relayed row Office records again under a new event id: the
-Chat SDK dedupes by the message's `ts`, and the bridge by its
-`handled_message` record. To hand one on again, stop the bridge, then run:
+A message the bridge already handled is dropped if it arrives again. To hand
+one to T3 again, stop the bridge and run:
 
 ```sh
 SLACK_BOT_TOKEN=xoxb-… node src/bin.ts resend-slack <channel id> <message ts>
 ```
 
-It refuses while a bridge runs on the same data dir. It reads the message from
-Slack (`conversations.replies` for that `ts`), clears that message's
-`handled_message` row, inbox row and kept context, and the Chat SDK's
-`dedupe:slack:<ts>` mark, and saves it to the inbox, in one transaction. Start
-the bridge again: it hands the message to T3 as a normal message, once. The
-T3 retry key is the message's own, so a message T3 already took returns that
-earlier send instead of sending it twice. A bot's message, or one Slack
-doesn't have, is refused.
-
-## iMessage
-
-The agent answers iMessages sent to a Mac's Messages account. Today that's
-iMessage only; SMS may come later. `imessage.services` lists the services
-that are read (default `["iMessage"]`), and chats on any other service are
-left alone. Each conversation is one ongoing T3 thread, and group chats are
-allowed. In a group, every message goes to the agent, which decides whether to
-answer. Photos and files arrive as attachments, and iPhone HEIC photos become
-JPEG. The agent sends files, such as images and PDFs, with `chat_post`. The
-text goes out with the first file, and a send `imsg` can't confirm isn't
-retried, so nothing arrives twice. Answers are sent as plain text.
-
-Reactions work the same way on every platform. A reaction never starts a run.
-In a bound thread, a reaction from someone allowed (an iMessage tapback or a
-Slack reaction) is kept as context for the thread's next turn, such as
-"Vivek reacted love (heart) to message <id>", and removals are kept too.
-Slack reactions reach the bridge only if the Slack app subscribes to
-`reaction_added` and `reaction_removed`.
-
-How it connects:
-
-- **On the Mac.** `mac/affil-imessage.swift` runs a pinned, reviewed `imsg`
-  (v0.20.0) and serves a limited set of its JSON-RPC methods on
-  `127.0.0.1:47821`. It watches every chat from the moment `imsg` starts and
-  subscribes again whenever `imsg` restarts or falls behind. It also stages
-  outgoing files and reads incoming ones, but only from the Messages
-  attachments folder. macOS grants Full Disk Access and Automation to this
-  service, and `imsg`, its child, inherits them. Sign it with a stable
-  identity, not ad hoc, so a rebuild keeps the grants. It serves one client
-  at a time, and a new connection replaces the old one, so don't probe it
-  while the bridge is connected.
-- **On the bridge's host.** An SSH tunnel carries that port. The adapter
-  connects through it and reconnects by itself. After a reconnect it catches
-  up from its saved Messages row id with `messages.after`.
-
-Config, in `config.json`:
-
-```json
-"imessage": {
-  "host": "127.0.0.1",
-  "port": 47821,
-  "projectId": "<T3 project id>",
-  "worktreeFrom": "dev",
-  "allowEveryone": false,
-  "allowedHandles": ["+14155550100", "someone@example.com"],
-  "outboundReactions": false
-}
-```
-
-`worktreeFrom` and `note` are optional, as in `channelProjects`.
-`allowEveryone: true` lets anyone who messages the account start runs, and the
-bridge logs a warning when it starts with it on. `startAfterRowId` also
-answers messages already waiting on the very first start.
-
-### Always on
-
-Every piece starts by itself and comes back by itself. Nobody starts anything
-by hand. Only macOS permission prompts need a person.
-
-- **Mac:** a LaunchAgent in the Messages user's login session
-  (`mac/com.affil.imessage.plist`: `RunAtLoad`, `KeepAlive`). The Mac stays
-  awake and logged in to that user.
-- **Bridge host:** systemd user units with `Restart=always`, enabled with
-  lingering, so they start at boot: the SSH tunnel (`ssh -N -L
-  127.0.0.1:47821:127.0.0.1:47821 …` with `ExitOnForwardFailure` and
-  keepalives), the bridge, and the T3 server it talks to.
-
-Checked on 2026-11-04 by killing each piece in turn: the bridge, the tunnel,
-the T3 server and the Mac service each came back without help, and the bridge
-reconnected to each.
-
-### What iMessage can't do without SIP off
-
-`imsg` sends tapbacks, typing bubbles and read receipts, and edits and unsends
-messages, only through Apple's private Messages framework. It reaches that
-framework by injecting a helper into Messages, which needs SIP turned off on
-the Mac. Until then the agent isn't offered `chat_react` in iMessage, there's
-no "typing" while a run works, and messages show as delivered, not read.
-
-`imsg react` can send the six standard tapbacks without SIP, by driving
-Messages' Tapback picker with UI scripting. The bridge doesn't use it:
-
-- it reacts to the last or selected message, not one picked by id;
-- it needs Messages frontmost in the active GUI session, and the bridge's Mac
-  user runs in the background while someone else uses the Mac;
-- it needs an Accessibility grant, and a timeout leaves it unknown whether the
-  tapback was sent.
-
-**Outbound tapbacks with SIP off.** Set `imessage.outboundReactions: true`.
-On each connect the adapter asks `imsg` for `status`. It turns tapbacks on
-only when imsg's private bridge is running and offers `tapback`, and logs
-which way it went. Otherwise `chat_react` fails with a clear message, and the
-agent is told not to use it. Tapbacks target a message by its guid. They come
-in six kinds: heart, thumbsup, thumbsdown, laugh, bangbang and question.
-
-Turning SIP off on an Apple Silicon Mac (imsg needs only `csrutil disable`;
-it documents no boot arguments):
-
-1. Apple menu → Shut Down, and wait until the Mac is fully off.
-2. Press and hold the power button until "Loading startup options" appears.
-   Click Options, then Continue.
-3. If asked, choose an administrator account and enter its password.
-4. In the menu bar, choose Utilities → Terminal.
-5. Run `csrutil disable`, answer `y`, and enter an administrator's name and
-   password when asked.
-6. Run `csrutil status`. It should say "System Integrity Protection status:
-   disabled."
-7. Apple menu → Restart, then log back in to the Mac user that runs Messages
-   for the bridge.
-
-Then, as that user, with no further clicks: run `imsg launch --install-agent`,
-which injects the helper into Messages and keeps it injected across restarts.
-Check that `imsg status` shows the bridge running. Then set
-`outboundReactions: true` and restart the bridge. On macOS 26 and later,
-library validation or Messages' private entitlement checks can still block the
-helper with SIP off; `imsg status` says so if they do.
-
-To undo: run `imsg launch --uninstall-agent`, set `outboundReactions: false`,
-then in Recovery run `csrutil enable` and restart. SIP off lowers the
-security of the whole Mac, not only Messages.
-
-## Linear
-
-The agent works in Linear as an app (`@chat-adapter/linear` in agent-sessions
-mode, on Linear's Agents API), so it shows natively:
-
-- **What starts a run:** an agent session. Mentioning the app in a comment
-  (`@office …`) starts one, and so does delegating or assigning an issue to
-  it. Plain comments that don't mention the app start nothing; on an issue
-  the agent already works on, they are kept as context for its next run and
-  never answered. That needs the app's Comments webhook event. A comment
-  waits 15 s first, so a session prompt made from the same comment counts
-  instead.
-- **One T3 thread per issue.** Every session on an issue continues the
-  issue's thread, so a new `@office` mention picks up where the last session
-  left off. Prompts in any of its sessions follow up there and steer a run in
-  flight. Each answer goes to the session the latest prompt came from.
-- **What shows in Linear:** a "thought" as soon as a session gets a prompt
-  (Linear marks a session unresponsive after a few seconds without one), the
-  run's status as thoughts, an "action" for each finished step (such as "Ran
-  `pnpm test`", with no output), and the final message as the response, in
-  Markdown. Only the answer is a response; a question is an elicitation.
-- **What the agent gets:** the prompt, plus Linear's context for a new
-  session (the issue, its description and comments). Images and files in a
-  prompt are downloaded with the bridge's token and arrive as files, HEIC as
-  JPEG (named `.jpg` in the prompt too); their signed links never reach the agent. A prompt whose webhook was
-  lost is handed over with the next one.
-- **Files:** the agent sends files with `chat_post`. They are uploaded to
-  Linear and linked in the response, and images show inline. Linear shows no
-  reactions on session messages, so `chat_react` adds none and tells the
-  agent to acknowledge in words instead.
-- **Questions:** a single-choice question shows Linear's own chooser (an
-  elicitation with the `select` signal); a pick comes back as a prompt with
-  the option's label. Multiple choice, or a chooser Linear refuses, is
-  numbered text. Either way a typed reply answers too.
-- **Plan:** the agent's to-do list shows as the session's plan, replaced whole
-  as steps start and finish.
-- **Stop:** the session menu's "Send stop request" interrupts the run. The
-  bridge checks Linear's signature before acting, and the stopped run's last
-  word is "The run was stopped." (or "Nothing was running.").
-- **Work a T3 thread starts:** any T3 thread can take its work to Linear
-  with `linear_start`: its own thread id (stock `orchestrator_capabilities`
-  returns it as `parentThreadId`), or a subagent's `childThreadId` from
-  `delegate_task`, plus an issue (`AFF-123`) or a new one (`newIssue: {team,
-  title, description}`). The bridge opens an agent session on the issue and
-  binds the issue to that thread, so its progress and final message show in
-  Linear and later prompts on the issue continue it. The answer of the run in
-  flight posts once, whether it ends before or after the call. A thread
-  answers one conversation, and an issue that already goes to another thread
-  needs `replace: true`. A subagent stays under its orchestrator in T3, and
-  its completion still wakes the orchestrator; later Linear prompts don't.
-- **Routing:** by the issue's team. `teams` lists a project, and optionally a
-  new worktree and a note, per team key; every other team takes the default
-  route.
-- **Access:** everyone in the workspace who can mention the app, unless
-  `allowEveryone` is false; then only `allowedUserIds` (Linear user ids).
-
-```json
-"linear": {
-  "botName": "office",
-  "webhookPort": 3930,
-  "webhookPath": "/linear/webhook",
-  "projectId": "<default T3 project id>",
-  "worktreeFrom": "dev",
-  "teams": [{ "team": "ENG", "projectId": "<T3 project id>", "worktreeFrom": "dev" }]
-}
-```
-
-Secrets come from the environment, never the config: `LINEAR_CLIENT_ID`,
-`LINEAR_CLIENT_SECRET` and `LINEAR_WEBHOOK_SECRET`. The bridge reads them and
-removes them from its environment, so the adapter's own auto-detection can't
-pick them up. Without all three, Linear stays off and its webhook answers 503. The app authenticates with client credentials as itself, with scopes
-`read`, `write`, `comments:create`, `issues:create`, `app:mentionable` and
-`app:assignable`, so there is no OAuth callback to host.
-
-### Webhook ingress
-
-The bridge serves webhooks on loopback only
-(`127.0.0.1:<webhookPort><webhookPath>`). It answers POST at exactly that
-path and 404 everywhere else, and the adapter checks Linear's signature and
-timestamp on every request. Public HTTPS is a separate, swappable piece that
-forwards only that path:
-
-- **Tailscale Funnel** (in use). Funnel opens a whole port, and port 443 on
-  this host already serves tailnet-only paths, so Linear gets 8443. This
-  host's Serve config has path and socket handlers, so any change needs root.
-  Once, as root:
-
-  ```sh
-  sudo tailscale funnel --bg --https=8443 --set-path=/linear/webhook \
-    http://127.0.0.1:3930/linear/webhook
-  ```
-
-  `--bg` keeps it across reboots and restarts of `tailscaled`. Check it with
-  `tailscale funnel status`; only `:8443` should say "Funnel on". The URL
-  Linear calls is `https://<host>.<tailnet>.ts.net:8443/linear/webhook`.
-  To undo: `sudo tailscale funnel --https=8443 --set-path=/linear/webhook off`.
-
-- **Cloudflare tunnel** (alternative). Add one ingress rule with
-  `path: ^/linear/webhook$` and service `http://127.0.0.1:3930`, followed by
-  the catch-all `http_status:404`.
+It refuses while a bridge runs on the same data directory. It reads the
+message from Slack, clears the bridge's record of it, and saves it to the
+inbox. The next `start` hands it to T3 once: the T3 retry key is the message's
+own, so a text message T3 already took isn't sent twice (with files, see the
+note under "Nothing is lost").
 
 ## Limits
 
-- The bridge, T3 and the agents must share a machine. `chat_post` reads files
+- The bridge, T3 and the agents must share a machine: `chat_post` reads files
   by path, and the tools server listens on loopback.
-- Catch-up after downtime misses a mention inside a thread the bot wasn't in,
-  and a first direct message from someone the bot has never answered.
-- T3 issues no refresh tokens, so the login needs renewing every 30 days.
+- Slack catch-up after downtime misses a mention inside a thread the bot
+  wasn't in, and a first DM from someone the bot has never answered.
+- The T3 login needs renewing every 30 days.
 - Answers are posted up to 50,000 characters, in parts of up to 12,000.
-- A T3 message takes at most 8 attachments, so a mention with more files (its
-  own plus the thread's) imports the first 8 and names the rest.
-- If Slack refuses an answer five times in a row, the bridge stops trying until
-  it restarts.
+- A T3 message takes at most 8 attachments; extra files are named, not
+  imported.
+- If Slack refuses an answer five times in a row, the bridge stops trying
+  until it restarts.
+- On stock T3, a retried send with files can post twice (see "Nothing is
+  lost").
 
 ## Development
 
 ```sh
+pnpm install          # the whole workspace; the tests use the root Vite config
 pnpm --filter @t3tools/chat-bridge typecheck
 pnpm --filter @t3tools/chat-bridge test
 ```
 
-| File                   | What it does                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `src/bin.ts`           | The `start`, `login`, `manifest`, `import-office`, and `resend-slack` commands.                                          |
-| `src/bridge.ts`        | The core: chat messages into T3 turns, each run watched, answers back.                                                   |
-| `src/platform.ts`      | `ChatPlatform`: what the core needs from a platform beyond the SDK.                                                      |
-| `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                                                                   |
-| `src/slack/`           | Slack: the adapter's messages and Slack-only calls (`host.ts`), its `ChatPlatform`, the relay, resends and the manifest. |
-| `src/linear/`          | Linear: agent sessions as `InboundEvent`s, file uploads, and its `ChatPlatform`.                                         |
-| `src/office/`          | Office: Convex inbox, presentation API, requester context, and expiring article connections.                             |
-| `src/webhookServer.ts` | Loopback webhooks for platforms that need them, at exact paths only.                                                     |
-| `src/imessage/`        | iMessage: the Chat SDK adapter, its RPC client and its `ChatPlatform`.                                                   |
-| `mac/`                 | The Mac service and its LaunchAgent.                                                                                     |
-| `src/runFeed.ts`       | What a run is doing now, from T3's activity view.                                                                        |
-| `src/activity.ts`      | T3 activity items as status lines; redaction.                                                                            |
-| `src/questions.ts`     | Agents' questions as buttons or numbered text, and their answers.                                                        |
-| `src/threads.ts`       | The T3 MCP calls: launch, send, wait, read, configure.                                                                   |
-| `src/t3Client.ts`      | The MCP client for T3.                                                                                                   |
-| `src/toolServer.ts`    | The `chat_post` / `chat_react` MCP server.                                                                               |
-| `src/store.ts`         | Inbox, bindings, handled messages and owed replies.                                                                      |
-| `src/chatState.ts`     | The Chat SDK's state on the same SQLite file.                                                                            |
-| `src/login.ts`         | T3's MCP OAuth sign-in.                                                                                                  |
+| File                   | What it does                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `src/bin.ts`           | The `start`, `login`, `manifest`, `import-office` and `resend-slack` commands. |
+| `src/config.ts`        | `config.json` parsing and defaults.                                            |
+| `src/bridge.ts`        | The core: chat messages into T3 turns, each run watched, answers back.         |
+| `src/platform.ts`      | `ChatPlatform`: what the core needs from a platform beyond the Chat SDK.       |
+| `src/chatHost.ts`      | The one Chat SDK `Chat`, with an adapter per platform.                         |
+| `src/slack/`           | Slack: adapter calls, its `ChatPlatform`, resends and the manifest.            |
+| `src/linear/`          | Linear: agent sessions, stop and comment webhooks, file uploads.               |
+| `src/imessage/`        | iMessage: the Chat SDK adapter, its RPC client and its `ChatPlatform`.         |
+| `mac/`                 | The Mac service and its LaunchAgent.                                           |
+| `src/office/`          | The optional Office relay channel; unused unless its variables are set.        |
+| `src/webhookServer.ts` | Loopback webhooks, at exact paths only.                                        |
+| `src/login.ts`         | T3's MCP OAuth sign-in.                                                        |
+| `src/t3Client.ts`      | The MCP client for T3.                                                         |
+| `src/threads.ts`       | The T3 MCP calls: launch, send, wait, read, configure.                         |
+| `src/toolServer.ts`    | The chat tools MCP server (`chat_post`, `chat_react`, `chat_status`, …).       |
+| `src/runFeed.ts`       | What a run is doing now, from T3's activity view.                              |
+| `src/activity.ts`      | T3 activity items as status lines; redaction.                                  |
+| `src/questions.ts`     | Agents' questions as buttons or numbered text, and their answers.              |
+| `src/modelCommand.ts`  | The `!model` switch aliases.                                                   |
+| `src/store.ts`         | Inbox, bindings, handled messages and owed replies (SQLite).                   |
+| `src/chatState.ts`     | The Chat SDK's state on the same SQLite file.                                  |

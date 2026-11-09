@@ -79,13 +79,13 @@ it("makes a session's first message an event with Linear's context, routed by te
 
 it("names a session's thread after its issue, not Linear's delegation notice", () => {
   const context =
-    '<issue identifier="AFF-1878">\n<title>Build a spend-based card\n recommendation quiz</title>\n<description>…</description>\n</issue>';
+    '<issue identifier="ENG-1878">\n<title>Build a settings page\n redesign</title>\n<description>…</description>\n</issue>';
   assert.strictEqual(
-    linearEvent(THREAD, message("c-3", context), "mention", "AFF", new Set()).title,
-    "AFF-1878 Build a spend-based card recommendation quiz",
+    linearEvent(THREAD, message("c-3", context), "mention", "ENG", new Set()).title,
+    "ENG-1878 Build a settings page redesign",
   );
   assert.isUndefined(
-    linearEvent(THREAD, message("c-4", "<issue>no title</issue>"), "mention", "AFF", new Set())
+    linearEvent(THREAD, message("c-4", "<issue>no title</issue>"), "mention", "ENG", new Set())
       .title,
   );
 });
@@ -490,7 +490,7 @@ it("hands over prompts the session has but the bridge never got, oldest first, b
               // The session's first prompt was handed over when it started.
               prompt("c-1", 1_000, "start"),
               // A session the bridge opened starts with a prompt Linear writes as the app.
-              { ...prompt("a-opened", 100, "Work on AFF-9"), userId: "bot" },
+              { ...prompt("a-opened", 100, "Work on ENG-9"), userId: "bot" },
               {
                 id: "a-response",
                 createdAt: new Date(2_500),
@@ -619,7 +619,7 @@ it("logs each webhook's method, path, status and event type, and nothing from it
 
 it("turns Linear's <linear-image> tag into an image file named by its title, and drops the tag", () => {
   const src =
-    "https://uploads.linear.app/org/cb49cf42-313f-4ab6-8667-297cbe3f8588?signature=secret";
+    "https://uploads.linear.app/org/00000000-0000-4000-8000-000000000001?signature=secret";
   const tag = (attrs: Record<string, unknown>) =>
     `<linear-image>${JSON.stringify({ type: "image", attrs })}</linear-image>`;
   const { text, uploads } = takeUploads(
@@ -1078,9 +1078,9 @@ it("creates an issue and opens a session for an orchestrator, and ignores that s
   const kept = new Map<string, string>();
   const issue = {
     id: "issue-9",
-    identifier: "AFF-9",
-    url: "https://linear.app/affil/issue/AFF-9",
-    team: Promise.resolve({ key: "AFF" }),
+    identifier: "ENG-9",
+    url: "https://linear.app/example/issue/ENG-9",
+    team: Promise.resolve({ key: "ENG" }),
   };
   const parts = linearPlatform({
     chat: () => ({ thread: () => ({ subscribe: async () => {} }) }) as never,
@@ -1119,17 +1119,17 @@ it("creates an issue and opens a session for an orchestrator, and ignores that s
     log: () => {},
     sessions: { get: (key) => kept.get(key), set: (key, id) => void kept.set(key, id) },
   });
-  const created = await parts.createIssue({ team: "aff", title: "Fix it", description: "Why" });
+  const created = await parts.createIssue({ team: "eng", title: "Fix it", description: "Why" });
   assert.deepStrictEqual(created, {
     issueId: "issue-9",
-    identifier: "AFF-9",
-    url: "https://linear.app/affil/issue/AFF-9",
-    teamKey: "AFF",
+    identifier: "ENG-9",
+    url: "https://linear.app/example/issue/ENG-9",
+    teamKey: "ENG",
   });
   const sessionThread = await parts.openSession(created);
   assert.strictEqual(sessionThread, "linear:issue-9:s:session-9");
   assert.deepStrictEqual(calls, [
-    "teams AFF",
+    "teams ENG",
     "create team-1 Fix it Why",
     "issue issue-9",
     "session issue-9",
@@ -1138,7 +1138,7 @@ it("creates an issue and opens a session for an orchestrator, and ignores that s
   assert.strictEqual(kept.get("linear:issue-9"), sessionThread);
   assert.deepStrictEqual(thoughts, [`${sessionThread} Working in T3`]);
   assert.include(parts.workNote(created, "key-9"), "Chat key: key-9");
-  assert.include(parts.workNote(created, "key-9"), "AFF-9");
+  assert.include(parts.workNote(created, "key-9"), "ENG-9");
 
   // Linear announces the session the bridge opened: not a prompt. A prompt in it later is.
   const announcement = new Message({

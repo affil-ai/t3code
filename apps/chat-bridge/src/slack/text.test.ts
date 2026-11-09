@@ -68,11 +68,11 @@ it("shows the URL behind a labelled link and a shared document", () => {
 
 it("drops the footer an app adds when it posts for someone", () => {
   assert.strictEqual(
-    withoutAttribution("what codeword? *Sent using* <@U0BC8FXNJG0>"),
+    withoutAttribution("what codeword? *Sent using* <@U0BOT000002>"),
     "what codeword?",
   );
   assert.strictEqual(
-    withoutAttribution("aside: heron Sent using @ChatGPT\nSent using @U0BC8FXNJG0"),
+    withoutAttribution("aside: heron Sent using @ChatGPT\nSent using @U0BOT000002"),
     "aside: heron",
   );
   assert.strictEqual(withoutAttribution("ask <@U0GRACE> about it"), "ask <@U0GRACE> about it");
