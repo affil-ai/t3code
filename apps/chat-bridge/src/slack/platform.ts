@@ -93,7 +93,7 @@ export function slackPlatform(options: {
     bound: (chatThreadKey) => connected().follow(chatThreadKey),
     acknowledgeFirst: true,
     backgroundStatus: true,
-    startConversation: (channel, text) => connected().startThread(channel, text),
+    startConversation: (channel, text, replyTo) => connected().startThread(channel, text, replyTo),
     ...(options.articles === undefined
       ? {}
       : {

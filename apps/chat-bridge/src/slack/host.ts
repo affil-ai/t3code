@@ -125,7 +125,7 @@ export interface SlackChatHost {
    * with a person when `channel` is their user id, and returns the chat thread
    * key of the Slack thread it starts.
    */
-  readonly startThread: (channel: string, text: string) => Promise<string>;
+  readonly startThread: (channel: string, text: string, replyTo?: string) => Promise<string>;
   /** Follows a channel thread, so its replies arrive without a mention. */
   readonly follow: (chatThreadKey: string) => Promise<void>;
   /**
@@ -971,14 +971,15 @@ export function createSlackHost(options: SlackChatHostOptions): {
       history,
       feedbackTarget,
       download,
-      startThread: async (channel, text) => {
+      startThread: async (channel, text, replyTo) => {
         // A user id posts in the bot's DM with them, which needs only chat:write.
         const posted = await slack.webClient.chat.postMessage({
           channel,
           text: mrkdwn.toResponseUrlText({ markdown: text }),
+          ...(replyTo === undefined ? {} : { thread_ts: replyTo }),
         });
         if (!posted.channel || !posted.ts) throw new Error("Slack didn't say where it posted.");
-        return slack.encodeThreadId({ channel: posted.channel, threadTs: posted.ts });
+        return slack.encodeThreadId({ channel: posted.channel, threadTs: replyTo ?? posted.ts });
       },
       follow: async (chatThreadKey) => {
         // Direct messages all reach the bot anyway; a channel thread needs following.

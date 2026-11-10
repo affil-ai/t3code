@@ -370,14 +370,20 @@ async function start(): Promise<void> {
             const slackPlatform = platforms.find((each) => each.id === "slack");
             if (slackPlatform?.startConversation === undefined)
               throw new Error("Slack isn't connected.");
+            // Same key shape as slack/host.ts, so a thread already bound elsewhere is refused before posting.
             const refusal = await core.attachRefusal({
               threadId: request.threadId,
+              chatThreadKey:
+                request.replyTo === undefined
+                  ? undefined
+                  : `slack:${request.channel}:${request.replyTo}`,
               replace: false,
             });
             if (refusal !== undefined) throw new Error(refusal);
             const chatThreadKey = await slackPlatform.startConversation(
               request.channel,
               request.text,
+              request.replyTo,
             );
             const channelId = chatThreadKey.split(":")[1] ?? request.channel;
             await core.attach({
