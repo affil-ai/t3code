@@ -384,6 +384,14 @@ function keptText(platform: ChatPlatform, lines: ReadonlyArray<string>): string 
   );
 }
 
+/** The request for a mention with no text or files, in a thread with messages above it. */
+export const BARE_MENTION_REQUEST =
+  "(Mentioned you with no message. Read the messages above and do what they ask.)";
+
+/** The request for a mention with no text or files, in a thread already bound to a chat. */
+export const BOUND_BARE_MENTION_REQUEST =
+  "(Mentioned you with no message. Read the latest messages and do what they ask.)";
+
 type ControlCommand = "mute" | "unmute" | "stop";
 
 /** `mute`, `unmute` or `stop`, when that is the whole message after the bot's mention. */
@@ -1168,6 +1176,7 @@ export class Bridge {
       } else if (event.followModel === true && event.modelSelection !== undefined) {
         await this.followChatModel(binding, event.modelSelection);
       }
+      if (nothingElse && event.addressed) event = { ...event, text: BOUND_BARE_MENTION_REQUEST };
       const kept = this.store.context(binding.chatThreadKey);
       const imported = await this.threads.importFiles(this.inboundFiles(platform, event.files));
       const context = keptText(
@@ -1222,7 +1231,20 @@ export class Bridge {
       }
       modelSelection = resolved.selection;
     }
-    if (nothingElse) {
+    // A bare mention under earlier messages asks about them; read them once, here.
+    let earlier: ReadonlyArray<EarlierMessage> | undefined;
+    if (nothingElse && switched.command === undefined && !seed && !event.historyNote) {
+      earlier = await this.loadEarlier(event);
+      if (earlier.length > 0) {
+        const first = earlier.find((message) => message.text.trim() !== "");
+        event = {
+          ...event,
+          text: BARE_MENTION_REQUEST,
+          title: event.title ?? (first === undefined ? undefined : threadTitle(first.text)),
+        };
+      }
+    }
+    if (nothingElse && event.text === "") {
       await this.notify(
         event,
         `Add what you'd like me to do after ${switched.command?.typed ?? "the mention"}.`,
@@ -1246,7 +1268,7 @@ export class Bridge {
     const launchKey = `launch_chat_key:${event.eventId}`;
     const chatKey = this.store.meta(launchKey) ?? NodeCrypto.randomBytes(16).toString("hex");
     this.store.setMeta(launchKey, chatKey);
-    const earlier = event.historyNote ? [] : await this.loadEarlier(event);
+    earlier ??= event.historyNote ? [] : await this.loadEarlier(event);
     // The mention's own files come first, so they are the ones kept when there are too many.
     const imported = await this.threads.importFiles([
       ...this.inboundFiles(platform, event.files),

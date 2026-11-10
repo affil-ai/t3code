@@ -8,6 +8,8 @@ import { assert, it } from "vite-plus/test";
 
 import {
   Bridge,
+  BARE_MENTION_REQUEST,
+  BOUND_BARE_MENTION_REQUEST,
   type EarlierMessage,
   earlierText,
   type ChannelRoute,
@@ -731,6 +733,62 @@ it("keeps the newest earlier messages within the size limit", () => {
   assert.include(kept, "(1 older messages left out)");
   assert.include(kept, "Grace");
   assert.strictEqual(earlierText(SLACK, []), "");
+});
+
+it("starts a chat from the thread above a bare mention", async () => {
+  const history = async () => [
+    said("Jenny", "<@U-Vivek> i think this compliance run is stuck https://jobs/42"),
+  ];
+  const { t3, bridge, posted } = harness(freshDatabase(), { history });
+  const outcome = await bridge.receive(event("100.5", { text: "" }));
+  assert.deepStrictEqual(outcome, { type: "started", threadId: THREAD });
+  assert.deepStrictEqual(posted, []);
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  const message = String(launch.args.message);
+  assert.include(
+    message,
+    "Jenny (<@U-Jenny>): <@U-Vivek> i think this compliance run is stuck https://jobs/42",
+  );
+  assert.include(message, BARE_MENTION_REQUEST);
+  // The thread is named for what it asks, not for the bare mention.
+  assert.strictEqual(launch.args.title, "i think this compliance run is stuck https://jobs/42");
+  t3.finish("run-1", "completed", "Looking.");
+  await bridge.idle();
+});
+
+it("asks for a request when a bare mention has nothing above it", async () => {
+  const { t3, bridge, posted } = harness(freshDatabase(), { history: async () => [] });
+  const outcome = await bridge.receive(event("100.1", { text: "" }));
+  assert.deepStrictEqual(outcome, { type: "ignored", reason: "bad_command" });
+  assert.isUndefined(t3.calls.find((call) => call.tool === "t3_thread_launch"));
+  assert.deepStrictEqual(posted, [
+    { chatThreadKey: "slack:C1:100.1", text: "Add what you'd like me to do after the mention." },
+  ]);
+});
+
+it("asks for a request after a bare model switch, even in a thread with messages above it", async () => {
+  const history = async () => [said("Jenny", "the run is stuck")];
+  const { t3, bridge, posted } = harness(freshDatabase(), { history });
+  const outcome = await bridge.receive(event("100.5", { text: "!opus" }));
+  assert.deepStrictEqual(outcome, { type: "ignored", reason: "bad_command" });
+  assert.isUndefined(t3.calls.find((call) => call.tool === "t3_thread_launch"));
+  assert.deepStrictEqual(posted, [
+    { chatThreadKey: "slack:C1:100.1", text: "Add what you'd like me to do after !opus." },
+  ]);
+});
+
+it("has a bound thread's run act on the latest messages after a bare mention", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  const outcome = await bridge.receive(event("100.3", { kind: "follow_up", text: "" }));
+  assert.strictEqual(outcome.type, "followed_up");
+  const sends = t3.calls.filter((call) => call.tool === "t3_thread_send");
+  const message = String(sends.at(-1)!.args.message);
+  assert.include(message, "Slack message 100.3 from Ada (<@U1>):");
+  assert.include(message, BOUND_BARE_MENTION_REQUEST);
+  assert.notInclude(posted.map((reply) => reply.text).join("\n"), "Add what you'd like");
 });
 
 it("lets every workspace member in with allowEveryone, and only them", async () => {

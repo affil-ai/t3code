@@ -72,7 +72,11 @@ These apply on every platform unless a section says otherwise.
 - **A mention inside a Slack thread brings the thread along.** The first turn
   includes the messages before the mention, oldest first, within 80,000
   characters (the newest are kept), with each author and their Slack id so the
-  agent can tag them. Their files are imported with the mention's own.
+  agent can tag them. Their files are imported with the mention's own. A
+  mention with nothing after it asks the agent to act on those messages; with
+  no messages above it, or after a bare model switch, the bot asks what to do.
+  In a thread already bound to a chat, a bare mention asks the run to act on
+  the latest messages.
 - **Replies continue it.** A reply steers the run in flight, or starts a new
   run if the thread is idle.
 - **Some replies are only context.** In Slack, a reply that starts with
