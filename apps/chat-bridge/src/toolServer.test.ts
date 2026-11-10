@@ -183,7 +183,27 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
     channel: "U0123ABCD",
     text: "Picking this up here.",
   });
+  const reply = await callTool(slack, "slack_start", {
+    threadId: "mcp:launch:abc",
+    channel: "C0CHANNEL01",
+    text: "On it.",
+    replyTo: "1794278854.319499",
+  });
+  assert.isUndefined(reply.isError);
+  assert.deepStrictEqual(requests[3], {
+    threadId: "mcp:launch:abc",
+    channel: "C0CHANNEL01",
+    text: "On it.",
+    replyTo: "1794278854.319499",
+  });
   for (const bad of [
+    {
+      threadId: "mcp:launch:abc",
+      channel: "C0CHANNEL01",
+      text: "hi",
+      replyTo: "p1794278854319499",
+    },
+    { threadId: "mcp:launch:abc", channel: "U0123ABCD", text: "hi", replyTo: "1794278854.319499" },
     { threadId: "mcp:launch:abc", channel: "#general", text: "hi" },
     { threadId: "mcp:launch:abc", channel: "C0CHANNEL01", text: "  " },
     { threadId: "mcp:launch:abc", channel: "C0CHANNEL01", text: "x".repeat(4_001) },
@@ -191,7 +211,7 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
   ]) {
     assert.isTrue((await callTool(slack, "slack_start", bad)).isError, JSON.stringify(bad));
   }
-  assert.lengthOf(requests, 3);
+  assert.lengthOf(requests, 4);
   assert.isTrue((await callTool(deps, "slack_start", requests[0] as never)).isError);
 });
 

@@ -216,9 +216,10 @@ export interface ChatPlatform {
   ) => Promise<ReadonlyArray<EarlierMessage>>;
   /**
    * Starts a new conversation for a thread that asks for one, such as a Slack
-   * thread under an opening message, and returns its chat thread key.
+   * thread under an opening message, and returns its chat thread key. With
+   * `replyTo`, the opening message is a reply under that existing message.
    */
-  readonly startConversation?: (where: string, text: string) => Promise<string>;
+  readonly startConversation?: (where: string, text: string, replyTo?: string) => Promise<string>;
   /**
    * A run ended without an answer: `NO_REPLY` or no final message. Ends
    * anything still waiting on one, such as a Linear session showing the

@@ -62,11 +62,18 @@ export interface SlackStartRequest {
   /** A channel id the bot is in (C…, G…, D…), or a person's user id (U…, W…) for a DM. */
   readonly channel: string;
   readonly text: string;
+  /**
+   * The timestamp of an existing message in `channel` to reply under, such as
+   * 1794278854.319499 from a permalink's p1794278854319499. That Slack thread
+   * then continues the T3 thread instead of a new top-level message.
+   */
+  readonly replyTo?: string | undefined;
 }
 
 const ISSUE_ID = /^[A-Za-z][A-Za-z0-9]{0,9}-\d{1,7}$/;
 const THREAD_ID = /^[\w.:%-]{1,300}$/;
 const SLACK_ID = /^[CGDUW][A-Z0-9]{2,20}$/;
+const SLACK_TS = /^\d{9,12}\.\d{6}$/;
 const MAX_OPENING = 4_000;
 
 const THREAD_ID_PROPERTY = {
@@ -106,7 +113,7 @@ const LINEAR_START_TOOL = {
 const SLACK_START_TOOL = {
   name: "slack_start",
   description:
-    "Start a Slack thread for a T3 thread: posts text as a new message in a channel the bot is in, or as a DM to a person, and replies in that Slack thread continue the T3 thread. The thread's final message in each run is posted there from then on. Pass your own thread id, or a subagent's childThreadId. No chat key needed.",
+    "Start a Slack thread for a T3 thread: posts text as a new message in a channel the bot is in, or as a DM to a person, or as a reply under an existing message with replyTo, and replies in that Slack thread continue the T3 thread. The thread's final message in each run is posted there from then on. Pass your own thread id, or a subagent's childThreadId. No chat key needed.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -120,6 +127,11 @@ const SLACK_START_TOOL = {
         type: "string",
         maxLength: MAX_OPENING,
         description: "The opening message, in Markdown.",
+      },
+      replyTo: {
+        type: "string",
+        description:
+          "Reply under this existing message instead of starting a new one: its ts, such as 1794278854.319499 (a permalink's p1794278854319499 with a dot before the last six digits). Use the thread's parent message, not a reply.",
       },
     },
     required: ["threadId", "channel", "text"],
@@ -271,7 +283,16 @@ function slackStartRequest(args: Record<string, unknown>): SlackStartRequest {
   if (text === "" || text.length > MAX_OPENING) {
     throw new ToolInputError(`text must be 1 to ${MAX_OPENING} characters.`);
   }
-  return { threadId, channel, text };
+  const replyTo = stringArg(args, "replyTo")?.trim() || undefined;
+  if (replyTo !== undefined) {
+    if (!SLACK_TS.test(replyTo)) {
+      throw new ToolInputError("replyTo must be a Slack message ts, such as 1794278854.319499.");
+    }
+    if (!/^[CG]/.test(channel)) {
+      throw new ToolInputError("replyTo needs a channel id (C…, G…), not a DM or member id.");
+    }
+  }
+  return { threadId, channel, text, ...(replyTo === undefined ? {} : { replyTo }) };
 }
 
 function linearStartRequest(args: Record<string, unknown>): LinearStartRequest {
