@@ -252,7 +252,17 @@ const DELEGATED_FOLLOW_MS = 6 * 60 * 60 * 1000;
 const ANSWER_ORDER_WAIT_MS = 60_000;
 /** Posted when the bridge stops following work that is still running. */
 const CAP_NOTE =
-  "Still working, but I've stopped watching for updates here after six hours. Check the thread in T3 for the rest.";
+  "Still working after six hours, so I've stopped showing it here. Its results still post here when it reports back.";
+/**
+ * How often the bridge looks for runs T3 started with a notification in bound
+ * threads, and how far before its last look each look starts reading, so a
+ * thread that changed during a look is read again.
+ */
+const NOTIFICATION_POLL_MS = 20_000;
+const NOTIFICATION_MARGIN_MS = 60_000;
+/** The start of the last finished look, in epoch ms, kept across restarts in `bridge_meta`. */
+const NOTIFICATIONS_READ_TO = "notifications_read_to";
+const NOTIFICATIONS_KEY = "notifications";
 /** How long after T3 calls the work settled the bridge looks once more for a run reporting it. */
 const SETTLE_GRACE_MS = 5_000;
 /** How often, and how many times, to look for the run an answer starts. */
@@ -528,6 +538,10 @@ export class Bridge {
   /** When each chat thread's next retry is scheduled, in epoch ms. */
   private readonly retryAt = new Map<string, number>();
   private readonly timers = new Set<NodeJS.Timeout>();
+  /** Set once the notification watch runs, so a later `resume` starts no second one. */
+  private watchingNotifications = false;
+  /** Threads whose last read found items, read again on the next look in case there were more. */
+  private readonly readAgain = new Set<string>();
   private stopped = false;
   private readonly store: BridgeStore;
   private readonly threads: T3Threads;
@@ -1285,6 +1299,8 @@ export class Bridge {
     this.store.transaction(() => {
       if (seed) this.store.consumeSeed(seed, created);
       else this.store.insertBinding(created);
+      // Every run a notification starts in a thread the chat started is the chat's.
+      this.store.startNotificationCursor(started.threadId, -1);
       // The thread starts on the chat's own model, or on a `!model` switch from it.
       if (event.followModel === true && event.modelSelection !== undefined)
         this.store.setFollowedModel(event.chatThreadKey, event.modelSelection);
@@ -1453,6 +1469,7 @@ export class Bridge {
           this.store.answeredReply(held.dispatchedRunId) ?? this.store.answeredReply(held.runId);
         if (answered !== undefined) this.followDelegatedWork({ ...answered, runId: held.runId });
       }
+    this.watchNotifications();
     await Promise.all(this.store.inboxThreads().map((chatThreadKey) => this.drain(chatThreadKey)));
   }
 
@@ -1752,10 +1769,97 @@ export class Bridge {
   }
 
   /**
-   * Keeps watching a thread after its run ends, while that run's subagents
-   * and background work are still going. When one reports back, T3 starts a
-   * run with a notification, and the chat is owed that run's answer too. A
-   * run started by a message typed in T3 stays in T3.
+   * Owes a bound thread's chat every run a notification starts, follow or not: T3 counts a
+   * background command only when it is awaited. Every 20 s, one thread list read finds the
+   * threads changed since the last look; bound ones are read on from their cursors.
+   */
+  private watchNotifications(): void {
+    if (this.watchingNotifications) return;
+    this.watchingNotifications = true;
+    const look = () => {
+      if (this.stopped) return;
+      const looking = this.oweNotificationRuns()
+        .catch((error: unknown) => {
+          this.log(`Looking for runs started by notifications failed: ${String(error)}`);
+        })
+        .finally(() => {
+          this.watching.delete(NOTIFICATIONS_KEY);
+          if (!this.stopped) this.schedule(NOTIFICATION_POLL_MS, look);
+        });
+      this.watching.set(NOTIFICATIONS_KEY, looking);
+    };
+    look();
+  }
+
+  private async oweNotificationRuns(): Promise<void> {
+    const startedAt = this.now();
+    const readTo = this.store.meta(NOTIFICATIONS_READ_TO);
+    // The first look ever starts each bound thread at its end: what came before was
+    // answered already, or was never the chat's.
+    if (readTo === undefined)
+      for (const threadId of this.store.threadsWithoutNotificationCursor()) {
+        if (this.stopped) return;
+        await this.startNotificationsAtEnd(threadId).catch((error: unknown) => {
+          this.log(`Reading where ${threadId} ends failed: ${String(error)}`);
+        });
+      }
+    const changed = await this.threads.updatedSince(
+      (readTo === undefined ? startedAt : Number(readTo)) - NOTIFICATION_MARGIN_MS,
+    );
+    const threadIds = new Set([...this.readAgain, ...changed]);
+    this.readAgain.clear();
+    for (const threadId of threadIds) {
+      if (this.stopped) return;
+      const binding = this.store.bindingByThreadId(threadId);
+      if (binding === undefined) continue;
+      try {
+        await this.oweThreadNotificationRuns(binding);
+      } catch (error) {
+        this.readAgain.add(threadId);
+        this.log(`Reading ${threadId} for notification runs failed: ${String(error)}`);
+      }
+    }
+    this.store.setMeta(NOTIFICATIONS_READ_TO, String(startedAt));
+  }
+
+  /** Owes the chat each run a notification started in the thread since its cursor. */
+  private async oweThreadNotificationRuns(binding: Binding): Promise<void> {
+    const cursor = this.store.notificationCursor(binding.threadId);
+    // A thread bound with its history, such as one Office imported, starts now.
+    if (cursor === undefined) {
+      await this.startNotificationsAtEnd(binding.threadId);
+      return;
+    }
+    const read = await this.threads.activity(binding.threadId, cursor);
+    for (const item of read.items) {
+      if (item.type !== "notification" || item.runId === null) continue;
+      if (this.store.isOwed(item.runId)) continue;
+      this.log(
+        `${item.runId} started from a notification; its answer goes to ${binding.chatThreadKey}.`,
+      );
+      this.owe({
+        runId: item.runId,
+        threadId: binding.threadId,
+        chatThreadKey: binding.chatThreadKey,
+      });
+    }
+    this.store.moveNotificationCursor(binding.threadId, Math.max(cursor, read.lastPosition));
+    // A read stops after a few pages; a busy thread is read on from there next time.
+    if (read.items.length > 0) this.readAgain.add(binding.threadId);
+  }
+
+  /** Reads the thread's notification runs from after its last item: when it has no cursor, or `always`. */
+  private async startNotificationsAtEnd(threadId: string, always = false): Promise<void> {
+    if (!always && this.store.notificationCursor(threadId) !== undefined) return;
+    const read = await this.threads.activity(threadId, undefined);
+    if (always) this.store.moveNotificationCursor(threadId, read.lastPosition);
+    else this.store.startNotificationCursor(threadId, read.lastPosition);
+  }
+
+  /**
+   * Follows a thread's subagents and awaited background work after its run ends: shows the
+   * work, owes the runs it starts at once, releases each run's resources when its work settles,
+   * and says so after six hours. `watchNotifications` owes the runs it misses.
    */
   private followDelegatedWork(reply: OwedReply, saved?: DelegatedFollow): void {
     const key = `delegated:${reply.threadId}`;
@@ -2138,6 +2242,10 @@ export class Bridge {
       .catch((error: unknown) => {
         this.log(`Following ${input.chatThreadKey} failed: ${String(error)}`);
       });
+    // Runs notifications start from now on are the chat's; earlier ones were not.
+    await this.startNotificationsAtEnd(input.threadId, true).catch((error: unknown) => {
+      this.log(`Reading where ${input.threadId} ends failed: ${String(error)}`);
+    });
     const run = shape.latestRun;
     this.log(
       `${input.chatThreadKey} now goes to ${input.threadId}${run ? `, owed ${run.runId} (${run.status})` : ""}.`,

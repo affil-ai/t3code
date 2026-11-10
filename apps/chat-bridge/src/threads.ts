@@ -71,6 +71,9 @@ const ACTIVITY_CHARS = 1_000;
 const ACTIVITY_LOOKBACK = 40;
 /** Pages read per activity call; a busier tick catches up on the next one. */
 const ACTIVITY_PAGES = 5;
+/** `t3_thread_list` returns at most 100 threads a page; one look reads at most this many pages. */
+const LIST_PAGE = 100;
+const LIST_PAGES = 50;
 
 interface ReadItem {
   readonly position: number;
@@ -390,6 +393,33 @@ export class T3Threads {
       items,
       lastPosition: after,
     };
+  }
+
+  /**
+   * The threads in every project that changed at or after `since` (epoch ms),
+   * newest first, from T3's thread list, which it sorts by when each changed.
+   */
+  async updatedSince(since: number): Promise<ReadonlyArray<string>> {
+    const threadIds: Array<string> = [];
+    let cursor: number | undefined;
+    for (let page = 0; page < LIST_PAGES; page++) {
+      const read = await this.t3.call<{
+        readonly threads: ReadonlyArray<{ readonly threadId: string; readonly updatedAt: string }>;
+        readonly nextCursor: number | null;
+      }>("t3_thread_list", {
+        allProjects: true,
+        limit: LIST_PAGE,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      for (const thread of read.threads) {
+        if (Date.parse(thread.updatedAt) < since) return threadIds;
+        threadIds.push(thread.threadId);
+      }
+      if (read.nextCursor === null) return threadIds;
+      cursor = read.nextCursor;
+    }
+    this.log(`Read ${threadIds.length} changed threads, the most one look reads.`);
+    return threadIds;
   }
 
   /** The position a few dozen items before the thread's end, or -1 for a short thread. */

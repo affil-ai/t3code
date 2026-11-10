@@ -230,6 +230,12 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       run_id TEXT
     );
     CREATE INDEX IF NOT EXISTS article_access_run ON article_access (run_id);
+    -- How far each bound thread's activity has been read for runs T3 starts with a
+    -- notification, which the chat is owed; see \`Bridge.watchNotifications\`.
+    CREATE TABLE IF NOT EXISTS notification_cursor (
+      thread_id TEXT PRIMARY KEY,
+      cursor INTEGER NOT NULL
+    );
   `);
   // Databases made before threads could be muted, or replies knew who asked.
   addColumn(db, "binding", "muted", "INTEGER NOT NULL DEFAULT 0");
@@ -1072,6 +1078,44 @@ export class BridgeStore {
 
   endFollow(threadId: string): void {
     this.db.prepare("DELETE FROM delegated_follow WHERE thread_id = ?").run(threadId);
+  }
+
+  /** The activity position the thread's notification runs have been read to, if it has one. */
+  notificationCursor(threadId: string): number | undefined {
+    const row = this.db
+      .prepare("SELECT cursor FROM notification_cursor WHERE thread_id = ?")
+      .get(threadId);
+    return row === undefined ? undefined : Number(row.cursor);
+  }
+
+  /** Where reading the thread's notification runs starts; a thread that has a cursor keeps it. */
+  startNotificationCursor(threadId: string, cursor: number): void {
+    this.db
+      .prepare(
+        "INSERT INTO notification_cursor (thread_id, cursor) VALUES (?, ?) ON CONFLICT (thread_id) DO NOTHING",
+      )
+      .run(threadId, cursor);
+  }
+
+  moveNotificationCursor(threadId: string, cursor: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO notification_cursor (thread_id, cursor) VALUES (?, ?)
+          ON CONFLICT (thread_id) DO UPDATE SET cursor = excluded.cursor`,
+      )
+      .run(threadId, cursor);
+  }
+
+  /** Bound threads with no notification cursor yet. */
+  threadsWithoutNotificationCursor(): Array<string> {
+    return this.db
+      .prepare(
+        `SELECT DISTINCT b.thread_id FROM binding b
+          LEFT JOIN notification_cursor c ON c.thread_id = b.thread_id
+          WHERE c.thread_id IS NULL ORDER BY b.thread_id`,
+      )
+      .all()
+      .map((row) => String(row.thread_id));
   }
 
   /** Adds a run to its thread's follow; a run already there keeps its cap. */

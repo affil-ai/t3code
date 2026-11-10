@@ -59,6 +59,8 @@ const SLACK = slackPlatform({
 });
 
 const PROJECT = "project-1";
+/** How often the bridge looks for runs T3 started with a notification. */
+const NOTIFICATION_POLL_MS = 20_000;
 const THREAD = "thread-1";
 
 /** A T3 server stand-in. Runs end when the test calls `finish`. */
@@ -102,6 +104,13 @@ function fakeT3() {
     }>;
     /** T3 accepts the next attachment send, and its reply is lost on the way back. */
     loseAttachmentReply?: boolean;
+    /**
+     * Reads return only the items after `afterPosition`, as T3's do. Off by default:
+     * answers are listed before `later`, so most tests' positions move as runs answer.
+     */
+    pagedReads?: boolean;
+    /** When the thread last changed, as `t3_thread_list` shows it. */
+    updatedAt?: string;
   } = {
     splitPendingTools: false,
   };
@@ -271,6 +280,21 @@ function fakeT3() {
               });
             }
             return { sequence: 1 };
+          case "t3_thread_list":
+            // Newest first, as T3 lists them; the harness's thread is always the newest.
+            return {
+              projectId: null,
+              currentThreadId: null,
+              threads: [
+                {
+                  threadId: THREAD,
+                  latestRunId: runs === 0 ? null : `run-${runs}`,
+                  updatedAt: options.updatedAt ?? "1970-01-01T00:00:00.000Z",
+                },
+              ],
+              nextCursor: null,
+              total: 1,
+            };
           case "t3_thread_read": {
             if (args.view === "activity" && args.itemId === undefined) beforeRead();
             if (args.itemId !== undefined) {
@@ -283,12 +307,17 @@ function fakeT3() {
               runId,
               text: "x",
             }));
-            const items = [...activity, ...answerItems, ...later].map((item, position) => ({
+            const all = [...activity, ...answerItems, ...later].map((item, position) => ({
               position,
               ...item,
             }));
+            const after =
+              options.pagedReads === true && typeof args.afterPosition === "number"
+                ? args.afterPosition
+                : -1;
+            const items = all.filter((item) => item.position > after);
             return {
-              thread: { ...thread, itemCount: items.length },
+              thread: { ...thread, itemCount: all.length },
               recentRuns: options.recentRuns ?? [],
               items,
               nextPosition: null,
@@ -306,6 +335,7 @@ function fakeT3() {
     tools,
     calls,
     activity,
+    later,
     thread,
     questions,
     options,
@@ -466,7 +496,8 @@ function harness(
     ],
     // Tests run retries themselves, by moving the clock and calling `resume`.
     schedule: (ms, run) => {
-      scheduled.push(ms);
+      // `scheduled` lists retries; the notification watch's next look is only in `scheduledRuns`.
+      if (ms !== NOTIFICATION_POLL_MS) scheduled.push(ms);
       scheduledRuns.push({ ms, run });
     },
     sleep: options.sleep ?? (async () => {}),
@@ -1893,6 +1924,139 @@ it("keeps following background work across a restart, and posts the run it start
   await again.bridge.resume();
   await again.bridge.idle();
   assert.lengthOf(again.posted, 0);
+});
+
+/** Runs the bridge's next scheduled look for notification runs, once. */
+function pollNotifications(
+  scheduledRuns: Array<{ readonly ms: number; readonly run: () => void }>,
+): void {
+  const index = scheduledRuns.findLastIndex((each) => each.ms === NOTIFICATION_POLL_MS);
+  if (index === -1) return;
+  const [next] = scheduledRuns.splice(index, 1);
+  next!.run();
+}
+
+it("posts the answer of a run background work starts after T3 calls the work settled", async () => {
+  const { t3, bridge, posted, scheduledRuns } = harness();
+  await bridge.resume();
+  await bridge.receive(event("100.1"));
+  // T3 counts a background command only when the agent awaits it, so it calls the
+  // work settled while the tests still run, and the follow ends.
+  t3.finish("run-1", "completed", "Started the tests in the background.");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Started the tests in the background."],
+  );
+  // The command finishes after that, and T3 starts a run with its notification.
+  t3.activity.push({ itemId: "wake", type: "notification", runId: "run-7", status: "completed" });
+  t3.finish("run-7", "completed", "The tests passed.");
+  pollNotifications(scheduledRuns);
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Started the tests in the background.", "The tests passed."],
+  );
+  // Later looks owe it nothing again.
+  pollNotifications(scheduledRuns);
+  await bridge.idle();
+  assert.lengthOf(posted, 2);
+});
+
+it("posts a notification run once when a follow and the notification watch both find it", async () => {
+  const { t3, bridge, posted, scheduledRuns, db } = harness();
+  await bridge.resume();
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", "Started a subagent.");
+  await t3.tick();
+  // The subagent reports back while the follow is still watching.
+  t3.activity.push({ itemId: "wake", type: "notification", runId: "run-7", status: "running" });
+  pollNotifications(scheduledRuns);
+  t3.options.delegatedPending = false;
+  await t3.tick();
+  pollNotifications(scheduledRuns);
+  t3.finish("run-7", "completed", "subagent-result: done");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Started a subagent.", "subagent-result: done"],
+  );
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS owed FROM owed_reply WHERE run_id = 'run-7'").get()?.owed,
+    1,
+  );
+});
+
+it("leaves a run started by a message typed in T3 in T3", async () => {
+  const { t3, bridge, posted, scheduledRuns } = harness();
+  await bridge.resume();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+  t3.activity.push({ itemId: "typed", type: "user_message", runId: "run-8", status: "completed" });
+  t3.finish("run-8", "completed", "An answer for the person in T3.");
+  pollNotifications(scheduledRuns);
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Done."],
+  );
+});
+
+it("posts a notification run that started while the bridge was down, once", async () => {
+  const db = freshDatabase();
+  const before = harness(db);
+  const { t3 } = before;
+  await before.bridge.resume();
+  await before.bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Started the tests in the background.");
+  await before.bridge.idle();
+  before.bridge.stop();
+  // The tests finish while the bridge restarts.
+  t3.activity.push({ itemId: "wake", type: "notification", runId: "run-7", status: "completed" });
+  t3.finish("run-7", "completed", "The tests passed.");
+
+  const after = harness(db, { t3 });
+  await after.bridge.resume();
+  await after.bridge.idle();
+  assert.deepStrictEqual(
+    after.posted.map((reply) => reply.text),
+    ["The tests passed."],
+  );
+  after.bridge.stop();
+  const again = harness(db, { t3 });
+  await again.bridge.resume();
+  await again.bridge.idle();
+  assert.lengthOf(again.posted, 0);
+});
+
+it("starts watching a thread bound before the notification watch at its end, so old runs stay unposted", async () => {
+  const { t3, bridge, posted, scheduledRuns, store } = harness();
+  // A conversation an older bridge bound, whose thread a notification woke and nobody answered.
+  store.insertBinding({
+    chatThreadKey: "slack:C1:100.1",
+    channelId: "C1",
+    projectId: PROJECT,
+    threadId: THREAD,
+    chatKey: "key",
+    createdByUserId: "U1",
+  });
+  t3.options.pagedReads = true;
+  t3.activity.push({ itemId: "old", type: "notification", runId: "run-5", status: "completed" });
+  t3.finish("run-5", "completed", "An answer from before.");
+  await bridge.resume();
+  await bridge.idle();
+  assert.lengthOf(posted, 0);
+  // A run that starts afterwards is the chat's.
+  t3.later.push({ itemId: "wake", type: "notification", runId: "run-7", status: "completed" });
+  t3.finish("run-7", "completed", "The tests passed.");
+  pollNotifications(scheduledRuns);
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["The tests passed."],
+  );
 });
 
 it("says so in the chat when six hours pass with background work still running", async () => {
