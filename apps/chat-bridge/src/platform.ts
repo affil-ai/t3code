@@ -138,12 +138,6 @@ export interface ChatPlatform {
   readonly refusal: (userId: string) => string;
   /** Refreshes request context just before handoff, without saving it to the inbox. Undefined rejects it. */
   readonly prepare?: (event: InboundEvent) => Promise<InboundEvent | undefined>;
-  /**
-   * `prepare` only adds context, so plain follow-ups still steer and combine; only one
-   * person's messages combine, since what `prepare` adds is scoped to the first author.
-   * Without it, a platform with `prepare` never combines (Office's requests each carry their own scope).
-   */
-  readonly combinesPrepared?: boolean;
   /** A tagged, externally owned thread receives this message without a bridge binding or answer watch. */
   readonly feedbackTarget?: (
     event: InboundEvent,
@@ -158,22 +152,6 @@ export interface ChatPlatform {
    * and the delegated work it started have settled (or following that work stopped).
    */
   readonly runEnded?: (chatThreadKey: string, runId: string) => Promise<void>;
-  /**
-   * True while someone other than `author` holds resources `prepare` granted in these
-   * conversations, such as article access. Their messages wait, then run as their own turn.
-   */
-  readonly heldByOther?: (chatThreadKeys: ReadonlyArray<string>, author: string) => boolean;
-  /**
-   * The runs still holding what `prepare` granted: `runId` now, `dispatchedRunId` the run the
-   * turn was handed to (they differ once T3 continues it). At startup, one already answered
-   * with nothing following its delegated work is followed again, which releases it.
-   */
-  readonly heldRuns?: () => ReadonlyArray<{
-    readonly runId: string;
-    readonly dispatchedRunId: string;
-  }>;
-  /** Releases what `prepare` staged for an event the bridge gave up handing to T3. */
-  readonly abandoned?: (eventId: string) => Promise<void>;
 
   /** Posts an answer or a notice. */
   readonly post: (message: OutboundMessage) => Promise<void>;

@@ -102,25 +102,6 @@ export interface OfficeMutations {
   };
   rename: { args: { chatId: string; title: string }; result: unknown };
   linkSlack: { args: { eventId: string; chatThreadKey: string }; result: unknown };
-  /** All-articles access for one Slack message; `null` when Office grants none. */
-  slackArticleAccess: {
-    args: {
-      chatThreadKey: string;
-      slackUserId: string;
-      messageTs: string;
-      text: string;
-      slackUserName?: string;
-      /** Sent only with `slackUserTeamId`; Office trusts it only for our team. */
-      slackUserEmail?: string;
-      slackUserTeamId?: string;
-    };
-    result: import("../slack/articles.ts").SlackArticleGrant;
-  };
-  /** Ends the Office runs one Slack turn's article access used, revoking their tokens. */
-  slackArticleAccessEnded: {
-    args: { chatId: string; runIds: Array<string>; outcome?: "completed" | "failed" | "canceled" };
-    result: unknown;
-  };
 }
 
 export interface OfficeApi {

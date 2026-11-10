@@ -329,8 +329,6 @@ export function createOfficeChannel(options: {
   };
   return {
     platform,
-    /** Shared with Slack turns that get Office article access, so one place owns these files. */
-    articles,
     /** The model of an Office chat a Slack conversation continues; undefined when it has none. */
     async chatModel(chatId: string): Promise<ModelSelection | undefined> {
       return (await api.chatModel(chatId)) ?? undefined;

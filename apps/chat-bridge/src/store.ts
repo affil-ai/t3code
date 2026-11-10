@@ -38,20 +38,6 @@ export interface ContextMessage {
   readonly line: string;
 }
 
-/** Office article access staged for one Slack turn; see the `article_access` table. */
-export interface ArticleAccess {
-  readonly eventId: string;
-  readonly chatThreadKey: string;
-  /** Who it was granted to. */
-  readonly author: string;
-  readonly chatId: string;
-  readonly officeRunId: string;
-  readonly expiresAt: number;
-  readonly runId?: string | undefined;
-  /** The run the turn was handed to, which `runId` leaves when T3 continues it in another. */
-  readonly dispatchedRunId?: string | undefined;
-}
-
 /** A thread the bridge keeps following after its run, until its delegated work settles or `until`. */
 export interface DelegatedFollow {
   readonly reply: OwedReply;
@@ -218,18 +204,6 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS slack_relay_row_at ON slack_relay_row (at);
-    -- Office article access staged for a Slack turn, until Office is told it ended. Kept on
-    -- disk, so a restart still ends it. run_id is the T3 run the turn reached, once known.
-    CREATE TABLE IF NOT EXISTS article_access (
-      event_id TEXT PRIMARY KEY,
-      chat_thread_key TEXT NOT NULL,
-      author TEXT NOT NULL,
-      chat_id TEXT NOT NULL,
-      office_run_id TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      run_id TEXT
-    );
-    CREATE INDEX IF NOT EXISTS article_access_run ON article_access (run_id);
     -- How far each bound thread's activity has been read for runs T3 starts with a
     -- notification, which the chat is owed; see \`Bridge.watchNotifications\`.
     CREATE TABLE IF NOT EXISTS notification_cursor (
@@ -246,8 +220,6 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
   addColumn(db, "binding", "followed_model", "TEXT");
   // Set once a person picks the thread's model with `!model`; see `modelSwitched`.
   addColumn(db, "binding", "model_switched", "INTEGER NOT NULL DEFAULT 0");
-  // The run access was handed to, kept when T3 continues it; see `ArticleAccess.dispatchedRunId`.
-  addColumn(db, "article_access", "dispatched_run_id", "TEXT");
   // A claimed reply is being answered; posted_at waits for delivery, so a crash in between resumes it.
   addColumn(db, "owed_reply", "claimed", "INTEGER NOT NULL DEFAULT 0");
   // Questions saved before this column were posted when saved.
@@ -666,20 +638,14 @@ export class BridgeStore {
     return this.inbox(chatThreadKey, 1)[0];
   }
 
-  /** The oldest message in these chat threads' inboxes, passing over the events in `skip`. */
-  inboxGroupHead(
-    keys: ReadonlyArray<string>,
-    skip: ReadonlySet<string> = new Set(),
-  ): InboxEntry | undefined {
+  /** The oldest message in these chat threads' inboxes. */
+  inboxGroupHead(keys: ReadonlyArray<string>): InboxEntry | undefined {
     if (keys.length === 0) return undefined;
-    const skipped = [...skip];
     const row = this.db
       .prepare(
-        `SELECT * FROM inbox WHERE chat_thread_key IN (${keys.map(() => "?").join(",")})${
-          skipped.length === 0 ? "" : ` AND event_id NOT IN (${skipped.map(() => "?").join(",")})`
-        } ORDER BY rowid LIMIT 1`,
+        `SELECT * FROM inbox WHERE chat_thread_key IN (${keys.map(() => "?").join(",")}) ORDER BY rowid LIMIT 1`,
       )
-      .get(...keys, ...skipped);
+      .get(...keys);
     return row ? inboxFromRow(row) : undefined;
   }
 
@@ -746,22 +712,6 @@ export class BridgeStore {
       )
       .get(runId);
     return Number(row?.owed ?? 0) > 0 && Number(row?.owed) === Number(row?.posted);
-  }
-
-  /** One of the chats owed the run's reply, once every one of them has had it; see `isAnswered`. */
-  answeredReply(runId: string): OwedReply | undefined {
-    if (!this.isAnswered(runId)) return undefined;
-    const row = this.db
-      .prepare("SELECT * FROM owed_reply WHERE run_id = ? ORDER BY rowid")
-      .get(runId);
-    return row === undefined
-      ? undefined
-      : {
-          runId: String(row.run_id),
-          threadId: String(row.thread_id),
-          chatThreadKey: String(row.chat_thread_key),
-          ...(row.requested_by === null ? {} : { requestedBy: String(row.requested_by) }),
-        };
   }
 
   /** True once the chat is owed the run's reply, whether or not it was posted. */
@@ -991,66 +941,6 @@ export class BridgeStore {
     this.db.prepare("UPDATE owed_reply SET claimed = 0 WHERE posted_at IS NULL").run();
   }
 
-  stageAccess(access: Omit<ArticleAccess, "runId">): void {
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO article_access
-          (event_id, chat_thread_key, author, chat_id, office_run_id, expires_at, run_id)
-          VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-      )
-      .run(
-        access.eventId,
-        access.chatThreadKey,
-        access.author,
-        access.chatId,
-        access.officeRunId,
-        access.expiresAt,
-      );
-  }
-
-  accessDispatched(eventId: string, runId: string): void {
-    this.db
-      .prepare("UPDATE article_access SET run_id = ?, dispatched_run_id = ? WHERE event_id = ?")
-      .run(runId, runId, eventId);
-  }
-
-  /** Staged access by event, by the T3 run it reached, or all of it. */
-  articleAccess(filter: { eventId?: string; runId?: string } = {}): Array<ArticleAccess> {
-    const rows =
-      filter.eventId !== undefined
-        ? this.db.prepare("SELECT * FROM article_access WHERE event_id = ?").all(filter.eventId)
-        : filter.runId !== undefined
-          ? this.db.prepare("SELECT * FROM article_access WHERE run_id = ?").all(filter.runId)
-          : this.db.prepare("SELECT * FROM article_access ORDER BY rowid").all();
-    return rows.map((row) => ({
-      eventId: String(row.event_id),
-      chatThreadKey: String(row.chat_thread_key),
-      author: String(row.author),
-      chatId: String(row.chat_id),
-      officeRunId: String(row.office_run_id),
-      expiresAt: Number(row.expires_at),
-      runId: row.run_id === null ? undefined : String(row.run_id),
-      dispatchedRunId:
-        row.dispatched_run_id === null || row.dispatched_run_id === undefined
-          ? undefined
-          : String(row.dispatched_run_id),
-    }));
-  }
-
-  /** Access follows the run T3 continued its run in, and keeps the run it was handed to. */
-  moveAccessRun(from: string, to: string): void {
-    this.db
-      .prepare(
-        `UPDATE article_access SET dispatched_run_id = COALESCE(dispatched_run_id, run_id),
-          run_id = ? WHERE run_id = ?`,
-      )
-      .run(to, from);
-  }
-
-  endAccess(eventId: string): void {
-    this.db.prepare("DELETE FROM article_access WHERE event_id = ?").run(eventId);
-  }
-
   saveFollow(follow: DelegatedFollow): void {
     this.db
       .prepare(
@@ -1145,13 +1035,6 @@ export class BridgeStore {
       },
       until: Number(row.until_ms),
     }));
-  }
-
-  isFollowedRun(runId: string): boolean {
-    return (
-      this.db.prepare("SELECT 1 FROM delegated_follow_run WHERE run_id = ?").get(runId) !==
-      undefined
-    );
   }
 
   endFollowRun(runId: string): void {
