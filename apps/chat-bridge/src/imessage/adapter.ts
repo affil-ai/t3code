@@ -1,6 +1,6 @@
 // @effect-diagnostics globalDate:off -- A plain Node app; it does not use Effect.
 /**
- * A Chat SDK adapter for iMessage over `imsg` on a Mac (via `mac/affil-imessage`).
+ * A Chat SDK adapter for iMessage over `imsg` on a Mac (via `mac/t3-imessage`).
  * Thread ids are `imessage:<chat rowid>`; every message counts as addressed.
  * Without SIP off, `imsg` can't edit, unsend, send tapbacks, type or mark read.
  */
@@ -66,7 +66,7 @@ interface ImsgChat {
 }
 
 export interface ImessageAdapterConfig {
-  /** Where `affil-imessage` listens; usually an SSH tunnel to the Mac. */
+  /** Where `t3-imessage` listens; usually an SSH tunnel to the Mac. */
   readonly host: string;
   readonly port: number;
   /** Chats on these services are read; others, such as SMS, are left alone. */

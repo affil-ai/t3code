@@ -48,7 +48,7 @@ export interface BridgeConfig {
    * current default.
    */
   readonly formerModelSelections?: ReadonlyArray<ModelSelection> | undefined;
-  /** iMessage through `affil-imessage` on a Mac. Omit to run without iMessage. */
+  /** iMessage through `t3-imessage` on a Mac. Omit to run without iMessage. */
   readonly imessage?: ImessageConfig | undefined;
   /** Linear agent sessions. Omit to run without Linear. Its secrets come from the environment. */
   readonly linear?: LinearConfig | undefined;
@@ -82,7 +82,7 @@ export interface LinearConfig {
 }
 
 export interface ImessageConfig {
-  /** Where `affil-imessage` listens, usually an SSH tunnel to the Mac: `127.0.0.1:47821`. */
+  /** Where `t3-imessage` listens, usually an SSH tunnel to the Mac: `127.0.0.1:47821`. */
   readonly host: string;
   readonly port: number;
   /** Where each new conversation starts its thread: a project, and optionally a new worktree and a note. */

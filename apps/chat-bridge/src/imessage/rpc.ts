@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- A plain Node app; it does not use Effect.
 /**
- * A JSON-RPC client for the `affil-imessage` service on the Mac (see
- * `mac/affil-imessage.swift`), which speaks `imsg rpc`'s protocol over TCP:
+ * A JSON-RPC client for the `t3-imessage` service on the Mac (see
+ * `mac/t3-imessage.swift`), which speaks `imsg rpc`'s protocol over TCP:
  * one JSON object per line. It reconnects by itself, every few seconds, for
  * as long as it runs.
  */
@@ -60,7 +60,7 @@ export class ImsgRpc {
     socket.setEncoding("utf8");
     socket.setKeepAlive(true, 15_000);
     socket.on("connect", () => {
-      this.options.log(`Connected to affil-imessage at ${this.options.host}:${this.options.port}.`);
+      this.options.log(`Connected to t3-imessage at ${this.options.host}:${this.options.port}.`);
       this.options.onConnect();
     });
     socket.on("data", (chunk: string) => this.receive(chunk));
@@ -70,7 +70,7 @@ export class ImsgRpc {
       this.buffer = "";
       for (const [id, call] of this.pending) {
         clearTimeout(call.timer);
-        call.reject(new Error("The connection to affil-imessage closed."));
+        call.reject(new Error("The connection to t3-imessage closed."));
         this.pending.delete(id);
       }
       if (this.closed) return;
@@ -86,13 +86,13 @@ export class ImsgRpc {
   call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     const socket = this.socket;
     if (socket === undefined || socket.connecting) {
-      return Promise.reject(new Error("affil-imessage is not connected."));
+      return Promise.reject(new Error("t3-imessage is not connected."));
     }
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`affil-imessage didn't answer ${method} in time.`));
+        reject(new Error(`t3-imessage didn't answer ${method} in time.`));
       }, CALL_TIMEOUT_MS);
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
       socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
@@ -116,7 +116,7 @@ export class ImsgRpc {
       try {
         message = JSON.parse(line);
       } catch {
-        this.options.log("affil-imessage sent a line that isn't JSON; ignored.");
+        this.options.log("t3-imessage sent a line that isn't JSON; ignored.");
         continue;
       }
       if (typeof message.method === "string") {

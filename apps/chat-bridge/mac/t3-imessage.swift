@@ -1,4 +1,4 @@
-// affil-imessage: runs `imsg rpc` for the chat bridge and serves it on one TCP port.
+// t3-imessage: runs `imsg rpc` for the chat bridge and serves it on one TCP port.
 // It is the process macOS grants Full Disk Access and Automation to, so `imsg`, its
 // child, inherits them, and it can read incoming attachments for the bridge.
 //
@@ -11,8 +11,8 @@
 // {"name", "data": base64} -> {"path"}, a file `send` can then take as `file`.
 // One client at a time; a new connection replaces the old one.
 //
-// Build: swiftc -O -o affil-imessage affil-imessage.swift
-// Run:   affil-imessage --imsg <path to imsg> [--host 127.0.0.1] [--port 47821]
+// Build: swiftc -O -o t3-imessage t3-imessage.swift
+// Run:   t3-imessage --imsg <path to imsg> [--host 127.0.0.1] [--port 47821]
 
 import Foundation
 import Network
@@ -24,7 +24,7 @@ let allowedMethods: Set<String> = [
   "send", "send.attachment", "tapback", "attachment.read", "attachment.write",
 ]
 /// The id of the service's own watch request; its reply stays here.
-let watchRequestId = "affil-imessage:watch"
+let watchRequestId = "t3-imessage:watch"
 
 func log(_ line: String) {
   FileHandle.standardError.write(Data("\(ISO8601DateFormatter().string(from: Date())) \(line)\n".utf8))
@@ -37,7 +37,7 @@ while argumentIndex + 1 < CommandLine.arguments.count {
   argumentIndex += 2
 }
 guard let imsgPath = arguments["--imsg"] else {
-  log("usage: affil-imessage --imsg <path> [--host 127.0.0.1] [--port 47821]")
+  log("usage: t3-imessage --imsg <path> [--host 127.0.0.1] [--port 47821]")
   exit(2)
 }
 let host = arguments["--host"] ?? "127.0.0.1"
@@ -45,7 +45,7 @@ let port = NWEndpoint.Port(rawValue: UInt16(arguments["--port"] ?? "47821") ?? 4
 let attachmentsRoot = URL(fileURLWithPath: NSHomeDirectory())
   .appendingPathComponent("Library/Messages/Attachments").resolvingSymlinksInPath().path + "/"
 
-let queue = DispatchQueue(label: "affil-imessage")
+let queue = DispatchQueue(label: "t3-imessage")
 var client: NWConnection?
 var imsgInput: FileHandle?
 var clientBuffer = Data()
@@ -134,7 +134,7 @@ func writeAttachment(id: Any?, params: [String: Any]?) {
   }
   let safeName = String(name.map { "/:\\".contains($0) ? "_" : $0 }.prefix(120))
   let folder = URL(fileURLWithPath: attachmentsRoot)
-    .appendingPathComponent("affil-imessage/\(UUID().uuidString)")
+    .appendingPathComponent("t3-imessage/\(UUID().uuidString)")
   let file = folder.appendingPathComponent(safeName.isEmpty || safeName.hasPrefix(".") ? "file" : safeName)
   do {
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -151,7 +151,7 @@ func handleClientLine(_ line: Data) {
   }
   let id = request["id"]
   guard allowedMethods.contains(method) else {
-    return reply(id: id, error: (-32601, "\(method) is not available through affil-imessage."))
+    return reply(id: id, error: (-32601, "\(method) is not available through t3-imessage."))
   }
   if method == "attachment.read" {
     return readAttachment(id: id, params: request["params"] as? [String: Any])

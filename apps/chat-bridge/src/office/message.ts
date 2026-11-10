@@ -124,14 +124,23 @@ const OTHER_MODELS: Readonly<Record<string, ModelSelection>> = {
 
 /**
  * Office's model key on the stock server: GPT on `codex`, Claude and GLM on `claudeAgent`.
- * Retired instance, account and provider prefixes (`claude_gpt/`, `vivek/`, `anthropic/`)
- * map to the model they named; a name with no stock model is undefined.
+ * Retired instance and provider prefixes (`claude_gpt/`, `anthropic/`) map to the model they
+ * named, and so does one more `<instance>/` prefix ahead of a known model (`team/gpt-6-astra`).
+ * A name with no stock model is undefined.
  */
 export function officeModel(model: string | undefined): ModelSelection | undefined {
   if (model === undefined) return undefined;
-  const bare = model
-    .replace(/^(codex|codex_proxy|claudeAgent|claude_gpt|claude_proxy|openai|anthropic)\//, "")
-    .replace(/^(vivek|admin|admin2|jenny)\//, "");
+  const bare = model.replace(
+    /^(codex|codex_proxy|claudeAgent|claude_gpt|claude_proxy|openai|anthropic)\//,
+    "",
+  );
+  return (
+    stockModel(bare, model) ??
+    (bare.includes("/") ? stockModel(bare.slice(bare.indexOf("/") + 1), model) : undefined)
+  );
+}
+
+function stockModel(bare: string, typed: string): ModelSelection | undefined {
   const normalized = RETIRED_MODELS[bare] ?? bare;
   const other = OTHER_MODELS[normalized];
   if (other !== undefined) return other;
@@ -140,7 +149,7 @@ export function officeModel(model: string | undefined): ModelSelection | undefin
   );
   if (entry === undefined) return undefined;
   const resolved = resolveModelCommand(
-    { model: entry[0], typed: model },
+    { model: entry[0], typed },
     { instanceId: entry[1].instanceId, model: entry[1].model },
   );
   return "selection" in resolved ? resolved.selection : undefined;

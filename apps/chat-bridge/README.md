@@ -149,6 +149,14 @@ default; leave them off on a T3 server other people's chats run on.
 `slack_start` posts only in a channel listed in `channelProjects`, or as a DM
 to someone allowed to use the bot.
 
+To start the conversation under a message that's already in the channel,
+pass `slack_start` that message's `ts` as `replyTo`, such as
+`1794278854.319499` (a permalink's `p1794278854319499` with a dot before the
+last six digits). Use the thread's parent message, not a reply. The bridge
+posts the text as a reply under that message and binds that Slack thread,
+instead of posting a new opening message. `replyTo` needs a channel id (`C…`
+or `G…`); it doesn't work with a DM or a member id.
+
 ## Prerequisites
 
 ### A stock T3 server
@@ -439,14 +447,14 @@ are read (default `["iMessage"]`); SMS chats are left alone.
 ### How it connects
 
 ```text
-Messages.app ← imsg rpc ← affil-imessage (Mac, 127.0.0.1:47821)
+Messages.app ← imsg rpc ← t3-imessage (Mac, 127.0.0.1:47821)
                                   ↑ SSH tunnel
                      bridge host 127.0.0.1:47821 ← chat bridge
 ```
 
-- **On the Mac,** `mac/affil-imessage.swift` (the name is historical) runs a
-  pinned [`imsg`](https://github.com/openclaw/imsg) and serves a limited set
-  of its JSON-RPC methods on `127.0.0.1:47821`. It also reads incoming
+- **On the Mac,** `mac/t3-imessage.swift` runs a pinned
+  [`imsg`](https://github.com/openclaw/imsg) and serves a limited set of its
+  JSON-RPC methods on `127.0.0.1:47821`. It also reads incoming
   attachments, only from the Messages attachments folder, and stages outgoing
   files. It serves one client at a time and a new connection replaces the old
   one, so don't probe it while the bridge is connected.
@@ -462,27 +470,26 @@ Messages.app ← imsg rpc ← affil-imessage (Mac, 127.0.0.1:47821)
 3. Build the service, as that user:
 
    ```sh
-   mkdir -p ~/Applications/affil-imessage
-   swiftc -O -o ~/Applications/affil-imessage/affil-imessage mac/affil-imessage.swift
+   mkdir -p ~/Applications/t3-imessage
+   swiftc -O -o ~/Applications/t3-imessage/t3-imessage mac/t3-imessage.swift
    ```
 
    Sign it with a stable identity (a Developer ID or a local code-signing
    certificate), not ad hoc, so a rebuild keeps its macOS permissions:
-   `codesign --force --sign "<identity>" ~/Applications/affil-imessage/affil-imessage`.
+   `codesign --force --sign "<identity>" ~/Applications/t3-imessage/t3-imessage`.
 
 4. **Grant permissions** in System Settings → Privacy & Security, to the
-   `affil-imessage` binary (its child `imsg` inherits them):
+   `t3-imessage` binary (its child `imsg` inherits them):
    - **Full Disk Access**, to read the Messages database and attachments;
    - **Automation → Messages**, to send. macOS asks the first time it sends;
      someone has to click Allow at the Mac.
-5. **Install the LaunchAgent.** Copy `mac/com.affil.imessage.plist` (the
-   label is historical; rename it if you like) to
+5. **Install the LaunchAgent.** Copy `mac/com.t3.imessage.plist` to
    `~/Library/LaunchAgents/`, replace `USER` with the user's short name and
    check the paths, then:
 
    ```sh
-   mkdir -p ~/Library/Logs/affil-imessage
-   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.affil.imessage.plist
+   mkdir -p ~/Library/Logs/t3-imessage
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.t3.imessage.plist
    ```
 
    It has `RunAtLoad` and `KeepAlive`, so it starts at login and restarts if

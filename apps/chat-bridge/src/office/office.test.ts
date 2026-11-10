@@ -1631,18 +1631,18 @@ it.each([
   ["claude_gpt/gpt-6-astra", ASTRA],
   ["claudeAgent/gpt-6-astra", ASTRA],
   ["codex/gpt-6-astra", ASTRA],
-  ["vivek/gpt-6-astra", ASTRA],
-  ["admin/gpt-6-astra", ASTRA],
-  ["jenny/gpt-6-astra", ASTRA],
+  ["team/gpt-6-astra", ASTRA],
+  ["ops/gpt-6-astra", ASTRA],
+  ["guest/gpt-6-astra", ASTRA],
   ["astra", ASTRA],
   ["claude_gpt/gpt-6.1-sol", SOL],
   ["codex_proxy/gpt-6.1-sol", SOL],
-  ["admin2/gpt-6.1-sol", SOL],
-  ["vivek/gpt-6-sol", SOL],
-  ["vivek/gpt-5.6-sol", SOL],
+  ["ops2/gpt-6.1-sol", SOL],
+  ["team/gpt-6-sol", SOL],
+  ["team/gpt-5.6-sol", SOL],
   ["sol", SOL],
   [
-    "vivek/gpt-6-luna",
+    "team/gpt-6-luna",
     {
       instanceId: "codex",
       model: "gpt-6-luna",
@@ -1650,7 +1650,7 @@ it.each([
     },
   ],
   [
-    "vivek/gpt-5.6-luna",
+    "team/gpt-5.6-luna",
     {
       instanceId: "codex",
       model: "gpt-6-luna",
@@ -1659,9 +1659,17 @@ it.each([
   ],
   ["claude_gpt/z-ai/glm-5.3-flash", { instanceId: "claudeAgent", model: "z-ai/glm-5.3" }],
   ["zai-org/GLM-5.3", { instanceId: "claudeAgent", model: "z-ai/glm-5.3" }],
+  ["team/z-ai/glm-5.3", { instanceId: "claudeAgent", model: "z-ai/glm-5.3" }],
 ])("maps the Office model key %s onto a stock instance", (key, expected) => {
   assert.deepEqual(officeModel(key), expected);
 });
+
+it.each(["team/unknown-model", "a/b/gpt-6-astra", "z-ai/unknown"])(
+  "leaves the Office model key %s unmapped",
+  (key) => {
+    assert.equal(officeModel(key), undefined);
+  },
+);
 
 it("starts a chat with only a legacy model key on that model", async () => {
   await using h = await harness({ defaultModel: ASTRA });

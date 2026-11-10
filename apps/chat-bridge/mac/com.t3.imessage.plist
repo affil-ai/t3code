@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- ~/Library/LaunchAgents/com.affil.imessage.plist for the Mac user that runs Messages.
+<!-- ~/Library/LaunchAgents/com.t3.imessage.plist for the Mac user that runs Messages.
      Replace USER with that user's short name. -->
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.affil.imessage</string>
+  <key>Label</key><string>com.t3.imessage</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/USER/Applications/affil-imessage/affil-imessage</string>
+    <string>/Users/USER/Applications/t3-imessage/t3-imessage</string>
     <string>--imsg</string><string>/Users/USER/.local/opt/imsg-0.20.0/imsg</string>
     <string>--host</string><string>127.0.0.1</string>
     <string>--port</string><string>47821</string>
@@ -15,7 +15,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
-  <key>StandardErrorPath</key><string>/Users/USER/Library/Logs/affil-imessage/service.log</string>
-  <key>StandardOutPath</key><string>/Users/USER/Library/Logs/affil-imessage/service.log</string>
+  <key>StandardErrorPath</key><string>/Users/USER/Library/Logs/t3-imessage/service.log</string>
+  <key>StandardOutPath</key><string>/Users/USER/Library/Logs/t3-imessage/service.log</string>
 </dict>
 </plist>
