@@ -957,7 +957,10 @@ export function createSlackHost(options: SlackChatHostOptions): {
           ...(replyTo === undefined ? {} : { thread_ts: replyTo }),
         });
         if (!posted.channel || !posted.ts) throw new Error("Slack didn't say where it posted.");
-        return slack.encodeThreadId({ channel: posted.channel, threadTs: replyTo ?? posted.ts });
+        // Replies arrive keyed by the thread's root. `replyTo` may name a reply rather than
+        // the root, and Slack then posts under the root, so take the thread Slack reports.
+        const threadTs = posted.message?.thread_ts ?? replyTo ?? posted.ts;
+        return slack.encodeThreadId({ channel: posted.channel, threadTs });
       },
       follow: async (chatThreadKey) => {
         // Direct messages all reach the bot anyway; a channel thread needs following.

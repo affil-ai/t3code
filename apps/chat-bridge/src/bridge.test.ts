@@ -32,6 +32,8 @@ import type { Chat } from "chat";
 import { createSlackHost, type SlackTransport } from "./slack/host.ts";
 import { fakeSlackApi } from "./slack/fakeSlackApi.ts";
 import { resendSlackMessage, RUNNING_PID_KEY, runningBridge } from "./slack/resend.ts";
+import { startSlackThread } from "./slack/start.ts";
+import { callTool } from "./toolServer.ts";
 import {
   connectSlackRelay,
   currentRelayedRow,
@@ -389,6 +391,8 @@ function harness(
     runEnded?: ChatPlatform["runEnded"];
     /** Another platform served beside Slack, such as Office's channel. */
     otherPlatform?: ChatPlatform;
+    /** Slack calls to take from elsewhere, such as the real Slack host's. */
+    slack?: Partial<ChatPlatform>;
   } = {},
 ) {
   const blockPosts: Array<BlockMessage & { messageId?: string }> = [];
@@ -472,6 +476,7 @@ function harness(
         acknowledgeFirst: true,
         backgroundStatus: true,
         ...(options.runEnded === undefined ? {} : { runEnded: options.runEnded }),
+        ...options.slack,
       },
       ...(options.otherPlatform ? [options.otherPlatform] : []),
     ],
@@ -2356,13 +2361,15 @@ async function relayedSlack(
     deliveredFails?: boolean;
     sleep?: (ms: number) => Promise<void>;
     timeout?: (ms: number) => Promise<void>;
+    /** Slack's Web API, such as a `fakeSlackApi`; by default an address that refuses. */
+    apiUrl?: string;
   } = {},
 ) {
   const slackParts = createSlackHost({
     botToken: "xoxb-test",
     transport: { kind: "office-relay" },
     botUserId: "UBOT",
-    apiUrl: "http://127.0.0.1:9/api/",
+    apiUrl: options.apiUrl ?? "http://127.0.0.1:9/api/",
     onEvent: (inbound) => bridge.receive(inbound),
   });
   const chat = await startChatHost({
@@ -2406,6 +2413,8 @@ async function relayedSlack(
     timeout: options.timeout ?? (() => new Promise<void>(() => {})),
   })!;
   return {
+    /** The Slack-only calls, as `bin.ts` gets them once the `Chat` runs. */
+    host: slackParts.connect(chat),
     delivered,
     /** What `delivered` records about the bridge when each batch is marked. */
     whenDelivered: (check: () => boolean) => (handled = check),
@@ -3016,4 +3025,244 @@ it("ends a joined run after a restart once its own delegated work settles", asyn
   void first.t3.tick();
   await second.bridge.idle();
   assert.deepStrictEqual(second.ended, ["run-2", "run-1"]);
+});
+
+/**
+ * `slack_start` binds a Slack thread to a T3 thread; then people answer there, as Slack sends
+ * it through Office's relay. Every path is the real one but T3's and Slack's Web API.
+ */
+async function slackStartHarness(thread: { readonly root?: string } = {}): Promise<{
+  readonly h: ReturnType<typeof subagentHarness>;
+  readonly slack: Awaited<ReturnType<typeof relayedSlack>>;
+  readonly api: Awaited<ReturnType<typeof fakeSlackApi>>;
+  readonly start: (args: Record<string, unknown>) => Promise<string>;
+  /** The tool's error, for a start that must fail. */
+  readonly startError: (args: Record<string, unknown>) => Promise<string>;
+  /** Slack's events for one human message, as Office relays them. */
+  readonly say: (where: {
+    channel: string;
+    ts: string;
+    threadTs: string;
+    text: string;
+  }) => Promise<void>;
+  /** What T3 got: each message sent and to which thread, and any thread launched. */
+  readonly t3Got: () => { sends: Array<[string, string]>; launches: number };
+  readonly close: () => Promise<void>;
+}> {
+  let host: Awaited<ReturnType<typeof relayedSlack>>["host"] | undefined;
+  const parts = harness(freshDatabase(), {
+    dmProjectId: PROJECT,
+    routes: [{ channelId: "C0CHAN1", projectId: PROJECT }],
+    allowEveryone: true,
+    members: ["U0ADA"],
+    slack: {
+      startConversation: (channel, text, replyTo) => host!.startThread(channel, text, replyTo),
+      bound: (chatThreadKey) => host!.follow(chatThreadKey),
+    },
+  });
+  // The thread calling slack_start, such as an orchestrator's subagent, between runs.
+  Object.assign(parts.t3.thread, {
+    projectId: PROJECT,
+    parentThreadId: "orchestrator",
+    relationshipToParent: "subagent",
+  });
+  parts.t3.options.recentRuns = [{ runId: "child-0", ordinal: 1, status: "completed" }];
+  parts.t3.finish("child-0", "completed", "Done.");
+  // Each message starts a run, as one does after the last run ended; the test ends each.
+  parts.t3.options.sendStartsRun = true;
+  let runs = 0;
+  const h = { ...parts, attach: async () => {} };
+  const api = await fakeSlackApi({
+    "users.info": (args) => ({ ok: true, user: { id: args.user, name: "ada", real_name: "Ada" } }),
+    "chat.postMessage": (args) => {
+      const channel = args.channel!.startsWith("U") ? "D0DMADA" : args.channel!;
+      const ts = "1794300500.000100";
+      // Slack posts a reply to a reply under the thread's root, and says so.
+      const threadTs = args.thread_ts === undefined ? undefined : (thread.root ?? args.thread_ts);
+      return {
+        ok: true,
+        channel,
+        ts,
+        message: { ts, ...(threadTs ? { thread_ts: threadTs } : {}) },
+      };
+    },
+  });
+  const slack = await relayedSlack(parts.bridge, parts.db, { apiUrl: api.apiUrl });
+  host = slack.host;
+  const platform = slackPlatform({
+    host: () => host,
+    access: { allowedUserIds: [], allowEveryone: true },
+    channelRoutes: [{ channelId: "C0CHAN1", projectId: PROJECT }],
+  });
+  const deps = {
+    bindingByChatKey: () => undefined,
+    workspaceRoots: async () => [],
+    post: async () => {},
+    react: async () => undefined,
+    setStatus: () => false,
+    startSlack: (request: Parameters<typeof startSlackThread>[1]) =>
+      startSlackThread(
+        {
+          access: {
+            channelProjects: [{ channelId: "C0CHAN1" }],
+            allowedUserIds: [],
+            allowEveryone: true,
+          },
+          platform,
+          core: parts.bridge,
+        },
+        request,
+      ),
+  };
+  let rows = 0;
+  const row = (event: Record<string, unknown>): SlackInboxRow => {
+    rows += 1;
+    return {
+      id: `row-${rows}`,
+      kind: "event",
+      contentType: "application/json",
+      retryNum: 0,
+      rawBody: JSON.stringify({
+        type: "event_callback",
+        team_id: "T1",
+        event_id: `Ev${rows}`,
+        event: { team: "T1", user: "U0ADA", ...event },
+      }),
+    };
+  };
+  return {
+    h,
+    slack,
+    api,
+    start: async (args) => {
+      const result = await callTool(deps, "slack_start", { threadId: "child-thread", ...args });
+      assert.isUndefined(result.isError, JSON.stringify(result.content));
+      return (result.content[0] as { text: string }).text;
+    },
+    startError: async (args) => {
+      const result = await callTool(deps, "slack_start", { threadId: "child-thread", ...args });
+      assert.isTrue(result.isError);
+      return (result.content[0] as { text: string }).text;
+    },
+    say: async ({ channel, ts, threadTs, text }) => {
+      const direct = channel.startsWith("D");
+      const message = {
+        channel,
+        channel_type: direct ? "im" : "channel",
+        ts,
+        thread_ts: threadTs,
+        text,
+      };
+      // A mention in a channel arrives twice, as Slack sends it: as a mention and as a message.
+      const mentioned = !direct && text.includes("<@UBOT>");
+      slack.push([
+        ...(mentioned ? [row({ type: "app_mention", ...message })] : []),
+        row({ type: "message", ...message }),
+      ]);
+      await slack.idle();
+      const sent = parts.t3.calls.filter((call) => call.tool === "t3_thread_send").length;
+      while (runs < sent) parts.t3.finish(`run-${++runs}`, "completed", "Done.");
+      await parts.bridge.idle();
+    },
+    t3Got: () => ({
+      sends: parts.t3.calls
+        .filter((call) => call.tool === "t3_thread_send")
+        .map((call) => [String(call.args.threadId), String(call.args.message)]),
+      launches: parts.t3.calls.filter((call) => call.tool === "t3_thread_launch").length,
+    }),
+    close: async () => {
+      await slack.close();
+      await api.close();
+    },
+  };
+}
+
+it.each([
+  [
+    "a new channel message",
+    { channel: "C0CHAN1", text: "Picking this up here." },
+    "slack:C0CHAN1:1794300500.000100",
+  ],
+  [
+    "a reply under an existing message",
+    { channel: "C0CHAN1", text: "On it.", replyTo: "1794300400.000100" },
+    "slack:C0CHAN1:1794300400.000100",
+  ],
+  ["a DM", { channel: "U0ADA", text: "Picking this up here." }, "slack:D0DMADA:1794300500.000100"],
+] as const)(
+  "continues the thread slack_start bound, from %s, when someone answers there with or without @Office",
+  async (_name, args, key) => {
+    const s = await slackStartHarness();
+    try {
+      assert.include(await s.start(args), key);
+      assert.strictEqual(s.h.store.binding(key)?.threadId, "child-thread");
+      const channel = key.split(":")[1]!;
+      const threadTs = key.split(":")[2]!;
+      await s.say({ channel, ts: "1794300601.000100", threadTs, text: "<@UBOT> do X" });
+      await s.say({ channel, ts: "1794300602.000100", threadTs, text: "and Y" });
+      await s.say({ channel, ts: "1794300603.000100", threadTs, text: "<@UBOT>" });
+      const got = s.t3Got();
+      assert.strictEqual(got.launches, 0, "no new T3 thread");
+      assert.deepStrictEqual(
+        got.sends.map(([threadId]) => threadId),
+        ["child-thread", "child-thread", "child-thread"],
+      );
+      assert.include(got.sends[0]![1], "do X");
+      assert.include(got.sends[1]![1], "and Y");
+      assert.include(got.sends[2]![1], BOUND_BARE_MENTION_REQUEST);
+      // Nothing else got bound: the one Slack thread still goes to the one T3 thread.
+      assert.deepStrictEqual(
+        s.h.store.bindingsForThread("child-thread").map((binding) => binding.chatThreadKey),
+        [key],
+      );
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+it("binds the root when slack_start replies under a reply, so an @Office there continues the thread", async () => {
+  const s = await slackStartHarness({ root: "1794300400.000100" });
+  try {
+    assert.include(
+      await s.start({ channel: "C0CHAN1", text: "On it.", replyTo: "1794300407.000100" }),
+      "slack:C0CHAN1:1794300400.000100",
+    );
+    await s.say({
+      channel: "C0CHAN1",
+      ts: "1794300601.000100",
+      threadTs: "1794300400.000100",
+      text: "<@UBOT> do X",
+    });
+    const got = s.t3Got();
+    assert.strictEqual(got.launches, 0);
+    assert.deepStrictEqual(
+      got.sends.map(([threadId]) => threadId),
+      ["child-thread"],
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+it("won't take a Slack thread another T3 thread answers when slack_start replies under one of its replies", async () => {
+  const s = await slackStartHarness({ root: "1794300400.000100" });
+  try {
+    const key = "slack:C0CHAN1:1794300400.000100";
+    s.h.store.replaceBinding({
+      chatThreadKey: key,
+      channelId: "C0CHAN1",
+      projectId: PROJECT,
+      threadId: "other-thread",
+      chatKey: "other-key",
+      createdByUserId: "U0ADA",
+    });
+    assert.include(
+      await s.startError({ channel: "C0CHAN1", text: "On it.", replyTo: "1794300407.000100" }),
+      "already goes to thread other-thread",
+    );
+    assert.strictEqual(s.h.store.binding(key)?.threadId, "other-thread");
+  } finally {
+    await s.close();
+  }
 });
