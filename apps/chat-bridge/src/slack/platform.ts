@@ -18,12 +18,21 @@ import type { SlackChatHost, SlackTransport } from "./host.ts";
 export const slackEligibility = (transport: SlackTransport): "workspace" | "person" =>
   transport.kind === "office-relay" ? "person" : "workspace";
 
+/**
+ * How Slack replies read. People skim a thread on a phone, so the bridge repeats
+ * this on every Slack turn and in the tool server's instructions, which also
+ * reach wakes from background work.
+ */
+export const SLACK_REPLY_STYLE =
+  "Write for Slack: lead with the answer, in a few lines or a short list, not a report. Leave out commit SHAs, run or deployment IDs, file paths and tool narration unless the reader needs them to act; give a link instead of an ID. A progress update is one short sentence.";
+
 /** Tells the agent how its answer reaches Slack, once per thread. */
 export function slackFirstTurnNote(chatKey: string): string {
   return [
     "Your final message in each run is posted to this Slack thread.",
     QUIET_RULES,
     DELIVER_FIRST,
+    SLACK_REPLY_STYLE,
     "To mention someone there, write <@USERID>, such as <@U0123ABCD>.",
     `To send files, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace.`,
     `To react to a message, call the chat_react tool with chatKey "${chatKey}", the message id and an emoji name.`,
@@ -74,6 +83,7 @@ export function slackPlatform(options: {
     directRoute: options.directRoute,
     person: (userId, name) => `${name} (<@${userId}>)`,
     firstTurnNote: (chatKey) => slackFirstTurnNote(chatKey),
+    replyStyle: SLACK_REPLY_STYLE,
     refusal: (userId) =>
       `Sorry, you can't use this bot yet. Ask whoever runs it to add your Slack member ID (${userId}) to its allowed users.`,
     post: (message) => connected().post(message),

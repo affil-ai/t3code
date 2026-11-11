@@ -22,6 +22,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { type OutboundFile, type OutboundMessage, QUIET_RULES, type Reaction } from "./platform.ts";
 import type { Binding } from "./store.ts";
+import { SLACK_REPLY_STYLE } from "./slack/platform.ts";
 
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -424,6 +425,7 @@ const INSTRUCTIONS = [
   QUIET_RULES,
   "The thread's first turn says how that chat works: how to mention people, and which of these tools it supports.",
   "Use chat_post to send files or an update before the run ends, chat_react to react to a message, and chat_status to set the status shown during a long run. All take the thread's chat key.",
+  `In a Slack thread: ${SLACK_REPLY_STYLE}`,
 ].join(" ");
 
 function mcpServer(deps: ToolDeps): Server {

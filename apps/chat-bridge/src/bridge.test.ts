@@ -25,7 +25,7 @@ import {
   type OutboundMessage,
   QUIET_REPLY,
 } from "./platform.ts";
-import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
+import { SLACK_REPLY_STYLE, slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
 import type { Chat } from "chat";
@@ -427,6 +427,7 @@ function harness(
           options.dmProjectId === undefined ? undefined : { projectId: options.dmProjectId },
         person: (userId, name) => `${name} (<@${userId}>)`,
         firstTurnNote: slackFirstTurnNote,
+        replyStyle: SLACK_REPLY_STYLE,
         refusal: (userId) =>
           `Sorry, you can't use this bot yet. Ask whoever runs it to add your Slack member ID (${userId}) to its allowed users.`,
         // An answer is recorded as before; anything else names its kind.
@@ -2178,7 +2179,7 @@ it("posts nothing for a run that answers NO_REPLY, and tells every chat how to",
   assert.include(slackFirstTurnNote("key"), "wake you more than once");
 });
 
-it("asks for an acknowledgement in the first turn only, not in follow-ups", async () => {
+it("asks for an acknowledgement in the first turn only, and the reply style in every turn", async () => {
   // Slack itself asks for it; the harness platform mirrors that.
   assert.isTrue(SLACK.acknowledgeFirst);
   const { t3, bridge } = harness();
@@ -2189,6 +2190,8 @@ it("asks for an acknowledgement in the first turn only, not in follow-ups", asyn
   const send = t3.calls.find((call) => call.tool === "t3_thread_send")!;
   assert.include(String(send.args.message), "also lint");
   assert.notInclude(String(send.args.message), ACKNOWLEDGE_FIRST);
+  for (const message of [launch.args.message, send.args.message])
+    assert.strictEqual(String(message).split(SLACK_REPLY_STYLE).length, 2);
   t3.finish("run-1", "completed", "Done.");
   await bridge.idle();
 });

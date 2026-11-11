@@ -134,6 +134,8 @@ export interface ChatPlatform {
   readonly person: (userId: string, name: string) => string;
   /** How the agent's answers reach the conversation and how it uses the chat tools, once per thread. */
   readonly firstTurnNote: (chatKey: string, event: InboundEvent) => string;
+  /** How replies should read, repeated on each follow-up turn; the first turn note carries it itself. */
+  readonly replyStyle?: string;
   /** Why someone can't use the bot, and what to ask for. */
   readonly refusal: (userId: string) => string;
   /** Refreshes request context just before handoff, without saving it to the inbox. Undefined rejects it. */

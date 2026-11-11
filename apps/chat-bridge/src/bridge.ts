@@ -443,6 +443,7 @@ function turnText(
       ? platform.firstTurnNote(chatKey, event)
       : `(Your final message is posted to the ${platform.place}. Chat key: ${chatKey})`,
   );
+  if (!first && platform.replyStyle) lines.push(platform.replyStyle);
   return lines.join("\n");
 }
 
