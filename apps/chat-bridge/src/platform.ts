@@ -75,12 +75,16 @@ export const QUIET_REPLY = "NO_REPLY";
 export const isQuietReply = (text: string): boolean =>
   text.trim().replace(/^[`"']+|[`"'.]+$/g, "") === QUIET_REPLY;
 
-/** How the agent stays quiet, and how to treat wake-ups from its subagents and background work. */
+/**
+ * How the agent stays quiet, and how to treat wake-ups from its subagents and background work.
+ * Wakes that restated earlier posts were the bridge's repeats in practice (a "second check"
+ * wake re-posting the first answer and its question), so the rule is "only what's new".
+ */
 export const QUIET_RULES = [
   `If a run needs no reply, make your whole final message exactly ${QUIET_REPLY} and nothing is posted.`,
-  "A subagent or background command can wake you more than once, and a wake can come before its work is done. Post each result once: when a wake only repeats what you already posted, or only says the work is still going, answer " +
-    QUIET_REPLY +
-    ".",
+  "A subagent or background command can wake you more than once, and a wake can come before its work is done. While it runs, don't promise to post a recap when it reports.",
+  "Every post says only what is new since your last post in this chat: never restate what you already posted, and never re-ask a question you already asked.",
+  `When a wake adds nothing new, or only says the work is still going, answer ${QUIET_REPLY}.`,
 ].join(" ");
 
 /** The person waits on their deliverable, not on the repository's gates. Office repeats it per request; Slack says it on a thread's first turn. */

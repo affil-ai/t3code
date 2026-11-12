@@ -388,6 +388,14 @@ export const BARE_MENTION_REQUEST =
 export const BOUND_BARE_MENTION_REQUEST =
   "(Mentioned you with no message. Read the latest messages and do what they ask.)";
 
+/**
+ * Added to a reply turn while the thread's delegated or background work from an earlier run
+ * still runs. That work wakes the agent again when it reports; without this, the reply and the
+ * wake each restated the same findings and re-asked the same question.
+ */
+export const WORK_RUNNING_NOTE =
+  "Delegated work from an earlier run is still running and will wake you when it reports. Answer only this message now. When that work reports, post only what it adds, and don't re-ask questions you already asked.";
+
 type ControlCommand = "mute" | "unmute" | "stop";
 
 /** `mute`, `unmute` or `stop`, when that is the whole message after the bot's mention. */
@@ -416,6 +424,7 @@ function turnText(
   first: boolean,
   context = "",
   note?: string | undefined,
+  workRunning = false,
 ): string {
   const lines = [
     ...(context ? [context, ""] : []),
@@ -443,6 +452,7 @@ function turnText(
       ? platform.firstTurnNote(chatKey, event)
       : `(Your final message is posted to the ${platform.place}. Chat key: ${chatKey})`,
   );
+  if (!first && workRunning) lines.push(WORK_RUNNING_NOTE);
   if (!first && platform.replyStyle) lines.push(platform.replyStyle);
   return lines.join("\n");
 }
@@ -1076,9 +1086,20 @@ export class Bridge {
         platform,
         kept.map((message) => message.line),
       );
+      // `background` holds the thread while its follow sees delegated work still going.
+      const workRunning = [...this.background.values()].includes(binding.threadId);
       const sent = await this.threads.send({
         threadId: binding.threadId,
-        text: turnText(platform, event, imported.skipped, binding.chatKey, false, context),
+        text: turnText(
+          platform,
+          event,
+          imported.skipped,
+          binding.chatKey,
+          false,
+          context,
+          undefined,
+          workRunning,
+        ),
         attachments: imported.attachments,
         requestId: requestId(event.eventId),
       });

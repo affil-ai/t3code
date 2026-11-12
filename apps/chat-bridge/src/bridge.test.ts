@@ -15,6 +15,7 @@ import {
   threadTitle,
   type BlockMessage,
   type Reply,
+  WORK_RUNNING_NOTE,
 } from "./bridge.ts";
 import type { PlanStep, RunStep } from "./activity.ts";
 import {
@@ -2177,6 +2178,7 @@ it("posts nothing for a run that answers NO_REPLY, and tells every chat how to",
   assert.isFalse(isQuietReply("No reply needed"));
   assert.include(slackFirstTurnNote("key"), `exactly ${QUIET_REPLY}`);
   assert.include(slackFirstTurnNote("key"), "wake you more than once");
+  assert.include(slackFirstTurnNote("key"), "never re-ask a question you already asked");
 });
 
 it("asks for an acknowledgement in the first turn only, and the reply style in every turn", async () => {
@@ -2225,6 +2227,35 @@ it("shows the thread processing while delegated work goes on after the turn, ref
   const after = statuses.length;
   scheduledRuns.at(-1)!.run();
   assert.lengthOf(statuses, after);
+});
+
+it("tells a reply turn to answer only the new message while earlier delegated work still runs", async () => {
+  const { t3, bridge } = harness();
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", "Here's what I found; a second check is still running.");
+  await t3.tick();
+  // The reply crosses the second check, as in the thread that repeated itself.
+  await bridge.receive(event("100.2", { kind: "follow_up", text: "u failed to tag andrew" }));
+  const sends = () => t3.calls.filter((call) => call.tool === "t3_thread_send");
+  assert.include(String(sends()[0]!.args.message), WORK_RUNNING_NOTE);
+  // Once the work settles, a reply gets no such line.
+  t3.options.delegatedPending = false;
+  void t3.tick();
+  await bridge.idle();
+  await bridge.receive(event("100.3", { kind: "follow_up", text: "thanks" }));
+  assert.lengthOf(sends(), 2);
+  assert.notInclude(String(sends()[1]!.args.message), WORK_RUNNING_NOTE);
+});
+
+it("adds no delegated-work line to a reply when no work was ever running", async () => {
+  const { t3, bridge } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  await bridge.receive(event("100.2", { kind: "follow_up", text: "also lint" }));
+  const send = t3.calls.find((call) => call.tool === "t3_thread_send")!;
+  assert.notInclude(String(send.args.message), WORK_RUNNING_NOTE);
 });
 
 it("leaves the state alone after the turn when no delegated work is going", async () => {
