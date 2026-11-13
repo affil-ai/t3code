@@ -4,8 +4,7 @@ import {
   type ChannelRoute,
   type ChatPlatform,
   DELIVER_FIRST,
-  QUIET_REPLY,
-  QUIET_RULES,
+  postRules,
   type ThreadRoute,
 } from "../platform.ts";
 import type { SlackChatHost, SlackTransport } from "./host.ts";
@@ -24,27 +23,29 @@ export const slackEligibility = (transport: SlackTransport): "workspace" | "pers
  * reach wakes from background work.
  */
 export const SLACK_REPLY_STYLE =
-  "Write for Slack: lead with the answer, in a few lines or a short list, not a report. Leave out commit SHAs, run or deployment IDs, file paths and tool narration unless the reader needs them to act; give a link instead of an ID. A progress update is one short sentence.";
+  "Write for Slack: lead with the answer, in a few lines or a short list, not a report. Leave out commit SHAs, run or deployment IDs, file paths and tool narration unless the reader needs them to act; give a link instead of an ID.";
+
+/** How the agent acknowledges a request in Slack: a reaction and the status line, never a post. */
+export const SLACK_ACKNOWLEDGE =
+  "When a person asks you for something, acknowledge it with chat_react (eyes) on their message and chat_status set to the step you're on; set chat_status again as you move to each new step.";
 
 /** Tells the agent how its answer reaches Slack, once per thread. */
 export function slackFirstTurnNote(chatKey: string): string {
   return [
-    "Your final message in each run is posted to this Slack thread.",
-    QUIET_RULES,
+    postRules("Slack thread"),
+    SLACK_ACKNOWLEDGE,
     DELIVER_FIRST,
     SLACK_REPLY_STYLE,
     "To mention someone there, write <@USERID>, such as <@U0123ABCD>.",
-    `To send files, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace.`,
-    `To react to a message, call the chat_react tool with chatKey "${chatKey}", the message id and an emoji name.`,
+    `The chat tools take chatKey "${chatKey}". chat_post sends text, files from your workspace, or both; chat_react takes the message id and an emoji name.`,
   ].join(" ");
 }
 
 /** What a thread that started its own Slack thread is told, with the key for the chat tools. */
 export function slackWorkNote(chatThreadKey: string, chatKey: string): string {
   return [
-    `You started a Slack thread (${chatThreadKey}). Replies there continue this thread, and from now on your final message in each run is posted there.`,
+    `You started a Slack thread (${chatThreadKey}). Replies there continue this thread.`,
     slackFirstTurnNote(chatKey),
-    `If you had already finished when this arrived, answer ${QUIET_REPLY}.`,
     `Chat key: ${chatKey}`,
   ].join("\n\n");
 }
@@ -98,7 +99,7 @@ export function slackPlatform(options: {
     history: (chatThreadKey, messageId) => connected().history(chatThreadKey, messageId),
     feedbackTarget: (event) => connected().feedbackTarget(event),
     bound: (chatThreadKey) => connected().follow(chatThreadKey),
-    acknowledgeFirst: true,
+    silentByDefault: true,
     backgroundStatus: true,
     startConversation: (channel, text, replyTo) => connected().startThread(channel, text, replyTo),
   };

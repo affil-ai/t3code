@@ -159,7 +159,7 @@ export function ensureSchema(db: NodeSqlite.DatabaseSync): void {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
-    -- Messages kept for the thread's next turn: asides, replies in a muted thread, other people.
+    -- Messages kept for the thread's next turn: messages for other bots, replies in a muted thread, other people.
     CREATE TABLE IF NOT EXISTS thread_context (
       event_id TEXT PRIMARY KEY,
       chat_thread_key TEXT NOT NULL,

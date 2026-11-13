@@ -28,6 +28,8 @@ import {
   type ThreadRoute,
 } from "./platform.ts";
 import { SLACK_REPLY_STYLE, slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
+import { imessagePlatform } from "./imessage/platform.ts";
+import type { ImessageAdapter } from "./imessage/adapter.ts";
 import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
 import type { Chat } from "chat";
@@ -839,16 +841,17 @@ it("mutes and unmutes a thread on command", async () => {
   );
 });
 
-it("keeps asides, other people and messages for other bots as context, once", async () => {
+it("keeps other people and messages for other bots as context, once", async () => {
   const { t3, bridge } = harness();
   await bridge.receive(event("100.1"));
   const followUp = { kind: "follow_up" as const, addressed: false };
   assert.strictEqual(
-    (await bridge.receive(event("100.2", { ...followUp, text: "aside: lunch?" }))).type,
+    (
+      await bridge.receive(
+        event("100.3", { ...followUp, text: "<@U0OTHER> deploy", forAnotherBot: true }),
+      )
+    ).type,
     "noted",
-  );
-  await bridge.receive(
-    event("100.3", { ...followUp, text: "<@U0OTHER> deploy", forAnotherBot: true }),
   );
   await bridge.receive(
     event("100.4", { ...followUp, author: { userId: "U9", userName: "grace", fullName: "Grace" } }),
@@ -859,7 +862,6 @@ it("keeps asides, other people and messages for other bots as context, once", as
     .filter((call) => call.tool === "t3_thread_send")
     .map((call) => String(call.args.message));
   assert.lengthOf(sends, 2);
-  assert.include(sends[0], "aside: lunch?");
   assert.include(sends[0], "<@U0OTHER> deploy");
   assert.include(sends[0], "Grace (<@U9>): fix the build");
   assert.notInclude(sends[1], "since your last turn");
@@ -1096,18 +1098,32 @@ it("waits for a starting run to take steers, then sends what arrived meanwhile a
   ]);
 });
 
-it("doesn't combine a command or an aside with the follow-ups around it", async () => {
+it("delivers a message led by aside as a turn like any other", async () => {
+  const { t3, bridge } = harness();
+  await bridge.receive(event("100.1"));
+  const outcome = await bridge.receive(
+    event("100.2", { kind: "follow_up", addressed: false, text: "aside: lunch?" }),
+  );
+  assert.strictEqual(outcome.type, "followed_up");
+  const send = t3.calls.find((call) => call.tool === "t3_thread_send")!;
+  assert.include(String(send.args.message), "aside: lunch?");
+  assert.notInclude(String(send.args.message), "since your last turn");
+});
+
+it("doesn't combine a command or a message for another bot with the follow-ups around it", async () => {
   const { t3, bridge, store } = harness();
   await bridge.receive(event("100.1"));
   for (const [ts, text] of [
     ["100.2", "first"],
-    ["100.3", "aside: just for the record"],
+    ["100.3", "<@U0OTHER> just for the record"],
     ["100.4", "second"],
   ] as const) {
     store.enqueue({
       eventId: `slack:C1:${ts}`,
       chatThreadKey: "slack:C1:100.1",
-      event: JSON.stringify(event(ts, { kind: "follow_up", text })),
+      event: JSON.stringify(
+        event(ts, { kind: "follow_up", text, forAnotherBot: text.startsWith("<@U0OTHER>") }),
+      ),
     });
   }
   await bridge.receive(event("100.5", { kind: "follow_up", text: "third" }));
@@ -1116,7 +1132,7 @@ it("doesn't combine a command or an aside with the follow-ups around it", async 
   const sent = t3.calls
     .filter((call) => call.tool === "t3_thread_send")
     .map((call) => String(call.args.message));
-  // The aside stays context, so "first" goes alone and "second" and "third" go together.
+  // The message for another bot stays context, so "first" goes alone and "second" and "third" go together.
   assert.strictEqual(sent.length, 2);
   assert.include(sent[0], "first");
   assert.notInclude(sent[0], "second");
@@ -2181,14 +2197,64 @@ it("posts nothing for a run that answers NO_REPLY, and tells every chat how to",
   assert.isTrue(isQuietReply("NO_REPLY"));
   assert.isFalse(isQuietReply("NO_REPLY was wrong earlier; here are the logs."));
   assert.isFalse(isQuietReply("No reply needed"));
-  assert.include(slackFirstTurnNote("key"), `exactly ${QUIET_REPLY}`);
-  assert.include(slackFirstTurnNote("key"), "wake you more than once");
-  assert.include(slackFirstTurnNote("key"), "never re-ask a question you already asked");
+  // Slack posts only through chat_post, so it has no use for the marker.
+  assert.notInclude(slackFirstTurnNote("key"), QUIET_REPLY);
+});
+
+it("posts nothing when a run completes on a silent platform, whatever its final message", async () => {
+  const { t3, bridge, posted, store } = harness(undefined, { slack: { silentByDefault: true } });
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "All done, tests pass.");
+  await bridge.idle();
+  assert.lengthOf(posted, 0);
+  // Not owed any more: a restart doesn't post it either.
+  assert.lengthOf(store.pendingReplies(), 0);
+  // A follow-up turn tells the agent how to reach the chat.
+  await bridge.receive(event("100.2", { kind: "follow_up", text: "and the lint?" }));
+  const send = t3.calls.find((call) => call.tool === "t3_thread_send")!;
+  assert.include(
+    String(send.args.message),
+    "Only chat_post reaches the Slack thread, with kind question, blocked, done or answer.",
+  );
+  // A failed run still says so.
+  const failing = harness(undefined, { slack: { silentByDefault: true } });
+  await failing.bridge.receive(event("100.1"));
+  failing.t3.finish("run-1", "failed");
+  await failing.bridge.idle();
+  assert.deepStrictEqual(
+    failing.posted.map((reply) => reply.text),
+    ["The run failed. Open the thread in T3 Code for details."],
+  );
+});
+
+it("makes Slack and iMessage silent by default, and tells their agents when to post", () => {
+  const imessage = imessagePlatform({
+    chat: () => undefined,
+    adapter: { isDM: () => false, canReact: false } as unknown as ImessageAdapter,
+    access: { allowedUserIds: [] },
+    route: { projectId: PROJECT },
+    onEvent: async () => ({ type: "pending" }),
+  }).platform;
+  assert.isTrue(SLACK.silentByDefault);
+  assert.isTrue(imessage.silentByDefault);
+  const imessageNote = imessage.firstTurnNote("key", event("1"));
+  for (const note of [slackFirstTurnNote("key"), imessageNote]) {
+    assert.include(note, "Only chat_post reaches this");
+    for (const kind of ["`question`", "`blocked`", "`done`", "`answer`"])
+      assert.include(note, kind);
+    assert.include(note, "post only for those addressed to you that need your answer");
+    assert.notInclude(note, QUIET_REPLY);
+    assert.notInclude(note, "final message in each run is");
+  }
+  assert.include(slackFirstTurnNote("key"), "chat_react (eyes)");
+  assert.include(slackFirstTurnNote("key"), "chat_status");
+  assert.notInclude(SLACK_REPLY_STYLE, "progress update");
+  assert.include(imessageNote, "group conversation");
 });
 
 it("asks for an acknowledgement in the first turn only, and the reply style in every turn", async () => {
-  // Slack itself asks for it; the harness platform mirrors that.
-  assert.isTrue(SLACK.acknowledgeFirst);
+  // Office asks for it, and the harness platform mirrors that; Slack acknowledges with a reaction instead.
+  assert.isUndefined(SLACK.acknowledgeFirst);
   const { t3, bridge } = harness();
   await bridge.receive(event("100.1"));
   const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;

@@ -20,9 +20,16 @@ import {
 
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-import { type OutboundFile, type OutboundMessage, QUIET_RULES, type Reaction } from "./platform.ts";
+import {
+  type OutboundFile,
+  type OutboundMessage,
+  POST_KINDS,
+  type PostKind,
+  QUIET_RULES,
+  type Reaction,
+} from "./platform.ts";
 import type { Binding } from "./store.ts";
-import { SLACK_REPLY_STYLE } from "./slack/platform.ts";
+import { SLACK_ACKNOWLEDGE, SLACK_REPLY_STYLE } from "./slack/platform.ts";
 
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -114,7 +121,7 @@ const LINEAR_START_TOOL = {
 const SLACK_START_TOOL = {
   name: "slack_start",
   description:
-    "Start a Slack thread for a T3 thread: posts text as a new message in a channel the bot is in, or as a DM to a person, or as a reply under an existing message with replyTo, and replies in that Slack thread continue the T3 thread. The thread's final message in each run is posted there from then on. Pass your own thread id, or a subagent's childThreadId. No chat key needed.",
+    "Start a Slack thread for a T3 thread: posts text as a new message in a channel the bot is in, or as a DM to a person, or as a reply under an existing message with replyTo, and replies in that Slack thread continue the T3 thread. From then on the thread posts there with chat_post. Pass your own thread id, or a subagent's childThreadId. No chat key needed.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -165,11 +172,12 @@ const TOOLS = [
   {
     name: "chat_post",
     description:
-      "Post a message, files, or both to the chat thread with this chat key. Your final message is posted there anyway, so use this for files and for updates before the run ends. Files must be inside your workspace, up to 10 per call and 50 MB each. The thread's first turn says how to mention people there.",
+      "Post a message, files, or both to the chat thread with this chat key, with its kind: question (you need a person to decide or tell you something), blocked (you can't go on until someone acts), done (the result, once the request is finished) or answer (a direct reply to something a person asked you). In Slack and iMessage this is the only way anything reaches the chat. Files must be inside your workspace, up to 10 per call and 50 MB each. The thread's first turn says how to mention people there.",
     inputSchema: {
       type: "object" as const,
       properties: {
         chatKey: { type: "string", description: "The chat key from the chat message." },
+        kind: { type: "string", enum: [...POST_KINDS], description: "What the post is for." },
         text: { type: "string", maxLength: MAX_TEXT },
         files: {
           type: "array",
@@ -187,7 +195,7 @@ const TOOLS = [
           },
         },
       },
-      required: ["chatKey"],
+      required: ["chatKey", "kind"],
     },
   },
   {
@@ -207,7 +215,7 @@ const TOOLS = [
   {
     name: "chat_status",
     description:
-      'Set the status shown under the chat thread with this chat key, such as "Running the tests", until your next step. Your commands, searches and edits show there already, so use this for a phase of work they don\'t name.',
+      'Set the status shown under the chat thread with this chat key, such as "Running the tests", until your next step. It is how people see your progress: set it when you take a request and at each new step.',
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -350,6 +358,8 @@ export async function callTool(
       return text("Unknown chat key. Use the one in the chat message this thread received.", true);
     }
     if (name === "chat_post") {
+      if (!POST_KINDS.includes(args.kind as PostKind))
+        return text(`kind must be one of ${POST_KINDS.join(", ")}.`, true);
       const message = stringArg(args, "text")?.trim() ?? "";
       const requested = Array.isArray(args.files)
         ? (args.files as Array<Record<string, unknown>>)
@@ -370,7 +380,7 @@ export async function callTool(
           );
         }
       }
-      // Mid-run: the run's own final message is the answer.
+      // Posted as before whatever its kind: on Linear and Office the run's final message stays the answer.
       await deps.post({
         eventId: `tool:${binding.threadId}:${invocationId}`,
         chatThreadKey: binding.chatThreadKey,
@@ -420,12 +430,11 @@ export async function callTool(
  * even after its first turn has been compacted away.
  */
 const INSTRUCTIONS = [
-  "Some threads take their messages from a chat, such as a Slack thread, an iMessage conversation or a Linear agent session. Their turns start with the chat message and carry a chat key.",
-  "In those threads your final message in each run is posted to the chat.",
-  QUIET_RULES,
-  "The thread's first turn says how that chat works: how to mention people, and which of these tools it supports.",
-  "Use chat_post to send files or an update before the run ends, chat_react to react to a message, and chat_status to set the status shown during a long run. All take the thread's chat key.",
-  `In a Slack thread: ${SLACK_REPLY_STYLE}`,
+  "Some threads take their messages from a chat, such as a Slack thread, an iMessage conversation, a Linear agent session or an Office chat. Their turns start with the chat message and carry a chat key, which every chat tool takes.",
+  "In Slack and iMessage, only chat_post reaches the chat; your final message stays in T3. Post with a kind: question when you need a person to decide or tell you something, blocked when you can't go on until someone acts, done with the result once the request is finished, answer for a direct reply to something a person asked you. Between those, work silently, and post a result once you have it in place of a promise to report later. Read every message; post only for those addressed to you that need your answer.",
+  `In a Slack thread: ${SLACK_ACKNOWLEDGE} ${SLACK_REPLY_STYLE}`,
+  `In Linear and Office, your final message in each run is posted to the chat. ${QUIET_RULES}`,
+  "The thread's first turn says how its chat works: how to mention people, and which of these tools it supports.",
 ].join(" ");
 
 function mcpServer(deps: ToolDeps): Server {

@@ -251,8 +251,7 @@ const DELEGATED_FOLLOW_MS = 6 * 60 * 60 * 1000;
 /** At most this long an answer waits for the one owed before it, so a stuck run can't hold up the rest. */
 const ANSWER_ORDER_WAIT_MS = 60_000;
 /** Posted when the bridge stops following work that is still running. */
-const CAP_NOTE =
-  "Still working after six hours, so I've stopped showing it here. Its results still post here when it reports back.";
+const CAP_NOTE = "Still working after six hours, so I've stopped showing its status here.";
 /**
  * How often the bridge looks for runs T3 started with a notification in bound
  * threads, and how far before its last look each look starts reading, so a
@@ -407,9 +406,6 @@ function controlCommand(text: string): ControlCommand | undefined {
   return command === "mute" || command === "unmute" || command === "stop" ? command : undefined;
 }
 
-/** A message led by the word "aside" is for the people in the thread, not the agent. */
-const isAside = (text: string) => /^\s*aside\b/i.test(text);
-
 /** "Slack message 100.1 from Ada:", with no doubled word for a platform already named iMessage. */
 function messageHeading(platform: ChatPlatform, event: InboundEvent): string {
   const kind = /message$/i.test(platform.name) ? platform.name : `${platform.name} message`;
@@ -450,7 +446,9 @@ function turnText(
     "",
     first
       ? platform.firstTurnNote(chatKey, event)
-      : `(Your final message is posted to the ${platform.place}. Chat key: ${chatKey})`,
+      : platform.silentByDefault === true
+        ? `(Only chat_post reaches the ${platform.place}, with kind question, blocked, done or answer. Chat key: ${chatKey})`
+        : `(Your final message is posted to the ${platform.place}. Chat key: ${chatKey})`,
   );
   if (!first && workRunning) lines.push(WORK_RUNNING_NOTE);
   if (!first && platform.replyStyle) lines.push(platform.replyStyle);
@@ -743,8 +741,8 @@ export class Bridge {
   }
 
   /**
-   * A follow-up that only asks the agent something: not a command, an aside,
-   * a model switch or the answer to an open question, and from someone allowed.
+   * A follow-up that only asks the agent something: not a command, a message for
+   * another bot, a model switch or the answer to an open question, and from someone allowed.
    * Only these steer as soon as the run can take them, and only these combine.
    */
   private async isPlainFollowUp(event: InboundEvent): Promise<boolean> {
@@ -753,7 +751,7 @@ export class Bridge {
     const binding = this.store.binding(event.chatThreadKey);
     // In a bound conversation a mention is a follow-up too, such as a new Linear session on the issue.
     if (binding === undefined || !event.addressed || event.contextOnly === true) return false;
-    if (isAside(event.text) || event.forAnotherBot === true) return false;
+    if (event.forAnotherBot === true) return false;
     if (controlCommand(event.text) !== undefined) return false;
     if (parseModelCommand(event.text).command !== undefined) return false;
     if (this.asking(binding.chatThreadKey) !== undefined) return false;
@@ -1039,11 +1037,7 @@ export class Bridge {
     const nothingElse = event.text === "" && event.files.length === 0;
 
     if (binding !== undefined) {
-      if (
-        isAside(event.text) ||
-        event.forAnotherBot === true ||
-        (binding.muted && !event.addressed)
-      ) {
+      if (event.forAnotherBot === true || (binding.muted && !event.addressed)) {
         this.keep(binding, event);
         return { type: "noted", threadId: binding.threadId };
       }
@@ -1125,8 +1119,7 @@ export class Bridge {
     }
     if (event.kind === "follow_up" && seed === undefined)
       return { type: "ignored", reason: "unbound_thread" };
-    if (seed && (isAside(event.text) || event.forAnotherBot === true))
-      return { type: "ignored", reason: "unbound_thread" };
+    if (seed && event.forAnotherBot === true) return { type: "ignored", reason: "unbound_thread" };
 
     const route: ThreadRoute | undefined = event.direct
       ? platform.directRoute
@@ -1572,7 +1565,7 @@ export class Bridge {
 
   /**
    * A reaction never starts a run. In a bound thread, from someone allowed,
-   * it is kept as context for the thread's next turn, like an aside.
+   * it is kept as context for the thread's next turn, like a message for another bot.
    */
   async reacted(reaction: InboundReaction): Promise<void> {
     const binding = this.store.binding(reaction.chatThreadKey);
@@ -2435,7 +2428,11 @@ export class Bridge {
     }
   }
 
-  /** Posts the run's answer once. A completed run with no final message, or only `NO_REPLY`, chose to stay quiet. */
+  /**
+   * Posts the run's answer once. A completed run with no final message, or only `NO_REPLY`,
+   * chose to stay quiet; on a `silentByDefault` platform every completed run does, and the
+   * agent posts with `chat_post`.
+   */
   private async answer(reply: OwedReply, finalRunId: string, status: RunStatus): Promise<void> {
     if (!this.store.claimReply(reply)) return;
     const delivered = () => {
@@ -2448,10 +2445,13 @@ export class Bridge {
       return;
     }
     try {
+      const silent = this.platform(reply.chatThreadKey).silentByDefault === true;
       const text =
-        status === "completed"
-          ? await this.threads.finalAnswer(reply.threadId, finalRunId)
-          : TERMINAL_TEXT[status];
+        status !== "completed"
+          ? TERMINAL_TEXT[status]
+          : silent
+            ? undefined
+            : await this.threads.finalAnswer(reply.threadId, finalRunId);
       if (text !== undefined && !isQuietReply(text)) {
         await this.post(
           reply.chatThreadKey,
@@ -2462,7 +2462,7 @@ export class Bridge {
         delivered();
       } else {
         this.log(
-          `${finalRunId} answered ${text === undefined ? "nothing" : QUIET_REPLY}; nothing posted to ${reply.chatThreadKey}.`,
+          `${finalRunId} answered ${silent ? "in a silent chat" : text === undefined ? "nothing" : QUIET_REPLY}; nothing posted to ${reply.chatThreadKey}.`,
         );
         // An answer still owed here ends the conversation's turn itself.
         const later = this.store

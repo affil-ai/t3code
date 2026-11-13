@@ -48,6 +48,7 @@ it("posts text and workspace files to the chat key's thread", async () => {
   const { deps, posts } = harness();
   const result = await callTool(deps, "chat_post", {
     chatKey: "key-1",
+    kind: "done",
     text: "here you go",
     files: [{ path: "report.txt" }],
   });
@@ -67,17 +68,46 @@ it("refuses an unknown chat key and files outside the workspace", async () => {
   for (const filePath of ["../secret.txt", NodePath.join(root, "secret.txt"), "missing.txt"]) {
     const result = await callTool(deps, "chat_post", {
       chatKey: "key-1",
+      kind: "done",
       files: [{ path: filePath }],
     });
     assert.isTrue(result.isError, filePath);
   }
   assert.include(
     textOf(
-      await callTool(deps, "chat_post", { chatKey: "key-1", files: [{ path: "../secret.txt" }] }),
+      await callTool(deps, "chat_post", {
+        chatKey: "key-1",
+        kind: "done",
+        files: [{ path: "../secret.txt" }],
+      }),
     ),
     "outside the workspace",
   );
   assert.deepStrictEqual(posts, []);
+});
+
+it("requires a post's kind: question, blocked, done or answer", async () => {
+  const { deps, posts } = harness();
+  for (const kind of [undefined, "update", "progress", 3]) {
+    const result = await callTool(deps, "chat_post", { chatKey: "key-1", kind, text: "hi" });
+    assert.isTrue(result.isError, String(kind));
+    assert.include(textOf(result), "question, blocked, done, answer");
+  }
+  assert.deepStrictEqual(posts, []);
+  for (const kind of ["question", "blocked", "done", "answer"])
+    assert.isUndefined(
+      (await callTool(deps, "chat_post", { chatKey: "key-1", kind, text: kind })).isError,
+    );
+  // Every kind posts as before, so Linear and Office treat it as they always have.
+  assert.deepStrictEqual(
+    posts.map((post) => [post.text, post.kind]),
+    [
+      ["question", "update"],
+      ["blocked", "update"],
+      ["done", "update"],
+      ["answer", "update"],
+    ],
+  );
 });
 
 it("reacts with a bare emoji name and checks the message id", async () => {

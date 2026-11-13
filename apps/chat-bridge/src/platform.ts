@@ -92,6 +92,30 @@ export const DELIVER_FIRST =
   "Send the requester's deliverable (files with chat_post, or the answer) as soon as it is built and checked. Run repository gates after that, or skip them for draft-only changes. Tell delegated agents the same.";
 
 /**
+ * What a `chat_post` is for, on a platform that is `silentByDefault`. The agent
+ * names it on each post; the bridge keeps nothing about it between turns.
+ */
+export const POST_KINDS = ["question", "blocked", "done", "answer"] as const;
+export type PostKind = (typeof POST_KINDS)[number];
+
+/**
+ * How the agent speaks in a `silentByDefault` conversation: only on a question,
+ * a blocker, the result, or a direct answer. Progress shows in the status line.
+ */
+export function postRules(place: string): string {
+  return [
+    `Only chat_post reaches this ${place}; your final message stays in T3. Each post names its kind:`,
+    "`question` when you need a person to decide or tell you something;",
+    "`blocked` when you can't go on until someone acts;",
+    "`done` with the result once the request is finished;",
+    "`answer` for a direct reply to something a person asked you.",
+    "Between those, work silently: the status line shows your progress. Post a result once you have it, in place of a promise to report later.",
+    "A wake from a subagent or background work posts only when it brings a question, a blocker or the result.",
+    "Read every message in the conversation; post only for those addressed to you that need your answer.",
+  ].join(" ");
+}
+
+/**
  * Added to a conversation's first turn where the platform asks for it, so the
  * person hears back in the agent's own words before long work.
  */
@@ -159,6 +183,12 @@ export interface ChatPlatform {
    */
   readonly runEnded?: (chatThreadKey: string, runId: string) => Promise<void>;
 
+  /**
+   * The run's final message isn't posted: only the agent's `chat_post`, the
+   * questions T3 relays and a failed or stopped run's notice reach the
+   * conversation. Absent: the final message is the answer, as on Linear.
+   */
+  readonly silentByDefault?: boolean;
   /** Posts an answer or a notice. */
   readonly post: (message: OutboundMessage) => Promise<void>;
   /** Reacts to a message; absent when the platform can't. */

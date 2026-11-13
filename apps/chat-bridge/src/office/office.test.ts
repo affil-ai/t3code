@@ -508,7 +508,7 @@ it("uploads chat_post files with a stable invocation identity, independent of th
     react: async () => undefined,
     setStatus: () => false,
   };
-  const args = { chatKey: binding.chatKey, text: "Report", files: [{ path: file }] };
+  const args = { chatKey: binding.chatKey, kind: "done", text: "Report", files: [{ path: file }] };
   assert.isUndefined((await callTool(deps, "chat_post", args, "invocation-1")).isError);
   await callTool(deps, "chat_post", args, "invocation-1");
   assert.equal(h.office.posts.size, 1);

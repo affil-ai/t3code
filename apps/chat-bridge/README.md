@@ -1,8 +1,9 @@
 # T3 chat bridge
 
 Talk to T3 Code agents from Slack, Linear and iMessage. A message to the bot
-starts a T3 thread, replies continue it, and the agent's final message comes
-back as a normal reply.
+starts a T3 thread and replies continue it. In Slack and iMessage the agent
+posts only when it asks a question, is blocked, finishes, or answers someone
+directly; in Linear its final message comes back as the response.
 
 > **This app is all you need.** `apps/chat-bridge` is a standalone Node app
 > that runs against **stock, unmodified T3 Code**
@@ -79,9 +80,10 @@ These apply on every platform unless a section says otherwise.
   the latest messages.
 - **Replies continue it.** A reply steers the run in flight, or starts a new
   run if the thread is idle.
-- **Some replies are only context.** In Slack, a reply that starts with
-  "aside", one that mentions another bot, and one from someone not allowed
-  start no run. The agent sees them, up to the newest 50, with its next
+- **Some replies are only context.** In Slack, a reply that mentions another
+  bot and one from someone not allowed start no run. Every other message in a
+  bound thread reaches the agent as a turn; its instructions tell it to post
+  nothing when the message isn't addressed to it or needs no answer. The agent sees them, up to the newest 50, with its next
   message. `@bot mute` in a thread makes the bot answer only messages that
   mention it; `@bot unmute` undoes it.
 - **Status shows what the agent is doing.** While a run goes, the bridge reads
@@ -91,10 +93,16 @@ These apply on every platform unless a section says otherwise.
   agent status (`assistant.threads.setStatus`) and the agent session state
   (`processing`, `suspended` while T3 waits on a person, `active`); in Linear
   it is the session's thoughts.
-- **Answers are normal replies.** When a run ends, its final message is posted
-  in parts of up to 12,000 characters. A run that ends without a final
-  message, or whose whole final message is `NO_REPLY`, posts nothing. A
-  failed run posts a short notice.
+- **Slack and iMessage are silent by default.** A run's final message stays in
+  T3. The agent posts with `chat_post`, naming the post's `kind`: `question`,
+  `blocked`, `done` or `answer` (a direct reply to something a person asked).
+  In Slack it acknowledges a request with an :eyes: reaction and the status
+  line, not a message. iMessage shows no status line, so there it doesn't
+  acknowledge. A failed or stopped run still posts a short notice.
+- **Linear and Office post the final message.** When a run ends, its final
+  message is posted in parts of up to 12,000 characters. A run that ends
+  without a final message, or whose whole final message is `NO_REPLY`, posts
+  nothing. A failed run posts a short notice.
 - **Questions come to the chat.** When the agent asks a question, Slack gets a
   button per option (and Submit for multiple choice), Linear gets its own
   chooser for single choice, and other cases get numbered text. A typed reply
@@ -110,7 +118,8 @@ These apply on every platform unless a section says otherwise.
   `modelSelection` from the config, or the project's default.
 - **Results that arrive later.** When a run ends while subagents or background
   work are still going, the bridge keeps following the thread for up to six
-  hours and posts each later answer once. The follow survives a restart.
+  hours. In Linear and Office it posts each later answer once; in Slack and
+  iMessage the agent posts with `chat_post` when the work reports. The follow survives a restart.
 - **Titles follow T3.** The bridge asks T3 to title each new thread, and the
   Slack thread takes T3's title.
 - **Stop.** `@bot stop` in a Slack thread, Slack's own stop button, or
@@ -136,7 +145,7 @@ These apply on every platform unless a section says otherwise.
 Stock T3 doesn't tell an MCP server which thread is calling it, so the bridge
 writes a random **chat key** for each conversation into the turn it sends.
 The agent passes that key to the bridge's own MCP tools, `chat_post` (text and
-files), `chat_react` and `chat_status`. The key is the permission: it reaches
+files, with a required `kind`), `chat_react` and `chat_status`. The key is the permission: it reaches
 only its own conversation, and `chat_post` reads files only inside that
 thread's worktree or project folder. The tools are served on
 `http://127.0.0.1:<toolsPort>/mcp`, on loopback only; see

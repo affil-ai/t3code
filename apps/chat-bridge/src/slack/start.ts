@@ -41,5 +41,5 @@ export async function startSlackThread(
     createdByUserId: "",
     note: (chatKey) => slackWorkNote(chatThreadKey, chatKey),
   });
-  return `Started a Slack thread (${chatThreadKey}) for thread ${request.threadId}: replies there continue it, and its final message in each run posts there.`;
+  return `Started a Slack thread (${chatThreadKey}) for thread ${request.threadId}: replies there continue it, and it posts there with chat_post.`;
 }

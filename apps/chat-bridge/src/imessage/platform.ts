@@ -7,13 +7,7 @@ import type { Chat, Message } from "chat";
 
 import type { EarlierMessage, InboundEvent, InboundOutcome } from "../bridge.ts";
 import type { Deliver } from "../chatHost.ts";
-import {
-  type Access,
-  type ChatPlatform,
-  QUIET_REPLY,
-  QUIET_RULES,
-  type ThreadRoute,
-} from "../platform.ts";
+import { type Access, type ChatPlatform, postRules, type ThreadRoute } from "../platform.ts";
 import type { ImessageAdapter } from "./adapter.ts";
 
 /** Earlier messages a first turn carries, for context in a conversation that started before the bot. */
@@ -79,15 +73,15 @@ export function imessagePlatform(options: {
     person: (userId, name) => (name && name !== userId ? `${name} (${userId})` : userId),
     firstTurnNote: (chatKey, event) =>
       [
-        "Your final message in each run is sent to this iMessage conversation as plain text, and people read it on a phone. Markdown is removed, so write plainly.",
-        "Keep replies short: one or two sentences for most answers, and a few short lines at most when there is more to say. Lead with the answer. Skip greetings, recaps and offers of more help. Leave out file paths, commit hashes, IDs and other detail unless someone asks for it. Ask at most one question, at the end.",
-        QUIET_RULES,
+        postRules("iMessage conversation"),
+        "Posts arrive as plain text, and people read them on a phone. Markdown is removed, so write plainly.",
+        "Keep posts short: one or two sentences for most answers, and a few short lines at most when there is more to say. Lead with the answer. Skip greetings, recaps and offers of more help. Leave out file paths, commit hashes, IDs and other detail unless someone asks for it. Ask at most one question, at the end.",
         ...(options.adapter.isDM(event.chatThreadKey)
           ? []
           : [
-              `This is a group conversation and every message in it reaches you. Answer only when someone is talking to you or you clearly have something to add; otherwise answer ${QUIET_REPLY}.`,
+              "This is a group conversation and every message in it reaches you. Post only when someone is talking to you or you clearly have something to add.",
             ]),
-        `To send files, such as images, call the chat_post tool with chatKey "${chatKey}" and their paths in your workspace.`,
+        `The chat tools take chatKey "${chatKey}". chat_post sends text, files from your workspace (such as images), or both. iMessage shows no status line, so a request needs no acknowledgement here.`,
         options.adapter.canReact
           ? `To react with a tapback, call chat_react with chatKey "${chatKey}", the message id and heart, thumbsup, thumbsdown, laugh, bangbang or question.`
           : "iMessage has no mentions, and tapbacks are off on this Mac, so don't call chat_react here.",
@@ -125,6 +119,7 @@ export function imessagePlatform(options: {
     bound: async (chatThreadKey) => {
       await chat().thread(chatThreadKey).subscribe();
     },
+    silentByDefault: true,
   };
   return { platform, deliver };
 }
