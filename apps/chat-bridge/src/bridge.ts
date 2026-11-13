@@ -33,6 +33,7 @@ import {
   type ChatPlatform,
   isQuietReply,
   type OutboundKind,
+  type PostKind,
   type OutboundMessage,
   platformFor,
   QUIET_REPLY,
@@ -905,10 +906,78 @@ export class Bridge {
   /** Agent tool posts use the same delivery destinations as answers. */
   async postFromAgent(message: OutboundMessage): Promise<void> {
     await Promise.all(
-      this.store
-        .recipients(message.chatThreadKey)
-        .map((chatThreadKey) => this.platform(chatThreadKey).post({ ...message, chatThreadKey })),
+      this.store.recipients(message.chatThreadKey).map(async (chatThreadKey) => {
+        await this.platform(chatThreadKey).post({ ...message, chatThreadKey });
+        this.postedTo(chatThreadKey, message.postKind);
+      }),
     );
+  }
+
+  /**
+   * A person's message that wants an answer, on a silent platform, arms the fallback: if the
+   * thread goes idle with nothing posted to the conversation since, the last run's final
+   * message is posted. A message not addressed to the agent arms it only right after the
+   * bot asked a question or said it was blocked, since it is likely the reply. `id` names the
+   * message, so it fires at most once for it.
+   */
+  private armFallback(chatThreadKey: string, id: string, asks: boolean): void {
+    if (this.platform(chatThreadKey).silentByDefault !== true) return;
+    if (!asks && this.store.meta(`answer_awaited:${chatThreadKey}`) === undefined) return;
+    if (this.store.meta(`answer_fired:${id}`) !== undefined) return;
+    this.store.setMeta(`answer_wanted:${chatThreadKey}`, id);
+  }
+
+  /** Whether the message asks the agent for an answer, as its platform judges. */
+  private asksForAnswer(event: InboundEvent): boolean {
+    return this.platform(event.chatThreadKey).asksForAnswer?.(event) ?? event.addressed;
+  }
+
+  /** Something was posted to the conversation, so the person's message has its answer. */
+  private postedTo(chatThreadKey: string, postKind?: PostKind | "question"): void {
+    this.store.transaction(() => {
+      this.store.deleteMeta(`answer_wanted:${chatThreadKey}`);
+      if (postKind === "question" || postKind === "blocked")
+        this.store.setMeta(`answer_awaited:${chatThreadKey}`, "1");
+      else this.store.deleteMeta(`answer_awaited:${chatThreadKey}`);
+    });
+  }
+
+  /**
+   * The thread went idle: no run owed and its delegated work settled. A silent conversation
+   * whose person's message got nothing posted gets the last run's final message, once.
+   */
+  private async answerIfSilent(threadId: string): Promise<void> {
+    if (this.store.owesThread(threadId)) return;
+    for (const { chatThreadKey } of this.store.bindingsForThread(threadId)) {
+      const platform = this.platform(chatThreadKey);
+      if (platform.silentByDefault !== true) continue;
+      const id = this.store.meta(`answer_wanted:${chatThreadKey}`);
+      if (id === undefined) continue;
+      const runId = this.store.meta(`answer_run:${chatThreadKey}`);
+      // Claimed before posting: after a crash it may go unposted, but never twice.
+      this.store.transaction(() => {
+        this.store.setMeta(`answer_fired:${id}`, "1");
+        this.store.deleteMeta(`answer_wanted:${chatThreadKey}`);
+      });
+      try {
+        const text =
+          runId === undefined ? undefined : await this.threads.finalAnswer(threadId, runId);
+        if (text === undefined || text.trim() === "" || isQuietReply(text)) {
+          this.log(`${chatThreadKey} went idle unanswered, but ${runId} has nothing to post.`);
+          continue;
+        }
+        await platform.post({
+          chatThreadKey,
+          text,
+          kind: "answer",
+          eventId: `fallback:${id}`,
+        });
+        this.store.deleteMeta(`answer_awaited:${chatThreadKey}`);
+        this.log(`${chatThreadKey} went idle unanswered; posted ${runId}'s final message.`);
+      } catch (error) {
+        this.log(`Posting the final message to ${chatThreadKey} failed: ${String(error)}`);
+      }
+    }
   }
 
   private async mirror(event: InboundEvent): Promise<void> {
@@ -945,25 +1014,27 @@ export class Bridge {
   }
 
   /** Posts to the chat thread on its platform. */
-  private post(
+  private async post(
     chatThreadKey: string,
     text: string,
     kind: OutboundKind = "answer",
     eventId: string = NodeCrypto.randomUUID(),
   ): Promise<void> {
-    return this.platform(chatThreadKey).post({ chatThreadKey, text, kind, eventId });
+    await this.platform(chatThreadKey).post({ chatThreadKey, text, kind, eventId });
+    this.postedTo(chatThreadKey, kind === "question" ? "question" : undefined);
   }
 
   /** Asks the open question as numbered text, with its options for platforms that offer them. */
-  private ask(chatThreadKey: string, asked: Asked): Promise<void> {
+  private async ask(chatThreadKey: string, asked: Asked): Promise<void> {
     const choices = questionChoices(asked);
-    return this.platform(chatThreadKey).post({
+    await this.platform(chatThreadKey).post({
       eventId: `question:${asked.requestId}:${openQuestion(asked)?.id ?? "done"}`,
       chatThreadKey,
       text: numberedQuestion(asked),
       kind: "question",
       ...(choices === undefined ? {} : { choices }),
     });
+    this.postedTo(chatThreadKey, "question");
   }
 
   /** Files as T3 imports them, downloaded on demand. */
@@ -1080,6 +1151,7 @@ export class Bridge {
         platform,
         kept.map((message) => message.line),
       );
+      this.armFallback(event.chatThreadKey, event.eventId, this.asksForAnswer(event));
       // `background` holds the thread while its follow sees delegated work still going.
       const workRunning = [...this.background.values()].includes(binding.threadId);
       const sent = await this.threads.send({
@@ -1181,6 +1253,7 @@ export class Bridge {
       ...this.inboundFiles(platform, event.files),
       ...earlier.flatMap((message) => message.files),
     ]);
+    this.armFallback(event.chatThreadKey, event.eventId, this.asksForAnswer(event));
     // The retry key makes a relaunch after a crash return the same thread.
     const started = await this.threads.start({
       projectId,
@@ -1607,6 +1680,7 @@ export class Bridge {
     if (record === undefined || record.closed || record.chatThreadKey !== chatThreadKey) return;
     const asked = applyClick(record.asked, value);
     if (asked === record.asked) return;
+    this.armFallback(chatThreadKey, `answer:${requestId}:${value}`, true);
     await this.saveAnswer(record, { ...asked, answeredBy: userId });
   }
 
@@ -1633,6 +1707,7 @@ export class Bridge {
       );
       return { type: "noted", threadId: binding.threadId };
     }
+    this.armFallback(event.chatThreadKey, event.eventId, true);
     await this.saveAnswer(record, { ...asked, answeredBy: event.author.userId });
     return { type: "answered", threadId: binding.threadId };
   }
@@ -1903,6 +1978,10 @@ export class Bridge {
           this.watching.delete(key);
           return;
         }
+        // Idle: the work settled and no run joined. Before the follow ends, so a restart
+        // in between follows it again rather than skipping this.
+        if (outcome === "settled" && this.store.followRuns(reply.threadId).length === 0)
+          await this.answerIfSilent(reply.threadId);
         if (outcome === undefined) {
           // The work couldn't be followed: what `prepare` granted its runs ends now.
           for (const each of this.store.followRuns(reply.threadId))
@@ -2059,6 +2138,7 @@ export class Bridge {
           blocks: questionBlocks(record.asked),
         });
         this.store.updateQuestion({ ...record, messageId, posted: true });
+        this.postedTo(reply.chatThreadKey, "question");
       } finally {
         this.postingQuestions.delete(key);
       }
@@ -2446,6 +2526,9 @@ export class Bridge {
     }
     try {
       const silent = this.platform(reply.chatThreadKey).silentByDefault === true;
+      // The fallback posts the latest run's final message if the thread goes idle unanswered.
+      if (silent && status === "completed")
+        this.store.setMeta(`answer_run:${reply.chatThreadKey}`, finalRunId);
       const text =
         status !== "completed"
           ? TERMINAL_TEXT[status]

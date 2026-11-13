@@ -99,6 +99,14 @@ These apply on every platform unless a section says otherwise.
   In Slack it acknowledges a request with an :eyes: reaction and the status
   line, not a message. iMessage shows no status line, so there it doesn't
   acknowledge. A failed or stopped run still posts a short notice.
+- **Fallback.** If a Slack or iMessage thread goes idle (no run going, and the
+  subagents and background work T3 tracks settled) with nothing posted since a
+  person's message that asked the agent something, the bridge posts the last
+  run's final message, unless it is empty or `NO_REPLY`. A Slack mention or
+  DM, a one-to-one iMessage, an answer to a relayed question, or a reply right
+  after the bot asked or said it was blocked counts as asking; other messages
+  don't. It fires once per message, across restarts. Work T3 doesn't track,
+  such as CI or a deploy, can make it fire early.
 - **Linear and Office post the final message.** When a run ends, its final
   message is posted in parts of up to 12,000 characters. A run that ends
   without a final message, or whose whole final message is `NO_REPLY`, posts

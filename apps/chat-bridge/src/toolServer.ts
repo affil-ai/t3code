@@ -387,6 +387,7 @@ export async function callTool(
         text: message,
         files,
         kind: "update",
+        postKind: args.kind as PostKind,
       });
       return text(
         files.length === 0 ? "Posted." : `Posted ${files.map((file) => file.filename).join(", ")}.`,

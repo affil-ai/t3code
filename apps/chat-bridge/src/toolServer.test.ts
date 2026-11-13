@@ -108,6 +108,11 @@ it("requires a post's kind: question, blocked, done or answer", async () => {
       ["answer", "update"],
     ],
   );
+  // The core still learns the agent's kind, to tell when a post answered the person.
+  assert.deepStrictEqual(
+    posts.map((post) => post.postKind),
+    ["question", "blocked", "done", "answer"],
+  );
 });
 
 it("reacts with a bare emoji name and checks the message id", async () => {

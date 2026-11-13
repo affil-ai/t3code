@@ -792,6 +792,59 @@ it.each(["seeded", "linked"])(
   },
 );
 
+it("posts final messages to the Office chat, and to its synced silent Slack thread only as the fallback", async () => {
+  const posts: OutboundMessage[] = [];
+  const slack: ChatPlatform = {
+    id: "slack",
+    name: "Slack",
+    place: "Slack thread",
+    access: { allowedUserIds: ["staff"] },
+    channelRoutes: [{ channelId: "C1", projectId: "project-1" }],
+    person: (_id, name) => name,
+    firstTurnNote: () => "",
+    refusal: () => "",
+    startConversation: async () => "slack:C1:1.1",
+    post: async (message) => {
+      posts.push(message);
+    },
+    silentByDefault: true,
+  };
+  await using h = await harness({ slack });
+  h.office.message(
+    request({ slack: { channelId: "C1", chatThreadKey: "slack:C1:1.1" }, sync: true }),
+  );
+  await vi.waitFor(() => assert.isTrue(h.store.isHandled("office:event-1")));
+  h.t3.finish("run-1", "Done.");
+  await h.bridge.idle();
+  // Asked in Office, answered in Office; the synced Slack thread gets only the mirrored request.
+  assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Done.");
+  assert.deepEqual(
+    posts.filter((post) => post.kind === "answer").map((post) => post.text),
+    [],
+  );
+  // Asked in Slack with a mention and nothing posted: Office gets the answer as always,
+  // and Slack gets it once the thread is idle.
+  await h.bridge.receive({
+    eventId: "slack:C1:2.1",
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    messageId: "2.1",
+    kind: "mention",
+    addressed: true,
+    direct: false,
+    author: { userId: "staff", userName: "Ada", fullName: "Ada" },
+    text: "Also fix the tests",
+    files: [],
+    mentions: [],
+  });
+  h.t3.finish("run-2", "Tests fixed.");
+  await h.bridge.idle();
+  assert.deepEqual(
+    posts.filter((post) => post.kind === "answer").map((post) => post.text),
+    ["Tests fixed."],
+  );
+});
+
 it("starts a new thread with Office history even when the old thread is readable", async () => {
   for (const readable of [true, false]) {
     await using h = await harness();

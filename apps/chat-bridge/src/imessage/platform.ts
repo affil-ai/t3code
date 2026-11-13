@@ -120,6 +120,8 @@ export function imessagePlatform(options: {
       await chat().thread(chatThreadKey).subscribe();
     },
     silentByDefault: true,
+    // Every message counts as addressed; only a one-to-one conversation's is surely for the agent.
+    asksForAnswer: (event) => options.adapter.isDM(event.chatThreadKey),
   };
   return { platform, deliver };
 }

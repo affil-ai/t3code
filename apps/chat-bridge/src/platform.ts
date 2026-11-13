@@ -58,6 +58,8 @@ export interface OutboundMessage {
   readonly files?: ReadonlyArray<OutboundFile> | undefined;
   /** Without it, an answer. */
   readonly kind?: OutboundKind | undefined;
+  /** The kind the agent gave `chat_post`; the core reads it, platforms don't. */
+  readonly postKind?: PostKind | undefined;
   /** A question's options, for platforms that offer them to pick; `text` has them numbered. */
   readonly choices?:
     | { readonly question: string; readonly options: ReadonlyArray<string> }
@@ -189,6 +191,12 @@ export interface ChatPlatform {
    * conversation. Absent: the final message is the answer, as on Linear.
    */
   readonly silentByDefault?: boolean;
+  /**
+   * On a `silentByDefault` platform, whether a person's message asks the agent for an
+   * answer, so the final message is posted if the thread goes idle without one. Absent:
+   * `addressed`, such as a Slack mention or DM.
+   */
+  readonly asksForAnswer?: (event: InboundEvent) => boolean;
   /** Posts an answer or a notice. */
   readonly post: (message: OutboundMessage) => Promise<void>;
   /** Reacts to a message; absent when the platform can't. */

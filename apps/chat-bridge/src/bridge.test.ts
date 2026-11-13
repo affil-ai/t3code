@@ -2201,12 +2201,22 @@ it("posts nothing for a run that answers NO_REPLY, and tells every chat how to",
   assert.notInclude(slackFirstTurnNote("key"), QUIET_REPLY);
 });
 
-it("posts nothing when a run completes on a silent platform, whatever its final message", async () => {
+it("posts nothing when a run completes on a silent platform, and nothing more after a post", async () => {
   const { t3, bridge, posted, store } = harness(undefined, { slack: { silentByDefault: true } });
   await bridge.receive(event("100.1"));
+  // The agent posts its result itself, as `chat_post` does, so the fallback has nothing to add.
+  await bridge.postFromAgent({
+    chatThreadKey: "slack:C1:100.1",
+    text: "Done: tests pass.",
+    kind: "update",
+    postKind: "done",
+  });
   t3.finish("run-1", "completed", "All done, tests pass.");
   await bridge.idle();
-  assert.lengthOf(posted, 0);
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Done: tests pass."],
+  );
   // Not owed any more: a restart doesn't post it either.
   assert.lengthOf(store.pendingReplies(), 0);
   // A follow-up turn tells the agent how to reach the chat.
@@ -2216,7 +2226,7 @@ it("posts nothing when a run completes on a silent platform, whatever its final 
     String(send.args.message),
     "Only chat_post reaches the Slack thread, with kind question, blocked, done or answer.",
   );
-  // A failed run still says so.
+  // A failed run still says so, and that notice is the answer: no fallback after it.
   const failing = harness(undefined, { slack: { silentByDefault: true } });
   await failing.bridge.receive(event("100.1"));
   failing.t3.finish("run-1", "failed");
@@ -2224,6 +2234,143 @@ it("posts nothing when a run completes on a silent platform, whatever its final 
   assert.deepStrictEqual(
     failing.posted.map((reply) => reply.text),
     ["The run failed. Open the thread in T3 Code for details."],
+  );
+});
+
+const SILENT = { slack: { silentByDefault: true } } as const;
+
+it("posts the final message once a silent thread goes idle with nothing posted since the request", async () => {
+  const db = freshDatabase();
+  const first = harness(db, SILENT);
+  await first.bridge.receive(event("100.1"));
+  first.t3.finish("run-1", "completed", "All done, tests pass.");
+  await first.bridge.idle();
+  assert.deepStrictEqual(
+    first.posted.map((reply) => reply.text),
+    ["All done, tests pass."],
+  );
+  // A restart posts it no second time.
+  first.bridge.stop();
+  const second = harness(db, { ...SILENT, t3: first.t3 });
+  await second.bridge.resume();
+  await second.bridge.idle();
+  assert.lengthOf(second.posted, 0);
+});
+
+it("waits for a silent thread's delegated work, and posts the latest run's final message", async () => {
+  const { t3, bridge, posted } = harness(undefined, SILENT);
+  await bridge.receive(event("100.1"));
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", "Started a subagent.");
+  await t3.tick();
+  assert.lengthOf(posted, 0);
+  t3.activity.push({ itemId: "wake-5", type: "notification", runId: "run-5", status: "running" });
+  t3.options.delegatedPending = false;
+  await t3.tick();
+  t3.finish("run-5", "completed", "subagent-result: done");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["subagent-result: done"],
+  );
+});
+
+it("posts nothing as a fallback when the final message is NO_REPLY or empty", async () => {
+  for (const final of ["NO_REPLY", "", undefined]) {
+    const { t3, bridge, posted } = harness(undefined, SILENT);
+    await bridge.receive(event("100.1"));
+    t3.finish("run-1", "completed", final);
+    await bridge.idle();
+    assert.lengthOf(posted, 0, String(final));
+  }
+});
+
+it("counts a relayed question as posted, and arms the fallback again on its answer", async () => {
+  for (const answered of [false, true]) {
+    const { t3, bridge, posted, blockPosts } = harness(undefined, SILENT);
+    await bridge.receive(event("100.1"));
+    t3.questions.set("req-1", [
+      {
+        id: "q1",
+        header: "Deploy",
+        question: "Which environment?",
+        options: [
+          { label: "Staging", description: "Safe" },
+          { label: "Production", description: "Live", value: "prod" },
+        ],
+      },
+    ]);
+    t3.activity.push({
+      itemId: "ask",
+      type: "user_input_request",
+      runId: "run-1",
+      status: "waiting",
+    });
+    await t3.tick();
+    await t3.tick();
+    assert.lengthOf(blockPosts, 1);
+    if (answered) {
+      const actions = blockPosts[0]!.blocks.find((block) => block.type === "actions") as {
+        elements: Array<{ value: string }>;
+      };
+      await bridge.questionClicked("slack:C1:100.1", "U1", actions.elements[1]!.value);
+    }
+    t3.activity[0]!.status = "completed";
+    t3.finish("run-1", "completed", "Deployed.");
+    await bridge.idle();
+    // Unanswered, the question was the last word; answered, the result is owed.
+    assert.deepStrictEqual(
+      posted.map((reply) => reply.text),
+      answered ? ["Deployed."] : [],
+    );
+  }
+});
+
+it("arms the fallback only for messages that ask the agent, or reply after it asked", async () => {
+  const { t3, bridge, posted } = harness(undefined, SILENT);
+  t3.options.sendStartsRun = true;
+  await bridge.receive(event("100.1"));
+  await bridge.postFromAgent({
+    chatThreadKey: "slack:C1:100.1",
+    text: "Done.",
+    kind: "update",
+    postKind: "done",
+  });
+  t3.finish("run-1", "completed", "Done.");
+  await bridge.idle();
+  // A side comment, not addressed to the agent: it reads it and stays silent.
+  await bridge.receive(event("100.2", { kind: "follow_up", addressed: false, text: "nice" }));
+  t3.finish("run-2", "completed", "Thanks!");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Done."],
+  );
+  // After the agent asks, an unmentioned reply is likely the answer.
+  await bridge.postFromAgent({
+    chatThreadKey: "slack:C1:100.1",
+    text: "Deploy too?",
+    kind: "update",
+    postKind: "question",
+  });
+  await bridge.receive(event("100.3", { kind: "follow_up", addressed: false, text: "yes" }));
+  t3.finish("run-3", "completed", "Deployed.");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Done.", "Deploy too?", "Deployed."],
+  );
+});
+
+it("leaves the fallback off a platform that posts its final messages", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "Fixed.");
+  await bridge.idle();
+  // Posted once, as the answer; no second post from the fallback.
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Fixed."],
   );
 });
 
@@ -2250,6 +2397,16 @@ it("makes Slack and iMessage silent by default, and tells their agents when to p
   assert.include(slackFirstTurnNote("key"), "chat_status");
   assert.notInclude(SLACK_REPLY_STYLE, "progress update");
   assert.include(imessageNote, "group conversation");
+  // In a group every message counts as addressed, so only a one-to-one conversation's asks for an answer.
+  assert.isFalse(imessage.asksForAnswer!(event("1")));
+  const direct = imessagePlatform({
+    chat: () => undefined,
+    adapter: { isDM: () => true, canReact: false } as unknown as ImessageAdapter,
+    access: { allowedUserIds: [] },
+    route: { projectId: PROJECT },
+    onEvent: async () => ({ type: "pending" }),
+  }).platform;
+  assert.isTrue(direct.asksForAnswer!(event("1")));
 });
 
 it("asks for an acknowledgement in the first turn only, and the reply style in every turn", async () => {

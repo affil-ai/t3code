@@ -695,6 +695,19 @@ export class BridgeStore {
     return row === undefined ? undefined : String(row.value);
   }
 
+  deleteMeta(key: string): void {
+    this.db.prepare("DELETE FROM bridge_meta WHERE key = ?").run(key);
+  }
+
+  /** True while any run in the thread is owed an answer that hasn't been posted or given up on. */
+  owesThread(threadId: string): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM owed_reply WHERE thread_id = ? AND posted_at IS NULL LIMIT 1")
+        .get(threadId) !== undefined
+    );
+  }
+
   setMeta(key: string, value: string): void {
     this.db
       .prepare(
