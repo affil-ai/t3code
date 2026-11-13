@@ -914,11 +914,9 @@ export class Bridge {
   }
 
   /**
-   * A person's message that wants an answer, on a silent platform, arms the fallback: if the
-   * thread goes idle with nothing posted to the conversation since, the last run's final
-   * message is posted. A message not addressed to the agent arms it only right after the
-   * bot asked a question or said it was blocked, since it is likely the reply. `id` names the
-   * message, so it fires at most once for it.
+   * On a silent platform, a message that asks the agent arms the fallback: an idle thread with
+   * nothing posted since gets the last run's final message. An unaddressed message arms it only
+   * after the bot asked or was blocked. `id` names the message, so it fires once for it.
    */
   private armFallback(chatThreadKey: string, id: string, asks: boolean): void {
     if (this.platform(chatThreadKey).silentByDefault !== true) return;
