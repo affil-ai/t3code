@@ -1912,7 +1912,7 @@ it("posts the answer of a subagent's run that ended before its work was attached
   ]);
 });
 
-it("attaches any thread to one conversation, and moves a bound conversation only when asked", async () => {
+it("links more conversations to a thread, and moves a bound conversation only when asked", async () => {
   const { t3, bridge, store } = subagentHarness("completed");
   const refusal = (chatThreadKey: string | undefined, replace = false) =>
     bridge.attachRefusal({ threadId: "child-thread", chatThreadKey, replace });
@@ -1929,12 +1929,93 @@ it("attaches any thread to one conversation, and moves a bound conversation only
     note: () => "",
   });
   assert.strictEqual(store.binding("slack:C1:100.1")?.threadId, "child-thread");
-  // The child answers that conversation now, and no other.
-  assert.include(await refusal("slack:C1:900.1"), "already answers slack:C1:100.1");
+  // The child may take another conversation as well.
+  assert.isUndefined(await refusal("slack:C1:900.1"));
   // Any thread may take a conversation, such as one connecting itself, not only a subagent.
   store.replaceBinding({ ...store.binding("slack:C1:100.1")!, threadId: "other-thread" });
   Object.assign(t3.thread, { parentThreadId: null, relationshipToParent: null });
   assert.isUndefined(await refusal(undefined));
+});
+
+const SECOND = "slack:C1:900.1";
+const attachSecond = (bridge: Bridge, t3: ReturnType<typeof fakeT3>, sync?: boolean) => {
+  Object.assign(t3.thread, { projectId: PROJECT });
+  return bridge.attach({
+    chatThreadKey: SECOND,
+    channelId: "C1",
+    threadId: THREAD,
+    createdByUserId: "",
+    note: () => "",
+    ...(sync === undefined ? {} : { sync }),
+  });
+};
+
+it("answers each run of a thread with two chats in the chat that started it, until one is unlinked", async () => {
+  const { t3, bridge, store, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "First.");
+  await bridge.idle();
+  t3.options.recentRuns = [];
+  t3.activity.push({ itemId: "unread", type: "notification", runId: null, status: "completed" });
+  const cursor = store.notificationCursor(THREAD);
+  await attachSecond(bridge, t3);
+  // The first chat is still owed notification runs not yet read.
+  assert.strictEqual(store.notificationCursor(THREAD), cursor);
+  const first = store.binding("slack:C1:100.1")!;
+  const second = store.binding(SECOND)!;
+  assert.strictEqual(second.threadId, THREAD);
+  assert.strictEqual(first.threadId, THREAD);
+  assert.notStrictEqual(second.chatKey, first.chatKey);
+
+  t3.options.sendStartsRun = true;
+  await bridge.receive(
+    event("900.2", { chatThreadKey: SECOND, kind: "follow_up", text: "from the second" }),
+  );
+  t3.finish("run-2", "completed", "Second.");
+  await bridge.idle();
+  await bridge.receive(event("100.2", { kind: "follow_up", text: "from the first" }));
+  t3.finish("run-3", "completed", "Third.");
+  await bridge.idle();
+  assert.deepStrictEqual(posted, [
+    { chatThreadKey: "slack:C1:100.1", text: "First." },
+    { chatThreadKey: SECOND, text: "Second." },
+    { chatThreadKey: "slack:C1:100.1", text: "Third." },
+  ]);
+
+  // Unlinked while its run goes on: the run's answer is not posted, and later messages are ignored.
+  await bridge.receive(event("900.3", { chatThreadKey: SECOND, kind: "follow_up", text: "more" }));
+  bridge.unlink(SECOND);
+  t3.finish("run-4", "completed", "Fourth.");
+  await bridge.idle();
+  assert.lengthOf(posted, 3);
+  assert.deepStrictEqual(
+    await bridge.receive(event("900.4", { chatThreadKey: SECOND, kind: "follow_up" })),
+    { type: "ignored", reason: "unbound_thread" },
+  );
+  assert.isUndefined(store.bindingByChatKey(second.chatKey));
+  assert.strictEqual(store.bindingByThreadId(THREAD)?.chatThreadKey, "slack:C1:100.1");
+  assert.lengthOf(store.pendingReplies(), 0);
+});
+
+it("posts every answer to all of a synced thread's chats", async () => {
+  const { t3, bridge, posted } = harness();
+  await bridge.receive(event("100.1"));
+  t3.finish("run-1", "completed", "First.");
+  await bridge.idle();
+  t3.options.recentRuns = [];
+  await attachSecond(bridge, t3, true);
+  t3.options.sendStartsRun = true;
+  await bridge.receive(event("900.2", { chatThreadKey: SECOND, kind: "follow_up", text: "hi" }));
+  t3.finish("run-2", "completed", "Both see this.");
+  await bridge.idle();
+  assert.deepStrictEqual(posted.filter((each) => each.kind === undefined).slice(1), [
+    { chatThreadKey: "slack:C1:100.1", text: "Both see this." },
+    { chatThreadKey: SECOND, text: "Both see this." },
+  ]);
+  // The second chat's message is copied into the first.
+  assert.isTrue(
+    posted.some((each) => each.kind === "update" && each.chatThreadKey === "slack:C1:100.1"),
+  );
 });
 
 it("keeps following background work across a restart, and posts the run it starts once", async () => {
@@ -3139,6 +3220,7 @@ async function slackStartHarness(thread: { readonly root?: string } = {}): Promi
     post: async () => {},
     react: async () => undefined,
     setStatus: () => false,
+    unlink: () => {},
     startSlack: (request: Parameters<typeof startSlackThread>[1]) =>
       startSlackThread(
         {

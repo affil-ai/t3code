@@ -349,6 +349,7 @@ async function start(): Promise<void> {
       post: (message) => core.postFromAgent(message),
       react: (reaction) => reactOn(platforms, reaction),
       setStatus: (chatThreadKey, status) => core.setStatus(chatThreadKey, status),
+      unlink: (chatThreadKey) => void core.unlink(chatThreadKey),
       startSlack: !config.startTools
         ? undefined
         : (request) =>
@@ -382,6 +383,7 @@ async function start(): Promise<void> {
                 threadId: request.threadId,
                 createdByUserId: "",
                 note: (chatKey) => linear.parts.workNote(issue, chatKey),
+                sync: request.sync,
               });
               return `${issue.identifier} (${issue.url}) now shows thread ${request.threadId}'s work in a Linear agent session, and its final message in each run posts there.`;
             },

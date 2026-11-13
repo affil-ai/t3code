@@ -1509,8 +1509,17 @@ export class Bridge {
     }
   }
 
+  /** Disconnects a conversation from its thread; see `BridgeStore.unlink`. */
+  unlink(chatThreadKey: string): Binding | undefined {
+    const binding = this.store.unlink(chatThreadKey);
+    if (binding !== undefined) this.log(`${chatThreadKey} no longer goes to ${binding.threadId}.`);
+    return binding;
+  }
+
   private owe(reply: OwedReply): void {
     for (const chatThreadKey of this.store.recipients(reply.chatThreadKey)) {
+      // An unlinked conversation is owed nothing more, whatever a follow saved before.
+      if (this.store.binding(chatThreadKey)?.threadId !== reply.threadId) continue;
       const destination = { ...reply, chatThreadKey };
       this.store.oweReply(destination);
       this.watch(destination);
@@ -2116,9 +2125,9 @@ export class Bridge {
   }
 
   /**
-   * Why `threadId` can't take over `chatThreadKey`, or nothing when it can: a
-   * thread answers one conversation, and a bound conversation moves only when
-   * asked. Pass no key for one that doesn't exist yet, such as a new issue.
+   * Why `threadId` can't take `chatThreadKey`, or nothing when it can: a thread may
+   * answer several conversations, but a bound conversation moves only when asked.
+   * Pass no key for one that doesn't exist yet, such as a new issue.
    */
   async attachRefusal(input: {
     readonly threadId: string;
@@ -2127,10 +2136,6 @@ export class Bridge {
   }): Promise<string | undefined> {
     // Reading it checks the thread exists.
     await this.threads.shape(input.threadId);
-    const own = this.store.bindingByThreadId(input.threadId);
-    if (own !== undefined && own.chatThreadKey !== input.chatThreadKey) {
-      return `${input.threadId} already answers ${own.chatThreadKey}.`;
-    }
     const bound = input.chatThreadKey ? this.store.binding(input.chatThreadKey) : undefined;
     if (bound !== undefined && bound.threadId !== input.threadId && !input.replace) {
       return `${input.chatThreadKey} already goes to thread ${bound.threadId}. Pass replace: true to move it to ${input.threadId}.`;
@@ -2150,26 +2155,35 @@ export class Bridge {
     readonly threadId: string;
     readonly createdByUserId: string;
     readonly note: (chatKey: string) => string;
+    /** Set: every conversation of the thread gets each final message and sees the others' messages. */
+    readonly sync?: boolean | undefined;
   }): Promise<void> {
     const shape = await this.threads.shape(input.threadId);
-    const existing = this.store.bindingByThreadId(input.threadId);
-    if (existing?.chatThreadKey === input.chatThreadKey) return;
+    if (this.store.binding(input.chatThreadKey)?.threadId === input.threadId) {
+      if (input.sync !== undefined) this.store.setSync(input.threadId, input.sync);
+      return;
+    }
+    const joining = this.store.bindingsForThread(input.threadId).length > 0;
     const chatKey = NodeCrypto.randomBytes(16).toString("hex");
-    this.store.replaceBinding({
-      chatThreadKey: input.chatThreadKey,
-      channelId: input.channelId,
-      projectId: shape.projectId,
-      threadId: input.threadId,
-      chatKey,
-      createdByUserId: input.createdByUserId,
+    this.store.transaction(() => {
+      this.store.replaceBinding({
+        chatThreadKey: input.chatThreadKey,
+        channelId: input.channelId,
+        projectId: shape.projectId,
+        threadId: input.threadId,
+        chatKey,
+        createdByUserId: input.createdByUserId,
+      });
+      if (input.sync !== undefined) this.store.setSync(input.threadId, input.sync);
     });
     await this.platform(input.chatThreadKey)
       .bound?.(input.chatThreadKey)
       .catch((error: unknown) => {
         this.log(`Following ${input.chatThreadKey} failed: ${String(error)}`);
       });
-    // Runs notifications start from now on are the chat's; earlier ones were not.
-    await this.startNotificationsAtEnd(input.threadId, true).catch((error: unknown) => {
+    // Runs notifications start from now on are the chat's; earlier ones were not. A thread
+    // that already has a chat keeps its cursor, so runs not yet read still reach that chat.
+    await this.startNotificationsAtEnd(input.threadId, !joining).catch((error: unknown) => {
       this.log(`Reading where ${input.threadId} ends failed: ${String(error)}`);
     });
     const run = shape.latestRun;

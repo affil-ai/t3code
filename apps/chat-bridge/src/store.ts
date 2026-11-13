@@ -502,15 +502,10 @@ export class BridgeStore {
 
   /** Binds the conversation to another thread, replacing its binding if it has one. */
   replaceBinding(binding: Binding): void {
-    this.db.exec("BEGIN");
-    try {
+    this.transaction(() => {
       this.db.prepare("DELETE FROM binding WHERE chat_thread_key = ?").run(binding.chatThreadKey);
       this.insertBinding(binding);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   insertBinding(binding: Binding): void {
@@ -546,6 +541,48 @@ export class BridgeStore {
     if (existing !== undefined) return existing;
     this.insertBinding({ ...input, chatKey: NodeCrypto.randomBytes(16).toString("hex") });
     return this.binding(input.chatThreadKey)!;
+  }
+
+  /**
+   * Disconnects the conversation from its thread: nothing it is owed is posted, and
+   * follows move to the thread's chat used most recently, or end when none is left.
+   */
+  unlink(chatThreadKey: string): Binding | undefined {
+    return this.transaction(() => {
+      const binding = this.binding(chatThreadKey);
+      if (binding === undefined) return undefined;
+      this.db.prepare("DELETE FROM binding WHERE chat_thread_key = ?").run(chatThreadKey);
+      this.db
+        .prepare(
+          "UPDATE owed_reply SET posted_at = ?, claimed = 0 WHERE chat_thread_key = ? AND posted_at IS NULL",
+        )
+        .run(this.now(), chatThreadKey);
+      this.db.prepare("DELETE FROM thread_context WHERE chat_thread_key = ?").run(chatThreadKey);
+      this.db.prepare("DELETE FROM inbox WHERE chat_thread_key = ?").run(chatThreadKey);
+      this.db.prepare("DELETE FROM owed_dispatch WHERE chat_thread_key = ?").run(chatThreadKey);
+      this.db
+        .prepare("UPDATE question SET closed = 1 WHERE chat_thread_key = ?")
+        .run(chatThreadKey);
+      const next = this.bindingsForThread(binding.threadId).at(-1);
+      if (next === undefined) {
+        this.db.prepare("DELETE FROM binding_group WHERE thread_id = ?").run(binding.threadId);
+      } else {
+        this.db
+          .prepare(
+            "UPDATE binding_group SET last_chat_thread_key = ? WHERE thread_id = ? AND last_chat_thread_key = ?",
+          )
+          .run(next.chatThreadKey, binding.threadId, chatThreadKey);
+      }
+      for (const table of ["delegated_follow", "delegated_follow_run"]) {
+        if (next === undefined)
+          this.db.prepare(`DELETE FROM ${table} WHERE chat_thread_key = ?`).run(chatThreadKey);
+        else
+          this.db
+            .prepare(`UPDATE ${table} SET chat_thread_key = ? WHERE chat_thread_key = ?`)
+            .run(next.chatThreadKey, chatThreadKey);
+      }
+      return binding;
+    });
   }
 
   setMuted(chatThreadKey: string, muted: boolean): void {

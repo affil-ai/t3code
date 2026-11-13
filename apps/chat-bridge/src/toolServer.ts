@@ -41,6 +41,8 @@ export interface ToolDeps {
   readonly react: (reaction: Reaction) => Promise<string | undefined>;
   /** Sets the status of the thread's runs in flight; false when there is none. */
   readonly setStatus: (chatThreadKey: string, status: string) => boolean;
+  /** Disconnects the chat thread from its T3 thread. */
+  readonly unlink: (chatThreadKey: string) => void;
   /** Connects a thread to a Linear issue; absent without Linear. Returns what to tell the caller. */
   readonly startLinear?: ((request: LinearStartRequest) => Promise<string>) | undefined;
   /** Starts a Slack thread for a thread; absent without Slack. Returns what to tell the caller. */
@@ -56,6 +58,7 @@ export interface LinearStartRequest {
     | undefined;
   /** Move an issue that already goes to another thread. */
   readonly replace: boolean;
+  readonly sync?: boolean | undefined;
 }
 
 export interface SlackStartRequest {
@@ -69,6 +72,7 @@ export interface SlackStartRequest {
    * then continues the T3 thread instead of a new top-level message.
    */
   readonly replyTo?: string | undefined;
+  readonly sync?: boolean | undefined;
 }
 
 const ISSUE_ID = /^[A-Za-z][A-Za-z0-9]{0,9}-\d{1,7}$/;
@@ -76,6 +80,12 @@ const THREAD_ID = /^[\w.:%-]{1,300}$/;
 const SLACK_ID = /^[CGDUW][A-Z0-9]{2,20}$/;
 const SLACK_TS = /^\d{9,12}\.\d{6}$/;
 const MAX_OPENING = 4_000;
+
+const SYNC_PROPERTY = {
+  type: "boolean",
+  description:
+    "For a thread with several chats: true posts every final message to all of them and copies each chat's messages into the others; false goes back to each run answering only the chat that started it (the default).",
+};
 
 const THREAD_ID_PROPERTY = {
   type: "string",
@@ -86,7 +96,7 @@ const THREAD_ID_PROPERTY = {
 const LINEAR_START_TOOL = {
   name: "linear_start",
   description:
-    "Connect a T3 thread to a Linear issue: its progress and final message show in the issue's agent session, and later prompts there continue the thread. Pass your own thread id to take your work to Linear, or a subagent's childThreadId (its completion still wakes you). Give either issue (an existing one, such as ENG-123) or newIssue. No chat key needed.",
+    "Connect a T3 thread to a Linear issue: its progress and final message show in the issue's agent session, and later prompts there continue the thread. Pass your own thread id to take your work to Linear, or a subagent's childThreadId (its completion still wakes you). Give either issue (an existing one, such as ENG-123) or newIssue. A thread already connected to other chats keeps them; each run's final message goes to the chat that started it. No chat key needed.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -106,6 +116,7 @@ const LINEAR_START_TOOL = {
         type: "boolean",
         description: "Move an issue that already goes to another thread to this one.",
       },
+      sync: SYNC_PROPERTY,
     },
     required: ["threadId"],
   },
@@ -114,7 +125,7 @@ const LINEAR_START_TOOL = {
 const SLACK_START_TOOL = {
   name: "slack_start",
   description:
-    "Start a Slack thread for a T3 thread: posts text as a new message in a channel the bot is in, or as a DM to a person, or as a reply under an existing message with replyTo, and replies in that Slack thread continue the T3 thread. The thread's final message in each run is posted there from then on. Pass your own thread id, or a subagent's childThreadId. No chat key needed.",
+    "Start a Slack thread for a T3 thread: posts text as a new message in a channel the bot is in, or as a DM to a person, or as a reply under an existing message with replyTo, and replies in that Slack thread continue the T3 thread. The thread's final message in each run is posted there from then on. A thread already connected to other chats keeps them; each later run's final message goes to the chat that started it. Pass your own thread id, or a subagent's childThreadId. No chat key needed.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -134,6 +145,7 @@ const SLACK_START_TOOL = {
         description:
           "Reply under this existing message instead of starting a new one: its ts, such as 1794278854.319499 (a permalink's p1794278854319499 with a dot before the last six digits). Use the thread's parent message, not a reply.",
       },
+      sync: SYNC_PROPERTY,
     },
     required: ["threadId", "channel", "text"],
   },
@@ -202,6 +214,18 @@ const TOOLS = [
         emoji: { type: "string", description: "An emoji name, with or without colons." },
       },
       required: ["chatKey", "messageId", "emoji"],
+    },
+  },
+  {
+    name: "chat_unlink",
+    description:
+      "Disconnect the chat thread with this chat key from your T3 thread: nothing more is posted there, its later messages no longer reach you, and a new mention there starts a new T3 thread. Your other chats stay connected. Post anything it should see first.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        chatKey: { type: "string", description: "The chat key of the chat to disconnect." },
+      },
+      required: ["chatKey"],
     },
   },
   {
@@ -274,6 +298,12 @@ function threadIdArg(args: Record<string, unknown>): string {
   return threadId;
 }
 
+function syncArg(args: Record<string, unknown>): { sync?: boolean } {
+  if (args.sync === undefined) return {};
+  if (typeof args.sync !== "boolean") throw new ToolInputError("sync must be true or false.");
+  return { sync: args.sync };
+}
+
 function slackStartRequest(args: Record<string, unknown>): SlackStartRequest {
   const threadId = threadIdArg(args);
   const channel = stringArg(args, "channel")?.trim() ?? "";
@@ -293,7 +323,13 @@ function slackStartRequest(args: Record<string, unknown>): SlackStartRequest {
       throw new ToolInputError("replyTo needs a channel id (C…, G…), not a DM or member id.");
     }
   }
-  return { threadId, channel, text, ...(replyTo === undefined ? {} : { replyTo }) };
+  return {
+    threadId,
+    channel,
+    text,
+    ...(replyTo === undefined ? {} : { replyTo }),
+    ...syncArg(args),
+  };
 }
 
 function linearStartRequest(args: Record<string, unknown>): LinearStartRequest {
@@ -326,7 +362,7 @@ function linearStartRequest(args: Record<string, unknown>): LinearStartRequest {
   if (args.replace !== undefined && typeof args.replace !== "boolean") {
     throw new ToolInputError("replace must be true or false.");
   }
-  return { threadId, issue, newIssue, replace: args.replace === true };
+  return { threadId, issue, newIssue, replace: args.replace === true, ...syncArg(args) };
 }
 
 export async function callTool(
@@ -397,6 +433,12 @@ export async function callTool(
       });
       return text(instead ?? `Reacted with :${bare}:.`);
     }
+    if (name === "chat_unlink") {
+      deps.unlink(binding.chatThreadKey);
+      return text(
+        `Disconnected ${binding.chatThreadKey} from thread ${binding.threadId}; its chat key no longer works.`,
+      );
+    }
     if (name === "chat_status") {
       const status = stringArg(args, "status")?.trim() ?? "";
       if (status === "" || status.length > MAX_STATUS)
@@ -421,7 +463,8 @@ export async function callTool(
  */
 const INSTRUCTIONS = [
   "Some threads take their messages from a chat, such as a Slack thread, an iMessage conversation or a Linear agent session. Their turns start with the chat message and carry a chat key.",
-  "In those threads your final message in each run is posted to the chat.",
+  "In those threads your final message in each run is posted to the chat whose message started the run.",
+  "A thread can have several chats, each with its own chat key; chat_post and the other chat tools reach only the chat whose key you pass.",
   QUIET_RULES,
   "The thread's first turn says how that chat works: how to mention people, and which of these tools it supports.",
   "Use chat_post to send files or an update before the run ends, chat_react to react to a message, and chat_status to set the status shown during a long run. All take the thread's chat key.",

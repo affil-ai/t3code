@@ -161,6 +161,18 @@ posts the text as a reply under that message and binds that Slack thread,
 instead of posting a new opening message. `replyTo` needs a channel id (`C…`
 or `G…`); it doesn't work with a DM or a member id.
 
+### One thread, several chats
+
+A thread that already has a chat can take more: `slack_start` and
+`linear_start` add the new one and keep the others. Each chat has its own chat
+key. A run's final message goes to the chat whose message started it; a run
+T3 starts with a notification goes to the chat used most recently. Messages
+aren't copied between chats. Pass `sync: true` to either tool to post every
+final message to all of the thread's chats and copy each chat's messages into
+the others (`sync: false` turns that off). `chat_unlink` takes a chat key and
+disconnects that chat: nothing more is posted there, and a new mention there
+starts a new thread.
+
 ## Prerequisites
 
 ### A stock T3 server

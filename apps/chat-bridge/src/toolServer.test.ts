@@ -16,6 +16,7 @@ function harness() {
   NodeFS.writeFileSync(NodePath.join(root, "secret.txt"), "nope");
   const posts: Array<OutboundMessage> = [];
   const reactions: Array<Reaction> = [];
+  const unlinked: Array<string> = [];
   const deps: ToolDeps = {
     bindingByChatKey: (chatKey) =>
       chatKey === "key-1"
@@ -37,8 +38,9 @@ function harness() {
         : undefined;
     },
     setStatus: (_chatThreadKey, status) => status !== "idle thread",
+    unlink: (chatThreadKey) => void unlinked.push(chatThreadKey),
   };
-  return { deps, posts, reactions, root };
+  return { deps, posts, reactions, root, unlinked };
 }
 
 const textOf = (result: Awaited<ReturnType<typeof callTool>>) =>
@@ -188,6 +190,7 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
     channel: "C0CHANNEL01",
     text: "On it.",
     replyTo: "1794278854.319499",
+    sync: true,
   });
   assert.isUndefined(reply.isError);
   assert.deepStrictEqual(requests[3], {
@@ -195,6 +198,7 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
     channel: "C0CHANNEL01",
     text: "On it.",
     replyTo: "1794278854.319499",
+    sync: true,
   });
   for (const bad of [
     {
@@ -208,6 +212,7 @@ it("starts a Slack thread in a channel or a DM only with valid ids and an openin
     { threadId: "mcp:launch:abc", channel: "C0CHANNEL01", text: "  " },
     { threadId: "mcp:launch:abc", channel: "C0CHANNEL01", text: "x".repeat(4_001) },
     { threadId: "../x y", channel: "C0CHANNEL01", text: "hi" },
+    { threadId: "mcp:launch:abc", channel: "C0CHANNEL01", text: "hi", sync: "yes" },
   ]) {
     assert.isTrue((await callTool(slack, "slack_start", bad)).isError, JSON.stringify(bad));
   }
@@ -238,4 +243,11 @@ it("sets a status only while the thread has a run in flight", async () => {
   assert.isUndefined(set.isError);
   const idle = await callTool(deps, "chat_status", { chatKey: "key-1", status: "idle thread" });
   assert.isTrue(idle.isError);
+});
+
+it("unlinks only the chat thread whose key is passed", async () => {
+  const { deps, unlinked } = harness();
+  assert.isUndefined((await callTool(deps, "chat_unlink", { chatKey: "key-1" })).isError);
+  assert.isTrue((await callTool(deps, "chat_unlink", { chatKey: "unknown" })).isError);
+  assert.deepStrictEqual(unlinked, ["slack:C1:100.1"]);
 });
