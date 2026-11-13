@@ -15,7 +15,7 @@ import type { Chat } from "chat";
 import { Bridge, type InboundEvent } from "./bridge.ts";
 import { startChatHost } from "./chatHost.ts";
 import { createChatState } from "./chatState.ts";
-import { dataDir, loadConfig } from "./config.ts";
+import { dataDir, dmRoute, loadConfig } from "./config.ts";
 import { login, savedToken } from "./login.ts";
 import { createImessageAdapter } from "./imessage/adapter.ts";
 import { type LinearApi, issueKeyOf, linearPlatform, sessionIdOf } from "./linear/platform.ts";
@@ -130,7 +130,7 @@ async function start(): Promise<void> {
             host: () => slackHost,
             access: { allowedUserIds: config.allowedUserIds, allowEveryone: config.allowEveryone },
             channelRoutes: config.channelProjects,
-            directRoute: config.dmProjectId ? { projectId: config.dmProjectId } : undefined,
+            directRoute: dmRoute(config),
             eligibility: slackEligibility(slackTransport),
           }),
         ]

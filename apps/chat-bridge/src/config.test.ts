@@ -1,6 +1,6 @@
 import { assert, it } from "vite-plus/test";
 
-import { DEFAULT_TOOLS_PORT, parseConfig } from "./config.ts";
+import { DEFAULT_TOOLS_PORT, dmRoute, parseConfig } from "./config.ts";
 
 it("fills defaults and rejects a bad config", () => {
   const config = parseConfig({
@@ -73,6 +73,24 @@ it("reads channel routes with a match, a worktree branch and a note", () => {
       }),
     /match/,
   );
+});
+
+it("routes direct messages to a project, in a new worktree when dmWorktreeFrom is set", () => {
+  const base = { t3Url: "http://x", channelProjects: [], allowedUserIds: [] };
+  assert.isUndefined(dmRoute(parseConfig(base)));
+  assert.deepStrictEqual(dmRoute(parseConfig({ ...base, dmProjectId: "p" })), { projectId: "p" });
+  assert.deepStrictEqual(
+    dmRoute(parseConfig({ ...base, dmProjectId: "p", dmWorktreeFrom: "dev" })),
+    {
+      projectId: "p",
+      worktreeFrom: "dev",
+    },
+  );
+  assert.throws(
+    () => parseConfig({ ...base, dmProjectId: "p", dmWorktreeFrom: " " }),
+    /dmWorktreeFrom/,
+  );
+  assert.throws(() => parseConfig({ ...base, dmWorktreeFrom: "dev" }), /dmWorktreeFrom/);
 });
 
 it("uses Socket Mode for Slack unless told to read Office's relay", () => {

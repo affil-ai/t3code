@@ -23,6 +23,8 @@ export interface BridgeConfig {
   readonly channelProjects: ReadonlyArray<ChannelRoute>;
   /** The T3 project a direct message to the bot starts its thread in. Omit to ignore direct messages. */
   readonly dmProjectId?: string | undefined;
+  /** Start each direct-message thread in a new worktree from this branch. Omit to use the project root. */
+  readonly dmWorktreeFrom?: string | undefined;
   /** Slack user ids who may use the bot. Everyone else gets a short refusal. */
   readonly allowedUserIds: ReadonlyArray<string>;
   /** Also allow every full member of the workspace. Off unless set to true. */
@@ -270,6 +272,10 @@ export function parseConfig(raw: unknown): BridgeConfig {
   ) {
     fail("dmProjectId must be a project id.");
   }
+  const dmWorktreeFrom = optionalText(raw, "dmWorktreeFrom");
+  if (dmWorktreeFrom !== undefined && raw.dmProjectId === undefined) {
+    fail("dmWorktreeFrom needs dmProjectId.");
+  }
   if (raw.allowEveryone !== undefined && typeof raw.allowEveryone !== "boolean") {
     fail("allowEveryone must be true or false.");
   }
@@ -308,6 +314,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
     t3EnvironmentId: optionalText(raw, "t3EnvironmentId"),
     channelProjects,
     dmProjectId: raw.dmProjectId as string | undefined,
+    dmWorktreeFrom,
     allowedUserIds: stringList(raw.allowedUserIds, "allowedUserIds"),
     allowEveryone: raw.allowEveryone === true,
     toolsPort: toolsPort as number,
@@ -320,6 +327,15 @@ export function parseConfig(raw: unknown): BridgeConfig {
     slack: parseSlack(raw.slack),
   };
 }
+
+/** The route a direct message starts its thread on, or undefined when DMs are ignored. */
+export const dmRoute = (config: BridgeConfig): ThreadRoute | undefined =>
+  config.dmProjectId === undefined
+    ? undefined
+    : {
+        projectId: config.dmProjectId,
+        ...(config.dmWorktreeFrom === undefined ? {} : { worktreeFrom: config.dmWorktreeFrom }),
+      };
 
 export function loadConfig(file: string): BridgeConfig {
   let text: string;

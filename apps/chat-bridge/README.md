@@ -290,6 +290,9 @@ In `config.json`:
   takes `worktreeFrom` and `note` too.
 - `dmProjectId`: where direct messages start their threads. Without it, DMs
   are ignored. Each top-level DM is its own thread; reply under it to continue.
+- `dmWorktreeFrom`: start each DM thread in a new worktree from this branch on
+  `origin`, like a channel entry's `worktreeFrom`. Without it, DM threads run
+  in the project's own checkout.
 - Invite the bot to each mapped channel (`/invite @T3 Code`).
 
 ### 4. Decide who may use it
@@ -709,6 +712,7 @@ you don't use:
     { "channelId": "C0123456789", "projectId": "<T3 project id>", "match": "[docs]" }
   ],
   "dmProjectId": "<T3 project id>",
+  "dmWorktreeFrom": "main",
   "allowedUserIds": ["U0123456789"],
   "allowEveryone": false,
 
@@ -745,6 +749,7 @@ you don't use:
 | `startTools`      | `false`                | Serve `slack_start` and `linear_start`.                                                        |
 | `channelProjects` | required (may be `[]`) | Slack channel routes: `channelId`, `projectId`, and optional `match`, `worktreeFrom`, `note`.  |
 | `dmProjectId`     | unset                  | Project for Slack DMs. Unset ignores DMs.                                                      |
+| `dmWorktreeFrom`  | unset                  | Branch each Slack DM thread's new worktree starts from. Unset runs DMs in the project root.    |
 | `allowedUserIds`  | required (may be `[]`) | Slack member ids allowed to use the bot.                                                       |
 | `allowEveryone`   | `false`                | Also allow every full member of the Slack workspace.                                           |
 | `slack.transport` | `"socket"`             | Leave as `socket`. `"office-relay"` belongs to the Office relay below.                         |

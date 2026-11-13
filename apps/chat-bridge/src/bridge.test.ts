@@ -25,6 +25,7 @@ import {
   isQuietReply,
   type OutboundMessage,
   QUIET_REPLY,
+  type ThreadRoute,
 } from "./platform.ts";
 import { SLACK_REPLY_STYLE, slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { startChatHost } from "./chatHost.ts";
@@ -369,7 +370,7 @@ function freshDatabase(): NodeSqlite.DatabaseSync {
 function harness(
   db = freshDatabase(),
   options: {
-    dmProjectId?: string;
+    directRoute?: ThreadRoute;
     post?: (reply: Reply) => Promise<void>;
     history?: () => Promise<ReadonlyArray<EarlierMessage>>;
     /** Renames to the chat thread fail this many times before they succeed. */
@@ -424,8 +425,7 @@ function harness(
         access: { allowedUserIds: ["U1"], allowEveryone: options.allowEveryone },
         isEligible: async (userId) => (options.members ?? []).includes(userId),
         channelRoutes: options.routes ?? [{ channelId: "C1", projectId: PROJECT }],
-        directRoute:
-          options.dmProjectId === undefined ? undefined : { projectId: options.dmProjectId },
+        directRoute: options.directRoute,
         person: (userId, name) => `${name} (<@${userId}>)`,
         firstTurnNote: slackFirstTurnNote,
         replyStyle: SLACK_REPLY_STYLE,
@@ -939,12 +939,17 @@ it("starts direct messages in the direct-message project, when there is one", as
     type: "ignored",
     reason: "unmapped_channel",
   });
-  const { t3, bridge } = harness(freshDatabase(), { dmProjectId: "project-dm" });
+  const { t3, bridge } = harness(freshDatabase(), {
+    directRoute: { projectId: "project-dm", worktreeFrom: "dev" },
+  });
   assert.strictEqual((await bridge.receive(dm)).type, "started");
-  assert.strictEqual(
-    t3.calls.find((call) => call.tool === "t3_thread_launch")!.args.projectId,
-    "project-dm",
-  );
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  assert.strictEqual(launch.args.projectId, "project-dm");
+  assert.deepStrictEqual(launch.args.workspaceStrategy, {
+    type: "worktree",
+    baseRef: "dev",
+    startFromOrigin: true,
+  });
 });
 
 it("stops posting an answer Slack keeps refusing", async () => {
@@ -3085,7 +3090,7 @@ async function slackStartHarness(thread: { readonly root?: string } = {}): Promi
 }> {
   let host: Awaited<ReturnType<typeof relayedSlack>>["host"] | undefined;
   const parts = harness(freshDatabase(), {
-    dmProjectId: PROJECT,
+    directRoute: { projectId: PROJECT },
     routes: [{ channelId: "C0CHAN1", projectId: PROJECT }],
     allowEveryone: true,
     members: ["U0ADA"],
