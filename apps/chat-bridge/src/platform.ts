@@ -78,6 +78,12 @@ export const isQuietReply = (text: string): boolean =>
   text.trim().replace(/^[`"']+|[`"'.]+$/g, "") === QUIET_REPLY;
 
 /**
+ * The idle fallback in a `silentByDefault` conversation, told to the agent so a
+ * decision to stay quiet ends in NO_REPLY rather than a note that gets posted.
+ */
+export const FALLBACK_RULE = `A message that mentions you or is sent only to you counts as a request; if a request ends with nothing posted, the bridge posts your final message once. When you decide a message needs no reply, make your whole final message exactly ${QUIET_REPLY} and nothing is posted.`;
+
+/**
  * How the agent stays quiet, and how to treat wake-ups from its subagents and background work.
  * Wakes that restated earlier posts were the bridge's repeats in practice (a "second check"
  * wake re-posting the first answer and its question), so the rule is "only what's new".
@@ -106,7 +112,7 @@ export type PostKind = (typeof POST_KINDS)[number];
  */
 export function postRules(place: string): string {
   return [
-    `Only chat_post reaches this ${place}; your final message stays in T3. Each post names its kind:`,
+    `Only chat_post reaches this ${place}. Each post names its kind:`,
     "`question` when you need a person to decide or tell you something;",
     "`blocked` when you can't go on until someone acts;",
     "`done` with the result once the request is finished;",
@@ -114,6 +120,7 @@ export function postRules(place: string): string {
     "Between those, work silently: the status line shows your progress. Post a result once you have it, in place of a promise to report later.",
     "A wake from a subagent or background work posts only when it brings a question, a blocker or the result.",
     "Read every message in the conversation; post only for those addressed to you that need your answer.",
+    FALLBACK_RULE,
   ].join(" ");
 }
 

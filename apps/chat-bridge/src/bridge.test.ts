@@ -2197,8 +2197,8 @@ it("posts nothing for a run that answers NO_REPLY, and tells every chat how to",
   assert.isTrue(isQuietReply("NO_REPLY"));
   assert.isFalse(isQuietReply("NO_REPLY was wrong earlier; here are the logs."));
   assert.isFalse(isQuietReply("No reply needed"));
-  // Slack posts only through chat_post, so it has no use for the marker.
-  assert.notInclude(slackFirstTurnNote("key"), QUIET_REPLY);
+  // Slack's fallback posts the final message, so its agents are told the marker too.
+  assert.include(slackFirstTurnNote("key"), QUIET_REPLY);
 });
 
 it("posts nothing when a run completes on a silent platform, and nothing more after a post", async () => {
@@ -2282,6 +2282,33 @@ it("posts nothing as a fallback when the final message is NO_REPLY or empty", as
     t3.finish("run-1", "completed", final);
     await bridge.idle();
     assert.lengthOf(posted, 0, String(final));
+  }
+});
+
+it("posts nothing for a mentioned aside the agent answers NO_REPLY, and a non-quiet final once", async () => {
+  for (const final of ["NO_REPLY", "I read this as an aside, so I didn't reply."]) {
+    const { t3, bridge, posted } = harness(undefined, SILENT);
+    await bridge.receive(event("100.1"));
+    await bridge.postFromAgent({
+      chatThreadKey: "slack:C1:100.1",
+      text: "Here are some ideas.",
+      kind: "update",
+      postKind: "answer",
+    });
+    t3.finish("run-1", "completed", "Answered.");
+    await bridge.idle();
+    // An @mention in an aside is still addressed, so it arms the fallback.
+    t3.options.sendStartsRun = true;
+    await bridge.receive(event("100.2", { kind: "follow_up", text: "@Office this part is hard" }));
+    const send = t3.calls.filter((call) => call.tool === "t3_thread_send").at(-1)!;
+    assert.include(String(send.args.message), `exactly ${QUIET_REPLY}`);
+    // The agent posts nothing in the run.
+    t3.finish("run-2", "completed", final);
+    await bridge.idle();
+    assert.deepStrictEqual(
+      posted.map((reply) => reply.text),
+      final === QUIET_REPLY ? ["Here are some ideas."] : ["Here are some ideas.", final],
+    );
   }
 });
 
@@ -2390,7 +2417,10 @@ it("makes Slack and iMessage silent by default, and tells their agents when to p
     for (const kind of ["`question`", "`blocked`", "`done`", "`answer`"])
       assert.include(note, kind);
     assert.include(note, "post only for those addressed to you that need your answer");
-    assert.notInclude(note, QUIET_REPLY);
+    // The fallback, and how to stay quiet against it.
+    assert.include(note, "the bridge posts your final message once");
+    assert.include(note, `exactly ${QUIET_REPLY}`);
+    assert.notInclude(note, "stays in T3");
     assert.notInclude(note, "final message in each run is");
   }
   assert.include(slackFirstTurnNote("key"), "chat_react (eyes) at most once per request");

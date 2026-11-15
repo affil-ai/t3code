@@ -25,6 +25,7 @@ import {
   type OutboundMessage,
   POST_KINDS,
   type PostKind,
+  FALLBACK_RULE,
   QUIET_RULES,
   type Reaction,
 } from "./platform.ts";
@@ -445,7 +446,7 @@ export async function callTool(
  */
 const INSTRUCTIONS = [
   "Some threads take their messages from a chat, such as a Slack thread, an iMessage conversation, a Linear agent session or an Office chat. Their turns start with the chat message and carry a chat key, which every chat tool takes.",
-  "In Slack and iMessage, only chat_post reaches the chat; your final message stays in T3. Post with a kind: question when you need a person to decide or tell you something, blocked when you can't go on until someone acts, done with the result once the request is finished, answer for a direct reply to something a person asked you. Between those, work silently, and post a result once you have it in place of a promise to report later. Read every message; post only for those addressed to you that need your answer.",
+  `In Slack and iMessage, only chat_post reaches the chat. Post with a kind: question when you need a person to decide or tell you something, blocked when you can't go on until someone acts, done with the result once the request is finished, answer for a direct reply to something a person asked you. Between those, work silently, and post a result once you have it in place of a promise to report later. Read every message; post only for those addressed to you that need your answer. ${FALLBACK_RULE}`,
   `In a Slack thread: ${SLACK_ACKNOWLEDGE} ${SLACK_REPLY_STYLE}`,
   `In Linear and Office, your final message in each run is posted to the chat. ${QUIET_RULES}`,
   "The thread's first turn says how its chat works: how to mention people, and which of these tools it supports.",

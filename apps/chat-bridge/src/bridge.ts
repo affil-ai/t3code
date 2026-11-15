@@ -28,6 +28,7 @@ import {
 } from "./modelCommand.ts";
 import {
   ACKNOWLEDGE_FIRST,
+  FALLBACK_RULE,
   BACKGROUND_STATUS,
   type ChannelRoute,
   type ChatPlatform,
@@ -448,7 +449,7 @@ function turnText(
     first
       ? platform.firstTurnNote(chatKey, event)
       : platform.silentByDefault === true
-        ? `(Only chat_post reaches the ${platform.place}, with kind question, blocked, done or answer. Chat key: ${chatKey})`
+        ? `(Only chat_post reaches the ${platform.place}, with kind question, blocked, done or answer. ${FALLBACK_RULE} Chat key: ${chatKey})`
         : `(Your final message is posted to the ${platform.place}. Chat key: ${chatKey})`,
   );
   if (!first && workRunning) lines.push(WORK_RUNNING_NOTE);
