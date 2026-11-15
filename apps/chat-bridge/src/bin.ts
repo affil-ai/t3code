@@ -38,6 +38,7 @@ import { BridgeStore, openDatabase } from "./store.ts";
 import { T3Client } from "./t3Client.ts";
 import { T3Threads } from "./threads.ts";
 import { OfficeClient } from "./office/client.ts";
+import { createThreadChannelReporter } from "./office/threadChannels.ts";
 import { createOfficeChannel } from "./office/platform.ts";
 import { runOfficeImport } from "./office/importCommand.ts";
 import { startToolServer } from "./toolServer.ts";
@@ -268,6 +269,20 @@ async function start(): Promise<void> {
   }
   const officeApi =
     office === undefined ? undefined : new OfficeClient(office.convexUrl, office.serviceToken);
+  // Office links each task to the Slack thread or Linear issue its owner thread is bound to.
+  const threadChannels =
+    officeApi === undefined
+      ? undefined
+      : createThreadChannelReporter({
+          store,
+          send: (bindings) => officeApi.mutate("bindThreadChannels", { bindings: [...bindings] }),
+          environmentId: config.t3EnvironmentId ?? (await t3.verifyEnvironment()),
+          linearIssueUrl: linear
+            ? async (issueId) => (await linear.parts.findIssue(issueId)).url
+            : undefined,
+          log,
+        });
+  store.onBindingSaved = threadChannels?.notify;
   const officeChannel =
     office === undefined
       ? undefined
@@ -459,6 +474,11 @@ async function start(): Promise<void> {
   log(
     `Connected channels: ${platforms.map((platform) => platform.name).join(", ")}. T3: ${config.t3Url}. Chat tools at http://127.0.0.1:${config.toolsPort}/mcp`,
   );
+  // The first start reports every binding the bridge holds; later ones only what's new.
+  void threadChannels?.sync().then((result) => {
+    if ("sent" in result && result.sent > 0)
+      log(`Office thread channels: reported ${result.sent} binding(s).`);
+  });
   if (webhooks && config.linear) {
     log(`Linear webhook on http://127.0.0.1:${webhooks.port}${config.linear.webhookPath}.`);
   }
@@ -477,6 +497,7 @@ async function start(): Promise<void> {
   const shutdown = async () => {
     log("Shutting down.");
     core.stop();
+    threadChannels?.stop();
     await slackRelay?.close();
     await officeChannel?.close();
     tools.close();

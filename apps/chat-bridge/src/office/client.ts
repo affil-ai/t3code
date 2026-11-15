@@ -102,6 +102,10 @@ export interface OfficeMutations {
   };
   rename: { args: { chatId: string; title: string }; result: unknown };
   linkSlack: { args: { eventId: string; chatThreadKey: string }; result: unknown };
+  bindThreadChannels: {
+    args: { bindings: Array<import("./threadChannels.ts").ThreadChannelBinding> };
+    result: unknown;
+  };
 }
 
 export interface OfficeApi {

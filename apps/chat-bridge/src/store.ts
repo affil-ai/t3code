@@ -310,6 +310,11 @@ const questionFromRow = (row: Record<string, unknown>): AskedRecord => ({
 export class BridgeStore {
   private readonly db: NodeSqlite.DatabaseSync;
   private readonly now: () => number;
+  /**
+   * Called after each binding row is saved, inside the caller's transaction;
+   * it must not throw or touch the database (Office's reporter defers its work).
+   */
+  onBindingSaved: (() => void) | undefined;
 
   constructor(db: NodeSqlite.DatabaseSync, now: () => number = Date.now) {
     this.db = db;
@@ -519,7 +524,7 @@ export class BridgeStore {
         `INSERT OR IGNORE INTO binding_group (thread_id, last_chat_thread_key) VALUES (?, ?)`,
       )
       .run(binding.threadId, binding.chatThreadKey);
-    this.db
+    const saved = this.db
       .prepare(
         `INSERT INTO binding
           (chat_thread_key, channel_id, project_id, thread_id, chat_key, created_by_user_id, created_at)
@@ -535,6 +540,21 @@ export class BridgeStore {
         binding.createdByUserId,
         this.now(),
       );
+    if (Number(saved.changes) > 0) {
+      try {
+        this.onBindingSaved?.();
+      } catch {
+        // Reporting a binding never fails saving it.
+      }
+    }
+  }
+
+  /** Bindings saved at or after `since` (epoch ms), oldest first, with when they were saved. */
+  bindingsSavedSince(since: number): Array<Binding & { readonly createdAt: number }> {
+    return this.db
+      .prepare("SELECT * FROM binding WHERE created_at >= ? ORDER BY created_at, rowid")
+      .all(since)
+      .map((row) => ({ ...fromRow(row), createdAt: Number(row.created_at) }));
   }
 
   /** Adopts history without owing any earlier run's answer or replacing a binding. */
