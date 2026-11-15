@@ -2393,7 +2393,7 @@ it("makes Slack and iMessage silent by default, and tells their agents when to p
     assert.notInclude(note, QUIET_REPLY);
     assert.notInclude(note, "final message in each run is");
   }
-  assert.include(slackFirstTurnNote("key"), "chat_react (eyes)");
+  assert.include(slackFirstTurnNote("key"), "chat_react (eyes) at most once per request");
   assert.include(slackFirstTurnNote("key"), "chat_status");
   assert.notInclude(SLACK_REPLY_STYLE, "progress update");
   assert.include(imessageNote, "group conversation");
@@ -3361,6 +3361,7 @@ async function slackStartHarness(thread: { readonly root?: string } = {}): Promi
     workspaceRoots: async () => [],
     post: async () => {},
     react: async () => undefined,
+    acknowledged: new Set<string>(),
     setStatus: () => false,
     startSlack: (request: Parameters<typeof startSlackThread>[1]) =>
       startSlackThread(

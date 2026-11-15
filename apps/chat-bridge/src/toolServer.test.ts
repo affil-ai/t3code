@@ -36,6 +36,7 @@ function harness() {
         ? "Reactions don't show here."
         : undefined;
     },
+    acknowledged: new Set(),
     setStatus: (_chatThreadKey, status) => status !== "idle thread",
   };
   return { deps, posts, reactions, root };
@@ -132,6 +133,31 @@ it("reacts with a bare emoji name and checks the message id", async () => {
     emoji: "eyes",
   });
   assert.isTrue(bad.isError);
+});
+
+it("accepts one eyes reaction per request, until a done or answer post", async () => {
+  const { deps, reactions } = harness();
+  const react = (messageId: string, emoji = "eyes") =>
+    callTool(deps, "chat_react", { chatKey: "key-1", messageId, emoji });
+  assert.strictEqual(textOf(await react("100.2")), "Reacted with :eyes:.");
+  const second = await react("100.3", ":eyes:");
+  assert.isUndefined(second.isError);
+  assert.include(textOf(second), "Not reacted");
+  // Other emoji are deliberate and not limited.
+  await react("100.3", "thumbsup");
+  // A question keeps the request open; done ends it.
+  await callTool(deps, "chat_post", { chatKey: "key-1", kind: "question", text: "which one?" });
+  assert.include(textOf(await react("100.4")), "Not reacted");
+  await callTool(deps, "chat_post", { chatKey: "key-1", kind: "done", text: "finished" });
+  assert.strictEqual(textOf(await react("100.5")), "Reacted with :eyes:.");
+  assert.deepStrictEqual(
+    reactions.map((reaction) => [reaction.messageId, reaction.emoji]),
+    [
+      ["100.2", "eyes"],
+      ["100.3", "thumbsup"],
+      ["100.5", "eyes"],
+    ],
+  );
 });
 
 it("passes on what the platform says instead of reacting, such as on Linear", async () => {

@@ -506,6 +506,7 @@ it("uploads chat_post files with a stable invocation identity, independent of th
     workspaceRoots: async () => [h.home],
     post: h.channel.platform.post,
     react: async () => undefined,
+    acknowledged: new Set<string>(),
     setStatus: () => false,
   };
   const args = { chatKey: binding.chatKey, kind: "done", text: "Report", files: [{ path: file }] };

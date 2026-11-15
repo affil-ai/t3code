@@ -348,6 +348,7 @@ async function start(): Promise<void> {
       workspaceRoots: (threadId) => threads.workspaceRoots(threadId),
       post: (message) => core.postFromAgent(message),
       react: (reaction) => reactOn(platforms, reaction),
+      acknowledged: new Set(),
       setStatus: (chatThreadKey, status) => core.setStatus(chatThreadKey, status),
       startSlack: !config.startTools
         ? undefined

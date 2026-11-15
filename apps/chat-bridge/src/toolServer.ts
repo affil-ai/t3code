@@ -46,6 +46,11 @@ export interface ToolDeps {
   readonly post: (message: OutboundMessage) => Promise<void>;
   /** Reacts, or says why it didn't: a note for the agent in place of "Reacted". */
   readonly react: (reaction: Reaction) => Promise<string | undefined>;
+  /**
+   * Chat threads whose current request already has an eyes reaction. A second eyes is
+   * refused until the agent posts `done` or `answer`. In memory: a restart forgets it.
+   */
+  readonly acknowledged: Set<string>;
   /** Sets the status of the thread's runs in flight; false when there is none. */
   readonly setStatus: (chatThreadKey: string, status: string) => boolean;
   /** Connects a thread to a Linear issue; absent without Linear. Returns what to tell the caller. */
@@ -201,7 +206,7 @@ const TOOLS = [
   {
     name: "chat_react",
     description:
-      "React with an emoji to a message in the chat thread with this chat key. Pass the message id shown in the turn and an emoji name such as eyes, white_check_mark or thumbsup. The thread's first turn says whether reactions work there and which ones.",
+      "React with an emoji to a message in the chat thread with this chat key. Pass the message id shown in the turn and an emoji name such as eyes, white_check_mark or thumbsup. Eyes is accepted once per request: a second one is refused until you post done or answer. The thread's first turn says whether reactions work there and which ones.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -389,6 +394,8 @@ export async function callTool(
         kind: "update",
         postKind: args.kind as PostKind,
       });
+      if (args.kind === "done" || args.kind === "answer")
+        deps.acknowledged.delete(binding.chatThreadKey);
       return text(
         files.length === 0 ? "Posted." : `Posted ${files.map((file) => file.filename).join(", ")}.`,
       );
@@ -401,11 +408,17 @@ export async function callTool(
       if (!EMOJI.test(emoji) || emoji.length > 100)
         return text("emoji must be an emoji name.", true);
       const bare = emoji.replace(/^:|:$/g, "");
+      const eyes = bare === "eyes";
+      if (eyes && deps.acknowledged.has(binding.chatThreadKey))
+        return text(
+          "Not reacted: this request already has an eyes reaction. Don't react to follow-ups; carry on, and post done or answer when you have the result.",
+        );
       const instead = await deps.react({
         chatThreadKey: binding.chatThreadKey,
         messageId,
         emoji: bare,
       });
+      if (eyes && instead === undefined) deps.acknowledged.add(binding.chatThreadKey);
       return text(instead ?? `Reacted with :${bare}:.`);
     }
     if (name === "chat_status") {

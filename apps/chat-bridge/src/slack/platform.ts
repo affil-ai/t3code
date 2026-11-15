@@ -25,9 +25,12 @@ export const slackEligibility = (transport: SlackTransport): "workspace" | "pers
 export const SLACK_REPLY_STYLE =
   "Write for Slack: lead with the answer, in a few lines or a short list, not a report. Leave out commit SHAs, run or deployment IDs, file paths and tool narration unless the reader needs them to act; give a link instead of an ID.";
 
-/** How the agent acknowledges a request in Slack: a reaction and the status line, never a post. */
+/**
+ * How the agent acknowledges a request in Slack: the status line, and an eyes reaction
+ * only when an answer won't come soon. The tool server refuses a second eyes per request.
+ */
 export const SLACK_ACKNOWLEDGE =
-  "When a person asks you for something, acknowledge it with chat_react (eyes) on their message and chat_status set to the step you're on; set chat_status again as you move to each new step.";
+  "React rarely. Use chat_react (eyes) at most once per request, on the message that asks you for work you won't answer within about a minute. Don't react when you'll answer in this run, or to follow-ups, answers to your questions, thanks, asides or messages not addressed to you. When you take on work, set chat_status to the step you're on, and again at each new step.";
 
 /** Tells the agent how its answer reaches Slack, once per thread. */
 export function slackFirstTurnNote(chatKey: string): string {
