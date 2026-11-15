@@ -2275,6 +2275,26 @@ it("waits for a silent thread's delegated work, and posts the latest run's final
   );
 });
 
+it("never posts as a fallback the final message of a run that no chat message started", async () => {
+  const { t3, bridge, posted } = harness(undefined, SILENT);
+  await bridge.receive(event("100.1"));
+  t3.activity.push({ itemId: "asked", type: "user_message", runId: "run-1", status: "completed" });
+  // The person's run starts a subagent and ends with nothing posted.
+  t3.options.delegatedPending = true;
+  t3.finish("run-1", "completed", QUIET_REPLY);
+  await t3.tick();
+  // Before the thread goes idle, another thread's send starts a run here, and the
+  // subagent that run starts reports back in a run of its own.
+  t3.activity.push({ itemId: "sent", type: "user_message", runId: "run-2", status: "completed" });
+  t3.activity.push({ itemId: "wake-3", type: "notification", runId: "run-3", status: "running" });
+  t3.options.delegatedPending = false;
+  await t3.tick();
+  t3.finish("run-2", "completed", "Started the audit for the orchestrator.");
+  t3.finish("run-3", "completed", "Audit done; reported to the orchestrator.");
+  await bridge.idle();
+  assert.lengthOf(posted, 0);
+});
+
 it("posts nothing as a fallback when the final message is NO_REPLY or empty", async () => {
   for (const final of ["NO_REPLY", "", undefined]) {
     const { t3, bridge, posted } = harness(undefined, SILENT);

@@ -6,7 +6,7 @@
  */
 import * as NodeCrypto from "node:crypto";
 
-import { THINKING } from "./activity.ts";
+import { type ActivityItem, THINKING } from "./activity.ts";
 import {
   applyClick,
   applyReply,
@@ -941,6 +941,38 @@ export class Bridge {
     });
   }
 
+  /** A chat message started, joined or answered this run, so the idle fallback may post its final message. */
+  private markChatRun(runId: string): void {
+    this.store.setMeta(`chat_run:${runId}`, "1");
+  }
+
+  private isChatRun(runId: string): boolean {
+    return this.store.meta(`chat_run:${runId}`) !== undefined;
+  }
+
+  /**
+   * Remembers the run the thread's latest message started or joined, as `position runId`.
+   * Read in order, so the run a notification starts follows the message read before it.
+   */
+  private noteTurn(threadId: string, item: ActivityItem): void {
+    if (item.type !== "user_message" || item.runId === null) return;
+    const key = `turn_run:${threadId}`;
+    const saved = this.store.meta(key);
+    if (saved !== undefined && Number(saved.split(" ")[0]) >= item.position) return;
+    this.store.setMeta(key, `${item.position} ${item.runId}`);
+  }
+
+  /**
+   * A run a notification starts is the chat's when the latest message read before it started
+   * or joined a chat run, or when none was read since the chat was bound. After a message from
+   * another thread or a scheduled task, its delegated work reports to that sender, not the chat.
+   */
+  private markNotificationRun(threadId: string, runId: string): void {
+    const saved = this.store.meta(`turn_run:${threadId}`);
+    const turn = saved?.slice(saved.indexOf(" ") + 1);
+    if (turn === undefined || this.isChatRun(turn)) this.markChatRun(runId);
+  }
+
   /**
    * The thread went idle: no run owed and its delegated work settled. A silent conversation
    * whose person's message got nothing posted gets the last run's final message, once.
@@ -1180,6 +1212,7 @@ export class Bridge {
       }
       this.store.dropContext(kept.map((message) => message.eventId));
       // A steered message can join a run someone started in T3; its answer is owed here too.
+      this.markChatRun(sent.runId);
       this.owe({
         runId: sent.runId,
         threadId: binding.threadId,
@@ -1318,9 +1351,11 @@ export class Bridge {
       if (switched.command !== undefined)
         for (const each of this.store.bindingsForThread(started.threadId))
           this.store.markModelSwitched(each.chatThreadKey);
-      if (owed !== undefined)
+      if (owed !== undefined) {
+        this.markChatRun(owed.runId);
         for (const chatThreadKey of this.store.recipients(event.chatThreadKey))
           this.store.oweReply({ ...owed, chatThreadKey });
+      }
       if (dispatch !== undefined) this.store.oweDispatch(dispatch);
       this.store.finish(event.eventId);
     });
@@ -1825,11 +1860,13 @@ export class Bridge {
     }
     const read = await this.threads.activity(binding.threadId, cursor);
     for (const item of read.items) {
+      this.noteTurn(binding.threadId, item);
       if (item.type !== "notification" || item.runId === null) continue;
       if (this.store.isOwed(item.runId)) continue;
       this.log(
         `${item.runId} started from a notification; its answer goes to ${binding.chatThreadKey}.`,
       );
+      this.markNotificationRun(binding.threadId, item.runId);
       this.owe({
         runId: item.runId,
         threadId: binding.threadId,
@@ -1845,6 +1882,7 @@ export class Bridge {
   private async startNotificationsAtEnd(threadId: string, always = false): Promise<void> {
     if (!always && this.store.notificationCursor(threadId) !== undefined) return;
     const read = await this.threads.activity(threadId, undefined);
+    for (const item of read.items) this.noteTurn(threadId, item);
     if (always) this.store.moveNotificationCursor(threadId, read.lastPosition);
     else this.store.startNotificationCursor(threadId, read.lastPosition);
   }
@@ -1876,6 +1914,8 @@ export class Bridge {
           -1,
           ...first.items.filter((item) => item.runId === reply.runId).map((item) => item.position),
         );
+        for (const item of first.items)
+          if (item.position <= cursor) this.noteTurn(reply.threadId, item);
         // Saved, so a restart before the work reports back still owes the chat its answer.
         this.store.saveFollow({ reply, cursor, until: this.now() + DELEGATED_FOLLOW_MS });
         this.log(`Following ${reply.threadId} after ${reply.runId} from position ${cursor}.`);
@@ -1893,11 +1933,13 @@ export class Bridge {
         const read = await this.threads.activity(reply.threadId, cursor);
         let found = false;
         for (const item of read.items) {
+          this.noteTurn(reply.threadId, item);
           if (item.type !== "notification" || item.runId === null) continue;
           if (this.store.isOwed(item.runId)) continue;
           this.log(
             `${item.runId} started from a notification; its answer goes to ${reply.chatThreadKey}.`,
           );
+          this.markNotificationRun(reply.threadId, item.runId);
           this.owe({
             ...reply,
             runId: item.runId,
@@ -2055,6 +2097,7 @@ export class Bridge {
         const read = await this.threads.activity(record.threadId, undefined);
         const runId = read.items.findLast((item) => item.runId !== null)?.runId;
         if (runId !== undefined && runId !== null && !this.store.isOwed(runId)) {
+          this.markChatRun(runId);
           this.owe({
             runId,
             threadId: record.threadId,
@@ -2525,8 +2568,9 @@ export class Bridge {
     }
     try {
       const silent = this.platform(reply.chatThreadKey).silentByDefault === true;
-      // The fallback posts the latest run's final message if the thread goes idle unanswered.
-      if (silent && status === "completed")
+      // The fallback posts the final message of the latest run a chat message started, joined
+      // or continued, if the thread goes idle unanswered; never one another thread started.
+      if (silent && status === "completed" && this.isChatRun(reply.runId))
         this.store.setMeta(`answer_run:${reply.chatThreadKey}`, finalRunId);
       const text =
         status !== "completed"
