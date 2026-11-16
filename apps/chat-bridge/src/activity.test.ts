@@ -3,6 +3,7 @@ import { assert, it } from "vite-plus/test";
 import {
   type ActivityItem,
   currentStatus,
+  answeredByPost,
   isPermissionRequest,
   isQuestion,
   redactSecrets,
@@ -220,4 +221,37 @@ it("reads a to-do list as the run's plan, not as a step", () => {
   assert.isUndefined(finishedStep(todo));
   assert.isUndefined(planOf({ ...todo, textTruncated: true }));
   assert.isUndefined(planOf(item({ type: "reasoning", text: "[pending] x" })));
+});
+
+it("takes a run's chat_post as its answer unless the work after it is more than wrapping up", () => {
+  const post = (toolName: string, chatKey: string, fields: Partial<ActivityItem> = {}) =>
+    item({
+      type: "dynamic_tool",
+      status: "completed",
+      // Cut off mid-output, as a long post is in an activity read.
+      text: `{"toolName": "${toolName}", "input": {"chatKey": "${chatKey}", "text": "Here's how`,
+      textTruncated: true,
+      ...fields,
+    });
+  const steps = (count: number) =>
+    Array.from({ length: count }, () =>
+      item({ type: "command_execution", status: "completed", text: "$ rg x" }),
+    );
+  const keys = new Set(["key-1"]);
+  const codex = "t3-chat-bridge.chat_post";
+  for (const name of [codex, "mcp__t3-chat-bridge__chat_post"])
+    assert.isTrue(
+      answeredByPost([...steps(9), post(name, "key-1"), ...steps(4)], "run-1", keys),
+      name,
+    );
+  // An acknowledgement before the investigation, a post to another chat, a failed post, or
+  // another run's post: not answered.
+  assert.isFalse(answeredByPost([post(codex, "key-1"), ...steps(5)], "run-1", keys));
+  assert.isFalse(answeredByPost([...steps(1), post(codex, "key-2")], "run-1", keys));
+  assert.isFalse(
+    answeredByPost([...steps(1), post(codex, "key-1", { status: "failed" })], "run-1", keys),
+  );
+  assert.isFalse(
+    answeredByPost([...steps(1), post(codex, "key-1", { runId: "run-0" })], "run-1", keys),
+  );
 });

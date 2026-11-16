@@ -810,19 +810,17 @@ it("posts final messages to the Office chat, and to its synced silent Slack thre
     },
     silentByDefault: true,
   };
+  const answers = () => posts.filter((post) => post.kind === "answer").map((post) => post.text);
   await using h = await harness({ slack });
   h.office.message(
     request({ slack: { channelId: "C1", chatThreadKey: "slack:C1:1.1" }, sync: true }),
   );
   await vi.waitFor(() => assert.isTrue(h.store.isHandled("office:event-1")));
-  h.t3.finish("run-1", "Done.");
+  h.t3.finish("run-1", "Linked.");
   await h.bridge.idle();
   // Asked in Office, answered in Office; the synced Slack thread gets only the mirrored request.
-  assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Done.");
-  assert.deepEqual(
-    posts.filter((post) => post.kind === "answer").map((post) => post.text),
-    [],
-  );
+  assert.equal(h.office.posts.get("answer:thread-1:run-1")?.text, "Linked.");
+  assert.deepEqual(answers(), []);
   // Asked in Slack with a mention and nothing posted: Office gets the answer as always,
   // and Slack gets it once the thread is idle.
   await h.bridge.receive({
@@ -840,10 +838,54 @@ it("posts final messages to the Office chat, and to its synced silent Slack thre
   });
   h.t3.finish("run-2", "Tests fixed.");
   await h.bridge.idle();
-  assert.deepEqual(
-    posts.filter((post) => post.kind === "answer").map((post) => post.text),
-    ["Tests fixed."],
+  assert.deepEqual(answers(), ["Tests fixed."]);
+  // A support case relayed in Office: the agent acknowledges it, which reaches Slack too,
+  // works on and ends with the answer. Having spoken in Slack, it owes Slack that answer.
+  await h.send(
+    request({
+      eventId: "event-2",
+      messageId: "message-2",
+      text: "New support case",
+      firstTurn: false,
+      sync: true,
+      mirror: false,
+      slack: { channelId: "C1", chatThreadKey: "slack:C1:1.1" },
+    }),
   );
+  const chatKey = h.store.binding("office:chat-1")!.chatKey;
+  h.t3.items.push(
+    {
+      position: 1,
+      itemId: "ack",
+      type: "dynamic_tool",
+      runId: "run-3",
+      status: "completed",
+      text: JSON.stringify({
+        toolName: "t3-chat-bridge.chat_post",
+        input: { chatKey, kind: "answer", text: "I'll check." },
+      }),
+    },
+    // The investigation: more steps than wrapping up takes.
+    ...[2, 3, 4, 5, 6].map((position) => ({
+      position,
+      itemId: `work-${position}`,
+      type: "command_execution",
+      runId: "run-3",
+      status: "completed",
+      text: "$ rg sync",
+    })),
+  );
+  await h.bridge.postFromAgent({
+    chatThreadKey: "office:chat-1",
+    text: "I'll check.",
+    kind: "answer",
+    postKind: "answer",
+    eventId: "post:ack",
+  });
+  h.t3.finish("run-3", "Archive each duplicate.");
+  await h.bridge.idle();
+  assert.equal(h.office.posts.get("answer:thread-1:run-3")?.text, "Archive each duplicate.");
+  assert.deepEqual(answers(), ["Tests fixed.", "I'll check.", "Archive each duplicate."]);
 });
 
 it("starts a new thread with Office history even when the old thread is readable", async () => {

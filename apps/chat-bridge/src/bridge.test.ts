@@ -2202,15 +2202,11 @@ it("posts nothing for a run that answers NO_REPLY, and tells every chat how to",
 });
 
 it("posts nothing when a run completes on a silent platform, and nothing more after a post", async () => {
-  const { t3, bridge, posted, store } = harness(undefined, { slack: { silentByDefault: true } });
+  const h = harness(undefined, { slack: { silentByDefault: true } });
+  const { t3, bridge, posted, store } = h;
   await bridge.receive(event("100.1"));
   // The agent posts its result itself, as `chat_post` does, so the fallback has nothing to add.
-  await bridge.postFromAgent({
-    chatThreadKey: "slack:C1:100.1",
-    text: "Done: tests pass.",
-    kind: "update",
-    postKind: "done",
-  });
+  await agentPost(h, "run-1", "done", "Done: tests pass.");
   t3.finish("run-1", "completed", "All done, tests pass.");
   await bridge.idle();
   assert.deepStrictEqual(
@@ -2238,6 +2234,32 @@ it("posts nothing when a run completes on a silent platform, and nothing more af
 });
 
 const SILENT = { slack: { silentByDefault: true } } as const;
+
+/**
+ * The agent's `chat_post`, as T3 records it in the run and the tool server hands it to the
+ * bridge. `itemId` orders it among the run's other items.
+ */
+async function agentPost(
+  h: Pick<ReturnType<typeof harness>, "t3" | "bridge" | "store">,
+  runId: string,
+  postKind: "question" | "blocked" | "done" | "answer",
+  text: string,
+  chatThreadKey = "slack:C1:100.1",
+): Promise<void> {
+  const chatKey = h.store.binding(chatThreadKey)!.chatKey;
+  h.t3.activity.push({
+    itemId: `post-${h.t3.activity.length}`,
+    type: "dynamic_tool",
+    runId,
+    status: "completed",
+    text: JSON.stringify({
+      toolName: "t3-chat-bridge.chat_post",
+      input: { chatKey, kind: postKind, text },
+      output: [{ type: "text", text: "Posted." }],
+    }),
+  });
+  await h.bridge.postFromAgent({ chatThreadKey, text, kind: "update", postKind });
+}
 
 it("posts the final message once a silent thread goes idle with nothing posted since the request", async () => {
   const db = freshDatabase();
@@ -2307,14 +2329,10 @@ it("posts nothing as a fallback when the final message is NO_REPLY or empty", as
 
 it("posts nothing for a mentioned aside the agent answers NO_REPLY, and a non-quiet final once", async () => {
   for (const final of ["NO_REPLY", "I read this as an aside, so I didn't reply."]) {
-    const { t3, bridge, posted } = harness(undefined, SILENT);
+    const h = harness(undefined, SILENT);
+    const { t3, bridge, posted } = h;
     await bridge.receive(event("100.1"));
-    await bridge.postFromAgent({
-      chatThreadKey: "slack:C1:100.1",
-      text: "Here are some ideas.",
-      kind: "update",
-      postKind: "answer",
-    });
+    await agentPost(h, "run-1", "answer", "Here are some ideas.");
     t3.finish("run-1", "completed", "Answered.");
     await bridge.idle();
     // An @mention in an aside is still addressed, so it arms the fallback.
@@ -2330,6 +2348,101 @@ it("posts nothing for a mentioned aside the agent answers NO_REPLY, and a non-qu
       final === QUIET_REPLY ? ["Here are some ideas."] : ["Here are some ideas.", final],
     );
   }
+});
+
+/** Steps of the agent's work in the run, as T3 records each command. */
+function work(t3: ReturnType<typeof fakeT3>, runId: string, steps: number): void {
+  for (let step = 0; step < steps; step++)
+    t3.activity.push({
+      itemId: `work-${t3.activity.length}`,
+      type: "command_execution",
+      runId,
+      status: "completed",
+      text: "$ rg archive",
+    });
+}
+
+it("posts the final message after an early post the agent kept working past", async () => {
+  // What follows the agent's post decides: the investigation after an acknowledgement makes
+  // the final message the answer; wrapping up (cleanup, a check), its closing note, a status
+  // or thinking leaves the post as the answer.
+  const status = {
+    type: "dynamic_tool",
+    status: "completed",
+    text: JSON.stringify({ toolName: "t3-chat-bridge.chat_status" }),
+  };
+  const cases = [
+    { steps: 5, extra: [], final: "Archive each duplicate.", posted: true },
+    { steps: 4, extra: [], final: "Posted the steps.", posted: false },
+    {
+      steps: 0,
+      extra: [{ type: "reasoning", status: "completed" }, status],
+      final: "Posted.",
+      posted: false,
+    },
+    { steps: 5, extra: [], final: QUIET_REPLY, posted: false },
+  ];
+  for (const { steps, extra, final, posted: answered } of cases) {
+    const h = harness(undefined, SILENT);
+    await h.bridge.receive(event("100.1"));
+    await agentPost(h, "run-1", "answer", "I'll check how archiving works.");
+    work(h.t3, "run-1", steps);
+    for (const item of extra)
+      h.t3.activity.push({ itemId: `extra-${item.type}`, runId: "run-1", ...item });
+    h.t3.finish("run-1", "completed", final);
+    await h.bridge.idle();
+    assert.deepStrictEqual(
+      h.posted.map((reply) => reply.text),
+      answered ? ["I'll check how archiving works.", final] : ["I'll check how archiving works."],
+      `${steps} steps, ${final}`,
+    );
+  }
+});
+
+it("posts nothing after an early question or blocker until someone replies", async () => {
+  // A question or blocker is the agent's last word until someone replies.
+  for (const postKind of ["question", "blocked"] as const) {
+    const h = harness(undefined, SILENT);
+    await h.bridge.receive(event("100.1"));
+    await agentPost(h, "run-1", postKind, "Which account?");
+    work(h.t3, "run-1", 5);
+    h.t3.finish("run-1", "completed", "Asked which account.");
+    await h.bridge.idle();
+    assert.deepStrictEqual(
+      h.posted.map((reply) => reply.text),
+      ["Which account?"],
+      postKind,
+    );
+  }
+});
+
+it("posts the person's answer after an early post, never the run another thread started", async () => {
+  // The person's run acknowledges, works on and starts a subagent. Before the thread goes
+  // idle, another thread's send starts a run here, and its subagent reports in a run of its own.
+  const h = harness(undefined, SILENT);
+  await h.bridge.receive(event("100.1"));
+  h.t3.activity.push({
+    itemId: "asked",
+    type: "user_message",
+    runId: "run-1",
+    status: "completed",
+  });
+  await agentPost(h, "run-1", "answer", "On it.");
+  work(h.t3, "run-1", 5);
+  h.t3.options.delegatedPending = true;
+  h.t3.finish("run-1", "completed", "Here is the answer.");
+  await h.t3.tick();
+  h.t3.activity.push({ itemId: "sent", type: "user_message", runId: "run-2", status: "completed" });
+  h.t3.activity.push({ itemId: "wake-3", type: "notification", runId: "run-3", status: "running" });
+  h.t3.options.delegatedPending = false;
+  await h.t3.tick();
+  h.t3.finish("run-2", "completed", "Started the audit for the orchestrator.");
+  h.t3.finish("run-3", "completed", "Audit done; reported to the orchestrator.");
+  await h.bridge.idle();
+  assert.deepStrictEqual(
+    h.posted.map((reply) => reply.text),
+    ["On it.", "Here is the answer."],
+  );
 });
 
 it("counts a relayed question as posted, and arms the fallback again on its answer", async () => {
@@ -2374,15 +2487,11 @@ it("counts a relayed question as posted, and arms the fallback again on its answ
 });
 
 it("arms the fallback only for messages that ask the agent, or reply after it asked", async () => {
-  const { t3, bridge, posted } = harness(undefined, SILENT);
+  const h = harness(undefined, SILENT);
+  const { t3, bridge, posted } = h;
   t3.options.sendStartsRun = true;
   await bridge.receive(event("100.1"));
-  await bridge.postFromAgent({
-    chatThreadKey: "slack:C1:100.1",
-    text: "Done.",
-    kind: "update",
-    postKind: "done",
-  });
+  await agentPost(h, "run-1", "done", "Done.");
   t3.finish("run-1", "completed", "Done.");
   await bridge.idle();
   // A side comment, not addressed to the agent: it reads it and stays silent.
@@ -2394,12 +2503,7 @@ it("arms the fallback only for messages that ask the agent, or reply after it as
     ["Done."],
   );
   // After the agent asks, an unmentioned reply is likely the answer.
-  await bridge.postFromAgent({
-    chatThreadKey: "slack:C1:100.1",
-    text: "Deploy too?",
-    kind: "update",
-    postKind: "question",
-  });
+  await agentPost(h, "run-2", "question", "Deploy too?");
   await bridge.receive(event("100.3", { kind: "follow_up", addressed: false, text: "yes" }));
   t3.finish("run-3", "completed", "Deployed.");
   await bridge.idle();

@@ -286,6 +286,47 @@ export function currentStatus(items: ReadonlyArray<ActivityItem>): string {
   return going.at(-1) ?? THINKING;
 }
 
+/** The bridge's own tool an item called, such as `chat_post`, whatever prefix its provider gives it. */
+function bridgeTool(item: ActivityItem): string | undefined {
+  if (item.type !== "dynamic_tool") return undefined;
+  const named = /"toolName":\s*"([^"]+)"/.exec(item.text ?? "")?.[1];
+  const tool = named?.split(/\.|__/).at(-1);
+  return tool === "chat_post" || tool === "chat_status" || tool === "chat_react" ? tool : undefined;
+}
+
+/**
+ * Steps of work after a post that still count as wrapping up: removing scratch files, a last
+ * check, a wait or a hand-off. Agents' answers had at most four after them; their
+ * acknowledgements ("I'll check…") were followed by the whole investigation, six steps or more.
+ */
+const WRAP_UP_STEPS = 4;
+
+/**
+ * Whether the run's last `chat_post` with one of `chatKeys` answered the person, so the run's
+ * final message is only its note to T3: nothing past wrapping up followed it. A post followed
+ * by more work was an acknowledgement, and the final message is the answer. Items are in
+ * thread order; a run whose last post is outside them counts as not answered.
+ */
+export function answeredByPost(
+  items: ReadonlyArray<ActivityItem>,
+  runId: string,
+  chatKeys: ReadonlySet<string>,
+): boolean {
+  let after = 0;
+  for (const item of items.toReversed()) {
+    if (item.runId !== runId) continue;
+    const tool = bridgeTool(item);
+    if (tool === "chat_post") {
+      if (item.status === "failed") continue;
+      const chatKey = /"chatKey":\s*"([^"]+)"/.exec(item.text ?? "")?.[1];
+      if (chatKey !== undefined && chatKeys.has(chatKey)) return after <= WRAP_UP_STEPS;
+      continue;
+    }
+    if (tool === undefined && work(item) !== undefined) after += 1;
+  }
+  return false;
+}
+
 /** True while the item is still going or waiting. */
 export const isOpen = (status: string): boolean => OPEN_STATUSES.has(status);
 
