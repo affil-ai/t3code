@@ -2258,6 +2258,8 @@ async function agentPost(
       output: [{ type: "text", text: "Posted." }],
     }),
   });
+  // The agent posts from its thread's latest run.
+  h.t3.options.recentRuns = [{ runId, ordinal: Number(runId.split("-")[1]), status: "running" }];
   await h.bridge.postFromAgent({ chatThreadKey, text, kind: "update", postKind });
 }
 
@@ -2383,6 +2385,19 @@ it("posts the final message after an early post the agent kept working past", as
     { steps: 5, extra: [], final: QUIET_REPLY, posted: false },
     // A final message that repeats the post is already in the chat.
     { steps: 5, extra: [], final: "I'll check how  archiving works.", posted: false },
+    // A later post that failed isn't the answer; the investigation before it still counts.
+    {
+      steps: 5,
+      extra: [
+        {
+          type: "dynamic_tool",
+          status: "failed",
+          text: '{"toolName": "t3-chat-bridge.chat_post"}',
+        },
+      ],
+      final: "Archive each duplicate.",
+      posted: true,
+    },
   ];
   for (const { steps, extra, final, posted: answered } of cases) {
     const h = harness(undefined, SILENT);
@@ -2412,6 +2427,18 @@ it("settles a request with its done post, and only the request armed when the ag
   assert.deepStrictEqual(
     done.posted.map((reply) => reply.text),
     ["Mockup sent."],
+  );
+  // Two answers, then more work, then a final message repeating the first: nothing new to post.
+  const twice = harness(undefined, SILENT);
+  await twice.bridge.receive(event("100.1"));
+  await agentPost(twice, "run-1", "answer", "Archive it.");
+  await agentPost(twice, "run-1", "answer", "It also syncs nightly.");
+  work(twice.t3, "run-1", 5);
+  twice.t3.finish("run-1", "completed", "Archive it.");
+  await twice.bridge.idle();
+  assert.deepStrictEqual(
+    twice.posted.map((reply) => reply.text),
+    ["Archive it.", "It also syncs nightly."],
   );
   // The agent answers A, and B comes in before the run ends: B keeps its own fallback.
   const h = harness(undefined, SILENT);
@@ -2466,8 +2493,8 @@ it("posts the person's answer after an early post, never the run another thread 
   h.t3.options.delegatedPending = false;
   await h.t3.tick();
   h.t3.finish("run-2", "completed", "Started the audit for the orchestrator.");
-  // The other thread's work posts to the chat too; that settles nothing for the person.
-  await agentPost(h, "run-3", "answer", "Audit posted.");
+  // The other thread's work posts its result to the chat too; that settles nothing for the person.
+  await agentPost(h, "run-3", "done", "Audit posted.");
   h.t3.finish("run-3", "completed", "Audit done; reported to the orchestrator.");
   await h.bridge.idle();
   assert.deepStrictEqual(

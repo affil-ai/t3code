@@ -134,6 +134,8 @@ function fakeT3() {
   const failures = new Set<string>();
   /** The thread's model, as launches and `t3_thread_configure` set it. */
   const model: { current: unknown } = { current: undefined };
+  /** The run an agent posts from, as the thread's latest; unset, T3 lists only the legacy run. */
+  const posting: { run?: string } = {};
   // A tool held here waits, standing in for a process that stops partway through.
   const holds = new Map<string, Promise<void>>();
   const startRun = () => {
@@ -210,7 +212,11 @@ function fakeT3() {
           items: args.itemId ? all.filter((item) => item.itemId === args.itemId) : all,
           hasMore: false,
           nextPosition: null,
-          recentRuns: [{ runId: "legacy-run", ordinal: 1, status: "completed" }],
+          recentRuns: [
+            posting.run === undefined
+              ? { runId: "legacy-run", ordinal: 1, status: "completed" }
+              : { runId: posting.run, ordinal: 1, status: "running" },
+          ],
         };
       } else if (tool === "t3_pending_request") {
         if (args.action === "list") result = { requestIds: [...questions.keys()] };
@@ -226,6 +232,7 @@ function fakeT3() {
     tools,
     calls,
     model,
+    posting,
     runs,
     failures,
     holds,
@@ -875,6 +882,7 @@ it("posts final messages to the Office chat, and to its synced silent Slack thre
       text: "$ rg sync",
     })),
   );
+  h.t3.posting.run = "run-3";
   await h.bridge.postFromAgent({
     chatThreadKey: "office:chat-1",
     text: "I'll check.",

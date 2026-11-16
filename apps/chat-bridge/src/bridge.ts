@@ -464,13 +464,16 @@ function turnText(
  * tags such as "[t3 bridge test]" or Slack mentions, cut at a word.
  */
 /**
- * An agent's `answer` post, kept in `bridge_meta` until the thread goes idle: the request it
- * was armed for, the runs owed the conversation when it posted, and its text's digest.
+ * The agent's posts to a conversation while one request was armed, kept in `bridge_meta` until
+ * the thread goes idle: the run that made each, its kind and its text's digest.
  */
-interface AgentAnswer {
+interface AgentPosts {
   readonly request: string;
-  readonly runs: ReadonlyArray<string>;
-  readonly digest: string;
+  readonly posts: ReadonlyArray<{
+    readonly run: string;
+    readonly kind: PostKind;
+    readonly digest: string;
+  }>;
 }
 
 /** Compares a final message with a post, whitespace aside, without keeping the text. */
@@ -922,12 +925,32 @@ export class Bridge {
 
   /** Agent tool posts use the same delivery destinations as answers. */
   async postFromAgent(message: OutboundMessage): Promise<void> {
+    const run = this.postingRun(message.chatThreadKey);
     await Promise.all(
       this.store.recipients(message.chatThreadKey).map(async (chatThreadKey) => {
         await this.platform(chatThreadKey).post({ ...message, chatThreadKey });
-        this.postedTo(chatThreadKey, message.postKind, message.text);
+        const runId = await run;
+        this.postedTo(
+          chatThreadKey,
+          message.postKind,
+          message.postKind === undefined || runId === undefined
+            ? undefined
+            : { run: runId, kind: message.postKind, text: message.text },
+        );
       }),
     );
+  }
+
+  /** The run the agent posts from: its thread's latest. Unknown, the post settles as the bridge's own. */
+  private async postingRun(chatThreadKey: string): Promise<string | undefined> {
+    const threadId = this.store.binding(chatThreadKey)?.threadId;
+    if (threadId === undefined) return undefined;
+    try {
+      return (await this.threads.shape(threadId)).latestRun?.runId;
+    } catch (error) {
+      this.log(`Reading the run that posted to ${chatThreadKey} failed: ${String(error)}`);
+      return undefined;
+    }
   }
 
   /**
@@ -961,61 +984,62 @@ export class Bridge {
   }
 
   /**
-   * Something was posted to the conversation. A question, blocker or result (`done`), or the
-   * bridge's own post, settles the person's message. An agent's `answer` is recorded for the
-   * request it answers and settles it when its run ends (`settleIfAnswered`), unless the run
-   * did more than wrap up after it: posted early, it was an acknowledgement.
+   * Something was posted to the conversation. The bridge's own post settles the person's
+   * message at once. An agent's post is recorded for the request armed then and settles it
+   * when its run ends, if that run is the chat's (`settleIfAnswered`).
    */
   private postedTo(
     chatThreadKey: string,
     postKind?: PostKind | "question",
-    agentText?: string,
+    agent?: { readonly run: string; readonly kind: PostKind; readonly text: string },
   ): void {
     const awaits = postKind === "question" || postKind === "blocked";
-    const byAgent = agentText !== undefined;
     this.store.transaction(() => {
       const linked = this.store.meta(`answer_linked:${chatThreadKey}`);
       this.store.deleteMeta(`answer_linked:${chatThreadKey}`);
-      if (byAgent && !awaits && linked !== undefined) this.armFallback(chatThreadKey, linked, true);
+      if (agent !== undefined && !awaits && linked !== undefined && this.isChatRun(agent.run))
+        this.armFallback(chatThreadKey, linked, true);
       const request = this.store.meta(`answer_wanted:${chatThreadKey}`);
-      if (awaits || !byAgent || postKind === "done")
-        this.store.deleteMeta(`answer_wanted:${chatThreadKey}`);
+      if (agent === undefined) this.store.deleteMeta(`answer_wanted:${chatThreadKey}`);
       else if (request !== undefined) {
-        const post: AgentAnswer = {
+        const earlier = this.agentPosts(chatThreadKey);
+        const record: AgentPosts = {
           request,
-          runs: this.store
-            .pendingReplies()
-            .filter((each) => each.chatThreadKey === chatThreadKey)
-            .map((each) => each.runId),
-          digest: digest(agentText),
+          posts: [
+            ...(earlier?.request === request ? earlier.posts : []),
+            { run: agent.run, kind: agent.kind, digest: digest(agent.text) },
+          ],
         };
-        this.store.setMeta(`answer_posted:${chatThreadKey}`, JSON.stringify(post));
+        this.store.setMeta(`answer_posted:${chatThreadKey}`, JSON.stringify(record));
       }
       if (awaits) this.store.setMeta(`answer_awaited:${chatThreadKey}`, "1");
       else this.store.deleteMeta(`answer_awaited:${chatThreadKey}`);
     });
   }
 
-  /** The agent's last `answer` post in the conversation, for the request it was armed for. */
-  private agentAnswer(chatThreadKey: string): AgentAnswer | undefined {
+  private agentPosts(chatThreadKey: string): AgentPosts | undefined {
     const saved = this.store.meta(`answer_posted:${chatThreadKey}`);
-    return saved === undefined ? undefined : (JSON.parse(saved) as AgentAnswer);
+    return saved === undefined ? undefined : (JSON.parse(saved) as AgentPosts);
   }
 
   /**
-   * A chat run whose `answer` post answered the request (`answeredByPost`) settles it, so the
-   * fallback stands down. Only the request armed when it posted, from a run open then or the
-   * run T3 continued it in; a later message keeps its own fallback.
+   * When a run ends, its posts for the armed request settle it if the run is the chat's: a
+   * question, blocker or result (`done`) at once, an `answer` only if the run did no more than
+   * wrap up after it (`answeredByPost`). Another thread's run, or a later message, never settles.
    */
   private async settleIfAnswered(reply: OwedReply, runId: string): Promise<void> {
-    if (!this.isChatRun(reply.runId)) return;
     const key = `answer_wanted:${reply.chatThreadKey}`;
     const wanted = this.store.meta(key);
-    const post = this.agentAnswer(reply.chatThreadKey);
-    if (wanted === undefined || post?.request !== wanted) return;
-    const runs = new Set(post.runs);
-    if (!runs.has(reply.runId) && !runs.has(runId)) return;
-    runs.add(reply.runId).add(runId);
+    const record = this.agentPosts(reply.chatThreadKey);
+    if (wanted === undefined || record?.request !== wanted) return;
+    // A restart continues a run in a new one; the posts of either count.
+    const runs = new Set([reply.runId, runId]);
+    const mine = record.posts.filter((each) => runs.has(each.run) && this.isChatRun(each.run));
+    if (mine.length === 0) return;
+    if (mine.some((each) => each.kind !== "answer")) {
+      this.store.deleteMeta(key);
+      return;
+    }
     const chatKeys = new Set(
       this.store
         .bindingsForThread(reply.threadId)
@@ -1076,7 +1100,7 @@ export class Bridge {
       const platform = this.platform(chatThreadKey);
       if (platform.silentByDefault !== true) continue;
       // The request is over; a later post doesn't make its answer owed here.
-      const post = this.agentAnswer(chatThreadKey);
+      const record = this.agentPosts(chatThreadKey);
       this.store.deleteMeta(`answer_linked:${chatThreadKey}`);
       this.store.deleteMeta(`answer_posted:${chatThreadKey}`);
       const id = this.store.meta(`answer_wanted:${chatThreadKey}`);
@@ -1094,8 +1118,10 @@ export class Bridge {
           this.log(`${chatThreadKey} went idle unanswered, but ${runId} has nothing to post.`);
           continue;
         }
-        if (post?.request === id && post.digest === digest(text)) {
-          this.log(`${chatThreadKey} went idle; ${runId}'s final message is the answer it posted.`);
+        if (record?.request === id && record.posts.some((each) => each.digest === digest(text))) {
+          this.log(
+            `${chatThreadKey} went idle; ${runId}'s final message is a post it already has.`,
+          );
           continue;
         }
         await platform.post({

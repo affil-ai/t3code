@@ -316,6 +316,8 @@ export function answeredByPost(
     if (item.runId === null || !runIds.has(item.runId)) continue;
     const tool = bridgeTool(item);
     if (tool === "chat_post") {
+      // A failed post isn't the one the bridge delivered; the work before it still counts.
+      if (item.status === "failed") continue;
       const chatKey = /"chatKey":\s*"([^"]+)"/.exec(item.text ?? "")?.[1];
       if (chatKey === undefined || chatKeys.has(chatKey)) break;
       continue;
