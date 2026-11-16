@@ -1025,11 +1025,9 @@ export class Bridge {
   }
 
   /**
-   * When a run ends, its own posts decide, if it is the chat's run; by then the bridge has
-   * classified it. Having spoken in a conversation linked to the request, it owes that
-   * conversation the answer. A question, blocker or result (`done`) settles the request, an
-   * `answer` only if the run did no more than wrap up after it (`answeredByPost`). Another
-   * thread's run, or a later message, never settles.
+   * At a chat run's end (classified by then), its own posts decide. Having spoken in a linked
+   * conversation, it owes it the answer. A question, blocker or `done` settles the request; an
+   * `answer` only if the run then did no more than wrap up (`answeredByPost`).
    */
   private async settleIfAnswered(reply: OwedReply, runId: string): Promise<void> {
     const key = `answer_wanted:${reply.chatThreadKey}`;
