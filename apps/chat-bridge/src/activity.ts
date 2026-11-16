@@ -302,11 +302,9 @@ function bridgeTool(item: ActivityItem): string | undefined {
 const WRAP_UP_STEPS = 4;
 
 /**
- * Whether an `answer` post the bridge saw the agent make during `runIds` was the answer: no more
- * than wrapping up followed its `chat_post` in the run. More work after it made it an
- * acknowledgement, and the final message is the answer. Best effort over an activity excerpt:
- * a post whose chat key was cut off counts as this chat's, and one before the excerpt's first
- * item counts every step the excerpt shows.
+ * Whether the agent's `answer` post in `runIds` was the answer: at most wrapping up followed it.
+ * Best effort over an excerpt: a post cut off before its chat key counts as this chat's, and
+ * one before the excerpt's first item counts every step the excerpt shows.
  */
 export function answeredByPost(
   items: ReadonlyArray<ActivityItem>,
