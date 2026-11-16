@@ -45,6 +45,8 @@ export interface PreparedRequest {
   history?: OfficeHistory;
   slack?: { channelId: string; chatThreadKey?: string; rootText?: string };
   sync?: boolean;
+  /** `false`: the agent gets the message, but linked conversations don't, as a support email the Slack root already shows. */
+  mirror?: boolean;
   article?: {
     convexUrl: string;
     token: string;

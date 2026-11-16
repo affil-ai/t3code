@@ -130,6 +130,7 @@ export function createOfficeChannel(options: {
         requestNote: [requestNote(request), articleNote].filter(Boolean).join("\n\n"),
         instructions: request.instructions,
         ...chatModel(request),
+        ...(request.mirror === false ? { mirror: false } : {}),
         historyNote:
           request.history || seed
             ? historyNote(

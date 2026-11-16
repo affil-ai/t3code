@@ -133,6 +133,8 @@ export interface InboundEvent {
    */
   readonly followModel?: boolean | undefined;
   readonly historyNote?: string | undefined;
+  /** `false` keeps the message out of linked conversations; the agent still gets it. */
+  readonly mirror?: boolean | undefined;
 }
 
 export interface LinkedConversation {
@@ -1013,6 +1015,7 @@ export class Bridge {
 
   private async mirror(event: InboundEvent): Promise<void> {
     this.store.usedConversation(event.chatThreadKey);
+    if (event.mirror === false) return;
     const source = this.platform(event.chatThreadKey);
     for (const key of this.store.recipients(event.chatThreadKey)) {
       if (key === event.chatThreadKey) continue;

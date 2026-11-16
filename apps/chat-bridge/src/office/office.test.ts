@@ -901,6 +901,54 @@ it("rejects revoked requests without handing them to T3", async () => {
   assert.equal(h.office.calls.at(-1)?.args.result, "rejected");
 });
 
+it("keeps a message Office marks mirror: false out of the synced Slack thread, and mirrors the next", async () => {
+  const posts: OutboundMessage[] = [];
+  const slack: ChatPlatform = {
+    id: "slack",
+    name: "Slack",
+    place: "Slack thread",
+    access: { allowedUserIds: ["staff-1"] },
+    person: (id) => `<@${id}>`,
+    firstTurnNote: () => "Reply to Slack.",
+    refusal: () => "Not allowed",
+    post: async (message) => {
+      posts.push(message);
+    },
+    startConversation: async (channel) => `slack:${channel}:123.456`,
+  };
+  await using h = await harness({ slack });
+  // A support briefing: the Slack root already shows its email.
+  await h.send(
+    request({
+      text: "Briefing",
+      sync: true,
+      mirror: false,
+      slack: { channelId: "C-SUPPORT", rootText: "New case" },
+    }),
+  );
+  assert.include(
+    String(h.t3.calls.find((call) => call.tool === "t3_thread_launch")?.args.message),
+    "Briefing",
+  );
+  h.t3.finish("run-1", "Triaged");
+  await h.bridge.idle();
+  // A follow-up email relayed later is shown in Slack only by the mirror.
+  await h.send(
+    request({
+      eventId: "event-2",
+      messageId: "message-2",
+      text: "Customer replied",
+      firstTurn: false,
+      sync: true,
+      slack: { channelId: "C-SUPPORT", chatThreadKey: "slack:C-SUPPORT:123.456" },
+    }),
+  );
+  assert.deepEqual(
+    posts.filter((post) => post.kind === "update").map((post) => post.text),
+    ["Ada <x> (in Office): Customer replied"],
+  );
+});
+
 it.each([
   { producer: "support", sync: false },
   { producer: "support", sync: true },
