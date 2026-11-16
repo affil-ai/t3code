@@ -474,7 +474,12 @@ interface AgentPosts {
     readonly kind: PostKind;
     readonly digest: string;
   }>;
+  /** Every post's digest since the thread was last idle, across requests. */
+  readonly seen: ReadonlyArray<string>;
 }
+
+/** A post made while no run is active, such as by another thread with the chat key: it settles nothing. */
+const NO_RUN = "";
 
 /** Compares a final message with a post, whitespace aside, without keeping the text. */
 const digest = (text: string): string =>
@@ -933,15 +938,15 @@ export class Bridge {
         this.postedTo(
           chatThreadKey,
           message.postKind,
-          message.postKind === undefined || runId === undefined
+          message.postKind === undefined
             ? undefined
-            : { run: runId, kind: message.postKind, text: message.text },
+            : { run: runId ?? NO_RUN, kind: message.postKind, text: message.text },
         );
       }),
     );
   }
 
-  /** The run the agent posts from: its thread's active one. Unknown, the post settles as the bridge's own. */
+  /** The run the agent posts from: its thread's active one, if any. */
   private async postingRun(chatThreadKey: string): Promise<string | undefined> {
     const threadId = this.store.binding(chatThreadKey)?.threadId;
     if (threadId === undefined) return undefined;
@@ -963,6 +968,8 @@ export class Bridge {
     if (!asks && this.store.meta(`answer_awaited:${chatThreadKey}`) === undefined) return;
     if (this.store.meta(`answer_fired:${id}`) !== undefined) return;
     this.store.setMeta(`answer_wanted:${chatThreadKey}`, id);
+    // The newer request here supersedes one asked earlier in a linked conversation.
+    this.store.deleteMeta(`answer_linked:${chatThreadKey}`);
   }
 
   /**
@@ -1004,12 +1011,14 @@ export class Bridge {
           this.store.meta(`answer_wanted:${chatThreadKey}`);
         if (request !== undefined) {
           const earlier = this.agentPosts(chatThreadKey);
+          const posted = digest(agent.text);
           const record: AgentPosts = {
             request,
             posts: [
               ...(earlier?.request === request ? earlier.posts : []),
-              { run: agent.run, kind: agent.kind, digest: digest(agent.text) },
+              { run: agent.run, kind: agent.kind, digest: posted },
             ],
+            seen: [...(earlier?.seen ?? []), posted],
           };
           this.store.setMeta(`answer_posted:${chatThreadKey}`, JSON.stringify(record));
         }
@@ -1127,7 +1136,7 @@ export class Bridge {
           this.log(`${chatThreadKey} went idle unanswered, but ${runId} has nothing to post.`);
           continue;
         }
-        if (record?.request === id && record.posts.some((each) => each.digest === digest(text))) {
+        if (record?.seen.includes(digest(text)) === true) {
           this.log(
             `${chatThreadKey} went idle; ${runId}'s final message is a post it already has.`,
           );

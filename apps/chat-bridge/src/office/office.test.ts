@@ -891,6 +891,43 @@ it("posts final messages to the Office chat, and to its synced silent Slack thre
   await h.bridge.idle();
   assert.equal(h.office.posts.get("answer:thread-1:run-3")?.text, "Archive each duplicate.");
   assert.deepEqual(answers(), ["Tests fixed.", "I'll check.", "Archive each duplicate."]);
+  // Asked in Office, the agent posts its result; before that run ends, someone asks in
+  // Slack. The newer Slack request keeps its own fallback.
+  await h.send(
+    request({
+      eventId: "event-3",
+      messageId: "message-3",
+      text: "Another case",
+      firstTurn: false,
+      sync: true,
+      slack: { channelId: "C1", chatThreadKey: "slack:C1:1.1" },
+    }),
+  );
+  h.t3.posting.run = "run-4";
+  await h.bridge.postFromAgent({
+    chatThreadKey: "office:chat-1",
+    text: "Done: archived.",
+    kind: "answer",
+    postKind: "done",
+    eventId: "post:done",
+  });
+  await h.bridge.receive({
+    eventId: "slack:C1:5.1",
+    chatThreadKey: "slack:C1:1.1",
+    channelId: "C1",
+    messageId: "5.1",
+    kind: "mention",
+    addressed: true,
+    direct: false,
+    author: { userId: "staff", userName: "Ada", fullName: "Ada" },
+    text: "And the sync?",
+    files: [],
+    mentions: [],
+  });
+  h.t3.finish("run-4", "Archived.");
+  h.t3.finish("run-5", "It syncs nightly.");
+  await h.bridge.idle();
+  assert.deepEqual(answers().slice(3), ["Done: archived.", "It syncs nightly."]);
 });
 
 it("starts a new thread with Office history even when the old thread is readable", async () => {
