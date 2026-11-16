@@ -134,7 +134,7 @@ function fakeT3() {
   const failures = new Set<string>();
   /** The thread's model, as launches and `t3_thread_configure` set it. */
   const model: { current: unknown } = { current: undefined };
-  /** The run an agent posts from, as the thread's latest; unset, T3 lists only the legacy run. */
+  /** The run executing now, which an agent posts from. */
   const posting: { run?: string } = {};
   // A tool held here waits, standing in for a process that stops partway through.
   const holds = new Map<string, Promise<void>>();
@@ -208,15 +208,12 @@ function fakeT3() {
             title: "Build fixes",
             pendingRequestCount: 0,
             itemCount: all.length,
+            activeRunId: posting.run ?? null,
           },
           items: args.itemId ? all.filter((item) => item.itemId === args.itemId) : all,
           hasMore: false,
           nextPosition: null,
-          recentRuns: [
-            posting.run === undefined
-              ? { runId: "legacy-run", ordinal: 1, status: "completed" }
-              : { runId: posting.run, ordinal: 1, status: "running" },
-          ],
+          recentRuns: [{ runId: "legacy-run", ordinal: 1, status: "completed" }],
         };
       } else if (tool === "t3_pending_request") {
         if (args.action === "list") result = { requestIds: [...questions.keys()] };

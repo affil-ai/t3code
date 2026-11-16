@@ -941,12 +941,12 @@ export class Bridge {
     );
   }
 
-  /** The run the agent posts from: its thread's latest. Unknown, the post settles as the bridge's own. */
+  /** The run the agent posts from: its thread's active one. Unknown, the post settles as the bridge's own. */
   private async postingRun(chatThreadKey: string): Promise<string | undefined> {
     const threadId = this.store.binding(chatThreadKey)?.threadId;
     if (threadId === undefined) return undefined;
     try {
-      return (await this.threads.shape(threadId)).latestRun?.runId;
+      return await this.threads.activeRun(threadId);
     } catch (error) {
       this.log(`Reading the run that posted to ${chatThreadKey} failed: ${String(error)}`);
       return undefined;
@@ -985,8 +985,8 @@ export class Bridge {
 
   /**
    * Something was posted to the conversation. The bridge's own post settles the person's
-   * message at once. An agent's post is recorded for the request armed then and settles it
-   * when its run ends, if that run is the chat's (`settleIfAnswered`).
+   * message at once. An agent's post is recorded for the request armed then (or asked in a
+   * linked conversation) and settles it when its run ends, if that run is the chat's.
    */
   private postedTo(
     chatThreadKey: string,
@@ -995,22 +995,24 @@ export class Bridge {
   ): void {
     const awaits = postKind === "question" || postKind === "blocked";
     this.store.transaction(() => {
-      const linked = this.store.meta(`answer_linked:${chatThreadKey}`);
-      this.store.deleteMeta(`answer_linked:${chatThreadKey}`);
-      if (agent !== undefined && !awaits && linked !== undefined && this.isChatRun(agent.run))
-        this.armFallback(chatThreadKey, linked, true);
-      const request = this.store.meta(`answer_wanted:${chatThreadKey}`);
-      if (agent === undefined) this.store.deleteMeta(`answer_wanted:${chatThreadKey}`);
-      else if (request !== undefined) {
-        const earlier = this.agentPosts(chatThreadKey);
-        const record: AgentPosts = {
-          request,
-          posts: [
-            ...(earlier?.request === request ? earlier.posts : []),
-            { run: agent.run, kind: agent.kind, digest: digest(agent.text) },
-          ],
-        };
-        this.store.setMeta(`answer_posted:${chatThreadKey}`, JSON.stringify(record));
+      if (agent === undefined) {
+        this.store.deleteMeta(`answer_wanted:${chatThreadKey}`);
+        this.store.deleteMeta(`answer_linked:${chatThreadKey}`);
+      } else {
+        const request =
+          this.store.meta(`answer_linked:${chatThreadKey}`) ??
+          this.store.meta(`answer_wanted:${chatThreadKey}`);
+        if (request !== undefined) {
+          const earlier = this.agentPosts(chatThreadKey);
+          const record: AgentPosts = {
+            request,
+            posts: [
+              ...(earlier?.request === request ? earlier.posts : []),
+              { run: agent.run, kind: agent.kind, digest: digest(agent.text) },
+            ],
+          };
+          this.store.setMeta(`answer_posted:${chatThreadKey}`, JSON.stringify(record));
+        }
       }
       if (awaits) this.store.setMeta(`answer_awaited:${chatThreadKey}`, "1");
       else this.store.deleteMeta(`answer_awaited:${chatThreadKey}`);
@@ -1023,19 +1025,28 @@ export class Bridge {
   }
 
   /**
-   * When a run ends, its posts for the armed request settle it if the run is the chat's: a
-   * question, blocker or result (`done`) at once, an `answer` only if the run did no more than
-   * wrap up after it (`answeredByPost`). Another thread's run, or a later message, never settles.
+   * When a run ends, its own posts decide, if it is the chat's run; by then the bridge has
+   * classified it. Having spoken in a conversation linked to the request, it owes that
+   * conversation the answer. A question, blocker or result (`done`) settles the request, an
+   * `answer` only if the run did no more than wrap up after it (`answeredByPost`). Another
+   * thread's run, or a later message, never settles.
    */
   private async settleIfAnswered(reply: OwedReply, runId: string): Promise<void> {
     const key = `answer_wanted:${reply.chatThreadKey}`;
-    const wanted = this.store.meta(key);
     const record = this.agentPosts(reply.chatThreadKey);
-    if (wanted === undefined || record?.request !== wanted) return;
-    // A restart continues a run in a new one; the posts of either count.
+    if (record === undefined) return;
+    // A restart continues a run in a new one; the posts of either count, as the chat's if it was.
     const runs = new Set([reply.runId, runId]);
-    const mine = record.posts.filter((each) => runs.has(each.run) && this.isChatRun(each.run));
+    const mine = this.isChatRun(reply.runId)
+      ? record.posts.filter((each) => runs.has(each.run))
+      : [];
     if (mine.length === 0) return;
+    if (this.store.meta(`answer_linked:${reply.chatThreadKey}`) === record.request) {
+      this.store.deleteMeta(`answer_linked:${reply.chatThreadKey}`);
+      this.armFallback(reply.chatThreadKey, record.request, true);
+    }
+    const wanted = this.store.meta(key);
+    if (wanted !== record.request) return;
     if (mine.some((each) => each.kind !== "answer")) {
       this.store.deleteMeta(key);
       return;
@@ -2650,6 +2661,7 @@ export class Bridge {
       if (waited.runId !== runId) {
         runId = waited.runId;
         feed.follow(runId);
+        if (this.isChatRun(reply.runId)) this.markChatRun(runId);
       }
       const ended = !waited.timedOut && TERMINAL_STATUSES.has(waited.status);
       await this.check(reply, feed, ended);

@@ -93,6 +93,10 @@ function fakeT3() {
     /** Runs whose own delegated work is still running, in place of `delegatedPending` for every run. */
     delegatedPendingRuns?: Set<string>;
     /** The runs a thread read lists, as for a subagent the bridge didn't start. */
+    /** Runs T3 continued in a new one after a restart, as waiting on them reports. */
+    continuations?: Record<string, string>;
+    /** The run executing now, as T3's thread read reports it. */
+    activeRunId?: string;
     recentRuns?: ReadonlyArray<{
       runId: string;
       ordinal: number;
@@ -234,19 +238,20 @@ function fakeT3() {
               }
               return { runId: args.runId, status: "completed", timedOut: false };
             }
-            const entry = run(String(args.runId));
+            const waited = options.continuations?.[String(args.runId)] ?? String(args.runId);
+            const entry = run(waited);
             // A zero timeout only reads the status; it isn't the watcher waiting.
             if (args.timeoutMs === 0) {
               return {
-                runId: args.runId,
+                runId: waited,
                 status: entry.status,
                 timedOut: entry.status !== "completed",
               };
             }
             waitCalled();
             return Promise.race([
-              entry.done.then(() => ({ runId: args.runId, status: entry.status, timedOut: false })),
-              ticked.then(() => ({ runId: args.runId, status: "running", timedOut: true })),
+              entry.done.then(() => ({ runId: waited, status: entry.status, timedOut: false })),
+              ticked.then(() => ({ runId: waited, status: "running", timedOut: true })),
             ]);
           }
           case "t3_thread_configure":
@@ -314,7 +319,11 @@ function fakeT3() {
                 : -1;
             const items = all.filter((item) => item.position > after);
             return {
-              thread: { ...thread, itemCount: all.length },
+              thread: {
+                ...thread,
+                itemCount: all.length,
+                activeRunId: options.activeRunId ?? null,
+              },
               recentRuns: options.recentRuns ?? [],
               items,
               nextPosition: null,
@@ -2258,8 +2267,8 @@ async function agentPost(
       output: [{ type: "text", text: "Posted." }],
     }),
   });
-  // The agent posts from its thread's latest run.
-  h.t3.options.recentRuns = [{ runId, ordinal: Number(runId.split("-")[1]), status: "running" }];
+  // The agent posts from the run executing in its thread.
+  h.t3.options.activeRunId = runId;
   await h.bridge.postFromAgent({ chatThreadKey, text, kind: "update", postKind });
 }
 
@@ -2426,6 +2435,18 @@ it("settles a request with its done post, and only the request armed when the ag
   await done.bridge.idle();
   assert.deepStrictEqual(
     done.posted.map((reply) => reply.text),
+    ["Mockup sent."],
+  );
+  // After a restart T3 continues the run in a new one; its result settles the request too.
+  const continued = harness(undefined, SILENT);
+  continued.t3.options.continuations = { "run-1": "run-1b" };
+  await continued.bridge.receive(event("100.1"));
+  await agentPost(continued, "run-1b", "done", "Mockup sent.");
+  work(continued.t3, "run-1b", 6);
+  continued.t3.finish("run-1b", "completed", "Sent the mockup; gates pass.");
+  await continued.bridge.idle();
+  assert.deepStrictEqual(
+    continued.posted.map((reply) => reply.text),
     ["Mockup sent."],
   );
   // Two answers, then more work, then a final message repeating the first: nothing new to post.
