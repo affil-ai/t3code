@@ -302,29 +302,30 @@ function bridgeTool(item: ActivityItem): string | undefined {
 const WRAP_UP_STEPS = 4;
 
 /**
- * Whether the run's last `chat_post` with one of `chatKeys` answered the person, so the run's
- * final message is only its note to T3: nothing past wrapping up followed it. A post followed
- * by more work was an acknowledgement, and the final message is the answer. Items are in
- * thread order; a run whose last post is outside them counts as not answered.
+ * Whether an `answer` post the bridge saw the agent make during `runIds` was the answer: no more
+ * than wrapping up followed its `chat_post` in the run. More work after it made it an
+ * acknowledgement, and the final message is the answer. Best effort over an activity excerpt:
+ * a post whose chat key was cut off counts as this chat's, and one before the excerpt's first
+ * item counts every step the excerpt shows.
  */
 export function answeredByPost(
   items: ReadonlyArray<ActivityItem>,
-  runId: string,
+  runIds: ReadonlySet<string>,
   chatKeys: ReadonlySet<string>,
 ): boolean {
   let after = 0;
   for (const item of items.toReversed()) {
-    if (item.runId !== runId) continue;
+    if (item.runId === null || !runIds.has(item.runId)) continue;
     const tool = bridgeTool(item);
     if (tool === "chat_post") {
-      if (item.status === "failed") continue;
       const chatKey = /"chatKey":\s*"([^"]+)"/.exec(item.text ?? "")?.[1];
-      if (chatKey !== undefined && chatKeys.has(chatKey)) return after <= WRAP_UP_STEPS;
+      if (chatKey === undefined || chatKeys.has(chatKey)) break;
       continue;
     }
-    if (tool === undefined && work(item) !== undefined) after += 1;
+    // A to-do list update is the run's plan, not a step.
+    if (tool === undefined && item.type !== "todo_list" && work(item) !== undefined) after += 1;
   }
-  return false;
+  return after <= WRAP_UP_STEPS;
 }
 
 /** True while the item is still going or waiting. */

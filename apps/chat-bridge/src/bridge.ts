@@ -463,6 +463,20 @@ function turnText(
  * A short, readable title for a request: its first sentence, without leading
  * tags such as "[t3 bridge test]" or Slack mentions, cut at a word.
  */
+/**
+ * An agent's `answer` post, kept in `bridge_meta` until the thread goes idle: the request it
+ * was armed for, the runs owed the conversation when it posted, and its text's digest.
+ */
+interface AgentAnswer {
+  readonly request: string;
+  readonly runs: ReadonlyArray<string>;
+  readonly digest: string;
+}
+
+/** Compares a final message with a post, whitespace aside, without keeping the text. */
+const digest = (text: string): string =>
+  NodeCrypto.createHash("sha256").update(text.trim().replace(/\s+/g, " ")).digest("hex");
+
 export function threadTitle(text: string, fallback = "Chat request"): string {
   const cleaned = text
     .replace(/<[@#!][^>]*>/g, " ")
@@ -911,7 +925,7 @@ export class Bridge {
     await Promise.all(
       this.store.recipients(message.chatThreadKey).map(async (chatThreadKey) => {
         await this.platform(chatThreadKey).post({ ...message, chatThreadKey });
-        this.postedTo(chatThreadKey, message.postKind, true);
+        this.postedTo(chatThreadKey, message.postKind, message.text);
       }),
     );
   }
@@ -947,37 +961,77 @@ export class Bridge {
   }
 
   /**
-   * Something was posted to the conversation. A question or blocker, or the bridge's own post,
-   * settles the person's message. An agent's answer or result settles it only if its run does
-   * little more after it (`settleIfAnswered`): posted early, it was an acknowledgement.
+   * Something was posted to the conversation. A question, blocker or result (`done`), or the
+   * bridge's own post, settles the person's message. An agent's `answer` is recorded for the
+   * request it answers and settles it when its run ends (`settleIfAnswered`), unless the run
+   * did more than wrap up after it: posted early, it was an acknowledgement.
    */
-  private postedTo(chatThreadKey: string, postKind?: PostKind | "question", byAgent = false): void {
+  private postedTo(
+    chatThreadKey: string,
+    postKind?: PostKind | "question",
+    agentText?: string,
+  ): void {
     const awaits = postKind === "question" || postKind === "blocked";
+    const byAgent = agentText !== undefined;
     this.store.transaction(() => {
       const linked = this.store.meta(`answer_linked:${chatThreadKey}`);
       this.store.deleteMeta(`answer_linked:${chatThreadKey}`);
       if (byAgent && !awaits && linked !== undefined) this.armFallback(chatThreadKey, linked, true);
-      if (awaits || !byAgent) this.store.deleteMeta(`answer_wanted:${chatThreadKey}`);
+      const request = this.store.meta(`answer_wanted:${chatThreadKey}`);
+      if (awaits || !byAgent || postKind === "done")
+        this.store.deleteMeta(`answer_wanted:${chatThreadKey}`);
+      else if (request !== undefined) {
+        const post: AgentAnswer = {
+          request,
+          runs: this.store
+            .pendingReplies()
+            .filter((each) => each.chatThreadKey === chatThreadKey)
+            .map((each) => each.runId),
+          digest: digest(agentText),
+        };
+        this.store.setMeta(`answer_posted:${chatThreadKey}`, JSON.stringify(post));
+      }
       if (awaits) this.store.setMeta(`answer_awaited:${chatThreadKey}`, "1");
       else this.store.deleteMeta(`answer_awaited:${chatThreadKey}`);
     });
   }
 
-  /** A run whose post to the conversation answered it (`answeredByPost`) settles it, so the fallback stands down. */
+  /** The agent's last `answer` post in the conversation, for the request it was armed for. */
+  private agentAnswer(chatThreadKey: string): AgentAnswer | undefined {
+    const saved = this.store.meta(`answer_posted:${chatThreadKey}`);
+    return saved === undefined ? undefined : (JSON.parse(saved) as AgentAnswer);
+  }
+
+  /**
+   * A chat run whose `answer` post answered the request (`answeredByPost`) settles it, so the
+   * fallback stands down. Only the request armed when it posted, from a run open then or the
+   * run T3 continued it in; a later message keeps its own fallback.
+   */
   private async settleIfAnswered(reply: OwedReply, runId: string): Promise<void> {
+    if (!this.isChatRun(reply.runId)) return;
     const key = `answer_wanted:${reply.chatThreadKey}`;
     const wanted = this.store.meta(key);
-    if (wanted === undefined) return;
+    const post = this.agentAnswer(reply.chatThreadKey);
+    if (wanted === undefined || post?.request !== wanted) return;
+    const runs = new Set(post.runs);
+    if (!runs.has(reply.runId) && !runs.has(runId)) return;
+    runs.add(reply.runId).add(runId);
     const chatKeys = new Set(
       this.store
         .bindingsForThread(reply.threadId)
         .filter((each) => this.store.recipients(each.chatThreadKey).includes(reply.chatThreadKey))
         .map((each) => each.chatKey),
     );
-    const read = await this.threads.activity(reply.threadId, undefined);
-    if (!answeredByPost(read.items, runId, chatKeys)) return;
+    // Unread, the post counts as the answer: the bridge stays quiet, as it did before.
+    let answered = true;
+    try {
+      const read = await this.threads.activity(reply.threadId, undefined);
+      answered = answeredByPost(read.items, runs, chatKeys);
+    } catch (error) {
+      this.log(`Reading ${reply.runId}'s work after its post failed: ${String(error)}`);
+    }
     // A message that came in during the read armed it again, for itself.
-    if (this.store.meta(key) === wanted) this.store.deleteMeta(key);
+    if (answered && this.store.meta(key) === wanted) this.store.deleteMeta(key);
   }
 
   /** A chat message started, joined or answered this run, so the idle fallback may post its final message. */
@@ -1022,7 +1076,9 @@ export class Bridge {
       const platform = this.platform(chatThreadKey);
       if (platform.silentByDefault !== true) continue;
       // The request is over; a later post doesn't make its answer owed here.
+      const post = this.agentAnswer(chatThreadKey);
       this.store.deleteMeta(`answer_linked:${chatThreadKey}`);
+      this.store.deleteMeta(`answer_posted:${chatThreadKey}`);
       const id = this.store.meta(`answer_wanted:${chatThreadKey}`);
       if (id === undefined) continue;
       const runId = this.store.meta(`answer_run:${chatThreadKey}`);
@@ -1036,6 +1092,10 @@ export class Bridge {
           runId === undefined ? undefined : await this.threads.finalAnswer(threadId, runId);
         if (text === undefined || text.trim() === "" || isQuietReply(text)) {
           this.log(`${chatThreadKey} went idle unanswered, but ${runId} has nothing to post.`);
+          continue;
+        }
+        if (post?.request === id && post.digest === digest(text)) {
+          this.log(`${chatThreadKey} went idle; ${runId}'s final message is the answer it posted.`);
           continue;
         }
         await platform.post({

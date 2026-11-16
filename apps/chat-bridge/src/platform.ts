@@ -81,7 +81,7 @@ export const isQuietReply = (text: string): boolean =>
  * The idle fallback in a `silentByDefault` conversation, told to the agent so a
  * decision to stay quiet ends in NO_REPLY rather than a note that gets posted.
  */
-export const FALLBACK_RULE = `A message that mentions you or is sent only to you counts as a request; if a request ends with nothing posted, the bridge posts your final message once. When you decide a message needs no reply, make your whole final message exactly ${QUIET_REPLY} and nothing is posted.`;
+export const FALLBACK_RULE = `A message that mentions you or is sent only to you counts as a request; if a request ends without its answer posted, the bridge posts your final message once (a post before you do the work, such as an acknowledgement, isn't the answer). When you decide a message needs no reply, make your whole final message exactly ${QUIET_REPLY} and nothing is posted.`;
 
 /**
  * How the agent stays quiet, and how to treat wake-ups from its subagents and background work.
