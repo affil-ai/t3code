@@ -286,6 +286,48 @@ export function currentStatus(items: ReadonlyArray<ActivityItem>): string {
   return going.at(-1) ?? THINKING;
 }
 
+/** The bridge's own tool an item called, such as `chat_post`, whatever prefix its provider gives it. */
+function bridgeTool(item: ActivityItem): string | undefined {
+  if (item.type !== "dynamic_tool") return undefined;
+  const named = /"toolName":\s*"([^"]+)"/.exec(item.text ?? "")?.[1];
+  const tool = named?.split(/\.|__/).at(-1);
+  return tool === "chat_post" || tool === "chat_status" || tool === "chat_react" ? tool : undefined;
+}
+
+/**
+ * Steps of work after a post that still count as wrapping up: removing scratch files, a last
+ * check, a wait or a hand-off. Agents' answers had at most four after them; their
+ * acknowledgements ("I'll check…") were followed by the whole investigation, six steps or more.
+ */
+const WRAP_UP_STEPS = 4;
+
+/**
+ * Whether the agent's `answer` post in `runIds` was the answer: at most wrapping up followed it.
+ * Best effort over an excerpt: a post cut off before its chat key counts as this chat's, and
+ * one before the excerpt's first item counts every step the excerpt shows.
+ */
+export function answeredByPost(
+  items: ReadonlyArray<ActivityItem>,
+  runIds: ReadonlySet<string>,
+  chatKeys: ReadonlySet<string>,
+): boolean {
+  let after = 0;
+  for (const item of items.toReversed()) {
+    if (item.runId === null || !runIds.has(item.runId)) continue;
+    const tool = bridgeTool(item);
+    if (tool === "chat_post") {
+      // A failed post isn't the one the bridge delivered; the work before it still counts.
+      if (item.status === "failed") continue;
+      const chatKey = /"chatKey":\s*"([^"]+)"/.exec(item.text ?? "")?.[1];
+      if (chatKey === undefined || chatKeys.has(chatKey)) break;
+      continue;
+    }
+    // A to-do list update is the run's plan, not a step.
+    if (tool === undefined && item.type !== "todo_list" && work(item) !== undefined) after += 1;
+  }
+  return after <= WRAP_UP_STEPS;
+}
+
 /** True while the item is still going or waiting. */
 export const isOpen = (status: string): boolean => OPEN_STATUSES.has(status);
 

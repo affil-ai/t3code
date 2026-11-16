@@ -538,6 +538,15 @@ export class T3Threads {
     };
   }
 
+  /** The run executing in the thread now, not a queued one; nothing between runs. */
+  async activeRun(threadId: string): Promise<string | undefined> {
+    const read = await this.t3.call<{ readonly thread: { readonly activeRunId?: string | null } }>(
+      "t3_thread_read",
+      { threadId, view: "messages", limit: 1, runLimit: 1, maxCharsPerItem: 1 },
+    );
+    return read.thread.activeRunId ?? undefined;
+  }
+
   /** The folders a thread may share files from: its worktree, or its project's checkout. */
   async workspaceRoots(threadId: string): Promise<ReadonlyArray<string>> {
     const read = await this.t3.call<ReadResult>("t3_thread_read", {

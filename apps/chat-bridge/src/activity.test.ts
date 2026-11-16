@@ -3,6 +3,7 @@ import { assert, it } from "vite-plus/test";
 import {
   type ActivityItem,
   currentStatus,
+  answeredByPost,
   isPermissionRequest,
   isQuestion,
   redactSecrets,
@@ -220,4 +221,58 @@ it("reads a to-do list as the run's plan, not as a step", () => {
   assert.isUndefined(finishedStep(todo));
   assert.isUndefined(planOf({ ...todo, textTruncated: true }));
   assert.isUndefined(planOf(item({ type: "reasoning", text: "[pending] x" })));
+});
+
+it("takes a run's chat_post as its answer unless the work after it is more than wrapping up", () => {
+  const post = (toolName: string, chatKey: string, fields: Partial<ActivityItem> = {}) =>
+    item({
+      type: "dynamic_tool",
+      status: "completed",
+      text: `{"toolName": "${toolName}", "input": {"chatKey": "${chatKey}", "text": "Here's how`,
+      textTruncated: true,
+      ...fields,
+    });
+  const steps = (count: number, fields: Partial<ActivityItem> = {}) =>
+    Array.from({ length: count }, () =>
+      item({ type: "command_execution", status: "completed", text: "$ rg x", ...fields }),
+    );
+  const runs = new Set(["run-1"]);
+  const keys = new Set(["key-1"]);
+  const codex = "t3-chat-bridge.chat_post";
+  for (const name of [codex, "mcp__t3-chat-bridge__chat_post"])
+    assert.isTrue(
+      answeredByPost([...steps(9), post(name, "key-1"), ...steps(4)], runs, keys),
+      name,
+    );
+  // An acknowledgement before the investigation: not the answer.
+  assert.isFalse(answeredByPost([post(codex, "key-1"), ...steps(5)], runs, keys));
+  // Another chat's post, or steps of another run, don't count; a to-do list isn't a step.
+  assert.isFalse(
+    answeredByPost([post(codex, "key-1"), ...steps(5), post(codex, "key-2")], runs, keys),
+  );
+  assert.isTrue(
+    answeredByPost([post(codex, "key-1"), ...steps(5, { runId: "run-0" })], runs, keys),
+  );
+  assert.isTrue(
+    answeredByPost(
+      [post(codex, "key-1"), ...steps(5, { type: "todo_list", text: "[pending] x" })],
+      runs,
+      keys,
+    ),
+  );
+  // Cut off before its chat key, the post counts as this chat's; read from after it, every step shown counts.
+  assert.isTrue(
+    answeredByPost(
+      [
+        post(codex, "key-1", {
+          text: '{"toolName": "t3-chat-bridge.chat_post", "input": {"text": "Long',
+        }),
+        ...steps(2),
+      ],
+      runs,
+      keys,
+    ),
+  );
+  assert.isFalse(answeredByPost(steps(5), runs, keys));
+  assert.isTrue(answeredByPost(steps(4), runs, keys));
 });
