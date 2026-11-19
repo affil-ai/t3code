@@ -5,11 +5,11 @@
  */
 
 /**
- * The Slack style rule. People skim a thread on a phone, so it asks for the answer first and
+ * The Slack style rule. People skim a thread, so it asks for the answer first and
  * a place for long detail; it sets no fixed length.
  */
 export const SLACK_REPLY_STYLE = [
-  "Write for Slack, where people skim on a phone.",
+  "Write for Slack, where people skim.",
   "Put the answer in the first line, then only what the reader needs to act or decide; length follows the content, not a fixed limit.",
   "Prefer short lines and bullets to paragraphs, and avoid headings and long code blocks.",
   "Leave out commit SHAs, run or deployment IDs, file paths, test counts and tool narration unless the reader needs them to act; give a link instead of an ID.",
