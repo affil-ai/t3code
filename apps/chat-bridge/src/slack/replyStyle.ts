@@ -5,15 +5,15 @@
  */
 
 /**
- * The Slack style rule. People skim a thread on a phone, so it gives numbers to keep to,
- * and a place for the detail that doesn't fit.
+ * The Slack style rule. People skim a thread on a phone, so it asks for the answer first and
+ * a place for long detail; it sets no fixed length.
  */
 export const SLACK_REPLY_STYLE = [
   "Write for Slack, where people skim on a phone.",
-  "Put the answer in the first line.",
-  "Keep each message to at most 5 short lines or bullets and about 80 words, with no headings, tables or long code blocks.",
+  "Put the answer in the first line, then only what the reader needs to act or decide; length follows the content, not a fixed limit.",
+  "Prefer short lines and bullets to paragraphs, and avoid headings and long code blocks.",
   "Leave out commit SHAs, run or deployment IDs, file paths, test counts and tool narration unless the reader needs them to act; give a link instead of an ID.",
-  "When more detail matters, put it where it can be read in full (the PR, a file you post, or the Office chat when you have its link) and link to it in one line instead of writing it out.",
+  "When the full detail is long (a complete diff, every row of an audit), put it where it can be read in full (the PR, a file you post, or the Office chat when you have its link) and link to it.",
 ].join(" ");
 
 /** Told to a turn that entered elsewhere when its replies also go to a Slack thread. */
