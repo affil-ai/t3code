@@ -86,6 +86,10 @@ These apply on every platform unless a section says otherwise.
   nothing when the message isn't addressed to it or needs no answer. The agent sees them, up to the newest 50, with its next
   message. `@bot mute` in a thread makes the bot answer only messages that
   mention it; `@bot unmute` undoes it.
+- **Other bots are dropped, unless listed.** A message from a bot in
+  `slack.deliverBots` reaches a bound thread like any other reply, shown as
+  `Name [bot]`. It never starts a chat, never answers a question and never
+  makes the bridge post the agent's final message.
 - **Status shows what the agent is doing.** While a run goes, the bridge reads
   T3's activity view every 2.5 seconds and shows what the agent is doing now,
   such as "Running `pnpm test`" or "Thinking…", at most 50 characters, with
@@ -756,22 +760,23 @@ you don't use:
 }
 ```
 
-| Field             | Default                | Meaning                                                                                        |
-| ----------------- | ---------------------- | ---------------------------------------------------------------------------------------------- |
-| `t3Url`           | required               | The T3 server's origin.                                                                        |
-| `t3EnvironmentId` | unset                  | Optional. Checks that `t3Url` serves this environment and pins thread and project calls to it. |
-| `toolsPort`       | `3920`                 | Loopback port of the chat-tools MCP server.                                                    |
-| `runtimeMode`     | project default        | For new threads, such as `full-access`. Capped by the access approved at `login`.              |
-| `modelSelection`  | project default        | For new threads: `{ instanceId, model, options? }`.                                            |
-| `startTools`      | `false`                | Serve `slack_start` and `linear_start`.                                                        |
-| `channelProjects` | required (may be `[]`) | Slack channel routes: `channelId`, `projectId`, and optional `match`, `worktreeFrom`, `note`.  |
-| `dmProjectId`     | unset                  | Project for Slack DMs. Unset ignores DMs.                                                      |
-| `dmWorktreeFrom`  | unset                  | Branch each Slack DM thread's new worktree starts from. Unset runs DMs in the project root.    |
-| `allowedUserIds`  | required (may be `[]`) | Slack member ids allowed to use the bot.                                                       |
-| `allowEveryone`   | `false`                | Also allow every full member of the Slack workspace.                                           |
-| `slack.transport` | `"socket"`             | Leave as `socket`. `"office-relay"` belongs to the Office relay below.                         |
-| `linear.*`        | off                    | See [Linear](#linear). `projectId` is required; `allowEveryone` defaults to `true`.            |
-| `imessage.*`      | off                    | See [iMessage](#imessage). `projectId` is required.                                            |
+| Field               | Default                | Meaning                                                                                                   |
+| ------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| `t3Url`             | required               | The T3 server's origin.                                                                                   |
+| `t3EnvironmentId`   | unset                  | Optional. Checks that `t3Url` serves this environment and pins thread and project calls to it.            |
+| `toolsPort`         | `3920`                 | Loopback port of the chat-tools MCP server.                                                               |
+| `runtimeMode`       | project default        | For new threads, such as `full-access`. Capped by the access approved at `login`.                         |
+| `modelSelection`    | project default        | For new threads: `{ instanceId, model, options? }`.                                                       |
+| `startTools`        | `false`                | Serve `slack_start` and `linear_start`.                                                                   |
+| `channelProjects`   | required (may be `[]`) | Slack channel routes: `channelId`, `projectId`, and optional `match`, `worktreeFrom`, `note`.             |
+| `dmProjectId`       | unset                  | Project for Slack DMs. Unset ignores DMs.                                                                 |
+| `dmWorktreeFrom`    | unset                  | Branch each Slack DM thread's new worktree starts from. Unset runs DMs in the project root.               |
+| `allowedUserIds`    | required (may be `[]`) | Slack member ids allowed to use the bot.                                                                  |
+| `allowEveryone`     | `false`                | Also allow every full member of the Slack workspace.                                                      |
+| `slack.transport`   | `"socket"`             | Leave as `socket`. `"office-relay"` belongs to the Office relay below.                                    |
+| `slack.deliverBots` | `[]`                   | Other apps' bots, by bot user id (`U…`) or bot id (`B…`), whose replies in bound threads reach the agent. |
+| `linear.*`          | off                    | See [Linear](#linear). `projectId` is required; `allowEveryone` defaults to `true`.                       |
+| `imessage.*`        | off                    | See [iMessage](#imessage). `projectId` is required.                                                       |
 
 `formerModelSelections` is also accepted; it only matters for migrating
 threads after changing `modelSelection`, and you can leave it out.

@@ -2592,6 +2592,44 @@ it("arms the fallback only for messages that ask the agent, or reply after it as
   );
 });
 
+it("takes a delivered bot's message as an aside in a bound thread only", async () => {
+  const h = harness(undefined, SILENT);
+  const { t3, bridge, posted } = h;
+  t3.options.sendStartsRun = true;
+  const joan = { userId: "BJOAN", userName: "unknown", fullName: "Joan of Affil", isBot: true };
+  const fromJoan = (ts: string) =>
+    event(ts, {
+      kind: "follow_up",
+      addressed: false,
+      author: joan,
+      text: "Crawl and Scrape complete",
+    });
+  // Not on the allowed users, and outside a bound thread it starts nothing.
+  assert.deepStrictEqual(await bridge.receive(fromJoan("100.0")), {
+    type: "ignored",
+    reason: "unbound_thread",
+  });
+  assert.isUndefined(t3.calls.find((call) => call.tool === "t3_thread_launch"));
+
+  await bridge.receive(event("100.1"));
+  await agentPost(h, "run-1", "question", "Wait for the crawl?");
+  t3.finish("run-1", "completed", "Waiting.");
+  await bridge.idle();
+  // Even right after a question, a bot's message is a turn, not the awaited reply.
+  assert.deepInclude(await bridge.receive(fromJoan("100.2")), { type: "followed_up" });
+  const send = t3.calls.findLast((call) => call.tool === "t3_thread_send")!;
+  assert.include(
+    String(send.args.message),
+    "Slack message 100.2 from Joan of Affil (<@BJOAN>) [bot]:\n\nCrawl and Scrape complete",
+  );
+  t3.finish("run-2", "completed", "Reviewed the crawl.");
+  await bridge.idle();
+  assert.deepStrictEqual(
+    posted.map((reply) => reply.text),
+    ["Wait for the crawl?"],
+  );
+});
+
 it("leaves the fallback off a platform that posts its final messages", async () => {
   const { t3, bridge, posted } = harness();
   await bridge.receive(event("100.1"));
