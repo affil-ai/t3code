@@ -64,6 +64,8 @@ export interface ChatAuthor {
   readonly userId: string;
   readonly userName: string;
   readonly fullName: string;
+  /** Another app's bot the platform lets through; its messages are only asides in a bound thread. */
+  readonly isBot?: boolean | undefined;
 }
 
 /** Someone the message mentions, other than the bot. */
@@ -93,8 +95,8 @@ export interface EventFile {
 }
 
 /**
- * One chat message, after the platform has dropped its own and other bots'
- * messages. Plain data, so the inbox can save it.
+ * One chat message, after the platform has dropped its own messages and those of
+ * bots it doesn't deliver. Plain data, so the inbox can save it.
  */
 export interface InboundEvent {
   /** Unique per message, so a redelivery cannot start a second turn. */
@@ -413,7 +415,8 @@ function controlCommand(text: string): ControlCommand | undefined {
 /** "Slack message 100.1 from Ada:", with no doubled word for a platform already named iMessage. */
 function messageHeading(platform: ChatPlatform, event: InboundEvent): string {
   const kind = /message$/i.test(platform.name) ? platform.name : `${platform.name} message`;
-  return `${kind} ${event.messageId} from ${platform.person(event.author.userId, event.author.fullName || event.author.userName)}:`;
+  const bot = event.author.isBot === true ? " [bot]" : "";
+  return `${kind} ${event.messageId} from ${platform.person(event.author.userId, event.author.fullName || event.author.userName)}${bot}:`;
 }
 
 function turnText(
@@ -1240,6 +1243,10 @@ export class Bridge {
     }
     const binding = this.store.binding(event.chatThreadKey);
     const seed = this.store.seed(event.chatThreadKey);
+    // A bot the platform delivers is an aside in a bound conversation: it never starts one,
+    // asks for an answer or answers a question.
+    const fromBot = event.author.isBot === true;
+    if (fromBot && binding === undefined) return { type: "ignored", reason: "unbound_thread" };
 
     if (event.contextOnly === true) {
       if (binding === undefined) return { type: "ignored", reason: "unbound_thread" };
@@ -1248,7 +1255,7 @@ export class Bridge {
       return { type: "noted", threadId: binding.threadId };
     }
 
-    if (!(await this.isAllowed(platform, event.author.userId))) {
+    if (!fromBot && !(await this.isAllowed(platform, event.author.userId))) {
       // What other people say in a bound thread is still context for the agent.
       if (binding !== undefined) this.keep(binding, event);
       if (event.addressed) await this.refuse(event);
@@ -1290,7 +1297,7 @@ export class Bridge {
         return { type: "noted", threadId: binding.threadId };
       }
       const asking = this.asking(binding.chatThreadKey);
-      if (asking !== undefined) return this.answerByText(binding, asking, event);
+      if (asking !== undefined && !fromBot) return this.answerByText(binding, asking, event);
       if (switched.command !== undefined) {
         const current = await this.threads.modelSelection(binding.threadId);
         const resolved = resolveModelCommand(switched.command, current);
@@ -1328,8 +1335,10 @@ export class Bridge {
         platform,
         kept.map((message) => message.line),
       );
-      this.armFallback(event.chatThreadKey, event.eventId, this.asksForAnswer(event));
-      this.armLinked(event, this.asksForAnswer(event));
+      if (!fromBot) {
+        this.armFallback(event.chatThreadKey, event.eventId, this.asksForAnswer(event));
+        this.armLinked(event, this.asksForAnswer(event));
+      }
       // `background` holds the thread while its follow sees delegated work still going.
       const workRunning = [...this.background.values()].includes(binding.threadId);
       const sent = await this.threads.send({
@@ -1546,7 +1555,7 @@ export class Bridge {
       line: messageLine(this.platform(event.chatThreadKey), {
         userId: event.author.userId,
         name: event.author.fullName || event.author.userName,
-        isBot: false,
+        isBot: event.author.isBot === true,
         text: event.text,
         fileNames: event.files.map((file) => file.name),
       }),

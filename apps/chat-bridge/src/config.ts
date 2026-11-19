@@ -65,6 +65,12 @@ export interface SlackConfig {
    * Office connection; it needs no app token.
    */
   readonly transport: "socket" | "office-relay";
+  /**
+   * Other apps' bots whose messages reach the agent, by bot user id (U…) or bot id (B…).
+   * Only in a Slack thread already bound to a T3 thread, as an aside: they never start a
+   * chat or ask for an answer. Every other bot's message is dropped.
+   */
+  readonly deliverBots: ReadonlyArray<string>;
 }
 
 export interface LinearConfig {
@@ -243,12 +249,16 @@ function parseLinear(raw: unknown): LinearConfig | undefined {
 }
 
 function parseSlack(raw: unknown): SlackConfig {
-  if (raw === undefined) return { transport: "socket" };
+  if (raw === undefined) return { transport: "socket", deliverBots: [] };
   if (!isRecord(raw)) return fail("slack must be an object.");
   const transport = raw.transport ?? "socket";
   if (transport !== "socket" && transport !== "office-relay")
     fail('slack.transport must be "socket" or "office-relay".');
-  return { transport: transport as SlackConfig["transport"] };
+  return {
+    transport: transport as SlackConfig["transport"],
+    deliverBots:
+      raw.deliverBots === undefined ? [] : stringList(raw.deliverBots, "slack.deliverBots"),
+  };
 }
 
 export function parseConfig(raw: unknown): BridgeConfig {

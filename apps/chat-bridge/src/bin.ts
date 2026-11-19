@@ -321,6 +321,7 @@ async function start(): Promise<void> {
       ? createSlackHost({
           botToken,
           transport: slackTransport,
+          deliverBots: config.slack.deliverBots,
           // The bridge logs each outcome as it handles the event.
           onEvent: receive,
           log: (level, line) => log(`slack ${level}: ${line}`),

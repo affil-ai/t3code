@@ -68,6 +68,8 @@ export interface SlackChatHostOptions {
   readonly log?: ((level: "info" | "warn" | "error", line: string) => void) | undefined;
   /** Tests supply the bot's user id, which `auth.test` would otherwise return. */
   readonly botUserId?: string | undefined;
+  /** Other bots whose messages are delivered, as `slack.deliverBots` in the config. */
+  readonly deliverBots?: ReadonlyArray<string> | undefined;
 }
 
 export interface SlackOutboundFile {
@@ -575,7 +577,11 @@ export function createSlackHost(options: SlackChatHostOptions): {
     };
   };
 
-  /** One message as an inbound event, or nothing for the bot's own and other bots' messages. */
+  const deliverBots = options.deliverBots ?? [];
+  /**
+   * One message as an inbound event, or nothing for the bot's own messages and those of bots
+   * outside `deliverBots`. A listed bot's message is an aside, never a request.
+   */
   const eventOf = async (
     threadId: string,
     message: Message,
@@ -583,7 +589,24 @@ export function createSlackHost(options: SlackChatHostOptions): {
     addressed: boolean,
     botNames: ReadonlyArray<string>,
   ): Promise<InboundEvent | undefined> => {
-    if (message.author.isMe || message.author.isBot === true) return undefined;
+    if (message.author.isMe) return undefined;
+    if (message.author.isBot === true) {
+      const raw = message.raw as SlackRawMessage | undefined;
+      const listed =
+        deliverBots.includes(message.author.userId) ||
+        (raw?.bot_id !== undefined && deliverBots.includes(raw.bot_id));
+      if (!listed) return undefined;
+      const event = toInboundEvent({ id: threadId }, message, {
+        kind: "follow_up",
+        addressed: false,
+        botNames,
+      });
+      const fullName =
+        event.author.fullName === "unknown"
+          ? (raw?.bot_profile?.name ?? event.author.fullName)
+          : event.author.fullName;
+      return { ...event, author: { ...event.author, fullName, isBot: true } };
+    }
     const mentions = await mentionedUsers(message);
     return toInboundEvent({ id: threadId }, message, {
       kind,

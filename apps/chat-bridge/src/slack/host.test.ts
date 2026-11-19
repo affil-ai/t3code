@@ -253,6 +253,7 @@ async function hostOn(
     botToken: "xoxb-test",
     transport,
     botUserId: "UBOT",
+    deliverBots: ["BJOAN"],
     apiUrl: api.apiUrl,
     onEvent: async () => ({ type: "pending" }),
     log: (level, line) => void logs.push(`${level}: ${line}`),
@@ -292,6 +293,58 @@ it("skips a thread Slack can't read during catch-up, and still reads the rest", 
       [["slack:C1:200.1", "while you were down"]],
     );
     assert.isTrue(logs.some((line) => line.includes("slack:C1:100.1: thread_not_found")));
+  } finally {
+    await api.close();
+  }
+});
+
+it("delivers a listed bot's messages as asides, and drops its own and other bots' messages", async () => {
+  const { api, host } = await hostOn({
+    ...USERS,
+    "conversations.replies": () => ({
+      ok: true,
+      messages: [
+        { ts: "200.1", user: "U1", text: "start" },
+        { ts: "200.2", thread_ts: "200.1", user: "UBOT", bot_id: "BBOT", text: "own post" },
+        { ts: "200.3", thread_ts: "200.1", bot_id: "BOTHER", text: "<@UBOT> other bot" },
+        {
+          ts: "200.4",
+          thread_ts: "200.1",
+          bot_id: "BJOAN",
+          bot_profile: { name: "Joan of Affil" },
+          text: "<@UBOT> Crawl and Scrape complete",
+        },
+      ],
+    }),
+    "conversations.history": () => ({
+      ok: true,
+      messages: [{ ts: "300.1", bot_id: "BJOAN", text: "<@UBOT> new job" }],
+    }),
+  });
+  try {
+    const events = await host.missedEvents!({
+      since: 150_000,
+      threads: ["slack:C1:200.1"],
+      channels: ["C1"],
+    });
+    assert.deepStrictEqual(
+      events.map((event) => [event.messageId, event.kind, event.addressed, event.author]),
+      [
+        [
+          "200.4",
+          "follow_up",
+          false,
+          { userId: "BJOAN", userName: "unknown", fullName: "Joan of Affil", isBot: true },
+        ],
+        // A mention by a listed bot is still never a request, so it starts nothing.
+        [
+          "300.1",
+          "follow_up",
+          false,
+          { userId: "BJOAN", userName: "unknown", fullName: "unknown", isBot: true },
+        ],
+      ],
+    );
   } finally {
     await api.close();
   }
