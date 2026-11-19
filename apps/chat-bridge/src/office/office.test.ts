@@ -22,6 +22,7 @@ import type {
   PreparedRequest,
 } from "./client.ts";
 import { slackFirstTurnNote } from "../slack/platform.ts";
+import { SLACK_REPLY_STYLE } from "../slack/replyStyle.ts";
 import type { ModelSelection } from "../modelCommand.ts";
 import { officeModel } from "./message.ts";
 import { createOfficeChannel } from "./platform.ts";
@@ -794,6 +795,44 @@ it.each(["seeded", "linked"])(
       posts.filter((post) => post.kind === "answer").map((post) => post.text),
       ["Done."],
     );
+  },
+);
+
+it.each([
+  ["no Slack thread", undefined, false],
+  ["an unsynced Slack thread", false, false],
+  ["a synced Slack thread", true, true],
+] as const)(
+  "tells an Office chat with %s to write for Slack only when its replies reach Slack",
+  async (_name, sync, toSlack) => {
+    const slack: ChatPlatform = {
+      id: "slack",
+      name: "Slack",
+      place: "Slack thread",
+      access: { allowedUserIds: [] },
+      person: (_id, name) => name,
+      firstTurnNote: () => "",
+      refusal: () => "",
+      startConversation: async () => "slack:C1:1.1",
+      post: async () => {},
+      silentByDefault: true,
+    };
+    await using h = await harness({ slack });
+    const link =
+      sync === undefined ? {} : { slack: { channelId: "C1", chatThreadKey: "slack:C1:1.1" }, sync };
+    h.office.message(request(link));
+    await vi.waitFor(() => assert.isTrue(h.store.isHandled("office:event-1")));
+    await h.send(
+      request({ ...link, eventId: "event-2", messageId: "message-2", firstTurn: false }),
+    );
+    const turns = h.t3.calls
+      .filter((call) => call.tool === "t3_thread_launch" || call.tool === "t3_thread_send")
+      .map((call) => String(call.args.message));
+    assert.lengthOf(turns, 2);
+    for (const turn of turns) {
+      assert.strictEqual(turn.includes(SLACK_REPLY_STYLE), toSlack);
+      assert.strictEqual(turn.includes("your final message can be posted there as well"), toSlack);
+    }
   },
 );
 

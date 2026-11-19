@@ -103,6 +103,11 @@ These apply on every platform unless a section says otherwise.
   In Slack it acknowledges a request with an :eyes: reaction and the status
   line, not a message. iMessage shows no status line, so there it doesn't
   acknowledge. A failed or stopped run still posts a short notice.
+- **Anything that reaches Slack is written for Slack.** Every turn whose posts
+  or final message can reach a Slack thread is told the Slack style rule: one
+  started in Slack, and one started in a chat synced with a Slack thread, such
+  as an Office chat. The rule lives in `src/slack/replyStyle.ts`. The bridge
+  doesn't shorten or rewrite what the agent posts.
 - **Fallback.** If a Slack or iMessage thread goes idle (no run going, and the
   subagents and background work T3 tracks settled) with nothing posted since a
   person's message that asked the agent something, the bridge posts the last

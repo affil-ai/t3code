@@ -8,6 +8,7 @@ import {
   type ThreadRoute,
 } from "../platform.ts";
 import type { SlackChatHost, SlackTransport } from "./host.ts";
+import { SLACK_REPLY_STYLE } from "./replyStyle.ts";
 
 /**
  * Who `allowEveryone` admits on a transport. Behind Office's relay, Office already accepted
@@ -16,14 +17,6 @@ import type { SlackChatHost, SlackTransport } from "./host.ts";
  */
 export const slackEligibility = (transport: SlackTransport): "workspace" | "person" =>
   transport.kind === "office-relay" ? "person" : "workspace";
-
-/**
- * How Slack replies read. People skim a thread on a phone, so the bridge repeats
- * this on every Slack turn and in the tool server's instructions, which also
- * reach wakes from background work.
- */
-export const SLACK_REPLY_STYLE =
-  "Write for Slack: lead with the answer, in a few lines or a short list, not a report. Leave out commit SHAs, run or deployment IDs, file paths and tool narration unless the reader needs them to act; give a link instead of an ID.";
 
 /**
  * How the agent acknowledges a request in Slack: the status line, and an eyes reaction
@@ -87,7 +80,6 @@ export function slackPlatform(options: {
     directRoute: options.directRoute,
     person: (userId, name) => `${name} (<@${userId}>)`,
     firstTurnNote: (chatKey) => slackFirstTurnNote(chatKey),
-    replyStyle: SLACK_REPLY_STYLE,
     refusal: (userId) =>
       `Sorry, you can't use this bot yet. Ask whoever runs it to add your Slack member ID (${userId}) to its allowed users.`,
     post: (message) => connected().post(message),

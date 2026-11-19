@@ -42,6 +42,7 @@ import {
   type ThreadRoute,
 } from "./platform.ts";
 import { RunFeed } from "./runFeed.ts";
+import { slackReplyNote } from "./slack/replyStyle.ts";
 import type {
   AskedRecord,
   Binding,
@@ -425,9 +426,10 @@ function turnText(
   skipped: ImportedFiles["skipped"],
   chatKey: string,
   first: boolean,
-  context = "",
-  note?: string | undefined,
-  workRunning = false,
+  context: string,
+  note: string | undefined,
+  workRunning: boolean,
+  destinations: ReadonlyArray<string>,
 ): string {
   const lines = [
     ...(context ? [context, ""] : []),
@@ -458,7 +460,8 @@ function turnText(
         : `(Your final message is posted to the ${platform.place}. Chat key: ${chatKey})`,
   );
   if (!first && workRunning) lines.push(WORK_RUNNING_NOTE);
-  if (!first && platform.replyStyle) lines.push(platform.replyStyle);
+  const slack = slackReplyNote({ enteredThrough: event.chatThreadKey, first, destinations });
+  if (slack !== undefined) lines.push(slack);
   return lines.join("\n");
 }
 
@@ -868,6 +871,19 @@ export class Bridge {
     return saved === undefined ? undefined : (JSON.parse(saved) as ConversationLinks);
   }
 
+  /**
+   * Every conversation a turn's posts and answer go to: the synced ones once bound, or the
+   * ones it is linked to and about to be bound with.
+   */
+  private destinations(chatThreadKey: string): ReadonlyArray<string> {
+    if (this.store.binding(chatThreadKey) !== undefined)
+      return this.store.recipients(chatThreadKey);
+    const links = this.links(chatThreadKey);
+    return links?.sync === true
+      ? links.conversations.map((each) => each.chatThreadKey)
+      : [chatThreadKey];
+  }
+
   private conversationKeys(chatThreadKey: string): ReadonlyArray<string> {
     const seed = this.store.seed(chatThreadKey);
     if (seed) return this.store.seeds(seed.chatId).map((each) => each.chatThreadKey);
@@ -1273,7 +1289,14 @@ export class Bridge {
             event.text || "(no text)",
             ...imported.skipped.map((file) => `File ${file.name}: ${file.reason}`),
             target.note,
-          ].join("\n\n"),
+            slackReplyNote({
+              enteredThrough: event.chatThreadKey,
+              first: false,
+              destinations: [event.chatThreadKey],
+            }) ?? "",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
           attachments: imported.attachments,
           requestId: requestId(event.eventId),
         });
@@ -1352,6 +1375,7 @@ export class Bridge {
           context,
           undefined,
           workRunning,
+          this.destinations(binding.chatThreadKey),
         ),
         attachments: imported.attachments,
         requestId: requestId(event.eventId),
@@ -1454,6 +1478,8 @@ export class Bridge {
         true,
         earlierText(platform, earlier),
         route.note,
+        false,
+        this.destinations(event.chatThreadKey),
       ),
       attachments: imported.attachments,
       requestId: requestId(event.eventId),
