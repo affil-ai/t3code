@@ -27,7 +27,8 @@ import {
   QUIET_REPLY,
   type ThreadRoute,
 } from "./platform.ts";
-import { SLACK_REPLY_STYLE, slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
+import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
+import { SLACK_REPLY_STYLE } from "./slack/replyStyle.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import type { ImessageAdapter } from "./imessage/adapter.ts";
 import { startChatHost } from "./chatHost.ts";
@@ -439,7 +440,6 @@ function harness(
         directRoute: options.directRoute,
         person: (userId, name) => `${name} (<@${userId}>)`,
         firstTurnNote: slackFirstTurnNote,
-        replyStyle: SLACK_REPLY_STYLE,
         refusal: (userId) =>
           `Sorry, you can't use this bot yet. Ask whoever runs it to add your Slack member ID (${userId}) to its allowed users.`,
         // An answer is recorded as before; anything else names its kind.
