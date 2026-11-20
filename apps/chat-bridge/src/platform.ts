@@ -164,6 +164,11 @@ export interface ChatPlatform {
   readonly isEligible?: (userId: string) => Promise<boolean>;
   /** Routes for messages outside a bound thread that aren't direct. */
   readonly channelRoutes?: ReadonlyArray<ChannelRoute>;
+  /**
+   * The route for a channel with no `channelRoutes` entry that the platform serves anyway,
+   * such as a Slack channel the bot is a member of. Without it, only routed channels.
+   */
+  readonly memberRoute?: (channelId: string) => Promise<ThreadRoute | undefined>;
   /** Where a new direct conversation starts. Without it, new direct conversations are ignored. */
   readonly directRoute?: ThreadRoute | undefined;
 

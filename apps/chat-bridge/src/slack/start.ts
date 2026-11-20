@@ -1,18 +1,25 @@
 /** `slack_start`: post a Slack message for a T3 thread and bind that Slack thread to it. */
 import type { Bridge } from "../bridge.ts";
 import type { ChatPlatform } from "../platform.ts";
-import { slackStartRefusal, type SlackStartRequest } from "../toolServer.ts";
+import { isPersonId, slackStartRefusal, type SlackStartRequest } from "../toolServer.ts";
 import { slackWorkNote } from "./platform.ts";
 
 export async function startSlackThread(
   deps: {
     readonly access: Parameters<typeof slackStartRefusal>[0];
+    /** Set when the bridge serves every channel the bot is a member of (`slack.memberChannels`). */
+    readonly isMemberChannel?: ((channelId: string) => Promise<boolean>) | undefined;
     readonly platform: ChatPlatform | undefined;
     readonly core: Pick<Bridge, "attachRefusal" | "attach">;
   },
   request: SlackStartRequest,
 ): Promise<string> {
-  const destination = slackStartRefusal(deps.access, request.channel);
+  const listed = deps.access.channelProjects.some((route) => route.channelId === request.channel);
+  const memberChannel =
+    deps.isMemberChannel === undefined || listed || isPersonId(request.channel)
+      ? undefined
+      : await deps.isMemberChannel(request.channel);
+  const destination = slackStartRefusal(deps.access, request.channel, memberChannel);
   if (destination !== undefined) throw new Error(destination);
   const startConversation = deps.platform?.startConversation;
   if (startConversation === undefined) throw new Error("Slack isn't connected.");

@@ -944,6 +944,39 @@ it("keeps a context-only message for a bound thread's next turn, and never answe
   assert.notInclude(sent, "early");
 });
 
+it("serves unlisted channels the bot is a member of on the member route, and only those", async () => {
+  const asked: Array<string> = [];
+  const { t3, bridge } = harness(freshDatabase(), {
+    routes: [{ channelId: "C1", projectId: PROJECT, match: "[web]" }],
+    slack: {
+      memberRoute: async (channelId) => {
+        asked.push(channelId);
+        return channelId === "CMEMBER"
+          ? { projectId: "project-member", worktreeFrom: "dev" }
+          : undefined;
+      },
+    },
+  });
+  const member = event("400.1", { channelId: "CMEMBER", chatThreadKey: "slack:CMEMBER:400.1" });
+  assert.strictEqual((await bridge.receive(member)).type, "started");
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  assert.strictEqual(launch.args.projectId, "project-member");
+  const outsider = event("400.2", { channelId: "COUTSIDE", chatThreadKey: "slack:COUTSIDE:400.2" });
+  assert.deepStrictEqual(await bridge.receive(outsider), {
+    type: "ignored",
+    reason: "unmapped_channel",
+  });
+  // A listed channel keeps its own routes, even when none matches the message.
+  assert.deepStrictEqual(
+    await bridge.receive(event("400.3", { chatThreadKey: "slack:C1:400.3" })),
+    {
+      type: "ignored",
+      reason: "unmapped_channel",
+    },
+  );
+  assert.deepStrictEqual(asked, ["CMEMBER", "COUTSIDE"]);
+});
+
 it("starts direct messages in the direct-message project, when there is one", async () => {
   const dm = event("300.1", { channelId: "D1", chatThreadKey: "slack:D1:300.1", direct: true });
   assert.deepStrictEqual(await harness().bridge.receive(dm), {

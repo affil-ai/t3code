@@ -156,8 +156,10 @@ const SLACK_START_TOOL = {
 class ToolInputError extends Error {}
 
 /**
- * Why `slack_start` may not post to `channel`, or undefined when it may: only a
- * configured channel, or a DM to someone allowed to use the bot.
+ * Why `slack_start` may not post to `channel`, or undefined when it may: a configured
+ * channel, a channel the bot is a member of when the bridge serves those (`memberChannel`
+ * is then the membership answer; undefined when it doesn't), or a DM to someone allowed
+ * to use the bot.
  */
 export function slackStartRefusal(
   access: {
@@ -166,14 +168,22 @@ export function slackStartRefusal(
     readonly allowEveryone: boolean;
   },
   channel: string,
+  memberChannel?: boolean,
 ): string | undefined {
-  if (channel.startsWith("U") || channel.startsWith("W")) {
+  if (isPersonId(channel)) {
     if (access.allowEveryone || access.allowedUserIds.includes(channel)) return undefined;
     return `${channel} isn't allowed to use the bot, so slack_start won't DM them.`;
   }
   if (access.channelProjects.some((route) => route.channelId === channel)) return undefined;
+  if (memberChannel === true) return undefined;
+  if (memberChannel === false)
+    return `${channel} isn't a channel the bridge serves: the Office bot isn't a member of it (or it's a Slack Connect channel), so slack_start won't post there. Invite the bot to the channel first.`;
   return `${channel} isn't one of the bridge's channels, so slack_start won't post there.`;
 }
+
+/** A Slack member id (U…, W…), which `slack_start` takes as a DM. */
+export const isPersonId = (channel: string): boolean =>
+  channel.startsWith("U") || channel.startsWith("W");
 
 const TOOLS = [
   {

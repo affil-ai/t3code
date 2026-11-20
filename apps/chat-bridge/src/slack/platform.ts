@@ -55,6 +55,8 @@ export function slackPlatform(options: {
   readonly access: Access;
   readonly channelRoutes: ReadonlyArray<ChannelRoute>;
   readonly directRoute?: ThreadRoute | undefined;
+  /** Where a mention in an unlisted channel the bot is a member of starts; see `slack.memberChannels`. */
+  readonly memberRoute?: ThreadRoute | undefined;
   /**
    * Who `allowEveryone` admits. `workspace` (Socket Mode): full members only. `person`
    * (Office relay): Office already accepted the event, so any person who can reach the
@@ -77,6 +79,12 @@ export function slackPlatform(options: {
         ? connected().isPerson(userId)
         : connected().isWorkspaceMember(userId),
     channelRoutes: options.channelRoutes,
+    ...(options.memberRoute === undefined
+      ? {}
+      : {
+          memberRoute: async (channelId: string) =>
+            (await connected().isMemberChannel(channelId)) ? options.memberRoute : undefined,
+        }),
     directRoute: options.directRoute,
     person: (userId, name) => `${name} (<@${userId}>)`,
     firstTurnNote: (chatKey) => slackFirstTurnNote(chatKey),

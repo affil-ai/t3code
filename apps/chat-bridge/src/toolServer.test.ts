@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { assert, it } from "vite-plus/test";
 
 import type { OutboundMessage, Reaction } from "./platform.ts";
+import { startSlackThread } from "./slack/start.ts";
 import { callTool, slackStartRefusal, type ToolDeps } from "./toolServer.ts";
 
 function harness() {
@@ -291,6 +292,39 @@ it("lets slack_start post only to the bridge's channels and to people allowed to
   assert.match(slackStartRefusal(access, "U0STRANGER1") ?? "", /isn't allowed/);
   assert.match(slackStartRefusal(access, "D0123ABCD") ?? "", /isn't one of the bridge's channels/);
   assert.isUndefined(slackStartRefusal({ ...access, allowEveryone: true }, "U0STRANGER1"));
+});
+
+it("lets slack_start post to a channel the bot is a member of, when the bridge serves those", async () => {
+  const access = {
+    channelProjects: [{ channelId: "C0CHANNEL01" }],
+    allowedUserIds: [],
+    allowEveryone: false,
+  };
+  assert.isUndefined(slackStartRefusal(access, "C0MEMBER001", true));
+  assert.match(slackStartRefusal(access, "C0OTHER0001", false) ?? "", /bot isn't a member of it/);
+  const asked: Array<string> = [];
+  const start = (channel: string) =>
+    startSlackThread(
+      {
+        access,
+        isMemberChannel: async (id) => {
+          asked.push(id);
+          return id === "C0MEMBER001";
+        },
+        platform: undefined,
+        core: { attachRefusal: async () => undefined, attach: async () => {} },
+      },
+      { threadId: "mcp:launch:abc", channel, text: "hi" },
+    ).then(
+      () => "started",
+      (error: Error) => error.message,
+    );
+  // Past the channel check, this test's bridge has no Slack to post with.
+  assert.strictEqual(await start("C0MEMBER001"), "Slack isn't connected.");
+  assert.match(await start("C0OTHER0001"), /isn't a channel the bridge serves/);
+  assert.strictEqual(await start("C0CHANNEL01"), "Slack isn't connected.");
+  // Listed channels and people need no membership lookup.
+  assert.deepStrictEqual(asked, ["C0MEMBER001", "C0OTHER0001"]);
 });
 
 it("sets a status only while the thread has a run in flight", async () => {

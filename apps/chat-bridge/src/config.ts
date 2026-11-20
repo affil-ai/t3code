@@ -71,6 +71,12 @@ export interface SlackConfig {
    * chat or ask for an answer. Every other bot's message is dropped.
    */
   readonly deliverBots: ReadonlyArray<string>;
+  /**
+   * Serve every channel the bot is a member of, except Slack Connect channels: a mention in
+   * one without a `channelProjects` entry starts its thread on this route, and `slack_start`
+   * may post there. Omit to serve only `channelProjects`.
+   */
+  readonly memberChannels?: ThreadRoute | undefined;
 }
 
 export interface LinearConfig {
@@ -258,6 +264,13 @@ function parseSlack(raw: unknown): SlackConfig {
     transport: transport as SlackConfig["transport"],
     deliverBots:
       raw.deliverBots === undefined ? [] : stringList(raw.deliverBots, "slack.deliverBots"),
+    ...(raw.memberChannels === undefined
+      ? {}
+      : {
+          memberChannels: isRecord(raw.memberChannels)
+            ? parseThreadRoute(raw.memberChannels, "slack.memberChannels")
+            : fail("slack.memberChannels must be an object."),
+        }),
   };
 }
 

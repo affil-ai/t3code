@@ -1405,9 +1405,13 @@ export class Bridge {
       return { type: "ignored", reason: "unbound_thread" };
     if (seed && event.forAnotherBot === true) return { type: "ignored", reason: "unbound_thread" };
 
+    const routes = platform.channelRoutes ?? [];
+    // A channel with its own routes keeps them; `memberRoute` only serves the rest.
     const route: ThreadRoute | undefined = event.direct
       ? platform.directRoute
-      : routeFor(platform.channelRoutes ?? [], event.channelId, event.text);
+      : routes.some((entry) => entry.channelId === event.channelId)
+        ? routeFor(routes, event.channelId, event.text)
+        : await platform.memberRoute?.(event.channelId);
     if (route === undefined) return { type: "ignored", reason: "unmapped_channel" };
     const projectId = route.projectId;
     let modelSelection = event.modelSelection;

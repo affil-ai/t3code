@@ -41,6 +41,8 @@ interface SlackMember {
 }
 
 const MEMBER_CACHE_MS = 10 * 60 * 1000;
+/** A "not a member" answer is kept briefly, so an invite takes effect within a minute. */
+const NOT_MEMBER_CACHE_MS = 60 * 1000;
 
 /**
  * How Slack's events and button clicks reach the bridge: over its own Socket
@@ -108,6 +110,11 @@ export interface SlackChatHost {
   readonly isWorkspaceMember: (userId: string) => Promise<boolean>;
   /** Whether someone is a person: any user Slack knows, guests and Slack Connect included, except bots and deleted users. */
   readonly isPerson: (userId: string) => Promise<boolean>;
+  /**
+   * Whether the bot is a member of this channel and it isn't shared with another
+   * organization (Slack Connect). Unknown or unreadable channels are not.
+   */
+  readonly isMemberChannel: (channelId: string) => Promise<boolean>;
   /** Posts a message with blocks, such as a question with buttons; returns its `ts`. */
   readonly postBlocks: (message: BlockMessage) => Promise<string>;
   /** Replaces a message posted with `postBlocks`. */
@@ -756,6 +763,7 @@ export function createSlackHost(options: SlackChatHostOptions): {
     /** Workspace membership by user, for `allowEveryone`, checked again after a while. */
     const members = new Map<string, { member: boolean; until: number }>();
     const people = new Map<string, { member: boolean; until: number }>();
+    const memberChannels = new Map<string, { member: boolean; until: number }>();
     const slackUser = async (userId: string) =>
       ((await slack.webClient.users.info({ user: userId })) as { user?: SlackMember }).user;
     let ownTeam: string | undefined;
@@ -933,6 +941,36 @@ export function createSlackHost(options: SlackChatHostOptions): {
           user.is_bot !== true;
         people.set(userId, { member: person, until: performance.now() + MEMBER_CACHE_MS });
         return person;
+      },
+      isMemberChannel: async (channelId) => {
+        const cached = memberChannels.get(channelId);
+        if (cached !== undefined && cached.until > performance.now()) return cached.member;
+        let channel:
+          | { is_member?: boolean; is_ext_shared?: boolean; is_pending_ext_shared?: boolean }
+          | undefined;
+        try {
+          channel = (
+            (await slack.webClient.conversations.info({ channel: channelId })) as {
+              channel?: typeof channel;
+            }
+          ).channel;
+        } catch (error) {
+          // channel_not_found is how Slack answers for a private channel the bot isn't in.
+          const code = (error as { data?: { error?: string } }).data?.error;
+          if (code !== "channel_not_found") {
+            log("warn", `Slack conversations.info failed for ${channelId}: ${code ?? "error"}.`);
+            return false;
+          }
+        }
+        const member =
+          channel?.is_member === true &&
+          channel.is_ext_shared !== true &&
+          channel.is_pending_ext_shared !== true;
+        memberChannels.set(channelId, {
+          member,
+          until: performance.now() + (member ? MEMBER_CACHE_MS : NOT_MEMBER_CACHE_MS),
+        });
+        return member;
       },
       rename: async (chatThreadKey, title) => {
         // agents.sessions.rename with channel_id and thread_ts, in DMs and channel threads alike.

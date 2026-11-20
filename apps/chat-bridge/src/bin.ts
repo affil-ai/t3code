@@ -108,6 +108,8 @@ async function start(): Promise<void> {
     await t3.call("t3_project_read", { projectId });
   }
   if (config.dmProjectId) await t3.call("t3_project_read", { projectId: config.dmProjectId });
+  if (config.slack.memberChannels)
+    await t3.call("t3_project_read", { projectId: config.slack.memberChannels.projectId });
   if (config.imessage)
     await t3.call("t3_project_read", { projectId: config.imessage.route.projectId });
   for (const { projectId } of config.linear
@@ -131,6 +133,7 @@ async function start(): Promise<void> {
             host: () => slackHost,
             access: { allowedUserIds: config.allowedUserIds, allowEveryone: config.allowEveryone },
             channelRoutes: config.channelProjects,
+            memberRoute: config.slack.memberChannels,
             directRoute: dmRoute(config),
             eligibility: slackEligibility(slackTransport),
           }),
@@ -372,6 +375,10 @@ async function start(): Promise<void> {
             startSlackThread(
               {
                 access: config,
+                isMemberChannel:
+                  config.slack.memberChannels === undefined || slackHost === undefined
+                    ? undefined
+                    : slackHost.isMemberChannel,
                 platform: platforms.find((each) => each.id === "slack"),
                 core,
               },

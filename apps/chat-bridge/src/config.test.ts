@@ -124,3 +124,15 @@ it("reads former default models and rejects malformed ones", () => {
       /formerModelSelections/,
     );
 });
+
+it("reads slack.memberChannels as a route, and serves only listed channels without it", () => {
+  const base = { t3Url: "http://x", channelProjects: [], allowedUserIds: [] };
+  assert.isUndefined(parseConfig(base).slack.memberChannels);
+  assert.deepStrictEqual(
+    parseConfig({ ...base, slack: { memberChannels: { projectId: "p", worktreeFrom: "dev" } } })
+      .slack.memberChannels,
+    { projectId: "p", worktreeFrom: "dev" },
+  );
+  assert.throws(() => parseConfig({ ...base, slack: { memberChannels: {} } }), /memberChannels/);
+  assert.throws(() => parseConfig({ ...base, slack: { memberChannels: true } }), /memberChannels/);
+});

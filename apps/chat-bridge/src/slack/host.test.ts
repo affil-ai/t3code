@@ -498,6 +498,44 @@ it("asks the person check behind Office's relay and the member check in Socket M
   assert.deepStrictEqual(asked, ["person UGUEST", "member UGUEST"]);
 });
 
+it("serves a channel only while the bot is a member and it isn't Slack Connect", async () => {
+  const channels: Record<string, Record<string, unknown> | undefined> = {
+    CIN: { is_member: true },
+    COUT: { is_member: false },
+    CCONNECT: { is_member: true, is_ext_shared: true },
+    CPENDING: { is_member: true, is_pending_ext_shared: true },
+  };
+  const { api, host } = await hostOn({
+    "conversations.info": (args) => {
+      const channel = channels[args.channel ?? ""];
+      return channel === undefined
+        ? { ok: false, error: "channel_not_found" }
+        : { ok: true, channel: { id: args.channel, ...channel } };
+    },
+  });
+  try {
+    const served: Record<string, boolean> = {};
+    for (const id of ["CIN", "COUT", "CCONNECT", "CPENDING", "CPRIVATE"]) {
+      served[id] = await host.isMemberChannel(id);
+    }
+    assert.deepStrictEqual(served, {
+      CIN: true,
+      COUT: false,
+      CCONNECT: false,
+      CPENDING: false,
+      CPRIVATE: false,
+    });
+    // Answers are cached.
+    await host.isMemberChannel("CIN");
+    assert.lengthOf(
+      api.calls.filter((call) => call.method === "conversations.info"),
+      5,
+    );
+  } finally {
+    await api.close();
+  }
+});
+
 it("doesn't count Slackbot as a person", async () => {
   const { api, host } = await hostOn(
     {
