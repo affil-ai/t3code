@@ -27,7 +27,7 @@ import {
   QUIET_REPLY,
   type ThreadRoute,
 } from "./platform.ts";
-import { slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
+import { NO_REACT_TO_STARTER, slackFirstTurnNote, slackPlatform } from "./slack/platform.ts";
 import { SLACK_REPLY_STYLE } from "./slack/replyStyle.ts";
 import { imessagePlatform } from "./imessage/platform.ts";
 import type { ImessageAdapter } from "./imessage/adapter.ts";
@@ -560,6 +560,25 @@ it("starts a thread on a mention and posts its final answer", async () => {
   t3.finish("run-1", "completed", "Fixed.");
   await bridge.idle();
   assert.deepStrictEqual(posted, [{ chatThreadKey: "slack:C1:100.1", text: "Fixed." }]);
+});
+
+it("tells the agent not to react when John Ta starts a Slack chat", async () => {
+  const { t3, bridge } = harness(undefined, { allowEveryone: true, members: ["U0791S1K34N"] });
+  await bridge.receive(
+    event("100.1", { author: { userId: "U0791S1K34N", userName: "john", fullName: "John Ta" } }),
+  );
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  assert.include(String(launch.args.message), NO_REACT_TO_STARTER);
+});
+
+it("keeps the first turn unchanged for a chat someone else starts", async () => {
+  const { t3, bridge, store } = harness();
+  await bridge.receive(event("100.1"));
+  const launch = t3.calls.find((call) => call.tool === "t3_thread_launch")!;
+  const message = String(launch.args.message);
+  assert.notInclude(message, NO_REACT_TO_STARTER);
+  assert.include(message, slackFirstTurnNote(store.binding("slack:C1:100.1")!.chatKey));
+  assert.strictEqual(slackFirstTurnNote("key", event("1")), slackFirstTurnNote("key"));
 });
 
 it("steers follow-ups into the bound thread and answers each run once", async () => {

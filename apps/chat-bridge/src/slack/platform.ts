@@ -7,6 +7,7 @@ import {
   postRules,
   type ThreadRoute,
 } from "../platform.ts";
+import type { InboundEvent } from "../bridge.ts";
 import type { SlackChatHost, SlackTransport } from "./host.ts";
 import { SLACK_REPLY_STYLE } from "./replyStyle.ts";
 
@@ -25,11 +26,19 @@ export const slackEligibility = (transport: SlackTransport): "workspace" | "pers
 export const SLACK_ACKNOWLEDGE =
   "React rarely. Use chat_react (eyes) at most once per request, on the message that asks you for work you won't answer within about a minute. Don't react when you'll answer in this run, or to follow-ups, answers to your questions, thanks, asides or messages not addressed to you. When you take on work, set chat_status to the step you're on, and again at each new step.";
 
-/** Tells the agent how its answer reaches Slack, once per thread. */
-export function slackFirstTurnNote(chatKey: string): string {
+/** John Ta's Slack user id. He asked that agents not react to his messages. */
+export const JOHN_TA_SLACK_ID = "U0791S1K34N";
+
+/** Added to the first turn of a chat John Ta starts. */
+export const NO_REACT_TO_STARTER =
+  "This chat was started by John Ta: don't react to his messages (no chat_react, eyes included).";
+
+/** Tells the agent how its answer reaches Slack, once per thread. `start` is the message that started it. */
+export function slackFirstTurnNote(chatKey: string, start?: Pick<InboundEvent, "author">): string {
   return [
     postRules("Slack thread"),
     SLACK_ACKNOWLEDGE,
+    ...(start?.author.userId === JOHN_TA_SLACK_ID ? [NO_REACT_TO_STARTER] : []),
     DELIVER_FIRST,
     SLACK_REPLY_STYLE,
     "To mention someone there, write <@USERID>, such as <@U0123ABCD>.",
@@ -87,7 +96,7 @@ export function slackPlatform(options: {
         }),
     directRoute: options.directRoute,
     person: (userId, name) => `${name} (<@${userId}>)`,
-    firstTurnNote: (chatKey) => slackFirstTurnNote(chatKey),
+    firstTurnNote: slackFirstTurnNote,
     refusal: (userId) =>
       `Sorry, you can't use this bot yet. Ask whoever runs it to add your Slack member ID (${userId}) to its allowed users.`,
     post: (message) => connected().post(message),
