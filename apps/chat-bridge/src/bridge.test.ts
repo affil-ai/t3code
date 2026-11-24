@@ -178,11 +178,17 @@ function fakeT3() {
           case "t3_attachment_prepare_upload":
             return { attachmentId: `attachment-${calls.length}`, relativeUrl: "/upload" };
           case "t3_thread_send_attachments": {
-            // A retry with the same key returns the message the first send made.
-            const key =
-              args.clientRequestId === undefined ? undefined : String(args.clientRequestId);
-            const runId = (key && attachmentSends.get(key)) || `run-${runs}`;
-            attachmentSends.set(key ?? `unkeyed-${calls.length}`, runId);
+            // Like stock T3: no retry key, and an unknown argument is refused.
+            const unknown = Object.keys(args).find(
+              (name) => !["threadId", "message", "attachments"].includes(name),
+            );
+            if (unknown !== undefined) {
+              throw new Error(
+                `MCP error -32602: Invalid parameters for tool 't3_thread_send_attachments': Unknown argument "${unknown}".`,
+              );
+            }
+            const runId = `run-${runs}`;
+            attachmentSends.set(`send-${calls.length}`, runId);
             if (options.loseAttachmentReply === true) {
               options.loseAttachmentReply = false;
               throw new Error("socket hang up");
@@ -2823,7 +2829,24 @@ it("finishes a launched message before its follow-on work, so a restart doesn't 
   );
 });
 
-it("sends a follow-up with files once when T3 took it but its reply was lost", async () => {
+it("sends a follow-up with files using only the arguments T3's attachment send accepts", async () => {
+  const { t3, bridge, store } = harness();
+  await bridge.receive(event("100.1"));
+  const followUp = event("100.2", {
+    kind: "follow_up",
+    text: "see the screenshot",
+    files: [{ name: "shot.png", mimeType: "image/png", sizeBytes: 3, url: "https://files/shot" }],
+  });
+  await bridge.receive(followUp);
+
+  const sends = t3.calls.filter((call) => call.tool === "t3_thread_send_attachments");
+  assert.lengthOf(sends, 1);
+  assert.sameMembers(Object.keys(sends[0]!.args), ["threadId", "message", "attachments"]);
+  assert.strictEqual(t3.attachmentSends.size, 1);
+  assert.isTrue(store.isHandled("slack:C1:100.2"));
+});
+
+it("retries a follow-up with files after a lost reply; T3 has no retry key for it", async () => {
   const { t3, bridge, store, advance } = harness();
   await bridge.receive(event("100.1"));
   t3.options.loseAttachmentReply = true;
@@ -2838,9 +2861,7 @@ it("sends a follow-up with files once when T3 took it but its reply was lost", a
 
   const sends = t3.calls.filter((call) => call.tool === "t3_thread_send_attachments");
   assert.lengthOf(sends, 2);
-  assert.strictEqual(sends[0]!.args.clientRequestId, "chat-bridge:slack:C1:100.2");
-  assert.strictEqual(sends[1]!.args.clientRequestId, sends[0]!.args.clientRequestId);
-  assert.strictEqual(t3.attachmentSends.size, 1, "T3 made one message");
+  assert.isUndefined(sends[1]!.args.clientRequestId);
   assert.isTrue(store.isHandled("slack:C1:100.2"));
 });
 
